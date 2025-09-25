@@ -122,6 +122,18 @@ class DatabaseDisplay:
             else:
                 time_display = f"{time_val:.1f}s"
 
+        # Safely extract metadata fields for display
+        metadata = program.metadata or {}
+        patch_name_raw = metadata.get("patch_name", "[dim]N/A[/dim]")
+        if patch_name_raw is None:
+            patch_name_raw = "[dim]N/A[/dim]"
+        patch_name = str(patch_name_raw)[:30]
+
+        patch_type_raw = metadata.get("patch_type", "[dim]N/A[/dim]")
+        if patch_type_raw is None:
+            patch_type_raw = "[dim]N/A[/dim]"
+        patch_type = str(patch_type_raw)
+
         # Add the data row
         island_display = (
             f"I-{program.island_idx}" if program.island_idx is not None else "N/A"
@@ -131,8 +143,8 @@ class DatabaseDisplay:
             island_display,
             status_display,
             score_display,
-            program.metadata.get("patch_name", "[dim]N/A[/dim]")[:30],
-            program.metadata.get("patch_type", "[dim]N/A[/dim]"),
+            patch_name,
+            patch_type,
             f"{program.complexity:.1f}",
             cost_display,
             time_display,
