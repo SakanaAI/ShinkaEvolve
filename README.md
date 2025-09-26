@@ -52,9 +52,9 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | Example | Description | Environment Setup |
 |---------|-------------|-------------------|
 | ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
-| 🤖 [Agent Design](examples/agent_design) | Design agent scaffolds for math tasks. | `LocalJobConfig` |
+| 🤖 [Agent Design](examples/adas_aime) | Design agent scaffolds for math tasks. | `LocalJobConfig` |
 | 🎯 [ALE-Bench](examples/ale_bench) | Code optimization for ALE-Bench tasks. | `LocalJobConfig` |
-| ✨ [Novelty Generator](examples/novelty_generator_bck) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
+| ✨ [Novelty Generator](examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
