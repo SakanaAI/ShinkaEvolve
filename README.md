@@ -308,9 +308,9 @@ If you use `ShinkaEvolve` in your research, please cite it as follows:
 
 ```
 @article{lange2025shinka,
-  title={ShinkaEvolve: Towards Open-Ended and Sample-Efficient Program Evolution},
+  title={ShinkaEvolve: Towards Open-Ended And Sample-Efficient Program Evolution},
   author={Lange, Robert Tjarko and Imajuku, Yuki and Cetin, Edoardo},
-  journal={arXiv preprint},
+  journal={arXiv preprint arXiv:2509.19349},
   year={2025}
 }
 ```
