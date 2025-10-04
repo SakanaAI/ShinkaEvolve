@@ -1,0 +1,137 @@
+--- a/original.py
++++ b/original.py
+@@ -1,17 +1,133 @@
+ from typing import List
+
+ # EVOLVE-BLOCK-START
+ def generate_novelty(rng: int) -> str:
+     # add any relevant imports inside this function
+     import math
++    import random # Added for seeded random generation
+
+     # generate some cool and inspiring outputs based on rng
+-    return "Hello world!"
++    random.seed(rng) # Seed the random number generator for diversity
++
++    canvas_width = 80
++    canvas_height = 25
++    grid = [[' ' for _ in range(canvas_width)] for _ in range(canvas_height)]
++
++    center_x, center_y = canvas_width // 2, canvas_height // 2
++
++    # Character palettes for variety
++    base_chars = "*+o.#@X"
++    petal_chars = "/\\-|~"
++    border_chars = "='\"^"
++    fill_chars = ".,:;`"
++
++    # Select character palette components based on rng
++    char_palette = [random.choice(base_chars), random.choice(petal_chars), random.choice(border_chars), random.choice(fill_chars)]
++
++    # Dynamic parameters for pattern generation
++    num_petals_base = random.randint(3, 8) # Base number of symmetrical segments
++    num_petals = num_petals_base * 2 if random.random() < 0.7 else num_petals_base # Sometimes double for tighter symmetry
++
++    inner_radius = random.uniform(2, 6)
++    outer_radius = random.uniform(10, 20)
++    density_factor = random.uniform(0.5, 1.8)
++    wave_frequency = random.uniform(0.1, 0.7)
++    wave_amplitude = random.uniform(0.2, 0.5)
++
++    # Background "star" density
++    star_density = random.uniform(0.01, 0.05)
++    star_type_density = random.uniform(0.3, 0.7) # Likelihood of complex stars vs simple dots
++
++    for y in range(canvas_height):
++        for x in range(canvas_width):
++            dx = x - center_x
++            dy = y - center_y
++            distance = math.sqrt(dx*dx + dy*dy)
++            angle = math.atan2(dy, dx) # -pi to pi
++
++            # Normalize angle to 0 to 2pi
++            normalized_angle = (angle + math.pi)
++
++            char_to_place = ' '
++
++            # Central Core
++            if distance < inner_radius:
++                char_to_place = char_palette[0] # Base char
++
++            # Petal/Spoke pattern
++            elif distance > inner_radius and distance < outer_radius:
++                # Modulo angle for symmetry
++                symmetrical_angle_norm = (normalized_angle * num_petals / (2 * math.pi)) % 1.0
++
++                # Wave/ripple effect based on distance and a random phase
++                wave_effect = math.sin(distance * wave_frequency + random.uniform(-math.pi, math.pi)) * wave_amplitude
++
++                # How far we are into the petal segment (0 at edges, 1 at center of petal)
++                petal_intensity = math.sin(symmetrical_angle_norm * math.pi)
++
++                # Combine effects to decide if it's a petal
++                # Adding some randomness to feather edges
++                threshold = 0.5 + wave_effect + (random.random() - 0.5) * 0.3
++
++                if petal_intensity > threshold * density_factor:
++                    char_to_place = char_palette[1] # Petal char
++                elif petal_intensity > (threshold - 0.2) * density_factor: # A slightly less dense border
++                    char_to_place = char_palette[2] # Border char
++
++            # Outer region / Sparse elements (stars/nebula)
++            else:
++                if random.random() < star_density * (1 - (distance / (max(canvas_width, canvas_height)/2))**2):
++                    if random.random() < star_type_density:
++                        char_to_place = random.choice(['*', ':', ';']) # More complex stars
++                    else:
++                        char_to_place = random.choice(['.', '`']) # Simple dots
++                elif random.random() < 0.005 and distance < max(canvas_width, canvas_height) * 0.4: # Very sparse fill chars closer to the bloom
++                    char_to_place = char_palette[3] # Fill char
++
++
++            grid[y][x] = char_to_place
++
++    # Assemble the output string from the grid
++    art_lines = ["".join(row) for row in grid]
++
++    # Generate a meaningful and inspirational caption
++    themes = [
++        "The universe whispers its intricate patterns.",
++        "A dance of chaos and order, eternally unfolding.",
++        "Witness the silent symphony of creation.",
++        "Every point, a possibility; every line, a destiny.",
++        "Reflections of cosmic artistry within.",
++        "The grand design, woven from starlight and intention.",
++        "Behold the bloom of infinity.",
++        "Where mathematics meets wonder.",
++        "A portal to inner landscapes, beyond sight.",
++        "The fabric of reality, rendered in light.",
++        "Embrace the beauty of emergent complexity.",
++        "From a single seed, a universe unfurls.",
++        "The echo of a cosmic breath.",
++        "Find harmony in the interwoven threads.",
++        "Meditate on the infinite possibilities.",
++        "A glimpse into the soul's geometry.",
++        "Unraveling the cosmos, one pattern at a time.",
++        "The infinite manifested in finite form.",
++        "Seek the patterns that connect all things.",
++        "Beyond the veil, patterns of profound truth.",
++        "The artistry of the unseen hand.",
++        "A fleeting glimpse of eternity's design.",
++        "Resonance in the architecture of existence."
++    ]
++    caption = random.choice(themes)
++
++    final_output = "\n".join(art_lines)
++    final_output += f"\n\n    \" {caption} \"\n"
++    final_output += f"    (Novelty Seed: {rng})" # Include seed for traceability/demonstration
++
++    return final_output
+ # EVOLVE-BLOCK-END
+
+ def run_experiment(random_inputs: List[int]) -> List[str]:
+     novel_outputs = [generate_novelty(rng) for rng in random_inputs]
+     for output in novel_outputs:
+         print("Here is something new, amazing, inspiring, and profound that you might have never seen before:")
+         print(output)
+     return novel_outputs

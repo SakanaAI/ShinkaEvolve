@@ -1,0 +1,109 @@
+verbose: false
+results_dir: results
+run_name: ${now:%Y.%m.%d}${now:%H%M%S}
+output_dir: ${results_dir}/${exp_name}/${run_name}${variant_suffix}
+db_config:
+  _target_: shinka.database.DatabaseConfig
+  db_path: evolution_db.sqlite
+  num_islands: 2
+  archive_size: 40
+  exploitation_ratio: 0.2
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.0
+  island_elitism: true
+  parent_selection_strategy: weighted
+  parent_selection_lambda: 10.0
+evo_config:
+  _target_: shinka.core.EvolutionConfig
+  patch_types:
+  - diff
+  - full
+  - cross
+  patch_type_probs:
+  - 0.6
+  - 0.3
+  - 0.1
+  num_generations: 100
+  max_parallel_jobs: 10
+  max_patch_resamples: 3
+  max_patch_attempts: 3
+  llm_models:
+  - gemini-2.5-flash
+  llm_dynamic_selection: ucb
+  llm_kwargs:
+    temperatures:
+    - 0.0
+    - 0.5
+    - 1.0
+    max_tokens: 16384
+  meta_rec_interval: 10
+  meta_llm_models:
+  - gpt-4.1
+  meta_llm_kwargs:
+    temperatures:
+    - 0.0
+  embedding_model: text-embedding-3-small
+  results_dir: ${output_dir}
+  task_sys_msg: 'Make a python function that takes as input a random integer and produces
+    a piece of art that is cool and novel. Depending on its input, each output should
+    be diverse from all other outputs produced with different inputs. Please, call
+    this function "def generate_novelty(rng: int) -> str"
+
+
+    Different judges will evaluate how 1) diverse, 2) meaningful, and 3) inspirational
+    the generated outputs are for different random seeds. These three criteria will
+    be used to assign your function a "final_novelty_score" for each judge. Only functions
+    excelling across all three dimensions will achieve a high "final_novelty_score".
+
+
+    Now bring out your creativity, it''s time to surprise us!
+
+    '
+  language: python
+  init_program_path:
+    _target_: shinka.utils.add_evolve_markers
+    save_dir: ${output_dir}
+    initial_file_path: examples/novelty_generator/initial.py
+    insert_start: generate_novelty
+    insert_end: generate_novelty
+  job_type: local
+novelty_generator_number_of_samples: 20
+evaluate_function:
+  _target_: examples.novelty_generator.evaluate.evaluate_with_lm_judge
+  program_path: ???
+  results_dir: ???
+  lm_input_and_output_processors:
+    _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
+    number_of_samples: ${novelty_generator_number_of_samples}
+  llm_judge_names:
+  - bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+  llm_judge_kwargs:
+    temperatures: 0.0
+    max_tokens: 8196
+    reasoning_efforts: low
+    model_sample_probs: null
+    output_model: null
+    verbose: true
+  limit_max_characters: 1000000
+  num_samples: ${novelty_generator_number_of_samples}
+  seed: 42
+distributed_job_config:
+  _target_: shinka.launch.SlurmCondaJobConfig
+  modules:
+  - cuda/12.4
+  - cudnn/8.9.7
+  - hpcx/2.20
+  eval_program_path: shinka/eval_hydra.py
+  conda_env: shinka
+  time: 00:10:00
+  cpus: 1
+  gpus: 0
+  mem: 8G
+exp_name: shinka_novelty_generator_llm_judge
+job_config:
+  _target_: shinka.launch.LocalJobConfig
+  eval_program_path: ${distributed_job_config.eval_program_path}
+variant_suffix: _example

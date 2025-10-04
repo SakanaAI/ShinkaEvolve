@@ -1,0 +1,66 @@
+/app
+Launching evaluation of function:
+_target_: examples.novelty_generator.evaluate.evaluate_with_lm_judge
+program_path: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_4/main.py
+results_dir: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_4/results
+lm_input_and_output_processors:
+  _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
+  number_of_samples: ${novelty_generator_number_of_samples}
+llm_judge_names:
+- bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+llm_judge_kwargs:
+  temperatures: 0.0
+  max_tokens: 8196
+  reasoning_efforts: low
+  model_sample_probs: null
+  output_model: null
+  verbose: true
+limit_max_characters: 1000000
+num_samples: ${novelty_generator_number_of_samples}
+seed: 42
+
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A pulsating solitary star ignites in infinite silence. It whispers of boundless hope.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Where does the luminous being end? And where do its illusions can it truly hold? It celebrates the joy of discovery.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The pulse of gravity reflects across the ocean of memory. A vibrant echo observes in the stillness of potential. It questions the nature of form.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A crystalline cosmic dust mote unfurls on a tapestry of thought. It illuminates the path of inner peace.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Where does the primordial void end? And where do its echoes where do they truly reside? It echoes the longing for truth.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Where does the luminous dream end? And where do its whispers what secrets does it unfold? It celebrates the joy of discovery.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The pulse of gravity emanates on the breath of existence. It speaks of ephemeral beauty.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The pulse of gravity lingers on a tapestry of thought. A resonant silence unfurls through the fabric of time. It illuminates the path of inner peace.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The breath of a nebula ignites amidst the echoes of causality. It questions the nature of form.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The silent hum emanates at the core of every moment. It whispers of boundless hope.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The fleeting shadow sleeps across the fields of oblivion. A pulsating void observes across the fields of oblivion. It embraces the dance of chaos and order.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A forgotten whisper lingers on the breath of existence. It celebrates the courage to exist.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+An ancient light pervades on the breath of existence. It inspires profound transformation.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A nascent thought sleeps beyond the horizon of understanding. A shadow-spun void ascends through the fabric of time. It inspires profound transformation.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A shimmering veil sleeps at the core of every moment. It points to the interconnectedness of all.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Where does the vibrant dream end? And where do its echoes where do they truly reside? It illuminates the path of inner peace.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A iridescent pulse of gravity resonates on a tapestry of thought. It whispers of boundless hope.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Where does the ethereal light end? And where do its illusions does it ever cease to be? It suggests a universe in constant becoming.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+The echo of dawn ignites beneath the canopy of the unseen. A silent essence reflects through the fabric of time. It hints at latent potential.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+A solitary star reflects from the crucible of pure being. It celebrates the joy of discovery.
+Error: 'NoneType' object has no attribute 'cost'
+{'combined_score': 0, 'public': {}, 'private': {}, 'runtime': 0}
+Completed after 0h 0m 0s
+Correct saved to /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_4/results/correct.json
+Metrics saved to /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_4/results/metrics.json

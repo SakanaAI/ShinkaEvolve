@@ -1,0 +1,91 @@
+from typing import List
+import random
+
+# EVOLVE-BLOCK-START
+def generate_novelty(rng: int) -> str:
+    # Use rng to seed a local random generator for diversity and determinism
+    local_random = random.Random(rng)
+
+    forms = [
+        "a crystalline hum", "an astral tapestry", "a phantom helix",
+        "a resonant void", "a geometric pulse", "a silent sentinel",
+        "a shimmering glyph", "an ephemeral bloom", "a gravity-defying edifice",
+        "a cosmic breath", "a weave of pure thought", "a temporal eddy",
+        "a luminescence of silence", "a chorus of forgotten stars",
+        "a fractal whisper", "a dream-spun atom", "an ocean of nascent possibilities"
+    ]
+
+    appearances = [
+        "bathed in indigo echoes", "pulsating with auroral gleam",
+        "etched in shadows of forgotten hues", "brimming with liquid starlight",
+        "outlined by phantom wavelengths", "composed of compressed longing",
+        "radiant with the glow of unspent futures", "a mosaic of fractured light",
+        "veiled in the mist of collapsing dimensions", "translucent with nascent truth",
+        "reflecting the spectrum of every 'if'", "draped in the silence before sound",
+        "a ripple in the fabric of memory", "gleaming with an ancient, knowing light"
+    ]
+
+    actions = [
+        "murmurs prophecies to nascent stars", "charts the dance of causality",
+        "breathes the dust of departed universes", "sculpts the architecture of oblivion",
+        "dreams the patterns of infinity into being", "unspools the threads of potential outcomes",
+        "echoes the first sound of creation", "siphons meaning from the silent void",
+        "weaves the destinies of nascent consciousness", "calibrates the scales of cosmic balance",
+        "remembers the future yet to unfold", "sings the song of entropy and rebirth"
+    ]
+
+    locations = [
+        "at the edge of collapsing probabilities", "within the heart of a cosmic sigh",
+        "beyond the liminal veil of perception", "where time folds back upon itself",
+        "in the forgotten chambers of the multiverse", "on the event horizon of pure potential",
+        "between the beats of universal consciousness", "along the spine of nascent realities",
+        "at the confluence of every 'was' and 'will be'", "in the shadow of the last thought",
+        "where the concept of 'self' first bloomed"
+    ]
+
+    effects = [
+        "leaving echoes in the soul's deepest chambers", "forging bridges between the seen and unseen",
+        "revealing patterns that defy comprehension", "awakening a dormant wonder within the observer",
+        "hinting at the grand design of all existence", "unveiling the beauty of perpetual becoming",
+        "distorting the very notion of what is real", "inspiring a profound and unsettling serenity",
+        "sparking the dawn of a new philosophical paradigm"
+    ]
+
+    # Pick elements using the local_random instance
+    chosen_form = local_random.choice(forms)
+    chosen_appearance = local_random.choice(appearances)
+    chosen_action = local_random.choice(actions)
+
+    # Probabilistically include a location for structural diversity
+    if local_random.random() < 0.75:
+        chosen_location = " " + local_random.choice(locations)
+    else:
+        chosen_location = ""
+
+    chosen_effect = local_random.choice(effects)
+
+    # Construct the output string using different templates for more phrasing diversity
+    template_options = [
+        f"Behold, {chosen_form} {chosen_appearance}. It {chosen_action}{chosen_location}, {chosen_effect}.",
+        f"A revelation: {chosen_form}, {chosen_appearance}. This entity {chosen_action}{chosen_location}, {chosen_effect}.",
+        f"Consider the {chosen_form} {chosen_appearance}, as it {chosen_action}{chosen_location}. What wonder it creates, {chosen_effect}."
+    ]
+
+    output_string = local_random.choice(template_options)
+
+    # Post-processing for cleaner output
+    output_string = output_string.replace(" ,", ",").replace(" .", ".").strip()
+
+    # Capitalize the first letter of the sentence
+    if output_string:
+        output_string = output_string[0].upper() + output_string[1:]
+
+    return output_string
+# EVOLVE-BLOCK-END
+
+def run_experiment(random_inputs: List[int]) -> List[str]:
+    novel_outputs = [generate_novelty(rng) for rng in random_inputs]
+    for output in novel_outputs:
+        print("Here is something new, amazing, inspiring, and profound that you might have never seen before:")
+        print(output)
+    return novel_outputs

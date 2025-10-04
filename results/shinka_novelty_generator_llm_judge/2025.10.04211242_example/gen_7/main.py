@@ -1,0 +1,266 @@
+from typing import List
+
+# EVOLVE-BLOCK-START
+def generate_novelty(rng: int) -> str:
+    # add any relevant imports inside this function
+    import math
+    import random
+
+    random.seed(rng) # Seed for reproducibility and diversity
+
+    output_parts = []
+
+    # --- PART 1: Visual Pattern Generation ---
+    # Choose a pattern type
+    pattern_type = random.choice(['grid', 'wave', 'concentric', 'sparse', 'fractalish'])
+
+    visual_art = []
+    width = random.randint(30, 60)
+    height = random.randint(10, 25)
+
+    if pattern_type == 'grid':
+        char_sets = [
+            (" ", "░", "▒", "▓", "█"),
+            (" ", "─", "│", "┌", "┐", "└", "┘", "┼"),
+            (" ", "*", ".", "o", "@"),
+            (" ", "•", "◦", "◎", "◉"),
+            (" ", "▞", "▛", "▙", "▚")
+        ]
+        char_pool = random.choice(char_sets)
+        density = random.random() * 0.7 + 0.1 # 10% to 80% density
+
+        for y in range(height):
+            line = []
+            for x in range(width):
+                if random.random() < density:
+                    line.append(random.choice(char_pool[1:])) # Use non-space chars
+                else:
+                    line.append(char_pool[0]) # Space
+            visual_art.append("".join(line))
+
+    elif pattern_type == 'wave':
+        wave_char = random.choice("~-_/\\=|*#@%")
+        amplitude = random.randint(2, 6) # Increased amplitude for more visible waves
+        frequency = random.uniform(0.1, 0.5)
+        phase_offset_per_row = random.uniform(0.01, 0.1) # Subtle vertical shift
+
+        for y in range(height):
+            line = []
+            for x in range(width):
+                # Calculate the ideal y-position for the wave at this x, considering row offset
+                ideal_y_pos = int(height / 2 + math.sin(x * frequency + y * phase_offset_per_row) * amplitude)
+
+                # If current y is the ideal y-position, draw the char
+                if y == ideal_y_pos:
+                    line.append(wave_char)
+                else:
+                    line.append(" ")
+            visual_art.append("".join(line))
+
+    elif pattern_type == 'concentric':
+        chars = random.choice([[" ", "o", "O", "◉"], [" ", "░", "▒", "█"], [" ", "•", "✦", "✨"]])
+        center_x = width // 2
+        center_y = height // 2
+
+        # Randomize the 'ripple' frequency
+        ripple_factor = random.randint(2, 5)
+
+        for y in range(height):
+            line = []
+            for x in range(width):
+                dist = int(math.sqrt((x - center_x)**2 + (y - center_y)**2))
+                char_idx = (dist // ripple_factor) % len(chars)
+                line.append(chars[char_idx])
+            visual_art.append("".join(line))
+
+    elif pattern_type == 'sparse':
+        sparse_char_sets = [
+            ["*", ".", ","],
+            ["•", "◦"],
+            ["✨", "💫"],
+            ["🌌", "🌠"]
+        ]
+        sparse_char_pool = random.choice(sparse_char_sets)
+        num_points = random.randint(width * height // 30, width * height // 10)
+        points = set()
+        while len(points) < num_points:
+            points.add((random.randint(0, width - 1), random.randint(0, height - 1)))
+
+        for y in range(height):
+            line = []
+            for x in range(width):
+                if (x, y) in points:
+                    line.append(random.choice(sparse_char_pool)) # Random char from pool
+                else:
+                    line.append(" ")
+            visual_art.append("".join(line))
+
+    elif pattern_type == 'fractalish': # A simple approximation of fractal-like growth (Diffusion-Limited Aggregation like)
+        seed_char = random.choice(["*", "#", "+", "•"])
+        empty_char = " "
+
+        grid = [[empty_char for _ in range(width)] for _ in range(height)]
+
+        # Start with a seed in the center or a random edge
+        if random.random() < 0.5: # Center seed
+            start_x, start_y = width // 2, height // 2
+        else: # Random edge seed
+            edge = random.choice(['top', 'bottom', 'left', 'right'])
+            if edge == 'top': start_x, start_y = random.randint(0, width - 1), 0
+            elif edge == 'bottom': start_x, start_y = random.randint(0, width - 1), height - 1
+            elif edge == 'left': start_x, start_y = 0, random.randint(0, height - 1)
+            else: start_x, start_y = width - 1, random.randint(0, height - 1)
+
+        grid[start_y][start_x] = seed_char
+
+        num_steps = random.randint(width * height // 15, width * height // 7)
+
+        for _ in range(num_steps):
+            # Pick a random point near an existing character to grow
+            candidates = []
+            for y_s in range(height):
+                for x_s in range(width):
+                    if grid[y_s][x_s] == seed_char:
+                        # Check empty neighbors
+                        for dy, dx in [(0,1), (0,-1), (1,0), (-1,0)]: # 4-directional adjacency
+                            nx, ny = x_s + dx, y_s + dy
+                            if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] == empty_char:
+                                candidates.append((ny, nx))
+
+            if candidates:
+                ny, nx = random.choice(candidates)
+                grid[ny][nx] = seed_char
+            else: # If no more growth candidates, stop
+                break
+
+        for row in grid:
+            visual_art.append("".join(row))
+
+
+    output_parts.append("\n".join(visual_art))
+    output_parts.append("\n") # Separator
+
+    # --- PART 2: Conceptual/Poetic Text Generation ---
+    themes = {
+        'existence': {
+            'adjectives': ['luminous', 'ephemeral', 'boundless', 'unseen', 'resonant', 'primal', 'verdant'],
+            'nouns': ['whisper', 'fabric', 'void', 'genesis', 'reality', 'continuum', 'essence'],
+            'verbs': ['unfurls', 'echoes', 'becomes', 'pervades', 'dwells', 'reveals', 'blooms'],
+            'templates': [
+                "A {adj} {noun} {verb} in the heart of all things.",
+                "Where {adj} {noun} meets the {adj} unknown, {verb} the boundaries of {noun}.",
+                "The {adj} {noun} {verb} through {adj} {noun}, an unending {noun} of being.",
+                "To witness the {adj} {noun} is to {verb} the {adj} {noun} within.",
+                "In the {adj} {noun} of {noun}, {adj} {noun} {verb} softly."
+            ]
+        },
+        'time': {
+            'adjectives': ['fleeting', 'eternal', 'unfolding', 'ancient', 'nascent', 'cyclical', 'serene'],
+            'nouns': ['river', 'echoes', 'moments', 'continuum', 'chronicle', 'pulse', 'sands'],
+            'verbs': ['flows', 'weaves', 'dissolves', 'expands', 'recalls', 'shatters', 'molds'],
+            'templates': [
+                "The {adj} {noun} {verb} through {adj} memories, shaping the {noun}.",
+                "In the current of {adj} {noun}, each {noun} {verb} a new {noun}.",
+                "An {adj} {noun} {verb} within the {adj} now, a dance of past and future.",
+                "From {adj} {noun}, {adj} {noun} {verb} and {verb} again.",
+                "The {adj} {noun} {verb}, a silent {noun} of {adj} {noun}."
+            ]
+        },
+        'chaos_order': {
+            'adjectives': ['fractured', 'symmetrical', 'turbulent', 'harmonious', 'emergent', 'interwoven', 'dynamic'],
+            'nouns': ['vortex', 'pattern', 'symphony', 'structure', 'discord', 'balance', 'flux'],
+            'verbs': ['collides', 'aligns', 'scatters', 'resolves', 'coalesces', 'entwines', 'defines'],
+            'templates': [
+                "From {adj} {noun}, a {adj} {noun} {verb} into existence.",
+                "The {adj} {noun} {verb} with {adj} {noun}, revealing hidden {noun}.",
+                "A delicate {noun} of {adj} and {adj} elements, forever {verb} and {verb}.",
+                "Where {adj} {noun} {verb} with {adj} {noun}, a new {noun} is born.",
+                "The {adj} {noun} {verb} to {verb} in an {adj} {noun}."
+            ]
+        },
+        'connection_isolation': {
+            'adjectives': ['intertwined', 'solitary', 'invisible', 'distant', 'shared', 'unbreakable', 'velvet'],
+            'nouns': ['threads', 'horizon', 'nexus', 'void', 'resonance', 'silence', 'bridges'],
+            'verbs': ['binds', 'separates', 'connects', 'distances', 'echoes', 'merges', 'embraces'],
+            'templates': [
+                "{adj} {noun} {verb} us across the {adj} {noun}.",
+                "In {adj} {noun}, the {adj} {noun} {verb} with silent {noun}.",
+                "Are we {adj} {noun}, or {verb} by {adj} {noun}?",
+                "The {adj} {noun} {verb} through the {adj} {noun}, finding {adj} {noun}.",
+                "Between {adj} {noun} and {adj} {noun}, a {adj} {noun} {verb}."
+            ]
+        },
+        'transformation': {
+            'adjectives': ['metamorphic', 'fluid', 'evolving', 'radical', 'subtle', 'unfolding', 'transient'],
+            'nouns': ['crucible', 'flux', 'cocoon', 'blossom', 'cycle', 'renewal', 'chrysalis'],
+            'verbs': ['unfolds', 'melds', 'reforms', 'ascends', 'sheds', 'becomes', 'transmutes'],
+            'templates': [
+                "Within the {adj} {noun}, a new {noun} {verb} from the old.",
+                "The {adj} {noun} {verb} through {adj} {noun}, a testament to endless becoming.",
+                "To {verb} is to embrace the {adj} {noun}, to step into the {adj} unknown.",
+                "A {adj} {noun} {verb} from the {adj} {noun}, a constant {noun} of form.",
+                "Witness the {adj} {noun} as it {verb} into a {adj} {noun}."
+            ]
+        },
+        'dreams_reality': {
+            'adjectives': ['ethereal', 'tangible', 'veiled', 'vivid', 'illusory', 'waking', 'lunar'],
+            'nouns': ['mirage', 'truth', 'perception', 'realm', 'awakening', 'whisper', 'semblance'],
+            'verbs': ['shimmers', 'grounds', 'deceives', 'reveals', 'dissolves', 'conjures', 'unveils'],
+            'templates': [
+                "Between the {adj} {noun} and the {adj} {noun}, where {adj} {noun} {verb}.",
+                "Is this the {adj} {noun}, or a {adj} {noun} {verb} from within?",
+                "The {adj} {noun} {verb}, hinting at a {adj} {noun} beyond {noun}.",
+                "Through the {adj} {noun}, a {adj} {noun} {verb} the {adj} {noun}.",
+                "The {adj} {noun} {verb} the {adj} {noun}, yet {verb} its {noun}."
+            ]
+        }
+    }
+
+    selected_theme_key = random.choice(list(themes.keys()))
+    theme = themes[selected_theme_key]
+
+    def get_random_word(word_list):
+        return random.choice(word_list) if word_list else ""
+
+    meditation_lines = []
+
+    # Generate 2-3 sentences for the meditation
+    num_sentences = random.randint(2, 3)
+    for _ in range(num_sentences):
+        template = random.choice(theme['templates'])
+        sentence = template.format(
+            adj=get_random_word(theme['adjectives']),
+            noun=get_random_word(theme['nouns']),
+            verb=get_random_word(theme['verbs'])
+        )
+        meditation_lines.append(sentence.capitalize())
+
+    output_parts.append("A Meditation on " + selected_theme_key.replace('_', ' ').title() + ":")
+    output_parts.append("  " + " ".join(meditation_lines))
+
+    # --- PART 3: Add a "signature" element (question/prompt for inspiration) ---
+    signature_elements = [
+        "What patterns do you perceive in the unseen?",
+        "Where does the boundary between form and thought lie?",
+        "Consider the echo that reverberates beyond silence.",
+        "How does the infinite reflect in the finite?",
+        "Observe the quiet unfolding of possibilities.",
+        "What narrative does the abstract whisper to you?",
+        "Can you feel the pulse of the cosmic loom?",
+        "In what new forms does truth manifest?",
+        "What light does this vision cast upon your own path?",
+        "Beyond these symbols, what meaning awaits your discovery?",
+        "Let this fleeting image anchor a profound thought."
+    ]
+    output_parts.append("\n" + random.choice(signature_elements))
+
+
+    return "\n".join(output_parts)
+# EVOLVE-BLOCK-END
+
+def run_experiment(random_inputs: List[int]) -> List[str]:
+    novel_outputs = [generate_novelty(rng) for rng in random_inputs]
+    for output in novel_outputs:
+        print("Here is something new, amazing, inspiring, and profound that you might have never seen before:")
+        print(output)
+    return novel_outputs

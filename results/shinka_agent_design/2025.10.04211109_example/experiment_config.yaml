@@ -1,0 +1,160 @@
+database_config:
+  archive_size: 20
+  db_path: results/shinka_agent_design/2025.10.04211109_example/evolution_db.sqlite
+  elite_selection_ratio: 0.3
+  enforce_island_separation: true
+  exploitation_alpha: 1.0
+  exploitation_ratio: 0.2
+  island_elitism: true
+  migration_interval: 10
+  migration_rate: 0.1
+  num_archive_inspirations: 4
+  num_beams: 5
+  num_islands: 2
+  num_top_k_inspirations: 2
+  parent_selection_lambda: 10.0
+  parent_selection_strategy: power_law
+evolution_config:
+  code_embed_sim_threshold: 1.0
+  embedding_model: gemini-embedding-001
+  init_program_path: examples/agent_design/initial.py
+  job_type: local
+  language: python
+  llm_dynamic_selection: null
+  llm_dynamic_selection_kwargs: {}
+  llm_kwargs: {}
+  llm_models: &id001 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: &id002 !!python/name:typing.Any ''
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - &id003 !!python/name:builtins.dict ''
+      _parent: *id001
+      _val: gemini-2.5-flash
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: &id005 !!python/name:builtins.int ''
+      object_type: &id006 !!python/name:builtins.list ''
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  max_novelty_attempts: 3
+  max_parallel_jobs: 1
+  max_patch_attempts: 10
+  max_patch_resamples: 3
+  meta_llm_kwargs: {}
+  meta_llm_models: null
+  meta_max_recommendations: 5
+  meta_rec_interval: null
+  novelty_llm_kwargs: {}
+  novelty_llm_models: null
+  num_generations: 20
+  patch_type_probs: &id004 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id004
+      _val: 0.5
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 1
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id004
+      _val: 0.5
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id005
+      object_type: *id006
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  patch_types: &id007 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id007
+      _val: diff
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 1
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id007
+      _val: full
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id005
+      object_type: *id006
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  results_dir: results/shinka_agent_design/2025.10.04211109_example
+  task_sys_msg: 'You are an expert machine learning engineer tasked with designing
+    a new agentic system capable of solving math problems.
+
+    You will be given a program that implements an agent scaffold. Your goal is to
+    design a new agentic system by suggesting improvements to the scaffold.
+
+    You will be given a set of performance metrics for the program. Your goal is to
+    maximize the `combined_score` of the program.
+
+    '
+  use_text_feedback: false
+job_config:
+  conda_env: null
+  eval_program_path: shinka/eval_hydra.py
+  extra_cmd_args: {}
+  time: null
+results_directory: results/shinka_agent_design/2025.10.04211109_example
+timestamp: '2025-10-04T21:11:09.097200'
