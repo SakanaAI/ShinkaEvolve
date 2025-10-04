@@ -26,6 +26,7 @@ dependencies = [
     "numpy",
     "pandas",
     "anthropic",
+    "google-generativeai",
     "requests",
     "boto3",
     "pydantic",
@@ -54,8 +55,8 @@ script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
 [tool.setuptools.package-data]
 "*" = ["*"]
 
-[tool.uv]
-dev-dependencies = [
+[project.optional-dependencies]
+dev = [
     "pytest>=6.0",
     "black",
     "isort",

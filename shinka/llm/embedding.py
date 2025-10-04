@@ -8,6 +8,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+from .models.pricing import GEMINI_EMBEDDING_MODELS
+from .models.gemini_embedding import query_gemini_embedding
+
 M = 1_000_000
 
 OPENAI_EMBEDDING_MODELS = [
@@ -38,6 +41,9 @@ def get_client_model(model_name: str) -> tuple[openai.OpenAI, str]:
             api_version=os.getenv("AZURE_API_VERSION"),
             azure_endpoint=os.getenv("AZURE_API_ENDPOINT"),
         )
+    elif model_name in GEMINI_EMBEDDING_MODELS:
+        # Gemini client is handled separately
+        return None, model_name
     else:
         raise ValueError(f"Invalid embedding model: {model_name}")
 
@@ -56,6 +62,8 @@ class EmbeddingClient:
         """
         self.client, self.model = get_client_model(model_name)
         self.verbose = verbose
+        self.provider = "gemini" if model_name in GEMINI_EMBEDDING_MODELS else "openai"
+
 
     def get_embedding(
         self, code: Union[str, List[str]]
@@ -76,6 +84,20 @@ class EmbeddingClient:
             single_code = True
         else:
             single_code = False
+
+        if self.provider == "gemini":
+            if single_code:
+                return query_gemini_embedding(self.model, code[0])
+            else:
+                # Gemini API currently processes one string at a time for embeddings
+                embeddings = []
+                total_cost = 0
+                for c in code:
+                    embedding, cost = query_gemini_embedding(self.model, c)
+                    embeddings.append(embedding)
+                    total_cost += cost
+                return embeddings, total_cost
+
         try:
             response = self.client.embeddings.create(
                 model=self.model, input=code, encoding_format="float"

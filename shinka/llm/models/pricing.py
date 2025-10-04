@@ -129,6 +129,10 @@ DEEPSEEK_MODELS = {
 }
 
 GEMINI_MODELS = {
+    "gemini-flash-latest": {
+        "input_price": 0.3 / M,
+        "output_price": 2.5 / M,
+    },
     "gemini-2.5-pro": {
         "input_price": 1.25 / M,
         "output_price": 10.0 / M,
@@ -141,6 +145,12 @@ GEMINI_MODELS = {
         "input_price": 0.1 / M,
         "output_price": 0.4 / M,
     },
+}
+
+GEMINI_EMBEDDING_MODELS = {
+    "gemini-embedding-001": {
+        "input_price": 0.15 / M,
+    }
 }
 
 BEDROCK_MODELS = {
