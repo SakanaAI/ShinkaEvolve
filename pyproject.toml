@@ -45,6 +45,7 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
+    "groq",
 ]
 
 [tool.setuptools]
