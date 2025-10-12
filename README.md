@@ -1,3 +1,4 @@
+Integrating e2b (or similar), and modal (for GPU code) would be a meaningful upgrade, so that you could further parallelize execution, do need to check how the existing other agents work though. Might already do similar
 <h1 align="center">
   <a href="shinka/favicon.png?raw=true"><img src="shinka/favicon.png?raw=true" width="180" /></a><br>
   <b><code>ShinkaEvolve</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
