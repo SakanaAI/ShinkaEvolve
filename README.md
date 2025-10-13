@@ -16,6 +16,8 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `ShinkaEvolve` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
+🌐 **Project Website**: [genesis.ai](https://genesis.ai)
+
 ![](docs/conceptual.png)
 
 ## Documentation 📝
