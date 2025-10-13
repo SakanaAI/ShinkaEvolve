@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genesis.ai - ShinkaEvolve: Open-Ended Program Evolution</title>
+
+    <!-- Meta Tags -->
+    <meta name="description" content="ShinkaEvolve combines Large Language Models with evolutionary algorithms to drive scientific discovery through automated code evolution.">
+    <meta name="keywords" content="LLM, evolutionary algorithms, program evolution, AI research, scientific discovery, code optimization">
+    <meta name="author" content="Sakana AI">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://genesis.ai/">
+    <meta property="og:title" content="ShinkaEvolve - Open-Ended Program Evolution">
+    <meta property="og:description" content="Combining LLMs with evolutionary algorithms for scientific discovery">
+    <meta property="og:image" content="https://genesis.ai/images/conceptual.png">
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://genesis.ai/">
+    <meta property="twitter:title" content="ShinkaEvolve - Open-Ended Program Evolution">
+    <meta property="twitter:description" content="Combining LLMs with evolutionary algorithms for scientific discovery">
+    <meta property="twitter:image" content="https://genesis.ai/images/conceptual.png">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="images/logo.png">
+
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav>
+        <div class="container">
+            <a href="#" class="logo">
+                <img src="images/logo.png" alt="ShinkaEvolve Logo">
+                <span>Genesis.ai</span>
+            </a>
+            <ul class="nav-links">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#demo">Demo</a></li>
+                <li><a href="#quickstart">Quick Start</a></li>
+                <li><a href="#links">Links</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <h1>ShinkaEvolve</h1>
+            <p>Towards Open-Ended and Sample-Efficient Program Evolution</p>
+            <p>Combining Large Language Models with evolutionary algorithms to drive scientific discovery. Automatically explore and improve scientific code through intelligent mutation operators.</p>
+
+            <div class="hero-buttons">
+                <a href="https://github.com/SakanaAI/ShinkaEvolve" class="btn btn-primary" target="_blank">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                    View on GitHub
+                </a>
+                <a href="http://arxiv.org/abs/2509.19349" class="btn btn-secondary" target="_blank">
+                    Read Paper
+                </a>
+                <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb" class="btn btn-secondary" target="_blank">
+                    Try Tutorial
+                </a>
+            </div>
+
+            <div class="badges">
+                <span class="badge">Python ≥ 3.10</span>
+                <span class="badge">Apache 2.0 License</span>
+                <span class="badge">Open Source</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features">
+        <div class="container">
+            <div class="section-header">
+                <h2>Key Features</h2>
+                <p>ShinkaEvolve provides a complete framework for automated program evolution with LLMs</p>
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🧬</div>
+                    <h3>LLM-Driven Evolution</h3>
+                    <p>Ensemble of Large Language Models acts as intelligent mutation operators, suggesting creative code improvements across generations.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Parallel Evaluation</h3>
+                    <p>Supports local, SLURM cluster, and E2B cloud execution. Scale from laptop to thousands of parallel evaluations.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🏝️</div>
+                    <h3>Island-Based Diversity</h3>
+                    <p>Maintains multiple evolutionary islands with periodic migration to prevent premature convergence and enhance exploration.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🎨</div>
+                    <h3>Interactive WebUI</h3>
+                    <p>Real-time visualization of evolutionary progress, genealogy trees, and performance metrics with an intuitive interface.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3>Smart Selection</h3>
+                    <p>Advanced parent selection strategies including power-law, weighted, and beam search for balanced exploration and exploitation.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>Meta-Learning</h3>
+                    <p>Automatic meta-recommendations analyze evolutionary history to suggest high-level strategic improvements.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Visual Demo Section -->
+    <section id="demo">
+        <div class="container">
+            <div class="section-header">
+                <h2>How It Works</h2>
+                <p>Evolutionary process powered by LLM creativity and optimization</p>
+            </div>
+
+            <div class="visual-demo">
+                <div>
+                    <img src="images/conceptual.png" alt="ShinkaEvolve Conceptual Diagram" class="demo-image">
+                    <p style="text-align: center; margin-top: 1rem; font-size: 0.9rem; color: var(--text-light);">Evolutionary framework combining LLMs with population-based optimization</p>
+                </div>
+                <div>
+                    <img src="images/webui.png" alt="ShinkaEvolve WebUI" class="demo-image">
+                    <p style="text-align: center; margin-top: 1rem; font-size: 0.9rem; color: var(--text-light);">Interactive WebUI for real-time monitoring and analysis</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section id="quickstart">
+        <div class="container">
+            <div class="section-header">
+                <h2>Quick Start</h2>
+                <p>Get started with ShinkaEvolve in minutes</p>
+            </div>
+
+            <div class="code-block">
+                <code># Clone the repository
+git clone https://github.com/SakanaAI/ShinkaEvolve
+cd ShinkaEvolve
+
+# Install dependencies
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.11
+source .venv/bin/activate
+uv pip install -e .
+
+# Run your first evolution experiment
+shinka_launch variant=circle_packing_example</code>
+            </div>
+
+            <h3 style="margin-top: 3rem; text-align: center;">Or use Python API</h3>
+
+            <div class="code-block">
+                <code>from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.database import DatabaseConfig
+from shinka.launch import LocalJobConfig
+
+# Configure evolution
+job_config = LocalJobConfig(eval_program_path="evaluate.py")
+db_config = DatabaseConfig()
+evo_config = EvolutionConfig(init_program_path="initial.py")
+
+# Run evolution
+runner = EvolutionRunner(
+    evo_config=evo_config,
+    job_config=job_config,
+    db_config=db_config,
+)
+runner.run()</code>
+            </div>
+        </div>
+    </section>
+
+    <!-- Links Section -->
+    <section id="links">
+        <div class="container">
+            <div class="section-header">
+                <h2>Resources</h2>
+                <p>Everything you need to get started with ShinkaEvolve</p>
+            </div>
+
+            <div class="links-grid">
+                <a href="https://github.com/SakanaAI/ShinkaEvolve" class="link-card" target="_blank">
+                    <h3>📦 GitHub Repository</h3>
+                    <p>Source code, examples, and issue tracker</p>
+                </a>
+
+                <a href="http://arxiv.org/abs/2509.19349" class="link-card" target="_blank">
+                    <h3>📄 Research Paper</h3>
+                    <p>Read the full technical paper on arXiv</p>
+                </a>
+
+                <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb" class="link-card" target="_blank">
+                    <h3>📓 Tutorial Notebook</h3>
+                    <p>Interactive Colab tutorial with examples</p>
+                </a>
+
+                <a href="https://github.com/SakanaAI/ShinkaEvolve/tree/main/docs" class="link-card" target="_blank">
+                    <h3>📚 Documentation</h3>
+                    <p>Comprehensive guides and API reference</p>
+                </a>
+            </div>
+
+            <div style="margin-top: 3rem;">
+                <h3 style="text-align: center; margin-bottom: 2rem;">Related Projects</h3>
+                <div class="links-grid">
+                    <a href="https://sakana.ai/ai-scientist/" class="link-card" target="_blank">
+                        <h3>🔬 AI Scientist</h3>
+                        <p>Automated scientific discovery system</p>
+                    </a>
+
+                    <a href="https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/" class="link-card" target="_blank">
+                        <h3>🧮 AlphaEvolve</h3>
+                        <p>Gemini-powered algorithm design</p>
+                    </a>
+
+                    <a href="https://sakana.ai/dgm/" class="link-card" target="_blank">
+                        <h3>🤖 Darwin Goedel Machine</h3>
+                        <p>Self-improving AI systems</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <h3 style="color: white; margin-bottom: 1rem;">Citation</h3>
+            <div class="citation">
+@article{lange2025shinka,
+  title={ShinkaEvolve: Towards Open-Ended And Sample-Efficient Program Evolution},
+  author={Lange, Robert Tjarko and Imajuku, Yuki and Cetin, Edoardo},
+  journal={arXiv preprint arXiv:2509.19349},
+  year={2025}
+}
+            </div>
+
+            <p>Licensed under <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/master/LICENSE.md" target="_blank">Apache 2.0 License</a></p>
+            <p>Developed by <a href="https://sakana.ai" target="_blank">Sakana AI</a></p>
+            <p style="margin-top: 2rem; font-size: 0.875rem;">© 2025 Genesis.ai - Powered by ShinkaEvolve</p>
+        </div>
+    </footer>
+</body>
+</html>
