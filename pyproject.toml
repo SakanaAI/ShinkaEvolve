@@ -45,6 +45,7 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
+    "e2b>=2.2.0",
 ]
 
 [tool.setuptools]

@@ -1,5 +1,5 @@
 from .scheduler import JobScheduler, JobConfig
-from .scheduler import LocalJobConfig, SlurmDockerJobConfig, SlurmCondaJobConfig
+from .scheduler import LocalJobConfig, SlurmDockerJobConfig, SlurmCondaJobConfig, E2BJobConfig
 from .local import ProcessWithLogging
 
 __all__ = [
@@ -8,5 +8,6 @@ __all__ = [
     "LocalJobConfig",
     "SlurmDockerJobConfig",
     "SlurmCondaJobConfig",
+    "E2BJobConfig",
     "ProcessWithLogging",
 ]

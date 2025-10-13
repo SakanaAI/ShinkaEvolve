@@ -174,6 +174,19 @@ runner.run()
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
 
+**E2BJobConfig** (for E2B cloud sandboxes):
+| Key | Default Value | Type | Explanation |
+|-----|---------------|------|-------------|
+| `eval_program_path` | `"evaluate.py"` | `Optional[str]` | Path to evaluation script |
+| `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
+| `template` | `"base"` | `str` | E2B sandbox template name |
+| `timeout` | `600` | `int` | Timeout in seconds |
+| `cpus` | `None` | `Optional[int]` | Number of CPUs (template-dependent) |
+| `memory_mb` | `None` | `Optional[int]` | Memory in MB (template-dependent) |
+| `env_vars` | `{}` | `Dict[str, Any]` | Environment variables to set in sandbox |
+
+> **Note**: E2B requires an API key. Set it as an environment variable: `export E2B_API_KEY=your_api_key_here`. Get your API key at [e2b.dev](https://e2b.dev).
+
 </details>
 
 ### Evaluation Setup & Initial Solution 🏃
@@ -272,6 +285,13 @@ shinka_launch \
     evolution=small_budget \
     cluster=local \
     evo_config.num_generations=20
+
+# Run with E2B cloud sandboxes (requires E2B_API_KEY)
+export E2B_API_KEY=your_api_key_here
+shinka_launch \
+    task=circle_packing \
+    cluster=e2b \
+    evo_config.num_generations=10
 ```
 
 For comprehensive configuration options and advanced usage, see the [Configuration Guide](docs/configuration.md).
@@ -297,13 +317,16 @@ shinka_visualize --port 8888 --open
 
 For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
 
-## Future Enhancements 🚧
+## Scalable Execution Backends ☁️
 
-**Scalable Execution Backends**: To enable large-scale parallel optimization and better resource utilization, we plan to integrate:
-- **[E2B](https://e2b.dev/)**: Secure sandboxed code execution environments for isolated program evaluation
-- **[Modal](https://modal.com/)**: Serverless compute platform for massively parallel evaluation jobs
+ShinkaEvolve supports multiple execution backends for different use cases:
 
-These integrations will allow ShinkaEvolve to scale beyond local and SLURM-based execution, enabling researchers to run thousands of parallel evaluations efficiently across distributed cloud infrastructure.
+- **Local**: Run evaluations on your local machine
+- **SLURM (Docker/Conda)**: Submit jobs to HPC clusters with SLURM
+- **E2B**: ✅ **NEW!** Secure cloud sandboxes for isolated, scalable evaluation (ideal for CPU-only tasks)
+- **Modal**: 🚧 *Planned* - Serverless compute platform for massively parallel evaluation jobs
+
+The E2B integration enables researchers to run thousands of parallel evaluations efficiently across distributed cloud infrastructure without managing local or HPC resources. Simply set your `E2B_API_KEY` and use `cluster=e2b` in your configuration.
 
 ## Related Open-Source Projects 🧑‍🔧
 

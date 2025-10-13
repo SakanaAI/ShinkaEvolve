@@ -1,0 +1,11 @@
+job_config:
+  _target_: shinka.launch.E2BJobConfig
+  eval_program_path: ${distributed_job_config.eval_program_path}
+  template: "base"  # E2B sandbox template
+  timeout: 600  # Timeout in seconds (10 minutes)
+  cpus: null  # Optional: Number of CPUs
+  memory_mb: null  # Optional: Memory in MB
+  env_vars: {}  # Optional: Environment variables
+
+evo_config:
+  job_type: "e2b"

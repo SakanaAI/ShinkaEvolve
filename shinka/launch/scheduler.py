@@ -11,6 +11,7 @@ from .slurm import (
     submit_conda as submit_slurm_conda,
     monitor as monitor_slurm,
 )
+from .e2b import submit as submit_e2b, monitor as monitor_e2b
 from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,17 @@ class SlurmCondaJobConfig(JobConfig):
             self.modules = []
 
 
+@dataclass
+class E2BJobConfig(JobConfig):
+    """Configuration for E2B sandboxed cloud jobs"""
+
+    template: str = "base"  # E2B sandbox template
+    timeout: int = 600  # Timeout in seconds
+    cpus: Optional[int] = None  # Number of CPUs (if template supports)
+    memory_mb: Optional[int] = None  # Memory in MB (if template supports)
+    env_vars: Dict[str, Any] = field(default_factory=dict)  # Environment variables
+
+
 class JobScheduler:
     def __init__(
         self,
@@ -76,6 +88,7 @@ class JobScheduler:
             LocalJobConfig,
             SlurmDockerJobConfig,
             SlurmCondaJobConfig,
+            E2BJobConfig,
         ],
         verbose: bool = False,
         max_workers: int = 4,
@@ -89,10 +102,12 @@ class JobScheduler:
             self.monitor = monitor_local
         elif self.job_type in ["slurm_docker", "slurm_conda"]:
             self.monitor = monitor_slurm
+        elif self.job_type == "e2b":
+            self.monitor = monitor_e2b
         else:
             raise ValueError(
                 f"Unknown job type: {job_type}. "
-                f"Must be 'local', 'slurm_docker', or 'slurm_conda'"
+                f"Must be 'local', 'slurm_docker', 'slurm_conda', or 'e2b'"
             )
 
     def _build_command(self, exec_fname_t: str, results_dir_t: str) -> List[str]:
@@ -180,11 +195,24 @@ class JobScheduler:
                 self.config.modules,
                 verbose=self.verbose,
             )
+        elif self.job_type == "e2b":
+            assert isinstance(self.config, E2BJobConfig)
+            job_id = submit_e2b(
+                results_dir_t,
+                cmd,
+                template=self.config.template,
+                timeout=self.config.timeout,
+                env_vars=self.config.env_vars,
+                verbose=self.verbose,
+            )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
 
         if isinstance(job_id, str):
-            results = monitor_slurm(job_id, results_dir_t)
+            if self.job_type == "e2b":
+                results = monitor_e2b(job_id, results_dir_t, verbose=self.verbose)
+            else:
+                results = monitor_slurm(job_id, results_dir_t)
         else:
             results = monitor_local(job_id, results_dir_t)
 
@@ -234,6 +262,16 @@ class JobScheduler:
                 self.config.modules,
                 verbose=self.verbose,
             )
+        elif self.job_type == "e2b":
+            assert isinstance(self.config, E2BJobConfig)
+            return submit_e2b(
+                results_dir_t,
+                cmd,
+                template=self.config.template,
+                timeout=self.config.timeout,
+                env_vars=self.config.env_vars,
+                verbose=self.verbose,
+            )
         raise ValueError(f"Unknown job type: {self.job_type}")
 
     def check_job_status(self, job) -> bool:
@@ -245,6 +283,13 @@ class JobScheduler:
                 status = get_job_status(job.job_id)
                 return status != ""
             return False  # Should not happen with slurm
+        elif self.job_type == "e2b":
+            from .e2b import get_sandbox_status
+
+            if isinstance(job.job_id, str):
+                status = get_sandbox_status(job.job_id)
+                return status != ""
+            return False
         else:
             if isinstance(job.job_id, ProcessWithLogging):
                 if (
@@ -298,6 +343,9 @@ class JobScheduler:
         if self.job_type in ["slurm_docker", "slurm_conda"]:
             if isinstance(job_id, str):
                 return monitor_slurm(job_id, results_dir, verbose=self.verbose)
+        elif self.job_type == "e2b":
+            if isinstance(job_id, str):
+                return monitor_e2b(job_id, results_dir, verbose=self.verbose)
         else:
             if isinstance(job_id, ProcessWithLogging):
                 job_id.wait()
