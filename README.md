@@ -297,6 +297,14 @@ shinka_visualize --port 8888 --open
 
 For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
 
+## Future Enhancements 🚧
+
+**Scalable Execution Backends**: To enable large-scale parallel optimization and better resource utilization, we plan to integrate:
+- **[E2B](https://e2b.dev/)**: Secure sandboxed code execution environments for isolated program evaluation
+- **[Modal](https://modal.com/)**: Serverless compute platform for massively parallel evaluation jobs
+
+These integrations will allow ShinkaEvolve to scale beyond local and SLURM-based execution, enabling researchers to run thousands of parallel evaluations efficiently across distributed cloud infrastructure.
+
 ## Related Open-Source Projects 🧑‍🔧
 
 - [OpenEvolve](https://github.com/codelion/openevolve): An open-source implementation of AlphaEvolve
