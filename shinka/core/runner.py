@@ -231,6 +231,8 @@ class EvolutionRunner:
             self.lang_ext = "cpp"
         elif self.evo_config.language == "python":
             self.lang_ext = "py"
+        elif self.evo_config.language == "rust":
+            self.lang_ext = "rs"
         else:
             msg = f"Language {self.evo_config.language} not supported"
             raise ValueError(msg)
@@ -1096,9 +1098,10 @@ class EvolutionRunner:
                     # error_attempt is already set from apply_patch or default
                     pass
 
-        # Only consider the diff summary for the original.py file!!!
-        if "original.py" in diff_summary:
-            diff_summary = diff_summary["original.py"]
+        # Only consider the diff summary for the original source file
+        original_filename = f"original.{self.lang_ext}"
+        if original_filename in diff_summary:
+            diff_summary = diff_summary[original_filename]
 
         meta_edit_data = {
             "patch_type": patch_type,
