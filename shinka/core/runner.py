@@ -1,3 +1,4 @@
+import json
 import shutil
 import uuid
 import time
@@ -570,12 +571,21 @@ class EvolutionRunner:
                         db_program.metadata = {}
                     db_program.metadata["meta_cost"] = meta_cost
                     # Update the program in the database with the new metadata
-                    import json
-
                     metadata_json = json.dumps(db_program.metadata)
+                    migration_history_json = json.dumps(
+                        db_program.migration_history or []
+                    )
                     self.db.cursor.execute(
-                        "UPDATE programs SET metadata = ? WHERE id = ?",
-                        (metadata_json, db_program.id),
+                        """
+                        INSERT OR REPLACE INTO program_metadata
+                            (program_id, metadata, migration_history)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            db_program.id,
+                            metadata_json,
+                            migration_history_json,
+                        ),
                     )
                     self.db.conn.commit()
 
@@ -864,12 +874,21 @@ class EvolutionRunner:
                         db_program.metadata = {}
                     db_program.metadata["meta_cost"] = meta_cost
                     # Update the program in the database with the new metadata
-                    import json
-
                     metadata_json = json.dumps(db_program.metadata)
+                    migration_history_json = json.dumps(
+                        db_program.migration_history or []
+                    )
                     self.db.cursor.execute(
-                        "UPDATE programs SET metadata = ? WHERE id = ?",
-                        (metadata_json, db_program.id),
+                        """
+                        INSERT OR REPLACE INTO program_metadata
+                            (program_id, metadata, migration_history)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            db_program.id,
+                            metadata_json,
+                            migration_history_json,
+                        ),
                     )
                     self.db.conn.commit()
 

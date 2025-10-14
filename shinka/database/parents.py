@@ -1,4 +1,3 @@
-import json
 import logging
 import sqlite3
 from abc import ABC, abstractmethod
@@ -324,67 +323,9 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
 
         eligible_programs = []
         for row in archive_rows:
-            p_dict = dict(row)
-
-            # Parse JSON fields
-            p_dict["public_metrics"] = (
-                json.loads(p_dict["public_metrics"])
-                if p_dict.get("public_metrics")
-                else {}
-            )
-            p_dict["private_metrics"] = (
-                json.loads(p_dict["private_metrics"])
-                if p_dict.get("private_metrics")
-                else {}
-            )
-            p_dict["metadata"] = (
-                json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
-            )
-            p_dict["archive_inspiration_ids"] = (
-                json.loads(p_dict["archive_inspiration_ids"])
-                if p_dict.get("archive_inspiration_ids")
-                else []
-            )
-            p_dict["top_k_inspiration_ids"] = (
-                json.loads(p_dict["top_k_inspiration_ids"])
-                if p_dict.get("top_k_inspiration_ids")
-                else []
-            )
-            p_dict["embedding"] = (
-                json.loads(p_dict["embedding"]) if p_dict.get("embedding") else []
-            )
-            p_dict["embedding_pca_2d"] = (
-                json.loads(p_dict["embedding_pca_2d"])
-                if p_dict.get("embedding_pca_2d")
-                else []
-            )
-            p_dict["embedding_pca_3d"] = (
-                json.loads(p_dict["embedding_pca_3d"])
-                if p_dict.get("embedding_pca_3d")
-                else []
-            )
-            p_dict["migration_history"] = (
-                json.loads(p_dict["migration_history"])
-                if p_dict.get("migration_history")
-                else []
-            )
-
-            # Create a simple dataclass-like object from the dict to avoid circular imports
-            class SimpleProgram:
-                def __init__(self, data):
-                    for key, value in data.items():
-                        setattr(self, key, value)
-                    # Ensure required attributes exist
-                    if not hasattr(self, "combined_score"):
-                        self.combined_score = 0.0
-                    if not hasattr(self, "children_count"):
-                        self.children_count = 0
-                    if not hasattr(self, "correct"):
-                        self.correct = False
-                    if not hasattr(self, "id"):
-                        self.id = None
-
-            eligible_programs.append(SimpleProgram(p_dict))
+            candidate = self.get_program(row["id"])
+            if candidate:
+                eligible_programs.append(candidate)
 
         # Calculate baseline performance (alpha_0) as the median
         scores = [p.combined_score or 0.0 for p in eligible_programs]

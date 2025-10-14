@@ -6,17 +6,7 @@ from typing import Optional
 
 
 def load_programs_to_df(db_path_str: str) -> Optional[pd.DataFrame]:
-    """
-    Loads the 'programs' table from an SQLite database into a pandas DataFrame.
-
-    Args:
-        db_path_str: The path to the SQLite database file.
-
-    Returns:
-        A pandas DataFrame containing program data, or None if an error occurs
-        or no data is found. The 'metrics' JSON string is parsed and its
-        key-value pairs are added as columns to the DataFrame.
-    """
+    """Load program data with normalized component tables into a DataFrame."""
     db_file = Path(db_path_str)
     if not db_file.exists():
         print(f"Error: Database file not found at {db_path_str}")
@@ -25,84 +15,110 @@ def load_programs_to_df(db_path_str: str) -> Optional[pd.DataFrame]:
     conn = None
     try:
         conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        cursor.execute("SELECT * FROM programs")  # Fetch all columns
-        all_program_rows = cursor.fetchall()
+        cursor.execute("SELECT * FROM programs")
+        program_rows = cursor.fetchall()
 
-        if not all_program_rows:
+        if not program_rows:
             print(f"No programs found in the database: {db_path_str}")
-            return pd.DataFrame()  # Return empty DataFrame if no programs
+            return pd.DataFrame()
 
-        # Get column names from cursor.description
-        column_names = [description[0] for description in cursor.description]
-        # print(column_names)
+        base_programs = [dict(row) for row in program_rows]
+        program_ids = {row["id"] for row in base_programs}
+
+        metrics_map = {pid: {"public": {}, "private": {}} for pid in program_ids}
+        cursor.execute(
+            "SELECT program_id, public_metrics, private_metrics FROM program_metrics"
+        )
+        for row in cursor.fetchall():
+            program_id = row["program_id"]
+            metrics_map.setdefault(program_id, {"public": {}, "private": {}})
+            public_json = row["public_metrics"]
+            private_json = row["private_metrics"]
+            if public_json:
+                metrics_map[program_id]["public"] = json.loads(public_json)
+            if private_json:
+                metrics_map[program_id]["private"] = json.loads(private_json)
+
+        metadata_map = {pid: {} for pid in program_ids}
+        cursor.execute("SELECT program_id, metadata FROM program_metadata")
+        for row in cursor.fetchall():
+            metadata_json = row["metadata"]
+            metadata_map[row["program_id"]] = (
+                json.loads(metadata_json) if metadata_json else {}
+            )
+
+        embedding_map = {pid: [] for pid in program_ids}
+        cursor.execute(
+            "SELECT program_id, embedding FROM program_embeddings"
+        )
+        for row in cursor.fetchall():
+            embedding_json = row["embedding"]
+            embedding_map[row["program_id"]] = (
+                json.loads(embedding_json) if embedding_json else []
+            )
+
+        inspiration_map = {
+            pid: {"archive": [], "top_k": []} for pid in program_ids
+        }
+        cursor.execute(
+            "SELECT program_id, inspiration_id, source FROM program_inspirations"
+        )
+        for row in cursor.fetchall():
+            entry = inspiration_map.setdefault(
+                row["program_id"], {"archive": [], "top_k": []}
+            )
+            if row["source"] == "archive":
+                entry["archive"].append(row["inspiration_id"])
+            elif row["source"] == "top_k":
+                entry["top_k"].append(row["inspiration_id"])
+
         programs_data = []
-        for row_tuple in all_program_rows:
-            # Convert row tuple to dict
-            p_dict = dict(zip(column_names, row_tuple))
-
-            # Metrics and metadata are stored as JSON strings
-            metrics_json = p_dict.get("metrics", "{}")
-            metrics_dict = json.loads(metrics_json) if metrics_json else {}
-
-            # Parse inspiration_ids JSON
-            archive_insp_ids_json = p_dict.get("archive_inspiration_ids", "[]")
-            archive_insp_ids = (
-                json.loads(archive_insp_ids_json) if archive_insp_ids_json else []
+        for base in base_programs:
+            program_id = base["id"]
+            metrics_entry = metrics_map.get(program_id, {"public": {}, "private": {}})
+            metadata_dict = metadata_map.get(program_id, {})
+            embedding = embedding_map.get(program_id, [])
+            inspirations = inspiration_map.get(
+                program_id, {"archive": [], "top_k": []}
             )
-            top_k_insp_ids_json = p_dict.get("top_k_inspiration_ids", "[]")
-            top_k_insp_ids = (
-                json.loads(top_k_insp_ids_json) if top_k_insp_ids_json else []
-            )
-            metadata_json = p_dict.get("metadata", "{}")
-            metadata_dict = json.loads(metadata_json) if metadata_json else {}
 
-            # Parse public_metrics and private_metrics
-            public_metrics_raw = p_dict.get("public_metrics", "{}")
-            if isinstance(public_metrics_raw, str):
-                public_metrics_dict = (
-                    json.loads(public_metrics_raw) if public_metrics_raw else {}
-                )
-            else:
-                public_metrics_dict = public_metrics_raw or {}
-
-            private_metrics_raw = p_dict.get("private_metrics", "{}")
-            if isinstance(private_metrics_raw, str):
-                private_metrics_dict = (
-                    json.loads(private_metrics_raw) if private_metrics_raw else {}
-                )
-            else:
-                private_metrics_dict = private_metrics_raw or {}
-
-            embedding = p_dict.get("embedding", [])
-            if isinstance(embedding, str):
-                embedding = json.loads(embedding)
-            # Create a flat dictionary for the DataFrame
+            timestamp_val = base.get("timestamp")
             try:
-                timestamp = pd.to_datetime(p_dict.get("timestamp"), unit="s")
+                timestamp = (
+                    pd.to_datetime(timestamp_val, unit="s")
+                    if timestamp_val is not None
+                    else None
+                )
             except Exception:
                 timestamp = None
+
             flat_data = {
-                "id": p_dict.get("id"),
-                "code": p_dict.get("code"),
-                "language": p_dict.get("language"),
-                "parent_id": p_dict.get("parent_id"),
-                "archive_inspiration_ids": archive_insp_ids,
-                "top_k_inspiration_ids": top_k_insp_ids,
-                "generation": p_dict.get("generation"),
+                "id": program_id,
+                "code": base.get("code"),
+                "language": base.get("language"),
+                "parent_id": base.get("parent_id"),
+                "archive_inspiration_ids": inspirations.get("archive", []),
+                "top_k_inspiration_ids": inspirations.get("top_k", []),
+                "generation": base.get("generation"),
                 "timestamp": timestamp,
-                "complexity": p_dict.get("complexity"),
+                "complexity": base.get("complexity"),
                 "embedding": embedding,
-                "code_diff": p_dict.get("code_diff"),
-                "correct": bool(p_dict.get("correct", False)),
-                "combined_score": p_dict.get("combined_score"),
-                **metadata_dict,
-                **public_metrics_dict,
-                **private_metrics_dict,
-                "text_feedback": p_dict.get("text_feedback", ""),
+                "code_diff": base.get("code_diff"),
+                "correct": bool(base.get("correct", False)),
+                "combined_score": base.get("combined_score"),
+                "children_count": base.get("children_count"),
+                "island_idx": base.get("island_idx"),
+                "embedding_cluster_id": base.get("embedding_cluster_id"),
+                "text_feedback": base.get("text_feedback") or "",
             }
-            flat_data.update(metrics_dict)
+
+            flat_data.update(metadata_dict)
+            flat_data.update(metrics_entry["public"])
+            flat_data.update(metrics_entry["private"])
+
             programs_data.append(flat_data)
 
         return pd.DataFrame(programs_data)

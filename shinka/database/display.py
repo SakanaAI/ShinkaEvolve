@@ -170,7 +170,10 @@ class DatabaseDisplay:
         num_with_scores = 0
         all_scores = []
         if self.cursor:  # Ensure cursor is not None
-            query = "SELECT metadata, combined_score FROM programs"
+            query = (
+                "SELECT pm.metadata, p.combined_score FROM programs p "
+                "LEFT JOIN program_metadata pm ON p.id = pm.program_id"
+            )
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
                 if row["metadata"]:
@@ -384,12 +387,14 @@ class DatabaseDisplay:
 
         # Fetch top performing programs ordered by combined_score
         query = (
-            "SELECT id, code, language, parent_id, generation, timestamp, "
-            "combined_score, public_metrics, private_metrics, "
-            "complexity, embedding, metadata, correct, island_idx, "
-            "children_count "
-            "FROM programs WHERE combined_score IS NOT NULL AND correct = 1 "
-            "ORDER BY combined_score DESC LIMIT 10"
+            "SELECT p.id, p.code, p.language, p.parent_id, p.generation, p.timestamp, "
+            "p.combined_score, p.complexity, p.correct, p.island_idx, p.children_count, "
+            "pm.public_metrics, pm.private_metrics, pmc.metadata "
+            "FROM programs p "
+            "LEFT JOIN program_metrics pm ON p.id = pm.program_id "
+            "LEFT JOIN program_metadata pmc ON p.id = pmc.program_id "
+            "WHERE p.combined_score IS NOT NULL AND p.correct = 1 "
+            "ORDER BY p.combined_score DESC LIMIT 10"
         )
         self.cursor.execute(query)
         top_program_rows = self.cursor.fetchall()
@@ -402,23 +407,22 @@ class DatabaseDisplay:
         # Process top performing programs
         for rank, row_data in enumerate(top_program_rows, 1):
             p_dict = dict(row_data)
+
+            public_metrics_str = p_dict.pop("public_metrics", None)
+            private_metrics_str = p_dict.pop("private_metrics", None)
+            metadata_str = p_dict.pop("metadata", None)
+
             p_dict["public_metrics"] = (
-                json.loads(p_dict["public_metrics"])
-                if p_dict.get("public_metrics")
-                else {}
+                json.loads(public_metrics_str) if public_metrics_str else {}
             )
             p_dict["private_metrics"] = (
-                json.loads(p_dict["private_metrics"])
-                if p_dict.get("private_metrics")
-                else {}
+                json.loads(private_metrics_str) if private_metrics_str else {}
             )
-            metadata_str = p_dict.get("metadata")
             p_dict["metadata"] = json.loads(metadata_str) if metadata_str else {}
-            # Make sure 'correct' is properly converted to boolean
+
             if "correct" in p_dict:
                 p_dict["correct"] = bool(p_dict["correct"])
 
-            # Import Program class here to avoid circular imports
             from .dbase import Program
 
             prog = Program.from_dict(p_dict)

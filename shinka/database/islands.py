@@ -394,7 +394,8 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         """Migrate a single program from source to destination island."""
         # Get current migration history
         self.cursor.execute(
-            "SELECT migration_history FROM programs WHERE id = ?", (migrant_id,)
+            "SELECT migration_history FROM program_metadata WHERE program_id = ?",
+            (migrant_id,),
         )
         row = self.cursor.fetchone()
         history = (
@@ -415,10 +416,24 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         history_json = json.dumps(history)
 
         self.cursor.execute(
-            """UPDATE programs
-               SET island_idx = ?, migration_history = ?
-               WHERE id = ?""",
-            (dest_idx, history_json, migrant_id),
+            "UPDATE programs SET island_idx = ? WHERE id = ?",
+            (dest_idx, migrant_id),
+        )
+
+        self.cursor.execute(
+            "SELECT metadata FROM program_metadata WHERE program_id = ?",
+            (migrant_id,),
+        )
+        metadata_row = self.cursor.fetchone()
+        metadata_json = metadata_row["metadata"] if metadata_row else "{}"
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_metadata
+                (program_id, metadata, migration_history)
+            VALUES (?, ?, ?)
+            """,
+            (migrant_id, metadata_json, history_json),
         )
         logger.debug(
             f"Migrated program {migrant_id[:8]}... from "
@@ -509,6 +524,7 @@ class CombinedIslandManager:
         self.cursor = cursor
         self.conn = conn
         self.config = config
+        self.database: Optional[Any] = None
 
         self.assignment_strategy = assignment_strategy or (
             CopyInitialProgramIslandStrategy(cursor, conn, config)
@@ -516,6 +532,10 @@ class CombinedIslandManager:
         self.migration_strategy = migration_strategy or (
             ElitistMigrationStrategy(cursor, conn, config)
         )
+
+    def attach_database(self, database: Any) -> None:
+        """Attach the owning database instance for helper operations."""
+        self.database = database
 
     def assign_island(self, program: Any) -> None:
         """Assign an island to a program using the configured strategy."""
@@ -622,60 +642,15 @@ class CombinedIslandManager:
             # Add metadata to indicate this is a copy
             copy_metadata["_is_island_copy"] = True
             copy_metadata["_original_program_id"] = program.id
-            # Serialize JSON data
-            public_metrics_json = json.dumps(program.public_metrics or {})
-            private_metrics_json = json.dumps(program.private_metrics or {})
-            metadata_json = json.dumps(copy_metadata)
-            archive_insp_ids_json = json.dumps(program.archive_inspiration_ids or [])
-            top_k_insp_ids_json = json.dumps(program.top_k_inspiration_ids or [])
-            embedding_json = json.dumps(program.embedding or [])
-            embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
-            embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
-            migration_history_json = json.dumps(program.migration_history or [])
-            # Insert the copy into the database
-            # Handle text_feedback - convert to string if it's a list
-            text_feedback_str = program.text_feedback
-            if isinstance(text_feedback_str, list):
-                text_feedback_str = "\n".join(text_feedback_str)
-            elif text_feedback_str is None:
-                text_feedback_str = ""
-            self.cursor.execute(
-                """
-                INSERT INTO programs
-                   (id, code, language, parent_id, archive_inspiration_ids,
-                    top_k_inspiration_ids, generation, timestamp, code_diff,
-                    combined_score, public_metrics, private_metrics,
-                    text_feedback, complexity, embedding, embedding_pca_2d,
-                    embedding_pca_3d, embedding_cluster_id, correct,
-                    children_count, metadata, island_idx, migration_history)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    new_id,
-                    program.code,
-                    program.language,
-                    program.parent_id,
-                    archive_insp_ids_json,
-                    top_k_insp_ids_json,
-                    program.generation,
-                    program.timestamp,
-                    program.code_diff,
-                    program.combined_score,
-                    public_metrics_json,
-                    private_metrics_json,
-                    text_feedback_str,
-                    program.complexity,
-                    embedding_json,
-                    embedding_pca_2d_json,
-                    embedding_pca_3d_json,
-                    program.embedding_cluster_id,
-                    program.correct,
-                    program.children_count,
-                    metadata_json,
-                    island_idx,
-                    migration_history_json,
-                ),
+
+            if not self.database:
+                raise RuntimeError("Island manager not attached to database for cloning")
+
+            self.database._clone_program_for_island(
+                source_program=program,
+                new_program_id=new_id,
+                island_idx=island_idx,
+                metadata_override=copy_metadata,
             )
             created_ids.append(new_id)
             logger.info(

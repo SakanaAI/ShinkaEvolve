@@ -7,7 +7,7 @@ from functools import wraps
 from pathlib import Path
 import random
 import numpy as np
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import math
 from .complexity import analyze_code_metrics
 from .parents import CombinedParentSelector
@@ -316,6 +316,7 @@ class ProgramDatabase:
             conn=self.conn,
             config=self.config,
         )
+        self.island_manager.attach_database(self)
 
         count = self._count_programs_in_db()
         logger.debug(f"DB initialized with {count} programs.")
@@ -346,44 +347,69 @@ class ProgramDatabase:
                 code TEXT NOT NULL,
                 language TEXT NOT NULL,
                 parent_id TEXT,
-                archive_inspiration_ids TEXT,  -- JSON serialized List[str]
-                top_k_inspiration_ids TEXT,    -- JSON serialized List[str]
                 generation INTEGER NOT NULL,
                 timestamp REAL NOT NULL,
-                code_diff TEXT,     -- Stores edit difference
+                code_diff TEXT,
                 combined_score REAL,
-                public_metrics TEXT, -- JSON serialized Dict[str, Any]
-                private_metrics TEXT, -- JSON serialized Dict[str, Any]
-                text_feedback TEXT, -- Text feedback for the program
-                complexity REAL,   -- Calculated complexity metric
-                embedding TEXT,    -- JSON serialized List[float]
-                embedding_pca_2d TEXT, -- JSON serialized List[float]
-                embedding_pca_3d TEXT, -- JSON serialized List[float]
+                text_feedback TEXT,
+                complexity REAL,
                 embedding_cluster_id INTEGER,
-                correct BOOLEAN DEFAULT 0,  -- Correct (0=False, 1=True)
+                correct BOOLEAN DEFAULT 0,
                 children_count INTEGER NOT NULL DEFAULT 0,
-                metadata TEXT,      -- JSON serialized Dict[str, Any]
-                migration_history TEXT, -- JSON of migration events
-                island_idx INTEGER  -- Add island_idx to the schema
+                island_idx INTEGER
+            )
+            """
+        )
+
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS program_metrics (
+                program_id TEXT PRIMARY KEY,
+                public_metrics TEXT,
+                private_metrics TEXT,
+                FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS program_embeddings (
+                program_id TEXT PRIMARY KEY,
+                embedding TEXT,
+                embedding_pca_2d TEXT,
+                embedding_pca_3d TEXT,
+                FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS program_metadata (
+                program_id TEXT PRIMARY KEY,
+                metadata TEXT,
+                migration_history TEXT,
+                FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS program_inspirations (
+                program_id TEXT NOT NULL,
+                inspiration_id TEXT NOT NULL,
+                source TEXT NOT NULL CHECK(source IN ('archive', 'top_k')),
+                PRIMARY KEY (program_id, inspiration_id, source),
+                FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE,
+                FOREIGN KEY (inspiration_id) REFERENCES programs(id) ON DELETE CASCADE
             )
             """
         )
 
         # Add indices for common query patterns
-        idx_cmds = [
-            "CREATE INDEX IF NOT EXISTS idx_programs_generation ON "
-            "programs(generation)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON programs(timestamp)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_complexity ON "
-            "programs(complexity)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_parent_id ON programs(parent_id)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_children_count ON "
-            "programs(children_count)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
-            "programs(island_idx)",
-        ]
-        for cmd in idx_cmds:
-            self.cursor.execute(cmd)
+        self._ensure_component_indexes()
 
         self.cursor.execute(
             """
@@ -415,22 +441,606 @@ class ProgramDatabase:
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
 
-        # Migration 1: Add text_feedback column if it doesn't exist
         try:
-            # Check if text_feedback column exists
-            self.cursor.execute("PRAGMA table_info(programs)")
-            columns = [row[1] for row in self.cursor.fetchall()]
+            self._migrate_legacy_program_table()
+            self._ensure_component_indexes()
+        except sqlite3.Error as exc:
+            logger.error("Database migration failed: %s", exc)
+            raise
 
-            if "text_feedback" not in columns:
-                logger.info("Adding text_feedback column to programs table")
-                self.cursor.execute(
-                    "ALTER TABLE programs ADD COLUMN text_feedback TEXT DEFAULT ''"
+    def _ensure_program_indexes(self) -> None:
+        """Ensure indexes on programs table for common access patterns."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        idx_cmds = [
+            "CREATE INDEX IF NOT EXISTS idx_programs_generation ON "
+            "programs(generation)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON programs(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_complexity ON "
+            "programs(complexity)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_parent_id ON programs(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_children_count ON "
+            "programs(children_count)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
+            "programs(island_idx)",
+        ]
+        for cmd in idx_cmds:
+            self.cursor.execute(cmd)
+
+    def _ensure_component_indexes(self) -> None:
+        """Ensure indexes for the new component tables."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        self._ensure_program_indexes()
+
+        component_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_program_embeddings_program_id "
+            "ON program_embeddings(program_id)",
+            "CREATE INDEX IF NOT EXISTS idx_program_inspirations_program_id "
+            "ON program_inspirations(program_id)",
+            "CREATE INDEX IF NOT EXISTS idx_program_inspirations_source "
+            "ON program_inspirations(source)",
+            "CREATE INDEX IF NOT EXISTS idx_program_inspirations_inspiration "
+            "ON program_inspirations(inspiration_id)",
+        ]
+        for cmd in component_indexes:
+            self.cursor.execute(cmd)
+
+    def _migrate_legacy_program_table(self) -> None:
+        """Normalize legacy programs table storing heavy JSON content inline."""
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        self.cursor.execute("PRAGMA table_info(programs)")
+        table_info = self.cursor.fetchall()
+        column_names: Set[str] = {row["name"] for row in table_info}
+
+        legacy_columns = {
+            "archive_inspiration_ids",
+            "top_k_inspiration_ids",
+            "public_metrics",
+            "private_metrics",
+            "metadata",
+            "migration_history",
+            "embedding",
+            "embedding_pca_2d",
+            "embedding_pca_3d",
+        }
+
+        if not column_names.intersection(legacy_columns):
+            # Already migrated
+            return
+
+        logger.info("Detected legacy programs table; migrating to normalized schema.")
+
+        # Backfill component tables before removing columns
+        self._backfill_component_tables_from_legacy(column_names)
+
+        # Temporarily disable FK checks while rebuilding the table.
+        self.cursor.execute("PRAGMA foreign_keys = OFF;")
+        self.conn.commit()
+
+        try:
+            self.cursor.execute("ALTER TABLE programs RENAME TO programs_legacy")
+
+            self.cursor.execute(
+                """
+                CREATE TABLE programs (
+                    id TEXT PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    parent_id TEXT,
+                    generation INTEGER NOT NULL,
+                    timestamp REAL NOT NULL,
+                    code_diff TEXT,
+                    combined_score REAL,
+                    text_feedback TEXT,
+                    complexity REAL,
+                    embedding_cluster_id INTEGER,
+                    correct BOOLEAN DEFAULT 0,
+                    children_count INTEGER NOT NULL DEFAULT 0,
+                    island_idx INTEGER
                 )
-                self.conn.commit()
-                logger.info("Successfully added text_feedback column")
-        except sqlite3.Error as e:
-            logger.error(f"Error during text_feedback migration: {e}")
-            # Don't raise - this is not critical for existing functionality
+                """
+            )
+
+            def col_expr(name: str, default_sql: str) -> str:
+                return name if name in column_names else f"{default_sql} AS {name}"
+
+            text_feedback_expr = col_expr("text_feedback", "''")
+            complexity_expr = col_expr("complexity", "NULL")
+            cluster_expr = col_expr("embedding_cluster_id", "NULL")
+            children_expr = col_expr("children_count", "0")
+            island_expr = col_expr("island_idx", "NULL")
+
+            self.cursor.execute(
+                f"""
+                INSERT INTO programs (
+                    id, code, language, parent_id, generation, timestamp,
+                    code_diff, combined_score, text_feedback, complexity,
+                    embedding_cluster_id, correct, children_count, island_idx
+                )
+                SELECT
+                    id,
+                    code,
+                    language,
+                    parent_id,
+                    generation,
+                    timestamp,
+                    code_diff,
+                    combined_score,
+                    {text_feedback_expr},
+                    {complexity_expr},
+                    {cluster_expr},
+                    correct,
+                    {children_expr},
+                    {island_expr}
+                FROM programs_legacy
+                """
+            )
+
+            self.cursor.execute("DROP TABLE programs_legacy")
+            self.conn.commit()
+            logger.info("Programs table migrated successfully.")
+        finally:
+            self.cursor.execute("PRAGMA foreign_keys = ON;")
+            self.conn.commit()
+
+    def _backfill_component_tables_from_legacy(self, column_names: Set[str]) -> None:
+        """Populate new component tables using legacy columns."""
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        # Determine which columns we can extract from.
+        selectable_columns = []
+        for name in [
+            "archive_inspiration_ids",
+            "top_k_inspiration_ids",
+            "public_metrics",
+            "private_metrics",
+            "metadata",
+            "migration_history",
+            "embedding",
+            "embedding_pca_2d",
+            "embedding_pca_3d",
+        ]:
+            if name in column_names:
+                selectable_columns.append(name)
+
+        if not selectable_columns:
+            return
+
+        logger.info("Backfilling component tables from legacy program columns.")
+
+        select_clause = ", ".join(["id"] + selectable_columns)
+        self.cursor.execute(f"SELECT {select_clause} FROM programs")
+        rows = self.cursor.fetchall()
+
+        for row in rows:
+            program_id = row["id"]
+            row_keys = set(row.keys())
+
+            def _safe_load(value: Optional[str], fallback):
+                if value is None or value == "":
+                    return fallback
+                try:
+                    return json.loads(value)
+                except (TypeError, json.JSONDecodeError):
+                    return fallback
+
+            # Metrics
+            public_metrics_raw = (
+                row["public_metrics"] if "public_metrics" in row_keys else None
+            )
+            private_metrics_raw = (
+                row["private_metrics"] if "private_metrics" in row_keys else None
+            )
+            if public_metrics_raw is not None or private_metrics_raw is not None:
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO program_metrics
+                        (program_id, public_metrics, private_metrics)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        program_id,
+                        public_metrics_raw or json.dumps({}),
+                        private_metrics_raw or json.dumps({}),
+                    ),
+                )
+
+            # Metadata and migration history
+            metadata_raw = row["metadata"] if "metadata" in row_keys else None
+            migration_raw = (
+                row["migration_history"]
+                if "migration_history" in row_keys
+                else None
+            )
+            if metadata_raw is not None or migration_raw is not None:
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO program_metadata
+                        (program_id, metadata, migration_history)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        program_id,
+                        metadata_raw or json.dumps({}),
+                        migration_raw or json.dumps([]),
+                    ),
+                )
+
+            # Embeddings
+            embedding_raw = row["embedding"] if "embedding" in row_keys else None
+            embedding_2d_raw = (
+                row["embedding_pca_2d"] if "embedding_pca_2d" in row_keys else None
+            )
+            embedding_3d_raw = (
+                row["embedding_pca_3d"] if "embedding_pca_3d" in row_keys else None
+            )
+            if (
+                embedding_raw is not None
+                or embedding_2d_raw is not None
+                or embedding_3d_raw is not None
+            ):
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO program_embeddings
+                        (program_id, embedding, embedding_pca_2d, embedding_pca_3d)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        program_id,
+                        embedding_raw or json.dumps([]),
+                        embedding_2d_raw or json.dumps([]),
+                        embedding_3d_raw or json.dumps([]),
+                    ),
+                )
+
+            # Inspirations
+            archive_ids = _safe_load(
+                row["archive_inspiration_ids"]
+                if "archive_inspiration_ids" in row_keys
+                else None,
+                [],
+            )
+            top_k_ids = _safe_load(
+                row["top_k_inspiration_ids"]
+                if "top_k_inspiration_ids" in row_keys
+                else None,
+                [],
+            )
+
+            if archive_ids or top_k_ids:
+                self.cursor.execute(
+                    "DELETE FROM program_inspirations WHERE program_id = ?",
+                    (program_id,),
+                )
+                for insp_id in archive_ids:
+                    self.cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO program_inspirations
+                            (program_id, inspiration_id, source)
+                        VALUES (?, ?, 'archive')
+                        """,
+                        (program_id, insp_id),
+                    )
+                for insp_id in top_k_ids:
+                    self.cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO program_inspirations
+                            (program_id, inspiration_id, source)
+                        VALUES (?, ?, 'top_k')
+                        """,
+                        (program_id, insp_id),
+                    )
+
+        self.conn.commit()
+
+    def _persist_program_components(self, program: Program) -> None:
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        public_metrics_json = json.dumps(program.public_metrics or {})
+        private_metrics_json = json.dumps(program.private_metrics or {})
+        metadata_json = json.dumps(program.metadata or {})
+        migration_history_json = json.dumps(program.migration_history or [])
+        embedding_json = json.dumps(program.embedding or [])
+        embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
+        embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_metrics
+                (program_id, public_metrics, private_metrics)
+            VALUES (?, ?, ?)
+            """,
+            (program.id, public_metrics_json, private_metrics_json),
+        )
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_metadata
+                (program_id, metadata, migration_history)
+            VALUES (?, ?, ?)
+            """,
+            (program.id, metadata_json, migration_history_json),
+        )
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_embeddings
+                (program_id, embedding, embedding_pca_2d, embedding_pca_3d)
+            VALUES (?, ?, ?, ?)
+            """,
+            (program.id, embedding_json, embedding_pca_2d_json, embedding_pca_3d_json),
+        )
+
+        self.cursor.execute(
+            "DELETE FROM program_inspirations WHERE program_id = ?", (program.id,)
+        )
+        for inspiration_id in program.archive_inspiration_ids or []:
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO program_inspirations
+                    (program_id, inspiration_id, source)
+                VALUES (?, ?, 'archive')
+                """,
+                (program.id, inspiration_id),
+            )
+        for inspiration_id in program.top_k_inspiration_ids or []:
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO program_inspirations
+                    (program_id, inspiration_id, source)
+                VALUES (?, ?, 'top_k')
+                """,
+                (program.id, inspiration_id),
+            )
+
+    def _insert_base_program_record(self, program: Program) -> None:
+        """Insert the core program row and associated component data."""
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        self.cursor.execute(
+            """
+            INSERT INTO programs
+               (id, code, language, parent_id, generation, timestamp,
+                code_diff, combined_score, text_feedback, complexity,
+                embedding_cluster_id, correct, children_count, island_idx)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                program.id,
+                program.code,
+                program.language,
+                program.parent_id,
+                program.generation,
+                program.timestamp,
+                program.code_diff,
+                program.combined_score,
+                program.text_feedback,
+                program.complexity,
+                program.embedding_cluster_id,
+                program.correct,
+                program.children_count,
+                program.island_idx,
+            ),
+        )
+
+        self._persist_program_components(program)
+
+    def _clone_program_for_island(
+        self,
+        source_program: Program,
+        new_program_id: str,
+        island_idx: int,
+        metadata_override: Dict[str, Any],
+    ) -> None:
+        """Create a cloned program record for another island."""
+        clone_metadata = metadata_override.copy()
+
+        if isinstance(source_program.text_feedback, list):
+            text_feedback = "\n".join(str(item) for item in source_program.text_feedback)
+        elif source_program.text_feedback is None:
+            text_feedback = ""
+        else:
+            text_feedback = str(source_program.text_feedback)
+
+        clone_program = Program(
+            id=new_program_id,
+            code=source_program.code,
+            language=source_program.language,
+            parent_id=source_program.parent_id,
+            archive_inspiration_ids=list(source_program.archive_inspiration_ids or []),
+            top_k_inspiration_ids=list(source_program.top_k_inspiration_ids or []),
+            generation=source_program.generation,
+            timestamp=source_program.timestamp,
+            code_diff=source_program.code_diff,
+            combined_score=source_program.combined_score,
+            public_metrics=source_program.public_metrics.copy(),
+            private_metrics=source_program.private_metrics.copy(),
+            text_feedback=text_feedback,
+            complexity=source_program.complexity,
+            embedding=list(source_program.embedding or []),
+            embedding_pca_2d=list(source_program.embedding_pca_2d or []),
+            embedding_pca_3d=list(source_program.embedding_pca_3d or []),
+            embedding_cluster_id=source_program.embedding_cluster_id,
+            correct=source_program.correct,
+            children_count=source_program.children_count,
+            metadata=clone_metadata,
+            migration_history=list(source_program.migration_history or []),
+            island_idx=island_idx,
+        )
+
+        self._insert_base_program_record(clone_program)
+
+    def _persist_program_components(self, program: Program) -> None:
+        """Persist program components in the normalized tables."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        public_metrics_json = json.dumps(program.public_metrics or {})
+        private_metrics_json = json.dumps(program.private_metrics or {})
+        metadata_json = json.dumps(program.metadata or {})
+        migration_history_json = json.dumps(program.migration_history or [])
+        embedding_json = json.dumps(program.embedding or [])
+        embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
+        embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_metrics
+                (program_id, public_metrics, private_metrics)
+            VALUES (?, ?, ?)
+            """,
+            (program.id, public_metrics_json, private_metrics_json),
+        )
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_metadata
+                (program_id, metadata, migration_history)
+            VALUES (?, ?, ?)
+            """,
+            (program.id, metadata_json, migration_history_json),
+        )
+
+        self.cursor.execute(
+            """
+            INSERT OR REPLACE INTO program_embeddings
+                (program_id, embedding, embedding_pca_2d, embedding_pca_3d)
+            VALUES (?, ?, ?, ?)
+            """,
+            (program.id, embedding_json, embedding_pca_2d_json, embedding_pca_3d_json),
+        )
+
+        self.cursor.execute(
+            "DELETE FROM program_inspirations WHERE program_id = ?", (program.id,)
+        )
+        for inspiration_id in program.archive_inspiration_ids or []:
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO program_inspirations
+                    (program_id, inspiration_id, source)
+                VALUES (?, ?, 'archive')
+                """,
+                (program.id, inspiration_id),
+            )
+        for inspiration_id in program.top_k_inspiration_ids or []:
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO program_inspirations
+                    (program_id, inspiration_id, source)
+                VALUES (?, ?, 'top_k')
+                """,
+                (program.id, inspiration_id),
+            )
+
+    def _load_program_components(
+        self, program_id: str, cursor: Optional[sqlite3.Cursor] = None
+    ) -> Dict[str, Any]:
+        """Load program component data from normalized tables."""
+        cursor = cursor or self.cursor
+        if not cursor:
+            raise ConnectionError("DB not connected.")
+
+        result: Dict[str, Any] = {
+            "public_metrics": {},
+            "private_metrics": {},
+            "metadata": {},
+            "migration_history": [],
+            "archive_inspiration_ids": [],
+            "top_k_inspiration_ids": [],
+            "embedding": [],
+            "embedding_pca_2d": [],
+            "embedding_pca_3d": [],
+        }
+
+        cursor.execute(
+            "SELECT public_metrics, private_metrics "
+            "FROM program_metrics WHERE program_id = ?",
+            (program_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            for key in ["public_metrics", "private_metrics"]:
+                value = row[key]
+                if value:
+                    try:
+                        result[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Failed to decode %s for program %s; defaulting to empty.",
+                            key,
+                            program_id,
+                        )
+
+        cursor.execute(
+            "SELECT metadata, migration_history "
+            "FROM program_metadata WHERE program_id = ?",
+            (program_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            metadata_val = row["metadata"]
+            migration_val = row["migration_history"]
+            if metadata_val:
+                try:
+                    result["metadata"] = json.loads(metadata_val)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Failed to decode metadata for program %s; using empty dict.",
+                        program_id,
+                    )
+            if migration_val:
+                try:
+                    result["migration_history"] = json.loads(migration_val)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Failed to decode migration history for program %s; using empty list.",
+                        program_id,
+                    )
+
+        cursor.execute(
+            "SELECT embedding, embedding_pca_2d, embedding_pca_3d "
+            "FROM program_embeddings WHERE program_id = ?",
+            (program_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            for key in ["embedding", "embedding_pca_2d", "embedding_pca_3d"]:
+                value = row[key]
+                if value:
+                    try:
+                        result[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Failed to decode %s for program %s; defaulting to empty list.",
+                            key,
+                            program_id,
+                        )
+
+        cursor.execute(
+            """
+            SELECT inspiration_id, source
+            FROM program_inspirations
+            WHERE program_id = ?
+            """,
+            (program_id,),
+        )
+        rows = cursor.fetchall()
+        for insp in rows:
+            source = insp["source"]
+            if source == "archive":
+                result["archive_inspiration_ids"].append(insp["inspiration_id"])
+            elif source == "top_k":
+                result["top_k_inspiration_ids"].append(insp["inspiration_id"])
+
+        return result
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -543,70 +1153,23 @@ class ProgramDatabase:
             )
             program.embedding = []
 
-        # Pre-serialize all JSON data once
-        public_metrics_json = json.dumps(program.public_metrics or {})
-        private_metrics_json = json.dumps(program.private_metrics or {})
-        metadata_json = json.dumps(program.metadata or {})
-        archive_insp_ids_json = json.dumps(program.archive_inspiration_ids or [])
-        top_k_insp_ids_json = json.dumps(program.top_k_inspiration_ids or [])
-        embedding_json = json.dumps(program.embedding)  # Serialize embedding
-        embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
-        embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
-        migration_history_json = json.dumps(program.migration_history or [])
-
-        # Handle text_feedback - convert to string if it's a list
-        text_feedback_str = program.text_feedback
-        if isinstance(text_feedback_str, list):
+        # Handle text_feedback - normalize to string
+        if isinstance(program.text_feedback, list):
             # Join list items with newlines for readability
-            text_feedback_str = "\n".join(str(item) for item in text_feedback_str)
-        elif text_feedback_str is None:
-            text_feedback_str = ""
+            program.text_feedback = "\n".join(
+                str(item) for item in program.text_feedback
+            )
+        elif program.text_feedback is None:
+            program.text_feedback = ""
         else:
-            text_feedback_str = str(text_feedback_str)
+            program.text_feedback = str(program.text_feedback)
 
         # Begin transaction - this improves performance by batching operations
         self.conn.execute("BEGIN TRANSACTION")
 
         try:
             # Insert the program in a single operation
-            self.cursor.execute(
-                """
-                INSERT INTO programs
-                   (id, code, language, parent_id, archive_inspiration_ids,
-                    top_k_inspiration_ids, generation, timestamp, code_diff,
-                    combined_score, public_metrics, private_metrics,
-                    text_feedback, complexity, embedding, embedding_pca_2d,
-                    embedding_pca_3d, embedding_cluster_id, correct,
-                    children_count, metadata, island_idx, migration_history)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    program.id,
-                    program.code,
-                    program.language,
-                    program.parent_id,
-                    archive_insp_ids_json,
-                    top_k_insp_ids_json,
-                    program.generation,
-                    program.timestamp,
-                    program.code_diff,
-                    program.combined_score,
-                    public_metrics_json,
-                    private_metrics_json,
-                    text_feedback_str,
-                    program.complexity,
-                    embedding_json,  # Use serialized embedding
-                    embedding_pca_2d_json,
-                    embedding_pca_3d_json,
-                    program.embedding_cluster_id,
-                    program.correct,
-                    program.children_count,
-                    metadata_json,
-                    program.island_idx,
-                    migration_history_json,
-                ),
-            )
+            self._insert_base_program_record(program)
 
             # Increment parent's children_count
             if program.parent_id:
@@ -660,9 +1223,14 @@ class ProgramDatabase:
             if program.metadata:
                 program.metadata.pop("_needs_island_copies", None)
                 metadata_json = json.dumps(program.metadata)
+                migration_history_json = json.dumps(program.migration_history or [])
                 self.cursor.execute(
-                    "UPDATE programs SET metadata = ? WHERE id = ?",
-                    (metadata_json, program.id),
+                    """
+                    INSERT OR REPLACE INTO program_metadata
+                        (program_id, metadata, migration_history)
+                    VALUES (?, ?, ?)
+                    """,
+                    (program.id, metadata_json, migration_history_json),
                 )
                 self.conn.commit()
 
@@ -673,117 +1241,30 @@ class ProgramDatabase:
         self.check_scheduled_operations()
         return program.id
 
-    def _program_from_row(self, row: sqlite3.Row) -> Optional[Program]:
+    def _program_from_row(
+        self, row: sqlite3.Row, cursor: Optional[sqlite3.Cursor] = None
+    ) -> Optional[Program]:
         """Helper to create a Program object from a database row."""
         if not row:
             return None
 
-        program_data = dict(row)
+        program_data = dict(row)  # type: ignore[arg-type]
 
-        # Use faster json loads
-        public_metrics_text = program_data.get("public_metrics")
-        if public_metrics_text:
-            try:
-                program_data["public_metrics"] = json.loads(public_metrics_text)
-            except json.JSONDecodeError:
-                program_data["public_metrics"] = {}
-        else:
-            program_data["public_metrics"] = {}
+        # Load components from normalized tables
+        try:
+            component_data = self._load_program_components(
+                program_data["id"], cursor=cursor
+            )
+            program_data.update(component_data)
+        except sqlite3.Error as exc:
+            logger.error(
+                "Failed to load component data for program %s: %s",
+                program_data.get("id"),
+                exc,
+            )
 
-        private_metrics_text = program_data.get("private_metrics")
-        if private_metrics_text:
-            try:
-                program_data["private_metrics"] = json.loads(private_metrics_text)
-            except json.JSONDecodeError:
-                program_data["private_metrics"] = {}
-        else:
-            program_data["private_metrics"] = {}
-
-        # Same for metadata
-        metadata_text = program_data.get("metadata")
-        if metadata_text:
-            try:
-                program_data["metadata"] = json.loads(metadata_text)
-            except json.JSONDecodeError:
-                program_data["metadata"] = {}
-        else:
-            program_data["metadata"] = {}
-
-        # Handle text_feedback (simple string field)
         if "text_feedback" not in program_data or program_data["text_feedback"] is None:
             program_data["text_feedback"] = ""
-
-        # Handle inspiration_ids
-        archive_insp_ids_text = program_data.get("archive_inspiration_ids")
-        if archive_insp_ids_text:
-            try:
-                program_data["archive_inspiration_ids"] = json.loads(
-                    archive_insp_ids_text
-                )
-            except json.JSONDecodeError:
-                program_data["archive_inspiration_ids"] = []
-        else:
-            program_data["archive_inspiration_ids"] = []
-
-        top_k_insp_ids_text = program_data.get("top_k_inspiration_ids")
-        if top_k_insp_ids_text:
-            try:
-                program_data["top_k_inspiration_ids"] = json.loads(top_k_insp_ids_text)
-            except json.JSONDecodeError:
-                logger.warning(
-                    "Could not decode top_k_inspiration_ids for "
-                    f"program {program_data.get('id')}. "
-                    "Defaulting to empty list."
-                )
-                program_data["top_k_inspiration_ids"] = []
-        else:
-            program_data["top_k_inspiration_ids"] = []
-
-        # Handle embedding
-        embedding_text = program_data.get("embedding")
-        if embedding_text:
-            try:
-                program_data["embedding"] = json.loads(embedding_text)
-            except json.JSONDecodeError:
-                logger.warning(
-                    f"Could not decode embedding for program "
-                    f"{program_data.get('id')}. Defaulting to empty list."
-                )
-                program_data["embedding"] = []
-        else:
-            program_data["embedding"] = []
-
-        embedding_pca_2d_text = program_data.get("embedding_pca_2d")
-        if embedding_pca_2d_text:
-            try:
-                program_data["embedding_pca_2d"] = json.loads(embedding_pca_2d_text)
-            except json.JSONDecodeError:
-                program_data["embedding_pca_2d"] = []
-        else:
-            program_data["embedding_pca_2d"] = []
-
-        embedding_pca_3d_text = program_data.get("embedding_pca_3d")
-        if embedding_pca_3d_text:
-            try:
-                program_data["embedding_pca_3d"] = json.loads(embedding_pca_3d_text)
-            except json.JSONDecodeError:
-                program_data["embedding_pca_3d"] = []
-        else:
-            program_data["embedding_pca_3d"] = []
-
-        # Handle migration_history
-        migration_history_text = program_data.get("migration_history")
-        if migration_history_text:
-            try:
-                program_data["migration_history"] = json.loads(migration_history_text)
-            except json.JSONDecodeError:
-                logger.warning(
-                    f"Could not decode migration_history for program "
-                    f"{program_data.get('id')}. Defaulting to empty list."
-                )
-                program_data["migration_history"] = []
-        else:
-            program_data["migration_history"] = []
 
         # Handle archive status
         program_data["in_archive"] = bool(program_data.get("in_archive", 0))
@@ -970,23 +1451,9 @@ class ProgramDatabase:
             logger.debug("No correct programs found in database.")
             return None
 
-        programs = []
-        for row_data in all_rows:
-            p_dict = dict(row_data)
-            p_dict["public_metrics"] = (
-                json.loads(p_dict["public_metrics"])
-                if p_dict.get("public_metrics")
-                else {}
-            )
-            p_dict["private_metrics"] = (
-                json.loads(p_dict["private_metrics"])
-                if p_dict.get("private_metrics")
-                else {}
-            )
-            p_dict["metadata"] = (
-                json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
-            )
-            programs.append(Program.from_dict(p_dict))
+        programs = [
+            prog for prog in (self._program_from_row(row) for row in all_rows) if prog
+        ]
 
         if not programs:
             return None
@@ -1115,40 +1582,9 @@ class ProgramDatabase:
             return []
 
         # Process results
-        programs = []
-        for row_data in all_rows:
-            p_dict = dict(row_data)
-
-            # Optimize JSON parsing
-            public_metrics_text = p_dict.get("public_metrics")
-            if public_metrics_text:
-                try:
-                    p_dict["public_metrics"] = json.loads(public_metrics_text)
-                except json.JSONDecodeError:
-                    p_dict["public_metrics"] = {}
-            else:
-                p_dict["public_metrics"] = {}
-
-            private_metrics_text = p_dict.get("private_metrics")
-            if private_metrics_text:
-                try:
-                    p_dict["private_metrics"] = json.loads(private_metrics_text)
-                except json.JSONDecodeError:
-                    p_dict["private_metrics"] = {}
-            else:
-                p_dict["private_metrics"] = {}
-
-            metadata_text = p_dict.get("metadata")
-            if metadata_text:
-                try:
-                    p_dict["metadata"] = json.loads(metadata_text)
-                except json.JSONDecodeError:
-                    p_dict["metadata"] = {}
-            else:
-                p_dict["metadata"] = {}
-
-            # Create program object
-            programs.append(Program.from_dict(p_dict))
+        programs = [
+            prog for prog in (self._program_from_row(row) for row in all_rows) if prog
+        ]
 
         # If we already have the sorted programs from SQL, just return them
         if metric in ["combined_score", "timestamp"] and programs:
@@ -1483,7 +1919,14 @@ class ProgramDatabase:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT embedding FROM programs WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'",
+                """
+                SELECT pe.embedding
+                FROM program_embeddings pe
+                JOIN programs p ON p.id = pe.program_id
+                WHERE p.island_idx = ?
+                  AND pe.embedding IS NOT NULL
+                  AND pe.embedding != '[]'
+                """,
                 (island_idx,),
             )
             rows = cursor.fetchall()
@@ -1531,8 +1974,12 @@ class ProgramDatabase:
         # Get all programs in the specified island that have embeddings
         self.cursor.execute(
             """
-            SELECT id, embedding FROM programs 
-            WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'
+            SELECT p.id, pe.embedding
+            FROM programs p
+            JOIN program_embeddings pe ON p.id = pe.program_id
+            WHERE p.island_idx = ?
+              AND pe.embedding IS NOT NULL
+              AND pe.embedding != '[]'
             """,
             (island_idx,),
         )
@@ -1587,8 +2034,12 @@ class ProgramDatabase:
         # Get all programs in the specified island that have embeddings
         self.cursor.execute(
             """
-            SELECT id, embedding FROM programs 
-            WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'
+            SELECT p.id, pe.embedding
+            FROM programs p
+            JOIN program_embeddings pe ON p.id = pe.program_id
+            WHERE p.island_idx = ?
+              AND pe.embedding IS NOT NULL
+              AND pe.embedding != '[]'
             """,
             (island_idx,),
         )
@@ -1650,8 +2101,12 @@ class ProgramDatabase:
             # Get all programs in the specified island that have embeddings
             cursor.execute(
                 """
-                SELECT id, embedding FROM programs 
-                WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'
+                SELECT p.id, pe.embedding
+                FROM programs p
+                JOIN program_embeddings pe ON p.id = pe.program_id
+                WHERE p.island_idx = ?
+                  AND pe.embedding IS NOT NULL
+                  AND pe.embedding != '[]'
                 """,
                 (island_idx,),
             )
@@ -1693,7 +2148,7 @@ class ProgramDatabase:
             row = cursor.fetchone()
 
             if row:
-                return self._program_from_row(row)
+                return self._program_from_row(row, cursor=cursor)
             return None
 
         except Exception as e:
@@ -1711,8 +2166,13 @@ class ProgramDatabase:
             raise ConnectionError("DB not connected.")
 
         self.cursor.execute(
-            "SELECT id, embedding FROM programs "
-            "WHERE embedding IS NOT NULL AND embedding != '[]'"
+            """
+            SELECT p.id, pe.embedding
+            FROM programs p
+            JOIN program_embeddings pe ON p.id = pe.program_id
+            WHERE pe.embedding IS NOT NULL
+              AND pe.embedding != '[]'
+            """
         )
         rows = self.cursor.fetchall()
 
@@ -1755,15 +2215,24 @@ class ProgramDatabase:
 
                 self.cursor.execute(
                     """
-                    UPDATE programs
+                    UPDATE program_embeddings
                     SET embedding_pca_2d = ?,
-                        embedding_pca_3d = ?,
-                        embedding_cluster_id = ?
-                    WHERE id = ?
+                        embedding_pca_3d = ?
+                    WHERE program_id = ?
                     """,
                     (
                         embedding_pca_2d_json,
                         embedding_pca_3d_json,
+                        program_id,
+                    ),
+                )
+                self.cursor.execute(
+                    """
+                    UPDATE programs
+                    SET embedding_cluster_id = ?
+                    WHERE id = ?
+                    """,
+                    (
                         cluster_id,
                         program_id,
                     ),
@@ -1795,8 +2264,13 @@ class ProgramDatabase:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT id, embedding FROM programs "
-                "WHERE embedding IS NOT NULL AND embedding != '[]'"
+                """
+                SELECT p.id, pe.embedding
+                FROM programs p
+                JOIN program_embeddings pe ON p.id = pe.program_id
+                WHERE pe.embedding IS NOT NULL
+                  AND pe.embedding != '[]'
+                """
             )
             rows = cursor.fetchall()
 
@@ -1849,15 +2323,24 @@ class ProgramDatabase:
 
                     cursor.execute(
                         """
-                        UPDATE programs
+                        UPDATE program_embeddings
                         SET embedding_pca_2d = ?,
-                            embedding_pca_3d = ?,
-                            embedding_cluster_id = ?
-                        WHERE id = ?
+                            embedding_pca_3d = ?
+                        WHERE program_id = ?
                         """,
                         (
                             embedding_pca_2d_json,
                             embedding_pca_3d_json,
+                            program_id,
+                        ),
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE programs
+                        SET embedding_cluster_id = ?
+                        WHERE id = ?
+                        """,
+                        (
                             cluster_id,
                             program_id,
                         ),
@@ -1896,29 +2379,13 @@ class ProgramDatabase:
             cursor.execute("SELECT * FROM programs WHERE generation = ?", (generation,))
             rows = cursor.fetchall()
 
-            programs = []
-            for row in rows:
-                if not row:
-                    continue
-                program_data = dict(row)
-                # Manually handle JSON deserialization for thread safety
-                for key, value in program_data.items():
-                    if key in [
-                        "public_metrics",
-                        "private_metrics",
-                        "metadata",
-                        "archive_inspiration_ids",
-                        "top_k_inspiration_ids",
-                        "embedding",
-                        "embedding_pca_2d",
-                        "embedding_pca_3d",
-                        "migration_history",
-                    ] and isinstance(value, str):
-                        try:
-                            program_data[key] = json.loads(value)
-                        except json.JSONDecodeError:
-                            program_data[key] = {} if key.endswith("_metrics") else []
-                programs.append(Program(**program_data))
+            programs = [
+                prog
+                for prog in (
+                    self._program_from_row(row, cursor=cursor) for row in rows
+                )
+                if prog
+            ]
             return programs
         finally:
             if conn:
@@ -1955,40 +2422,13 @@ class ProgramDatabase:
                 return []
 
             # Process results
-            programs = []
-            for row_data in all_rows:
-                program_data = dict(row_data)
-
-                # Manually handle JSON deserialization for thread safety
-                json_fields = [
-                    "public_metrics",
-                    "private_metrics",
-                    "metadata",
-                    "archive_inspiration_ids",
-                    "top_k_inspiration_ids",
-                    "embedding",
-                    "embedding_pca_2d",
-                    "embedding_pca_3d",
-                    "migration_history",
-                ]
-                for key, value in program_data.items():
-                    if key in json_fields and isinstance(value, str):
-                        try:
-                            program_data[key] = json.loads(value)
-                        except json.JSONDecodeError:
-                            is_dict_field = (
-                                key.endswith("_metrics") or key == "metadata"
-                            )
-                            program_data[key] = {} if is_dict_field else []
-
-                # Handle text_feedback
-                if (
-                    "text_feedback" not in program_data
-                    or program_data["text_feedback"] is None
-                ):
-                    program_data["text_feedback"] = ""
-
-                programs.append(Program.from_dict(program_data))
+            programs = [
+                prog
+                for prog in (
+                    self._program_from_row(row, cursor=cursor) for row in all_rows
+                )
+                if prog
+            ]
 
             return programs
 
