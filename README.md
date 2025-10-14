@@ -1,6 +1,8 @@
 Integrating e2b (or similar), and modal (for GPU code) would be a meaningful upgrade, so that you could further parallelize execution, do need to check how the existing other agents work though. Might already do similar
 <h1 align="center">
-  <a href="shinka/favicon.png?raw=true"><img src="shinka/favicon.png?raw=true" width="180" /></a><br>
+  <a href="docs/genesis-logo.png?raw=true">
+    <img src="docs/genesis-logo.png?raw=true" width="180" style="border-radius: 50%; background-color: white; padding: 20px;" />
+  </a><br>
   <b><code>ShinkaEvolve</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
 </h1>
 
@@ -12,6 +14,7 @@ Integrating e2b (or similar), and modal (for GPU code) would be a meaningful upg
   <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" /></a>
 </p>
 
+> **Note**: This repository is based on [ShinkaEvolve](https://github.com/SakanaAI/ShinkaEvolve) by Sakana AI (~90% of the codebase). We are running platform experiments on top of their excellent work, exploring new execution backends and deployment strategies.
 
 [`ShinkaEvolve`](https://arxiv.org/abs/2509.19349) is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `ShinkaEvolve` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
