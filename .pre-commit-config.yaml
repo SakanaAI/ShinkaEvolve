@@ -26,3 +26,12 @@ repos:
       - id: flake8
         language_version: python3.12
         args: ['--max-line-length=120', '--extend-ignore=E203,W503']
+
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+        name: Lint Dockerfiles with hadolint
+        language: docker_image
+        types: ["dockerfile"]
+        entry: hadolint/hadolint:v2.12.0 hadolint

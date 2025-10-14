@@ -29,7 +29,37 @@ python scripts/check_pinned_deps.py
 - **Security**: Makes it easier to audit and track dependency vulnerabilities
 - **CI/CD**: Guarantees consistent builds across environments
 
-## Installing Pre-commit Hooks
+## Pre-commit Hooks
+
+### Hadolint (Dockerfile Linting)
+
+**Purpose**: Lint Dockerfiles to ensure best practices and catch common mistakes.
+
+**What it does**:
+- Checks Dockerfiles for best practices
+- Validates instruction syntax
+- Warns about security issues
+- Suggests improvements for caching and build optimization
+- Runs automatically on any file named `Dockerfile` or matching `*.dockerfile`
+
+**Common checks**:
+- `DL3008`: Pin versions in apt-get install
+- `DL3009`: Delete apt-get lists after installing
+- `DL3015`: Avoid additional packages by specifying `--no-install-recommends`
+- `DL3059`: Multiple consecutive RUN instructions should be consolidated
+- And many more...
+
+**Usage**:
+```bash
+# Run manually on a Dockerfile
+docker run --rm -i hadolint/hadolint:v2.12.0 hadolint < Dockerfile
+
+# Automatically runs via pre-commit hook when Dockerfiles are changed
+```
+
+**Documentation**: https://github.com/hadolint/hadolint
+
+### Installing Pre-commit Hooks
 
 To enable the pre-commit hooks:
 
