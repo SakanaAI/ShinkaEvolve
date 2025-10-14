@@ -8,16 +8,16 @@
 - `webui-react/` and `website/`: front-end clients; keep UI changes isolated from the core engine.
 
 ## Build, Test, and Development Commands
-- `uv venv --python 3.11 && source .venv/bin/activate`: create and activate the recommended environment.
+- `uv venv --python 3.12 && source .venv/bin/activate`: create and activate the recommended environment.
 - `uv pip install -e .[dev]`: install the package with developer tooling.
-- `shinka_launch variant=circle_packing_example`: run a reference experiment via the CLI entrypoint.
+- `genesis_launch variant=circle_packing_example`: run a reference experiment via the CLI entrypoint.
 - `pytest`: execute the full unit test suite; use `pytest tests/test_edit_circle.py -k "smoke"` while iterating.
 - `black shinka tests && isort shinka tests && flake8 shinka tests`: format and lint before submitting.
 
 ## Coding Style & Naming Conventions
-- Python 3.11+, 4-space indentation, and type hints for new public APIs.
+- Python 3.12+, 4-space indentation, and type hints for new public APIs.
 - Modules, files, and functions use `snake_case`; classes follow `PascalCase`.
-- Keep experiment configs declarative; prefer Hydra overrides (`shinka_launch +foo=bar`) over ad-hoc scripts.
+- Keep experiment configs declarative; prefer Hydra overrides (`genesis_launch +foo=bar`) over ad-hoc scripts.
 - Document non-obvious behaviors with concise docstrings referencing evaluation assumptions.
 
 ## Testing Guidelines

@@ -3,22 +3,22 @@ Integrating e2b (or similar), and modal (for GPU code) would be a meaningful upg
   <a href="docs/genesis-logo.png?raw=true">
     <img src="docs/genesis-logo.png?raw=true" width="180" style="border-radius: 50%; background-color: white; padding: 20px;" />
   </a><br>
-  <b><code>ShinkaEvolve</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
+  <b><code>Genesis</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
 </h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" />
+  <img src="https://img.shields.io/badge/python-%3E%3D3.12-blue" />
   <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/master/LICENSE.md"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
   <a href="http://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
-  <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" /></a>
+  <a href="https://genesis.ai"><img src="https://img.shields.io/badge/website-genesis.ai-blue" /></a>
 </p>
 
 > **Note**: This repository is based on [ShinkaEvolve](https://github.com/SakanaAI/ShinkaEvolve) by Sakana AI (~90% of the codebase). We are running platform experiments on top of their excellent work, exploring new execution backends and deployment strategies.
 
-[`ShinkaEvolve`](https://arxiv.org/abs/2509.19349) is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `ShinkaEvolve` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
+[`Genesis`](https://genesis.ai) is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `Genesis` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/), [Darwin Goedel Machine](https://sakana.ai/dgm/), and [ShinkaEvolve](https://arxiv.org/abs/2509.19349): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
-The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `ShinkaEvolve` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
+The framework supports **parallel evaluation of candidates** locally, on a Slurm cluster, or in cloud sandboxes. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `Genesis` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
 ![](docs/conceptual.png)
 
@@ -27,26 +27,26 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | Guide | Description | What You'll Learn |
 |-------|-------------|-------------------|
 | 🚀 **[Getting Started](docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
-| 📓 **[Tutorial Notebook](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
+| 📓 **[Tutorial Notebook](examples/genesis_tutorial.ipynb)** | Interactive walkthrough of Genesis features | Hands-on examples, configuration, best practices |
 | ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
-| 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
+| 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools |
 
 ## Installation & Quick Start 🚀
 
 ```bash
 # Clone the repository
-git clone https://github.com/SakanaAI/ShinkaEvolve
+git clone https://github.com/GeorgePearse/Genesis
 # Install uv if you haven't already
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Create environment and install Shinka
-cd ShinkaEvolve
-uv venv --python 3.11
+# Create environment and install Genesis
+cd Genesis
+uv venv --python 3.12
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install -e .
 
 # Run your first evolution experiment
-shinka_launch variant=circle_packing_example
+genesis_launch variant=circle_packing_example
 ```
 
 For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
@@ -61,14 +61,14 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | ✨ [Novelty Generator](examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
-## `shinka` Run with Python API 🐍
+## `genesis` Run with Python API 🐍
 
 For the simplest setup with default settings, you only need to specify the evaluation program:
 
 ```python
-from shinka.core import EvolutionRunner, EvolutionConfig
-from shinka.database import DatabaseConfig
-from shinka.launch import LocalJobConfig
+from genesis.core import EvolutionRunner, EvolutionConfig
+from genesis.database import DatabaseConfig
+from genesis.launch import LocalJobConfig
 
 # Minimal config - only specify what's required
 job_config = LocalJobConfig(eval_program_path="evaluate.py")
@@ -182,7 +182,7 @@ runner.run()
 
 ### Evaluation Setup & Initial Solution 🏃
 
-To use EvolutionRunner, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `shinka` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
+To use EvolutionRunner, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `genesis` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
 
 <table>
 <tr>
@@ -191,11 +191,11 @@ To use EvolutionRunner, you need two key files: The **`evaluate.py`** script def
 **`evaluate.py` - Evaluation Script**
 
 ```python
-from shinka.core import run_shinka_eval
+from genesis.core import run_genesis_eval
 
 def main(program_path: str,
          results_dir: str):
-    metrics, correct, err = run_shinka_eval(
+    metrics, correct, err = run_genesis_eval(
         program_path=program_path,
         results_dir=results_dir,
         experiment_fn_name="run_experiment",
@@ -213,8 +213,8 @@ def aggregate_fn(results: list) -> dict:
     text = results[1]
     return {
         "combined_score": float(score),
-        "public": {...},  # shinka-visible
-        "private": {...},  # shinka-invisible
+        "public": {...},  # genesis-visible
+        "private": {...},  # genesis-invisible
         "extra_data": {...},  # store as pkl
         "text_feedback": text,  # str fb
     }
@@ -253,7 +253,7 @@ def solve_problem(params):
 - Dependencies must be available in env
 - Results can be unpacked for metrics
 - Auto-stores several results in `results_dir`
-- Can add text feedback in `shinka` loop
+- Can add text feedback in `genesis` loop
 - Higher `combined_score` values indicate better performance (maximization)
 
 </td>
@@ -261,16 +261,16 @@ def solve_problem(params):
 </table>
 
 
-## `shinka` Launcher with Hydra 🚀
+## `genesis` Launcher with Hydra 🚀
 
-`shinka` Launcher utilizes [Hydra](https://hydra.cc/) to configure and launch evolutionary experiments effortlessly. It supports concise configuration via Hydra's powerful override syntax, making it easy to manage and iterate scientific explorations.
+`genesis` Launcher utilizes [Hydra](https://hydra.cc/) to configure and launch evolutionary experiments effortlessly. It supports concise configuration via Hydra's powerful override syntax, making it easy to manage and iterate scientific explorations.
 
 ```bash
 # Run with pre-configured variant
-shinka_launch variant=circle_packing_example
+genesis_launch variant=circle_packing_example
 
 # Run with custom parameters
-shinka_launch \
+genesis_launch \
     task=circle_packing \
     database=island_large \
     evolution=small_budget \
@@ -283,7 +283,7 @@ For comprehensive configuration options and advanced usage, see the [Configurati
 
 ## Interactive WebUI 🎨
 
-Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
+Monitor your evolution experiments in real-time with Genesis's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
 ![WebUI Screenshot](docs/webui.png)
 
@@ -293,10 +293,10 @@ Launch the WebUI alongside your evolution experiment:
 
 ```bash
 # Start your evolution experiment
-shinka_launch variant=circle_packing_example
+genesis_launch variant=circle_packing_example
 
 # In another terminal, launch the WebUI
-shinka_visualize --port 8888 --open
+genesis_visualize --port 8888 --open
 ```
 
 For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
@@ -308,13 +308,24 @@ For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
 
 ## Citation ✍️
 
-If you use `ShinkaEvolve` in your research, please cite it as follows:
+If you use `Genesis` in your research, please cite the original ShinkaEvolve paper:
 
 ```
 @article{lange2025shinka,
   title={ShinkaEvolve: Towards Open-Ended And Sample-Efficient Program Evolution},
   author={Lange, Robert Tjarko and Imajuku, Yuki and Cetin, Edoardo},
   journal={arXiv preprint arXiv:2509.19349},
+  year={2025}
+}
+```
+
+And reference this Genesis platform:
+
+```
+@misc{genesis2025,
+  title={Genesis: Platform Experiments for LLM-Driven Program Evolution},
+  author={Pearse, George},
+  howpublished={\url{https://genesis.ai}},
   year={2025}
 }
 ```

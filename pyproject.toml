@@ -1,63 +1,64 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shinka"
-version = "0.0.1"
-description = "Automated Scientific Evolution"
+name = "genesis-evolve"
+version = "0.1.0"
+description = "Genesis: LLM-Driven Program Evolution Platform"
 authors = [
-    {name = "Sakana AI", email = "robert@sakana.ai"}
+    {name = "George Pearse", email = "george@genesis.ai"},
+    {name = "Sakana AI (Original ShinkaEvolve)", email = "robert@sakana.ai"}
 ]
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = "==3.12.*"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "openai",
-    "numpy",
-    "pandas",
-    "anthropic",
-    "requests",
-    "boto3",
-    "pydantic",
-    "backoff",
-    "python-dotenv",
-    "instructor",
-    "python-Levenshtein",
-    "radon",
-    "unidiff",
-    "dill",
+    "openai==1.58.1",
+    "numpy==2.2.6",
+    "pandas==2.2.3",
+    "anthropic==0.42.0",
+    "requests==2.32.5",
+    "boto3==1.39.4",
+    "pydantic==2.10.1",
+    "backoff==2.2.1",
+    "python-dotenv==1.0.1",
+    "instructor==1.7.2",
+    "python-Levenshtein==0.27.0",
+    "radon==6.0.1",
+    "unidiff==0.7.5",
+    "dill==0.4.0",
     "hydra-core==1.3.2",
-    "matplotlib",
-    "networkx",
-    "seaborn",
-    "moviepy",
-    "scikit-learn",
-    "adjustText",
-    "markdown",
-    "aiofiles",
+    "matplotlib==3.9.2",
+    "networkx==3.5",
+    "seaborn==0.13.2",
+    "moviepy==2.1.1",
+    "scikit-learn==1.7.1",
+    "adjustText==1.3.2",
+    "markdown==3.8.2",
+    "aiofiles==24.1.0",
+    "e2b==2.2.0",
 ]
 
 [tool.setuptools]
 packages = ["shinka"]
-script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
+script-files = ["shinka/genesis_launch", "shinka/genesis_visualize"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
 
 [tool.uv]
 dev-dependencies = [
-    "pytest>=6.0",
-    "black",
-    "isort",
-    "flake8",
+    "pytest==8.3.3",
+    "black==22.12.0",
+    "isort==5.13.2",
+    "flake8==7.1.1",
+    "pre-commit==4.0.1",
 ]
