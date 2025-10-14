@@ -303,6 +303,7 @@ For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
 
 ## Related Open-Source Projects 🧑‍🔧
 
+- [ShinkaEvolve](https://github.com/SakanaAI/ShinkaEvolve): The original framework by Sakana AI that Genesis was forked from (~90% of the codebase)
 - [OpenEvolve](https://github.com/codelion/openevolve): An open-source implementation of AlphaEvolve
 - [LLM4AD](https://github.com/Optima-CityU/llm4ad): A Platform for Algorithm Design with Large Language Model
 
