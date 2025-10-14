@@ -3,22 +3,21 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shinka"
-version = "0.0.1"
-description = "Automated Scientific Evolution"
+name = "genesis-evolve"
+version = "0.1.0"
+description = "Genesis: LLM-Driven Program Evolution Platform"
 authors = [
-    {name = "Sakana AI", email = "robert@sakana.ai"}
+    {name = "George Pearse", email = "george@genesis.ai"},
+    {name = "Sakana AI (Original ShinkaEvolve)", email = "robert@sakana.ai"}
 ]
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
@@ -49,7 +48,7 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["shinka"]
-script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
+script-files = ["shinka/genesis_launch", "shinka/genesis_visualize"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
