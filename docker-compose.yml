@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: genesis-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-genesis}
+      POSTGRES_USER: ${POSTGRES_USER:-genesis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-genesis}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-genesis}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - genesis-network
+    restart: unless-stopped
+
+  # Genesis Backend Application
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: genesis-backend
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://${POSTGRES_USER:-genesis}:${POSTGRES_PASSWORD:-genesis}@postgres:5432/${POSTGRES_DB:-genesis}
+
+      # Genesis application settings
+      GENESIS_DATA_DIR: /app/data
+      GENESIS_RESULTS_DIR: /app/results
+      PYTHONUNBUFFERED: 1
+
+      # LLM API Keys (to be provided via .env file)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+      # Optional E2B configuration
+      E2B_API_KEY: ${E2B_API_KEY:-}
+
+      # Web UI configuration
+      GENESIS_WEBUI_PORT: ${GENESIS_WEBUI_PORT:-8000}
+    volumes:
+      # Mount directories for persistent data
+      - ./data:/app/data
+      - ./results:/app/results
+
+      # Mount source code for development (comment out for production)
+      - ./shinka:/app/shinka
+      - ./configs:/app/configs
+      - ./examples:/app/examples
+    ports:
+      - "${GENESIS_WEBUI_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - genesis-network
+    restart: unless-stopped
+    command: ["python", "-m", "shinka.webui.visualization", "--port", "8000"]
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  genesis-network:
+    driver: bridge
