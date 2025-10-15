@@ -1,0 +1,333 @@
+database_config:
+  archive_size: 40
+  db_path: results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/evolution_db.sqlite
+  elite_selection_ratio: 0.3
+  enforce_island_separation: true
+  exploitation_alpha: 1.0
+  exploitation_ratio: 0.2
+  island_elitism: true
+  migration_interval: 10
+  migration_rate: 0.0
+  num_archive_inspirations: 4
+  num_beams: 5
+  num_islands: 2
+  num_top_k_inspirations: 2
+  parent_selection_lambda: 10.0
+  parent_selection_strategy: weighted
+evolution_config:
+  code_embed_sim_threshold: 1.0
+  embedding_model: gemini-embedding-001
+  init_program_path: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/initial.py
+  job_type: local
+  language: python
+  llm_dynamic_selection: ucb
+  llm_dynamic_selection_kwargs: {}
+  llm_kwargs: &id001 !!python/object:omegaconf.dictconfig.DictConfig
+    _content:
+      max_tokens: !!python/object:omegaconf.nodes.AnyNode
+        _metadata: !!python/object:omegaconf.base.Metadata
+          flags: {}
+          flags_root: false
+          key: max_tokens
+          object_type: null
+          optional: true
+          ref_type: &id002 !!python/name:typing.Any ''
+          resolver_cache: !!python/object/apply:collections.defaultdict
+          - &id003 !!python/name:builtins.dict ''
+        _parent: *id001
+        _val: 16384
+      temperatures: &id004 !!python/object:omegaconf.listconfig.ListConfig
+        _content:
+        - !!python/object:omegaconf.nodes.AnyNode
+          _metadata: !!python/object:omegaconf.base.Metadata
+            flags: {}
+            flags_root: false
+            key: 0
+            object_type: null
+            optional: true
+            ref_type: *id002
+            resolver_cache: !!python/object/apply:collections.defaultdict
+            - *id003
+          _parent: *id004
+          _val: 0.0
+        - !!python/object:omegaconf.nodes.AnyNode
+          _metadata: !!python/object:omegaconf.base.Metadata
+            flags: {}
+            flags_root: false
+            key: 1
+            object_type: null
+            optional: true
+            ref_type: *id002
+            resolver_cache: !!python/object/apply:collections.defaultdict
+            - *id003
+          _parent: *id004
+          _val: 0.5
+        - !!python/object:omegaconf.nodes.AnyNode
+          _metadata: !!python/object:omegaconf.base.Metadata
+            flags: {}
+            flags_root: false
+            key: 2
+            object_type: null
+            optional: true
+            ref_type: *id002
+            resolver_cache: !!python/object/apply:collections.defaultdict
+            - *id003
+          _parent: *id004
+          _val: 1.0
+        _metadata: !!python/object:omegaconf.base.ContainerMetadata
+          element_type: *id002
+          flags:
+            allow_objects: true
+          flags_root: false
+          key: temperatures
+          key_type: &id006 !!python/name:builtins.int ''
+          object_type: &id007 !!python/name:builtins.list ''
+          optional: true
+          ref_type: *id002
+          resolver_cache: !!python/object/apply:collections.defaultdict
+          - *id003
+        _parent: *id001
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id002
+      object_type: *id003
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  llm_models: &id005 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id005
+      _val: gemini-2.5-flash
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id006
+      object_type: *id007
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  max_novelty_attempts: 3
+  max_parallel_jobs: 10
+  max_patch_attempts: 3
+  max_patch_resamples: 3
+  meta_llm_kwargs: &id009 !!python/object:omegaconf.dictconfig.DictConfig
+    _content:
+      temperatures: &id008 !!python/object:omegaconf.listconfig.ListConfig
+        _content:
+        - !!python/object:omegaconf.nodes.AnyNode
+          _metadata: !!python/object:omegaconf.base.Metadata
+            flags: {}
+            flags_root: false
+            key: 0
+            object_type: null
+            optional: true
+            ref_type: *id002
+            resolver_cache: !!python/object/apply:collections.defaultdict
+            - *id003
+          _parent: *id008
+          _val: 0.0
+        _metadata: !!python/object:omegaconf.base.ContainerMetadata
+          element_type: *id002
+          flags:
+            allow_objects: true
+          flags_root: false
+          key: temperatures
+          key_type: *id006
+          object_type: *id007
+          optional: true
+          ref_type: *id002
+          resolver_cache: !!python/object/apply:collections.defaultdict
+          - *id003
+        _parent: *id009
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id002
+      object_type: *id003
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  meta_llm_models: &id010 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id010
+      _val: gpt-4.1
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id006
+      object_type: *id007
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  meta_max_recommendations: 5
+  meta_rec_interval: 10
+  novelty_llm_kwargs: {}
+  novelty_llm_models: null
+  num_generations: 100
+  patch_type_probs: &id011 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id011
+      _val: 0.6
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 1
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id011
+      _val: 0.3
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 2
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id011
+      _val: 0.1
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id006
+      object_type: *id007
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  patch_types: &id012 !!python/object:omegaconf.listconfig.ListConfig
+    _content:
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 0
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id012
+      _val: diff
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 1
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id012
+      _val: full
+    - !!python/object:omegaconf.nodes.AnyNode
+      _metadata: !!python/object:omegaconf.base.Metadata
+        flags: {}
+        flags_root: false
+        key: 2
+        object_type: null
+        optional: true
+        ref_type: *id002
+        resolver_cache: !!python/object/apply:collections.defaultdict
+        - *id003
+      _parent: *id012
+      _val: cross
+    _metadata: !!python/object:omegaconf.base.ContainerMetadata
+      element_type: *id002
+      flags:
+        allow_objects: true
+      flags_root: false
+      key: null
+      key_type: *id006
+      object_type: *id007
+      optional: true
+      ref_type: *id002
+      resolver_cache: !!python/object/apply:collections.defaultdict
+      - *id003
+    _parent: null
+  results_dir: results/shinka_novelty_generator_llm_judge/2025.10.04211242_example
+  task_sys_msg: 'Make a python function that takes as input a random integer and produces
+    a piece of art that is cool and novel. Depending on its input, each output should
+    be diverse from all other outputs produced with different inputs. Please, call
+    this function "def generate_novelty(rng: int) -> str"
+
+
+    Different judges will evaluate how 1) diverse, 2) meaningful, and 3) inspirational
+    the generated outputs are for different random seeds. These three criteria will
+    be used to assign your function a "final_novelty_score" for each judge. Only functions
+    excelling across all three dimensions will achieve a high "final_novelty_score".
+
+
+    Now bring out your creativity, it''s time to surprise us!
+
+    '
+  use_text_feedback: false
+job_config:
+  conda_env: null
+  eval_program_path: shinka/eval_hydra.py
+  extra_cmd_args: {}
+  time: null
+results_directory: results/shinka_novelty_generator_llm_judge/2025.10.04211242_example
+timestamp: '2025-10-04T21:12:42.433588'

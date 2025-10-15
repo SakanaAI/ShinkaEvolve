@@ -47,6 +47,44 @@ shinka_launch variant=circle_packing_example
 
 For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
 
+## LLM and Embedding Model Configuration
+
+`ShinkaEvolve` supports multiple LLM and embedding providers, including OpenAI, Anthropic, and Google Gemini.
+
+### API Key Setup
+
+To use a specific model provider, you must set the corresponding API key as an environment variable:
+
+-   **OpenAI:** `export OPENAI_API_KEY="your-openai-api-key"`
+-   **Anthropic:** `export ANTHROPIC_API_KEY="your-anthropic-api-key"`
+-   **Google Gemini:** `export GEMINI_API_KEY="your-gemini-api-key"`
+
+### Model Selection
+
+You can select the LLM and embedding models in your Hydra configuration files (e.g., `configs/evolution/small_budget.yaml`).
+
+**Example: Using Gemini**
+
+To use the Gemini Flash LLM and the Gemini embedding model, modify your configuration as follows:
+
+```yaml
+evo_config:
+  llm_models:
+    - "gemini-flash-latest"
+  embedding_model: "gemini-embedding-001"
+```
+
+**Example: Using OpenAI**
+
+To use GPT-4 and the OpenAI embedding model, your configuration would look like this:
+
+```yaml
+evo_config:
+  llm_models:
+    - "gpt-4.1"
+  embedding_model: "text-embedding-3-small"
+```
+
 ## Examples 📖
 
 | Example | Description | Environment Setup |

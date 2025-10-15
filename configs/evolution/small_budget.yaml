@@ -10,9 +10,9 @@ evo_config:
   max_parallel_jobs: 1
   max_patch_attempts: 10
   llm_models:
-    - "gpt-4.1"
+    - "gemini-flash-latest"
   llm_dynamic_selection: null
-  embedding_model: "text-embedding-3-small"
+  embedding_model: "gemini-embedding-001"
   results_dir: ${output_dir}
 
 

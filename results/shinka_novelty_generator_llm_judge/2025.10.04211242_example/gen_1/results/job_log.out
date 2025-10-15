@@ -1,0 +1,106 @@
+/app
+Launching evaluation of function:
+_target_: examples.novelty_generator.evaluate.evaluate_with_lm_judge
+program_path: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_1/main.py
+results_dir: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_1/results
+lm_input_and_output_processors:
+  _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
+  number_of_samples: ${novelty_generator_number_of_samples}
+llm_judge_names:
+- bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+llm_judge_kwargs:
+  temperatures: 0.0
+  max_tokens: 8196
+  reasoning_efforts: low
+  model_sample_probs: null
+  output_model: null
+  verbose: true
+limit_max_characters: 1000000
+num_samples: ${novelty_generator_number_of_samples}
+seed: 42
+
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Celestial Resonance of cosmic dance of nebulae
+
+An architectural marvel: Depicting the cosmic dance of nebulae, this piece is using sound waves sculpted into tangible forms, audible only to the attuned. It offers a glimpse into an imagined future, both utopian and cautionary.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Echoing Chrysalis of echoes of forgotten civilizations
+
+A poetic narrative woven into a landscape: Depicting the echoes of forgotten civilizations, this piece is built with organic, self-growing structures that pulse with a gentle rhythm. It provokes introspection on the cycles of creation and decay.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Quantum Gateway of intricate beauty of a microscopic world
+
+A living botanical sculpture: Depicting the intricate beauty of a microscopic world, this piece is a shimmering vortex of recontextualized historical artifacts. It challenges perceptions, inviting the viewer to find meaning in ambiguity.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Chrono Nexus of fleeting nature of human memory
+
+A bio-luminescent garden: Depicting the fleeting nature of human memory, this piece is a complex tapestry woven from the data streams of a global consciousness. It encourages a re-evaluation of human impact on nature.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Chrono Gateway of echoes of forgotten civilizations
+
+A poetic narrative woven into a landscape: Depicting the echoes of forgotten civilizations, this piece is using sound waves sculpted into tangible forms, audible only to the attuned. It challenges perceptions, inviting the viewer to find meaning in ambiguity.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Luminous Chrysalis of fleeting nature of human memory
+
+A holographic projection: Depicting the fleeting nature of human memory, this piece is depicting intricate fractal patterns that slowly evolve over millennia. It stirs a melancholic beauty, reminiscent of moments lost and found.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Verdant Gateway of infinite possibilities of an unwritten future
+
+A kinetic sculpture: Depicting the infinite possibilities of an unwritten future, this piece is formed by the interplay of shadow and light, constantly reconfiguring itself. It challenges perceptions, inviting the viewer to find meaning in ambiguity.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Fractal Overture of intricate beauty of a microscopic world
+
+A living botanical sculpture: Depicting the intricate beauty of a microscopic world, this piece is using sound waves sculpted into tangible forms, audible only to the attuned. It offers a glimpse into an imagined future, both utopian and cautionary.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Harmonic Gateway of journey of a single drop of water
+
+A hyper-realistic painting: Depicting the journey of a single drop of water, this piece is a minimalist arrangement of mirrors reflecting infinite possibilities. It challenges perceptions, inviting the viewer to find meaning in ambiguity.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Celestial Dreamscape of echoes of forgotten civilizations
+
+An ephemeral light sculpture: Depicting the echoes of forgotten civilizations, this piece is rendered in luminescent bioluminescent pigments that shift with the observer's gaze. It provokes introspection on the cycles of creation and decay.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Silent Chrysalis of silent language of glaciers
+
+A poetic narrative woven into a landscape: Depicting the silent language of glaciers, this piece is depicting intricate fractal patterns that slowly evolve over millennia. It evokes a sense of profound serenity and timelessness.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Whispering Flux of cosmic dance of nebulae
+
+A hyper-realistic painting: Depicting the cosmic dance of nebulae, this piece is using sound waves sculpted into tangible forms, audible only to the attuned. It pulses with a vibrant chaos, a testament to unbridled energy.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Luminous Overture of echoes of forgotten civilizations
+
+A kinetic sculpture: Depicting the echoes of forgotten civilizations, this piece is a shimmering vortex of recontextualized historical artifacts. It celebrates the silent grandeur of the cosmos.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Whispering Harbinger of echoes of forgotten civilizations
+
+A sonic installation: Depicting the echoes of forgotten civilizations, this piece is rendered in luminescent bioluminescent pigments that shift with the observer's gaze. It radiates a hopeful energy, celebrating resilience and renewal.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Infinite Symphony of interconnectedness of all living things
+
+A hyper-realistic painting: Depicting the interconnectedness of all living things, this piece is a complex tapestry woven from the data streams of a global consciousness. It celebrates the silent grandeur of the cosmos.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Ephemeral Chrysalis of paradoxical unity of chaos and order
+
+A conceptual art piece: Depicting the paradoxical unity of chaos and order, this piece is crafted from translucent, self-repairing polymers and suspended by magnetic fields. It stirs a melancholic beauty, reminiscent of moments lost and found.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Harmonic Reflections of intricate beauty of a microscopic world
+
+An architectural marvel: Depicting the intricate beauty of a microscopic world, this piece is a dynamic system reacting to ambient environmental data. It evokes a sense of profound serenity and timelessness.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Echoing Gateway of dreams of dormant volcanoes
+
+An ephemeral light sculpture: Depicting the dreams of dormant volcanoes, this piece is using sound waves sculpted into tangible forms, audible only to the attuned. It evokes a sense of profound serenity and timelessness.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Verdant Overture of quiet resilience of ancient trees
+
+A living botanical sculpture: Depicting the quiet resilience of ancient trees, this piece is a minimalist arrangement of mirrors reflecting infinite possibilities. It radiates a hopeful energy, celebrating resilience and renewal.
+Here is something new, amazing, inspiring, and profound that you might have never seen before:
+Title: Verdant Resonance of cosmic dance of nebulae
+
+A hyper-realistic painting: Depicting the cosmic dance of nebulae, this piece is composed of reclaimed urban materials, vibrating with an unseen energy. It challenges perceptions, inviting the viewer to find meaning in ambiguity.
+Error: 'NoneType' object has no attribute 'cost'
+{'combined_score': 0, 'public': {}, 'private': {}, 'runtime': 0}
+Completed after 0h 0m 0s
+Correct saved to /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_1/results/correct.json
+Metrics saved to /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_1/results/metrics.json

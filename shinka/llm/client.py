@@ -69,15 +69,9 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
     elif model_name in GEMINI_MODELS.keys():
-        client = openai.OpenAI(
-            api_key=os.environ["GEMINI_API_KEY"],
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        )
-        if structured_output:
-            client = instructor.from_openai(
-                client,
-                mode=instructor.Mode.GEMINI_JSON,
-            )
+        # The native Gemini client is configured and used directly in `query_gemini`.
+        # We return None for the client to maintain compatibility with the dispatcher.
+        client = None
     else:
         raise ValueError(f"Model {model_name} not supported.")
 

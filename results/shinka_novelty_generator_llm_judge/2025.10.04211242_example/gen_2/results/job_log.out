@@ -1,0 +1,26 @@
+/app
+Launching evaluation of function:
+_target_: examples.novelty_generator.evaluate.evaluate_with_lm_judge
+program_path: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_2/main.py
+results_dir: /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_2/results
+lm_input_and_output_processors:
+  _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
+  number_of_samples: ${novelty_generator_number_of_samples}
+llm_judge_names:
+- bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+llm_judge_kwargs:
+  temperatures: 0.0
+  max_tokens: 8196
+  reasoning_efforts: low
+  model_sample_probs: null
+  output_model: null
+  verbose: true
+limit_max_characters: 1000000
+num_samples: ${novelty_generator_number_of_samples}
+seed: 42
+
+Error: name 'random' is not defined
+{'combined_score': 0, 'public': {}, 'private': {}, 'runtime': 0}
+Completed after 0h 0m 0s
+Correct saved to /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_2/results/correct.json
+Metrics saved to /app/results/shinka_novelty_generator_llm_judge/2025.10.04211242_example/gen_2/results/metrics.json

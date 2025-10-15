@@ -1,0 +1,4 @@
+{
+    "correct": false,
+    "error": "'NoneType' object has no attribute 'cost'"
+}
