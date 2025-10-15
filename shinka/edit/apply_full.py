@@ -102,7 +102,7 @@ def apply_full_patch(
                 # We need to find the actual start of the comment line
                 if language == "python":
                     end_marker = "# EVOLVE-BLOCK-END"
-                elif language in ["cuda", "cpp"]:
+                elif language in ["cuda", "cpp", "rust"]:
                     end_marker = "// EVOLVE-BLOCK-END"
                 else:
                     end_marker = "# EVOLVE-BLOCK-END"  # Default fallback
@@ -146,6 +146,8 @@ def apply_full_patch(
         suffix = ".cpp"
     elif language == "cuda":
         suffix = ".cu"
+    elif language == "rust":
+        suffix = ".rs"
     else:
         raise ValueError(f"Language {language} not supported")
 
