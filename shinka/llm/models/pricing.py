@@ -143,6 +143,53 @@ GEMINI_MODELS = {
     },
 }
 
+GROQ_MODELS = {
+    "groq/openai/gpt-oss-120b": {
+        "input_price": 0.15 / M,
+        "output_price": 0.75 / M,
+    },
+    "groq/openai/gpt-oss-20b": {
+        "input_price": 0.10 / M,
+        "output_price": 0.50 / M,
+    },
+    "groq/groq/compound": {
+        "input_price": 0.15 / M,  # Uses gpt-oss-120b pricing
+        "output_price": 0.75 / M,
+    },
+    "groq/groq/compound-mini": {
+        "input_price": 0.15 / M,  # Uses gpt-oss-120b pricing
+        "output_price": 0.75 / M,
+    },
+    "groq/moonshotai/kimi-k2-instruct-0905": {
+        "input_price": 1.00 / M,
+        "output_price": 3.00 / M,
+    },
+    "groq/llama-3.3-70b-versatile": {
+        "input_price": 0.59 / M,
+        "output_price": 0.79 / M,
+    },
+    "groq/qwen/qwen3-32b": {
+        "input_price": 0.29 / M,
+        "output_price": 0.59 / M,
+    },
+    "groq/llama-3.1-8b-instant": {
+        "input_price": 0.05 / M,
+        "output_price": 0.08 / M,
+    },
+    "groq/deepseek-r1-distill-llama-70b": {
+        "input_price": 0.75 / M,
+        "output_price": 0.99 / M,
+    },
+    "groq/meta-llama/llama-4-scout-17b-16e-instruct": {
+        "input_price": 0.11 / M,
+        "output_price": 0.34 / M,
+    },
+    "groq/meta-llama/llama-4-maverick-17b-128e-instruct": {
+        "input_price": 0.20 / M,
+        "output_price": 0.60 / M,
+    },
+}
+
 BEDROCK_MODELS = {
     "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0": CLAUDE_MODELS[
         "claude-3-5-sonnet-20241022"
@@ -199,4 +246,11 @@ REASONING_AZURE_MODELS = [
 REASONING_BEDROCK_MODELS = [
     "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+]
+
+REASONING_GROQ_MODELS = [
+    "groq/openai/gpt-oss-120b",
+    "groq/openai/gpt-oss-20b",
+    "groq/groq/compound",
+    "groq/groq/compound-mini",
 ]
