@@ -161,6 +161,110 @@ def new_func2():
     # Should have replaced both evolve blocks with new content
 
 
+def test_apply_full_patch_full_file_without_markers_extracts_block_only():
+    """Full-file patch without EVOLVE markers should not copy immutable code
+    into the evolve block; only the block payload is replaced."""
+    original_content = """# Header line\n# EVOLVE-BLOCK-START\nold_line()\n# EVOLVE-BLOCK-END\n# Footer line\n"""
+
+    # Patch is the entire file content but with the EVOLVE markers omitted.
+    patch_content = """```python
+new_line()
+another_new_line()
+```"""
+
+    expected = """# Header line
+# EVOLVE-BLOCK-START
+new_line()
+another_new_line()
+# EVOLVE-BLOCK-END
+# Footer line
+"""
+
+    result = apply_full_patch(
+        patch_str=patch_content,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert error is None
+    assert num_applied == 1
+    assert updated_content == expected
+
+
+def test_apply_full_patch_patch_with_start_marker_only():
+    """Patch has only START marker; original has both markers."""
+    original_content = """# Header line
+# EVOLVE-BLOCK-START
+old_line()
+# EVOLVE-BLOCK-END
+# Footer line
+"""
+
+    patch_content = """```python
+# Header line
+# EVOLVE-BLOCK-START
+new_line()
+# Footer line
+```"""
+
+    expected = """# Header line
+# EVOLVE-BLOCK-START
+new_line()
+# EVOLVE-BLOCK-END
+# Footer line
+"""
+
+    result = apply_full_patch(
+        patch_str=patch_content,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert error is None
+    assert num_applied == 1
+    assert updated_content == expected
+
+
+def test_apply_full_patch_patch_with_end_marker_only():
+    """Patch has only END marker; original has both markers."""
+    original_content = """# Header line
+# EVOLVE-BLOCK-START
+old_line()
+# EVOLVE-BLOCK-END
+# Footer line
+"""
+
+    patch_content = """```python
+# Header line
+new_line()
+# EVOLVE-BLOCK-END
+# Footer line
+```"""
+
+    expected = """# Header line
+# EVOLVE-BLOCK-START
+new_line()
+# EVOLVE-BLOCK-END
+# Footer line
+"""
+
+    result = apply_full_patch(
+        patch_str=patch_content,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert error is None
+    assert num_applied == 1
+    assert updated_content == expected
+
+
 def test_apply_full_patch_no_evolve_blocks():
     """Test apply_full_patch with no EVOLVE-BLOCK regions - should error."""
     original_content = """# Just regular code
@@ -219,6 +323,41 @@ def new_function():
     assert "doesn't specify which to replace" in error
     assert output_path is None
     assert updated_content == original_content  # Should return original content
+
+
+def test_apply_full_patch_patch_with_single_marker_ambiguous_multiple_regions():
+    """Single marker in patch is ambiguous when original has multiple regions."""
+    original_content = """# Header
+# EVOLVE-BLOCK-START
+func1()
+# EVOLVE-BLOCK-END
+
+# EVOLVE-BLOCK-START
+func2()
+# EVOLVE-BLOCK-END
+# Footer
+"""
+
+    # Patch includes only START marker
+    patch_content = """```python
+# Header
+# EVOLVE-BLOCK-START
+new_code()
+# Footer
+```"""
+
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = (
+        apply_full_patch(
+            patch_str=patch_content,
+            original_str=original_content,
+            language="python",
+            verbose=False,
+        )
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert "only one EVOLVE-BLOCK marker" in error
 
 
 def test_apply_full_patch_invalid_extraction():
