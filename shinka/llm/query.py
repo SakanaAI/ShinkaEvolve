@@ -7,6 +7,7 @@ from .models.pricing import (
     OPENAI_MODELS,
     DEEPSEEK_MODELS,
     GEMINI_MODELS,
+    GROQ_MODELS,
     BEDROCK_MODELS,
     REASONING_OAI_MODELS,
     REASONING_CLAUDE_MODELS,
@@ -14,12 +15,14 @@ from .models.pricing import (
     REASONING_GEMINI_MODELS,
     REASONING_AZURE_MODELS,
     REASONING_BEDROCK_MODELS,
+    REASONING_GROQ_MODELS,
 )
 from .models import (
     query_anthropic,
     query_openai,
     query_deepseek,
     query_gemini,
+    query_groq,
     QueryResult,
 )
 import logging
@@ -119,6 +122,7 @@ def sample_model_kwargs(
         + REASONING_GEMINI_MODELS
         + REASONING_AZURE_MODELS
         + REASONING_BEDROCK_MODELS
+        + REASONING_GROQ_MODELS
     ):
         kwargs_dict["temperature"] = 1.0
     else:
@@ -180,6 +184,7 @@ def sample_model_kwargs(
             or kwargs_dict["model_name"] in REASONING_BEDROCK_MODELS
             or kwargs_dict["model_name"] in DEEPSEEK_MODELS
             or kwargs_dict["model_name"] in REASONING_DEEPSEEK_MODELS
+            or kwargs_dict["model_name"] in GROQ_MODELS
         ):
             kwargs_dict["max_tokens"] = random.choice(max_tokens)
         else:
@@ -198,19 +203,22 @@ def query(
     **kwargs,
 ) -> QueryResult:
     """Query the LLM."""
+    original_model_name = model_name
     client, model_name = get_client_llm(
         model_name, structured_output=output_model is not None
     )
-    if model_name in CLAUDE_MODELS.keys() or "anthropic" in model_name:
+    if original_model_name in CLAUDE_MODELS.keys() or "anthropic" in original_model_name:
         query_fn = query_anthropic
-    elif model_name in OPENAI_MODELS.keys():
+    elif original_model_name in OPENAI_MODELS.keys():
         query_fn = query_openai
-    elif model_name in DEEPSEEK_MODELS.keys():
+    elif original_model_name in DEEPSEEK_MODELS.keys():
         query_fn = query_deepseek
-    elif model_name in GEMINI_MODELS.keys():
+    elif original_model_name in GEMINI_MODELS.keys():
         query_fn = query_gemini
+    elif original_model_name in GROQ_MODELS.keys():
+        query_fn = query_groq
     else:
-        raise ValueError(f"Model {model_name} not supported.")
+        raise ValueError(f"Model {original_model_name} not supported.")
     result = query_fn(
         client,
         model_name,

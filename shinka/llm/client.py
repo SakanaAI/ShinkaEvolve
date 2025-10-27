@@ -11,6 +11,7 @@ from .models.pricing import (
     OPENAI_MODELS,
     DEEPSEEK_MODELS,
     GEMINI_MODELS,
+    GROQ_MODELS,
 )
 
 env_path = Path(__file__).parent.parent.parent / ".env"
@@ -78,6 +79,14 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
                 client,
                 mode=instructor.Mode.GEMINI_JSON,
             )
+    elif model_name in GROQ_MODELS.keys():
+        import groq
+        # Strip groq/ prefix for API call
+        actual_model_name = model_name.replace("groq/", "", 1)
+        client = groq.Groq(api_key=os.environ["GROQ_API_KEY"])
+        if structured_output:
+            raise NotImplementedError("Structured output not supported for Groq.")
+        return client, actual_model_name
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
