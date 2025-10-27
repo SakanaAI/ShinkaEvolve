@@ -698,7 +698,7 @@ def apply_diff_patch(
     patch_str = _strip_trailing_whitespace(patch_str)
 
     # Remove the EVOLVE-BLOCK START and EVOLVE-BLOCK END markers
-    if language in ["cuda", "cpp"]:
+    if language in ["cuda", "cpp", "rust"]:
         patch_str = re.sub(r"// EVOLVE-BLOCK START\\n", "", patch_str)
         patch_str = re.sub(r"// EVOLVE-BLOCK END\\n", "", patch_str)
     elif language == "python":
@@ -730,6 +730,8 @@ def apply_diff_patch(
         suffix = ".cpp"
     elif language == "cuda":
         suffix = ".cu"
+    elif language == "rust":
+        suffix = ".rs"
     else:
         raise ValueError(f"Language {language} not supported")
 
