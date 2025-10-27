@@ -158,7 +158,12 @@ class EvolutionRunner:
 
         # Initialize database and scheduler
         db_config.db_path = str(db_path)
-        self.db = ProgramDatabase(config=db_config)
+        embedding_model_to_use = (
+            evo_config.embedding_model or "text-embedding-3-small"
+        )
+        self.db = ProgramDatabase(
+            config=db_config, embedding_model=embedding_model_to_use
+        )
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type,
             config=job_config,  # type: ignore

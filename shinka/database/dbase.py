@@ -82,6 +82,9 @@ class DatabaseConfig:
     # Beam search parent selection parameters
     num_beams: int = 5
 
+    # Embedding model name
+    embedding_model: str = "text-embedding-3-small"
+
 
 def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
     """
@@ -248,12 +251,12 @@ class ProgramDatabase:
     populations, and an archive of elites.
     """
 
-    def __init__(self, config: DatabaseConfig, read_only: bool = False):
+    def __init__(self, config: DatabaseConfig,embedding_model: str = "text-embedding-3-small", read_only: bool = False):
         self.config = config
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
-        self.embedding_client = EmbeddingClient()
+        self.embedding_client = EmbeddingClient(model_name=embedding_model)
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
