@@ -26,6 +26,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 📓 **[Tutorial Notebook](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
 | ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
 | 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
+|🕹️ **[Local LLM Support](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)**| Instructions for Local LLMs | How to setup local LLMs on your machine|
 
 ## Installation & Quick Start 🚀
 
@@ -308,9 +309,9 @@ If you use `ShinkaEvolve` in your research, please cite it as follows:
 
 ```
 @article{lange2025shinka,
-  title={ShinkaEvolve: Towards Open-Ended and Sample-Efficient Program Evolution},
+  title={ShinkaEvolve: Towards Open-Ended And Sample-Efficient Program Evolution},
   author={Lange, Robert Tjarko and Imajuku, Yuki and Cetin, Edoardo},
-  journal={arXiv preprint},
+  journal={arXiv preprint arXiv:2509.19349},
   year={2025}
 }
 ```
