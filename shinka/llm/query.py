@@ -154,7 +154,8 @@ def sample_model_kwargs(
         REASONING_CLAUDE_MODELS + REASONING_BEDROCK_MODELS
     ):
         kwargs_dict["max_tokens"] = min(random.choice(max_tokens), 16384)
-        think_bool = random.choice(reasoning_efforts) != "auto"
+        r_effort = random.choice(reasoning_efforts)
+        think_bool = r_effort != "auto"
         if think_bool:
             # filter thinking tokens to be smaller than max_tokens
             # not auto THINKING_TOKENS
