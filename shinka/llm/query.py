@@ -137,16 +137,13 @@ def sample_model_kwargs(
         r_effort = random.choice(reasoning_efforts)
         think_bool = r_effort != "auto"
         if think_bool:
-            thinking_tokens = [
-                t
-                for t in THINKING_TOKENS.values()
-                if t < kwargs_dict["max_tokens"] and t >= 1024
-            ]
+            t = THINKING_TOKENS[r_effort]
+            thinking_tokens = t if t < kwargs_dict["max_tokens"] else 1024
             kwargs_dict["extra_body"] = {
                 "extra_body": {
                     "google": {
                         "thinking_config": {
-                            "thinking_budget": random.choice(thinking_tokens),
+                            "thinking_budget": thinking_tokens,
                             "include_thoughts": True,
                         }
                     }
@@ -161,15 +158,12 @@ def sample_model_kwargs(
         if think_bool:
             # filter thinking tokens to be smaller than max_tokens
             # not auto THINKING_TOKENS
-            thinking_tokens = [
-                t
-                for t in THINKING_TOKENS.values()
-                if t < kwargs_dict["max_tokens"] and t >= 1024
-            ]
+            t = THINKING_TOKENS[r_effort]
+            thinking_tokens = t if t < kwargs_dict["max_tokens"] else 1024
             # sample only from thinking tokens that are valid
             kwargs_dict["thinking"] = {
                 "type": "enabled",
-                "budget_tokens": random.choice(thinking_tokens),
+                "budget_tokens": thinking_tokens,
             }
 
     else:
