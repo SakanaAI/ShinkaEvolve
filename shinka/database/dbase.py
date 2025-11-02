@@ -251,12 +251,22 @@ class ProgramDatabase:
     populations, and an archive of elites.
     """
 
-    def __init__(self, config: DatabaseConfig,embedding_model: str = "text-embedding-3-small", read_only: bool = False):
+    def __init__(
+        self,
+        config: DatabaseConfig,
+        embedding_model: str = "text-embedding-3-small",
+        read_only: bool = False,
+    ):
         self.config = config
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
-        self.embedding_client = EmbeddingClient(model_name=embedding_model)
+        # Only create embedding client if not in read-only mode
+        # (e.g., WebUI doesn't need it for visualization)
+        if not read_only:
+            self.embedding_client = EmbeddingClient(model_name=embedding_model)
+        else:
+            self.embedding_client = None
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
