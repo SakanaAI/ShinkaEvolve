@@ -2,9 +2,9 @@ defaults:
   - _self_
   - database@_global_: island_small
   - evolution@_global_: small_budget
-  - task@_global_: mad_tf
+  - task@_global_: circle_packing
   - cluster@_global_: local
-  - variant@_global_: mad_tf_example
+  - variant@_global_: circle_packing_example
 
 verbose: false
 results_dir: results
