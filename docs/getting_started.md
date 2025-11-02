@@ -331,6 +331,75 @@ The `run_shinka_eval` function returns three values:
 
 ## Advanced Usage
 
+### Resuming Experiments
+
+If you need to pause and resume an evolutionary run, or extend a completed run with more generations, Shinka supports seamless resumption from existing results.
+
+#### How Resuming Works
+
+When you specify an existing `results_dir` that contains a database, Shinka will:
+- Detect the previous run automatically
+- Restore the population database and all program history
+- Resume meta-recommendations from the last checkpoint
+- Continue from the last completed generation
+
+#### Using the CLI (Hydra)
+
+```bash
+# Resume an existing run and extend to 50 generations
+shinka_launch \
+    variant=circle_packing_example \
+    evo_config.results_dir=results_20250101_120000 \
+    evo_config.num_generations=50
+
+# Or with a custom task
+shinka_launch \
+    task=circle_packing \
+    database=island_small \
+    evolution=small_budget \
+    cluster=local \
+    evo_config.results_dir=path/to/previous/results \
+    evo_config.num_generations=100
+```
+
+#### Using the Python API
+
+```python
+from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.database import DatabaseConfig
+from shinka.launch import LocalJobConfig
+
+# Point to existing results directory
+evo_config = EvolutionConfig(
+    num_generations=50,  # Extend to 50 total generations
+    results_dir="results_20250101_120000",  # Existing results
+    # ... other config parameters ...
+)
+
+job_config = LocalJobConfig(
+    eval_program_path="examples/circle_packing/evaluate.py",
+)
+
+db_config = DatabaseConfig(
+    archive_size=20,
+    num_islands=2,
+)
+
+# Run will automatically detect and resume
+runner = EvolutionRunner(
+    evo_config=evo_config,
+    job_config=job_config,
+    db_config=db_config,
+)
+runner.run()
+```
+
+**Important Notes:**
+- The `num_generations` parameter should be set to the **total** number of generations you want (not additional generations)
+- For example, if you completed 20 generations and want 30 more, set `num_generations=50`
+- The database configuration (number of islands, archive size, etc.) should match the original run
+- All previous progress, including the best solutions and meta-recommendations, will be preserved
+
 ### Environment Management for Local Jobs
 
 When running jobs locally, you have several options for managing Python environments:
