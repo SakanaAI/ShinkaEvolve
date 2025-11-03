@@ -51,9 +51,9 @@ def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
         )
     elif model_name in GEMINI_EMBEDDING_MODELS:
         # Configure Gemini API
-        api_key = os.getenv("GOOGLE_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable not set for Gemini models")
+            raise ValueError("GEMINI_API_KEY environment variable not set for Gemini models")
         genai.configure(api_key=api_key)
         client = "gemini"  # Use string identifier for Gemini
         model_to_use = model_name
