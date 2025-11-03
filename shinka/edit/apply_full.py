@@ -264,6 +264,8 @@ def apply_full_patch(
         suffix = ".cu"
     elif language == "rust":
         suffix = ".rs"
+    elif language == "swift":
+        suffix = ".swift"
     else:
         raise ValueError(f"Language {language} not supported")
 
