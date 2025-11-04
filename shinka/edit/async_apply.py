@@ -79,7 +79,7 @@ async def apply_patch_async(
 
 
 async def exec_language_tool(
-    *args: Tuple[str], timeout: int
+    *args: str, timeout: int
 ) -> Tuple[bool, Optional[str]]:
     """Execute a language tool and return the result."""
     proc = await asyncio.create_subprocess_exec(
