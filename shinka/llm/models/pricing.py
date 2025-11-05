@@ -161,6 +161,13 @@ BEDROCK_MODELS = {
     ],
 }
 
+LOCAL_MODELS = {
+    "qwen3": {
+        "input_price": 0.0 / M,  # Free local model
+        "output_price": 0.0 / M,  # Free local model
+    },
+}
+
 REASONING_OAI_MODELS = [
     "o3-mini-2025-01-31",
     "o1-2024-12-17",

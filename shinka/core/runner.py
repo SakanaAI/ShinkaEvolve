@@ -7,7 +7,7 @@ from rich.logging import RichHandler
 from rich.table import Table
 from rich.console import Console
 import rich.box
-from typing import List, Optional, Union, cast
+from typing import List, Optional, Union, cast, Any
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -275,19 +275,39 @@ class EvolutionRunner:
         db_config: DatabaseConfig,
     ) -> None:
         """Save experiment configuration to a YAML file."""
-        config_data = {
-            "evolution_config": asdict(evo_config),
-            "job_config": asdict(job_config),
-            "database_config": asdict(db_config),
-            "timestamp": datetime.now().isoformat(),
-            "results_directory": str(self.results_dir),
-        }
+        try:
+            # Use OmegaConf to convert to a YAML-safe structure
+            from omegaconf import OmegaConf
+            
+            config_data = {
+                "evolution_config": asdict(evo_config),
+                "job_config": asdict(job_config),
+                "database_config": asdict(db_config),
+                "timestamp": datetime.now().isoformat(),
+                "results_directory": str(self.results_dir),
+            }
+            
+            # Convert to OmegaConf and then to YAML-safe container
+            omega_conf = OmegaConf.create(config_data)
+            yaml_safe_dict = OmegaConf.to_container(omega_conf, resolve=True)
+            
+        except Exception as e:
+            # Fallback: use simple dict conversion, filtering out None values
+            logger.warning(f"Failed to use OmegaConf for config serialization: {e}, using fallback")
+            config_data = {
+                "evolution_config": {k: v for k, v in asdict(evo_config).items() if v is not None},
+                "job_config": {k: v for k, v in asdict(job_config).items() if v is not None},
+                "database_config": {k: v for k, v in asdict(db_config).items() if v is not None},
+                "timestamp": datetime.now().isoformat(),
+                "results_directory": str(self.results_dir),
+            }
+            yaml_safe_dict = config_data
 
         config_path = Path(self.results_dir) / "experiment_config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         with config_path.open("w", encoding="utf-8") as f:
-            yaml.dump(config_data, f, default_flow_style=False, indent=2)
+            yaml.dump(yaml_safe_dict, f, default_flow_style=False, indent=2, allow_unicode=True)
 
         logger.info(f"Experiment configuration saved to {config_path}")
 

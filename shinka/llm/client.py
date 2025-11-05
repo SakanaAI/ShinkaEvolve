@@ -11,6 +11,7 @@ from .models.pricing import (
     OPENAI_MODELS,
     DEEPSEEK_MODELS,
     GEMINI_MODELS,
+    LOCAL_MODELS,
 )
 
 env_path = Path(__file__).parent.parent.parent / ".env"
@@ -78,6 +79,13 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
                 client,
                 mode=instructor.Mode.GEMINI_JSON,
             )
+    elif model_name in LOCAL_MODELS.keys():
+        client = openai.OpenAI(
+            api_key="not-needed",  # Local models don't need API key
+            base_url="http://localhost:8000/v1",
+        )
+        if structured_output:
+            raise NotImplementedError("Structured output not supported for local models.")
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
