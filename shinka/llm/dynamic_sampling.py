@@ -28,7 +28,8 @@ def _logdiffexp(a_log, b_log):
 
 def _logexpm1(z):
     z = np.asarray(z, dtype=float)
-    return np.where(z > 50.0, z, np.log(np.expm1(z)))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return np.where(z > 50.0, z, np.log(np.expm1(z)))
 
 
 class BanditBase(ABC):
@@ -433,12 +434,13 @@ class AsymmetricUCB(BanditBase):
         if self.use_exponential_scaling and self.asymmetric_scaling:
             # shrink in exp space to match original score scale
             s = self.s
-            log1p_term = np.where(
-                s > 0.0,
-                s + np.log(one_minus_factor + np.exp(-s)),
-                np.log1p(one_minus_factor * np.exp(s)),
-            )
-            self.s = s + np.log(factor) - log1p_term
+            with np.errstate(divide='ignore', invalid='ignore'):
+                log1p_term = np.where(
+                    s > 0.0,
+                    s + np.log(one_minus_factor + np.exp(-s)),
+                    np.log1p(one_minus_factor * np.exp(s)),
+                )
+                self.s = s + np.log(factor) - log1p_term
 
             if self.adaptive_scale and np.isfinite(self._obs_max):
                 means_log = self._mean()
