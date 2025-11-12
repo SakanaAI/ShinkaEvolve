@@ -138,7 +138,13 @@ class JobScheduler:
                 ]
         if self.config.extra_cmd_args:
             for k, v in self.config.extra_cmd_args.items():
-                cmd.extend([f"--{k}", str(v)])
+                # Handle boolean flags
+                if isinstance(v, bool):
+                    if v:  # Only append flag if True
+                        cmd.append(f"--{k}")
+                else:
+                    # For non-boolean values, append both flag and value
+                    cmd.extend([f"--{k}", str(v)])
         return cmd
 
     def run(
