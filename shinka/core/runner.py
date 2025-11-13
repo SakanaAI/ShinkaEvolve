@@ -31,6 +31,7 @@ from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.logo import print_gradient_logo
+from shinka.utils.security import validate_safe_path, SecurityError
 
 FOLDER_PREFIX = "gen"
 
@@ -101,11 +102,29 @@ class EvolutionRunner:
         self.verbose = verbose
 
         print_gradient_logo((255, 0, 0), (255, 255, 255))
+
+        # Secure path validation for results directory
         if evo_config.results_dir is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.results_dir = f"results_{timestamp}"
+            results_dir_name = f"results_{timestamp}"
         else:
-            self.results_dir = Path(evo_config.results_dir)
+            results_dir_name = str(evo_config.results_dir)
+
+        # Validate path to prevent traversal attacks
+        cwd = Path.cwd()
+        try:
+            # For user-provided paths, validate they're within cwd
+            if evo_config.results_dir is not None:
+                safe_results_dir = validate_safe_path(str(cwd), results_dir_name)
+            else:
+                # For auto-generated paths, just use them directly under cwd
+                safe_results_dir = cwd / results_dir_name
+        except SecurityError as e:
+            logger.warning(f"Path validation failed: {e}. Using sanitized path.")
+            # Fall back to safe path under cwd
+            safe_results_dir = cwd / "results" / Path(results_dir_name).name
+
+        self.results_dir = str(safe_results_dir)
 
         if self.verbose:
             # Create log file path in results directory
