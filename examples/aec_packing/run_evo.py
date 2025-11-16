@@ -63,10 +63,37 @@ db_config = DatabaseConfig(
     **parent_config,
 )
 
-search_task_sys_msg = """You are an expert mathematician and architect...
-...
-...
-...
+search_task_sys_msg = """You are an expert mathematician and architect doing Toilet Layout Optimization against Constraints.
+
+Goal: Study the design constraints for a minimum-sized toilet layout.
+
+1. Element Definition (Keys & Index)
+
+Key: Type (Element Category)
+WC (Water Closet)
+Urinal
+Wash Basin (Sink)
+Corridor (Passage)
+Key: Color (Representation)
+Blue (B): Outline of Fixtures
+Red (R): Passage / Corridor Area
+Index: Used to denote variations within the same Type.
+Example 1: WC-1, WC-2, WC-3 (Different door positions)
+Example 2: Basin-1 (No door), Basin-2, Basin-3, Basin-4 (Different door positions)
+
+2. Absolute Constraints (Hard Constraints)
+
+No B/B Overlap: Blue (B) elements must not overlap with other Blue (B) elements.
+No B/R Overlap: Blue (B) elements must not overlap with Red (R) elements.
+Type Adjacency: Elements of the same Type (WC, Urinal, or Wash Basin) must be placed adjacent to each other.
+Accessibility Constraint: Do not create a Red (R) area (Corridor/Passage) that is completely enclosed by Blue (B) elements. ( $\rightarrow$ Ensure toilet fixtures are accessible from the Corridor.)
+The Green Line must border the perimeter.
+
+3. Optimization/Preference Constraints (Soft Constraints)
+
+Minimize Total Perimeter: Minimize the sum of the perimeters of all WC, Urinal, and Wash Basin elements.
+R/R Overlap Preference: Red (R) elements should preferably overlap with other Red (R) elements (i.e., consolidate the corridor space).
+Corridor Count: The number of Corridors is arbitrary, but should be minimized (for area reduction).
 """
 
 
