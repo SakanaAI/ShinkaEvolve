@@ -63,21 +63,11 @@ db_config = DatabaseConfig(
     **parent_config,
 )
 
-search_task_sys_msg = """You are an expert mathematician specializing in circle packing problems and computational geometry. The best known result for the sum of radii when packing 26 circles in a unit square is 2.635.
-
-Key directions to explore:
-1. The optimal arrangement likely involves variable-sized circles
-2. A pure hexagonal arrangement may not be optimal due to edge effects
-3. The densest known circle packings often use a hybrid approach
-4. The optimization routine is critically important - simple physics-based models with carefully tuned parameters
-5. Consider strategic placement of circles at square corners and edges
-6. Adjusting the pattern to place larger circles at the center and smaller at the edges
-7. The math literature suggests special arrangements for specific values of n
-8. You can use the scipy optimize package (e.g. LP or SLSQP) to optimize the radii given center locations and constraints
-
-Make sure that all circles are disjoint and lie inside the unit square.
-
-Be creative and try to find a new solution better than the best known result."""
+search_task_sys_msg = """You are an expert mathematician and architect...
+...
+...
+...
+"""
 
 
 evo_config = EvolutionConfig(
@@ -91,13 +81,13 @@ evo_config = EvolutionConfig(
     job_type="local",
     language="python",
     llm_models=[
-        "gemini-2.5-pro",
+        # "gemini-2.5-pro",
         "gemini-2.5-flash",
-        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
-        "o4-mini",
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-5-nano",
+        # "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        # "o4-mini",
+        # "gpt-5",
+        # "gpt-5-mini",
+        # "gpt-5-nano",
     ],
     llm_kwargs=dict(
         temperatures=[0.0, 0.5, 1.0],
@@ -105,11 +95,14 @@ evo_config = EvolutionConfig(
         max_tokens=32768,
     ),
     meta_rec_interval=10,
-    meta_llm_models=["gpt-5-nano"],
+    # meta_llm_models=["gpt-5-nano"],
+    meta_llm_models=["gemini-2.5-flash"],
     meta_llm_kwargs=dict(temperatures=[0.0], max_tokens=16384),
-    embedding_model="text-embedding-3-small",
+    # embedding_model="text-embedding-3-small",
+    embedding_model="gemini-embedding-exp-03-07",
     code_embed_sim_threshold=0.995,
-    novelty_llm_models=["gpt-5-nano"],
+    # novelty_llm_models=["gpt-5-nano"],
+    novelty_llm_models=["gemini-2.5-flash"],
     novelty_llm_kwargs=dict(temperatures=[0.0], max_tokens=16384),
     llm_dynamic_selection="ucb1",
     llm_dynamic_selection_kwargs=dict(exploration_coef=1.0),
