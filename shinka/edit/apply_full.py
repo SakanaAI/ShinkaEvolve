@@ -264,6 +264,8 @@ def apply_full_patch(
         suffix = ".cu"
     elif language == "rust":
         suffix = ".rs"
+    elif language in ["json", "json5"]:
+        suffix = ".json"
     else:
         raise ValueError(f"Language {language} not supported")
 
