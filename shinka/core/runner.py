@@ -240,6 +240,8 @@ class EvolutionRunner:
             self.lang_ext = "rs"
         elif self.evo_config.language == "swift":
             self.lang_ext = "swift"
+        elif self.evo_config.language in ["json", "json5"]:
+            self.lang_ext = "json"
         else:
             msg = f"Language {self.evo_config.language} not supported"
             raise ValueError(msg)
