@@ -238,6 +238,8 @@ class EvolutionRunner:
             self.lang_ext = "py"
         elif self.evo_config.language == "rust":
             self.lang_ext = "rs"
+        elif self.evo_config.language == "swift":
+            self.lang_ext = "swift"
         elif self.evo_config.language in ["json", "json5"]:
             self.lang_ext = "json"
         else:

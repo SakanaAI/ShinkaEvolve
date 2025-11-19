@@ -264,6 +264,8 @@ def apply_full_patch(
         suffix = ".cu"
     elif language == "rust":
         suffix = ".rs"
+    elif language == "swift":
+        suffix = ".swift"
     elif language in ["json", "json5"]:
         suffix = ".json"
     else:

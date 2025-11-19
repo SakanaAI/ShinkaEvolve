@@ -698,7 +698,7 @@ def apply_diff_patch(
     patch_str = _strip_trailing_whitespace(patch_str)
 
     # Remove the EVOLVE-BLOCK START and EVOLVE-BLOCK END markers
-    if language in ["cuda", "cpp", "rust", "json", "json5"]:
+    if language in ["cuda", "cpp", "rust", "swift", "json", "json5"]:
         patch_str = re.sub(r"// EVOLVE-BLOCK START\\n", "", patch_str)
         patch_str = re.sub(r"// EVOLVE-BLOCK END\\n", "", patch_str)
     elif language == "python":
@@ -732,6 +732,8 @@ def apply_diff_patch(
         suffix = ".cu"
     elif language == "rust":
         suffix = ".rs"
+    elif language == "swift":
+        suffix = ".swift"
     elif language in ["json", "json5"]:
         suffix = ".json"
     else:
