@@ -118,6 +118,10 @@ OPENAI_MODELS = {
         "input_price": 0.05 / M,
         "output_price": 0.4 / M,
     },
+    "gpt-5.1": {
+        "input_price": 1.25 / M,
+        "output_price": 10.0 / M,
+    },
 }
 
 
@@ -144,6 +148,10 @@ GEMINI_MODELS = {
     "gemini-2.5-flash-lite-preview-06-17": {
         "input_price": 0.1 / M,
         "output_price": 0.4 / M,
+    },
+    "gemini-3-pro-preview" : {
+        "input_price": 2.0 / M,
+        "output_price": 12.0 / M,
     },
 }
 
@@ -191,6 +199,7 @@ REASONING_GEMINI_MODELS = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite-preview-06-17",
+    "gemini-3-pro-preview",
 ]
 
 REASONING_AZURE_MODELS = [
