@@ -2,6 +2,8 @@
 
 Shinka is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. This guide will help you get started with installing, configuring, and running your first evolutionary experiments.
 
+![](../docs/conceptual.png)
+
 ## Table of Contents
 
 1. [What is Shinka?](#what-is-shinka)
