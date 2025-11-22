@@ -16,7 +16,7 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `ShinkaEvolve` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
-![](docs/conceptual.png)
+![evolution](https://github.com/user-attachments/assets/22cf3468-17fe-4995-9e13-d602b490a54e)
 
 ## Documentation 📝
 
