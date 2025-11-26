@@ -4,7 +4,7 @@ defaults:
   - evolution@_global_: small_budget
   - task@_global_: mad_tf
   - cluster@_global_: local
-  - variant@_global_: mad_tf_example
+  - variant@_global_: default
 
 verbose: false
 results_dir: results

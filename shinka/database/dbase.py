@@ -14,7 +14,10 @@ from .parents import CombinedParentSelector
 from .inspirations import CombinedContextSelector
 from .islands import CombinedIslandManager
 from .display import DatabaseDisplay
-from shinka.llm.embedding import EmbeddingClient
+try:  # pragma: no cover - optional dependency during tests
+    from shinka.llm.embedding import EmbeddingClient
+except ImportError:  # pragma: no cover - allow running without llm extras
+    EmbeddingClient = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,74 @@ def clean_nan_values(obj: Any) -> Any:
             return clean_nan_values(obj.tolist())
     else:
         return obj
+
+
+@dataclass
+class SuccessAdaptationConfig:
+    window: int = 5
+    target_improvement: float = 0.01
+    step_up: float = 1.2
+    step_down: float = 0.83
+    ema_beta: float = 0.8
+
+
+@dataclass
+class DiversityAdaptationConfig:
+    metric: str = "score_std"
+    low_thresh: float = 0.2
+    high_thresh: float = 0.6
+    adjust_strength: float = 0.15
+
+
+@dataclass
+class BanditPolicyArms:
+    donor: List[str] = field(default_factory=lambda: ["random", "ring"])
+    payload: List[str] = field(
+        default_factory=lambda: ["random", "elite", "novel"]
+    )
+    size: List[str] = field(default_factory=lambda: ["small", "medium", "large"])
+
+
+@dataclass
+class BanditAdaptationConfig:
+    policy_arms: BanditPolicyArms = field(default_factory=BanditPolicyArms)
+    algo: str = "ucb1"
+    ucb_c: float = 1.0
+    epsilon: float = 0.1
+
+
+@dataclass
+class MigrationAdaptationBounds:
+    rate_min: float = 0.01
+    rate_max: float = 0.5
+    interval_min: int = 2
+    interval_max: int = 50
+    elitism_min: float = 0.05
+    elitism_max: float = 0.5
+
+
+@dataclass
+class MigrationAdaptationWeights:
+    success: float = 1.0
+    diversity: float = 0.5
+    bandit: float = 0.5
+
+
+@dataclass
+class MigrationAdaptationConfig:
+    enabled: bool = False
+    methods: List[str] = field(default_factory=lambda: ["success"])
+    success: SuccessAdaptationConfig = field(default_factory=SuccessAdaptationConfig)
+    diversity: DiversityAdaptationConfig = field(
+        default_factory=DiversityAdaptationConfig
+    )
+    bandit: BanditAdaptationConfig = field(default_factory=BanditAdaptationConfig)
+    bounds: MigrationAdaptationBounds = field(
+        default_factory=MigrationAdaptationBounds
+    )
+    weights: MigrationAdaptationWeights = field(
+        default_factory=MigrationAdaptationWeights
+    )
 
 
 @dataclass
@@ -81,6 +152,9 @@ class DatabaseConfig:
 
     # Beam search parent selection parameters
     num_beams: int = 5
+
+    # Adaptive migration
+    migration_adaptation: Optional[MigrationAdaptationConfig] = None
 
 
 def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
@@ -253,7 +327,17 @@ class ProgramDatabase:
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
-        self.embedding_client = EmbeddingClient()
+        if EmbeddingClient:
+            try:
+                self.embedding_client = EmbeddingClient()
+            except Exception as exc:  # pragma: no cover - defensive runtime path
+                logger.warning(
+                    "Embedding client unavailable (%s). Continuing without embeddings.",
+                    exc,
+                )
+                self.embedding_client = None
+        else:
+            self.embedding_client = None
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
@@ -1707,6 +1791,9 @@ class ProgramDatabase:
     def _recompute_embeddings_and_clusters(self, num_clusters: int = 4):
         if self.read_only:
             return
+        if not self.embedding_client:
+            logger.debug("Embedding client unavailable, skipping recompute")
+            return
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
 
@@ -1783,6 +1870,9 @@ class ProgramDatabase:
         Thread-safe version of embedding recomputation. Creates its own DB connection.
         """
         if self.read_only:
+            return
+        if not self.embedding_client:
+            logger.debug("Embedding client unavailable, skipping recompute")
             return
 
         conn = None

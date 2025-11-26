@@ -157,6 +157,7 @@ exp_name: "shinka_my_task"
 | `migration_interval` | int | 10 | Generations between island migrations |
 | `migration_rate` | float | 0.1 | Fraction of population migrated |
 | `island_elitism` | bool | true | Preserve elites per island |
+| `migration_adaptation` | dict | null | Optional per-island adaptive migration settings |
 
 ### Resource Parameters
 
@@ -168,6 +169,14 @@ exp_name: "shinka_my_task"
 | `mem` | str | `"8G"` | Memory per job |
 | `conda_env` | str | `"shinka"` | Conda environment name |
 | `modules` | list | `[]` | Environment modules to load |
+
+#### Adaptive Migration Settings
+
+The optional `migration_adaptation` block enables automatic adjustment of
+`migration_rate`, `migration_interval`, and `island_elitism` per island. Each
+method (`success`, `diversity`, `bandit`) can be toggled independently and has a
+dedicated configuration block. Refer to `docs/migration_adaptation.md` and the
+sample `configs/database/island_adaptive.yaml` file for a complete walkthrough.
 
 ## Pre-configured Variants
 

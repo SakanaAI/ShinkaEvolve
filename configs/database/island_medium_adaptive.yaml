@@ -1,0 +1,48 @@
+# Adaptive variant of island_medium
+db_config:
+  _target_: shinka.database.DatabaseConfig
+  db_path: "evolution_db.sqlite"
+  num_islands: 2
+  archive_size: 40
+  exploitation_ratio: 0.2
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.0
+  island_elitism: true
+  parent_selection_strategy: "weighted"
+  parent_selection_lambda: 10.0
+  migration_adaptation:
+    enabled: true
+    methods: ["success", "diversity", "bandit"]
+    success:
+      window: 8
+      target_improvement: 0.01
+      step_up: 1.2
+      step_down: 0.83
+      ema_beta: 0.75
+    diversity:
+      metric: "score_std"
+      low_thresh: 0.25
+      high_thresh: 0.6
+      adjust_strength: 0.15
+    bandit:
+      policy_arms:
+        donor: ["random", "ring", "topk"]
+        payload: ["random", "elite", "novel"]
+        size: ["small", "medium", "large"]
+      algo: "ucb1"
+      ucb_c: 1.0
+      epsilon: 0.1
+    bounds:
+      rate_min: 0.02
+      rate_max: 0.5
+      interval_min: 2
+      interval_max: 40
+      elitism_min: 0.05
+      elitism_max: 0.4
+    weights:
+      success: 1.0
+      diversity: 0.5
+      bandit: 0.5

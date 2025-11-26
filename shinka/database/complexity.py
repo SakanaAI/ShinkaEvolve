@@ -1,9 +1,15 @@
 import ast
-from radon.complexity import cc_visit
-from radon.metrics import h_visit
-from radon.raw import analyze
 import math
 import re
+
+try:  # pragma: no cover - optional dependency for detailed metrics
+    from radon.complexity import cc_visit
+    from radon.metrics import h_visit
+    from radon.raw import analyze
+except ImportError:  # pragma: no cover - graceful degradation
+    cc_visit = None
+    h_visit = None
+    analyze = None
 
 
 def max_nesting_depth(code_string):
@@ -54,20 +60,41 @@ def analyze_python_complexity(code_string):
     Raises:
         SyntaxError: If the code cannot be parsed as valid Python
     """
-    cc_results = cc_visit(code_string)
-    total_cc = sum(block.complexity for block in cc_results)
-    avg_cc = total_cc / len(cc_results) if cc_results else 0
+    if cc_visit and h_visit and analyze:
+        cc_results = cc_visit(code_string)
+        total_cc = sum(block.complexity for block in cc_results)
+        avg_cc = total_cc / len(cc_results) if cc_results else 0
 
-    h_metrics = h_visit(code_string)
-    halstead_total = h_metrics.total if h_metrics.total else None
-    halstead_volume = halstead_total.volume if halstead_total else 1
-    halstead_difficulty = halstead_total.difficulty if halstead_total else 0
-    halstead_effort = halstead_total.effort if halstead_total else 0
+        h_metrics = h_visit(code_string)
+        halstead_total = h_metrics.total if h_metrics.total else None
+        halstead_volume = halstead_total.volume if halstead_total else 1
+        halstead_difficulty = halstead_total.difficulty if halstead_total else 0
+        halstead_effort = halstead_total.effort if halstead_total else 0
 
-    raw_metrics = analyze(code_string)
-    loc = raw_metrics.loc
-    lloc = raw_metrics.lloc
-    comments = raw_metrics.comments
+        raw_metrics = analyze(code_string)
+        loc = raw_metrics.loc
+        lloc = raw_metrics.lloc
+        comments = raw_metrics.comments
+    else:
+        # Fallback lightweight metrics when radon isn't installed
+        loc = len(code_string.splitlines())
+        non_empty_lines = [line for line in code_string.splitlines() if line.strip()]
+        lloc = len(non_empty_lines)
+        comments = sum(
+            1
+            for line in code_string.splitlines()
+            if line.strip().startswith(("#", "//"))
+        )
+        total_cc = 1 + sum(
+            len(re.findall(pattern, code_string))
+            for pattern in (r"\bif\b", r"\bfor\b", r"\bwhile\b", r"\btry\b")
+        )
+        avg_cc = total_cc
+        halstead_volume = float(loc)
+        halstead_difficulty = 0.0
+        halstead_effort = 0.0
+
+    nesting_depth = max_nesting_depth(code_string)
 
     mi = (
         171
@@ -76,15 +103,11 @@ def analyze_python_complexity(code_string):
         - 16.2 * (math.log2(loc) if loc > 0 else 0)
     )
 
-    nesting_depth = max_nesting_depth(code_string)
-
-    # Normalized scores for aggregation
-    norm_cc = total_cc / 10  # Assuming 10 is high complexity
+    norm_cc = total_cc / 10
     norm_halstead = math.log2(halstead_volume + 1) / 10
     norm_loc = math.log2(loc + 1) / 10
-    norm_nesting = nesting_depth / 5  # Assuming depth 5 is quite nested
+    norm_nesting = nesting_depth / 5
 
-    # Complexity Score (weighted sum)
     complexity_score = (
         0.4 * norm_cc + 0.4 * norm_halstead + 0.1 * norm_loc + 0.1 * norm_nesting
     )

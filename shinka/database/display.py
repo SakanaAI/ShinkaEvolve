@@ -600,8 +600,10 @@ class DatabaseDisplay:
                     time_display = f"{time_val:.1f}s"
 
             # Patch name and type
-            patch_name = prog.metadata.get("patch_name", "[dim]N/A[/dim]")[:30]
-            patch_type = prog.metadata.get("patch_type", "[dim]N/A[/dim]")
+            metadata = prog.metadata or {}
+            patch_name_raw = metadata.get("patch_name", "[dim]N/A[/dim]")
+            patch_name = (patch_name_raw or "[dim]N/A[/dim]")[:30]
+            patch_type = metadata.get("patch_type", "[dim]N/A[/dim]") or "[dim]N/A[/dim]"
 
             return [
                 role_name,

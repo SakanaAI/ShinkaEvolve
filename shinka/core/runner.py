@@ -30,6 +30,7 @@ from shinka.edit import (
 from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
+from shinka.core.migration_adaptation import MigrationAdaptationController
 from shinka.logo import print_gradient_logo
 
 FOLDER_PREFIX = "gen"
@@ -106,6 +107,7 @@ class EvolutionRunner:
             self.results_dir = f"results_{timestamp}"
         else:
             self.results_dir = Path(evo_config.results_dir)
+        self._last_adaptation_generation_notified = -1
 
         if self.verbose:
             # Create log file path in results directory
@@ -222,6 +224,18 @@ class EvolutionRunner:
             max_novelty_attempts=evo_config.max_novelty_attempts,
         )
 
+        self.migration_adapter: Optional[MigrationAdaptationController] = None
+        if (
+            db_config.migration_adaptation
+            and db_config.migration_adaptation.enabled
+        ):
+            self.migration_adapter = MigrationAdaptationController(
+                db=self.db,
+                config=db_config,
+                results_dir=Path(self.results_dir),
+                logger=logger,
+            )
+
         # Initialize rich console for formatted output
         self.console = Console()
 
@@ -299,6 +313,7 @@ class EvolutionRunner:
             self._run_generation_0()
             self.completed_generations = 1
             self.next_generation_to_submit = 1
+            self._notify_migration_adapter(0)
             logger.info(f"Completed generation 0, total: 1/{target_gens}")
 
         # Now start parallel execution for remaining generations
@@ -319,6 +334,10 @@ class EvolutionRunner:
 
                     # Update completed generations count
                     self._update_completed_generations()
+                    if self.completed_generations > 0:
+                        self._notify_migration_adapter(
+                            self.completed_generations - 1
+                        )
 
                     if self.verbose:
                         logger.info(
@@ -605,6 +624,15 @@ class EvolutionRunner:
                 return
 
         self.completed_generations = completed_up_to
+
+    def _notify_migration_adapter(self, generation: int) -> None:
+        if (
+            self.migration_adapter
+            and generation >= 0
+            and generation > self._last_adaptation_generation_notified
+        ):
+            self.migration_adapter.on_generation_completed(generation)
+            self._last_adaptation_generation_notified = generation
 
     def _submit_new_job(self):
         """Submit a new job to the queue."""

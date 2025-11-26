@@ -5,8 +5,9 @@ import sqlite3
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, List
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 import rich.box  # type: ignore
 import rich  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
@@ -14,6 +15,21 @@ from rich.table import Table as RichTable  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class IslandMigrationParams:
+    migration_rate: float
+    migration_interval: int
+    island_elitism: float
+
+
+@dataclass
+class MigrationSummary:
+    generation: int
+    total_migrated: int
+    per_island: Dict[int, int]
+    migrations: Dict[int, Dict[int, List[str]]]
+    policies_used: Dict[int, Dict[str, str]]
 
 class IslandStrategy(ABC):
     """Abstract base class for island strategies."""
@@ -204,57 +220,90 @@ class IslandMigrationStrategy(ABC):
         self.config = config
 
     @abstractmethod
-    def perform_migration(self, current_generation: int) -> bool:
-        """Perform migration between islands.
-        Returns True if migration occurred."""
-        pass
+    def perform_migration(
+        self,
+        current_generation: int,
+        eligible_islands: Optional[Sequence[int]] = None,
+    ) -> MigrationSummary:
+        """Perform migration between islands and return a summary."""
+        raise NotImplementedError
 
 
 class ElitistMigrationStrategy(IslandMigrationStrategy):
-    """Migration strategy that protects elite programs from migration."""
+    """Migration strategy that supports adaptive parameters and policies."""
 
-    def perform_migration(self, current_generation: int) -> bool:
-        """
-        Implements island migration by moving a subset of programs between
-        islands. Called periodically based on migration_interval.
-        """
+    def __init__(
+        self,
+        cursor: sqlite3.Cursor,
+        conn: sqlite3.Connection,
+        config: Any,
+        param_provider: Optional[Callable[[int], Optional[IslandMigrationParams]]] = None,
+        policy_provider: Optional[Callable[[int], Optional[Dict[str, str]]]] = None,
+    ):
+        super().__init__(cursor, conn, config)
+        self.param_provider = param_provider
+        self.policy_provider = policy_provider
+
+    def perform_migration(
+        self,
+        current_generation: int,
+        eligible_islands: Optional[Sequence[int]] = None,
+    ) -> MigrationSummary:
         num_islands = getattr(self.config, "num_islands", 0)
-        migration_rate = getattr(self.config, "migration_rate", 0.1)
-        island_elitism = getattr(self.config, "island_elitism", True)
+        if num_islands < 2:
+            return MigrationSummary(current_generation, 0, {}, {}, {})
 
-        if num_islands < 2 or migration_rate <= 0:
-            return False  # No migration needed
-
-        logger.info(f"Performing island migration at generation {current_generation}")
+        logger.info(
+            f"Performing island migration at generation {current_generation}"
+        )
 
         migrations_summary = defaultdict(lambda: defaultdict(list))
-        # Track all programs selected for migration
         all_migrated_programs = set()
+        per_island_counts: Dict[int, int] = defaultdict(int)
+        policies_used: Dict[int, Dict[str, str]] = {}
 
-        # For each island, select migrants to move
-        for source_idx in range(num_islands):
-            # Count programs in this island
-            self.cursor.execute(
-                "SELECT COUNT(*) FROM programs WHERE island_idx = ?",
-                (source_idx,),
+        island_iter = eligible_islands if eligible_islands else range(num_islands)
+        island_best_scores = self._fetch_island_best_scores()
+
+        for source_idx in island_iter:
+            params = self.param_provider(source_idx) if self.param_provider else None
+            migration_rate = (
+                params.migration_rate
+                if params is not None
+                else getattr(self.config, "migration_rate", 0.1)
             )
-            island_size = (self.cursor.fetchone() or [0])[0]
+            elitism_ratio = (
+                params.island_elitism
+                if params is not None
+                else self._normalize_elitism(
+                    getattr(self.config, "island_elitism", True)
+                )
+            )
+            if migration_rate <= 0:
+                continue
 
+            island_size = self._get_island_size(source_idx)
             if island_size <= 1:
-                continue  # Skip tiny islands
+                continue
 
-            # Number of programs to migrate
             num_migrants = max(1, int(island_size * migration_rate))
+            policy = self.policy_provider(source_idx) if self.policy_provider else None
+            if policy:
+                policies_used[source_idx] = policy
+                num_migrants = self._apply_size_policy(num_migrants, policy.get("size"))
 
-            # Select destination islands (all except source)
             dest_islands = [i for i in range(num_islands) if i != source_idx]
             if not dest_islands:
                 continue
 
-            # Select migrants based on elitism setting
-            migrants = self._select_migrants(source_idx, num_migrants, island_elitism)
+            migrants = self._select_migrants(
+                source_idx,
+                island_size,
+                num_migrants,
+                elitism_ratio,
+                (policy or {}).get("payload"),
+            )
 
-            # Filter out any programs already selected for migration
             unique_migrants = []
             for migrant_id in migrants:
                 if migrant_id not in all_migrated_programs:
@@ -266,123 +315,172 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
                         "migration, skipping duplicate"
                     )
 
-            # Move each unique migrant to a new island
+            donor_policy = (policy or {}).get("donor") if policy else None
             for migrant_id in unique_migrants:
-                dest_idx = random.choice(dest_islands)
+                dest_idx = self._select_destination(
+                    source_idx,
+                    dest_islands,
+                    donor_policy,
+                    island_best_scores,
+                )
+                if dest_idx is None:
+                    continue
                 self._migrate_program(
                     migrant_id, source_idx, dest_idx, current_generation
                 )
                 migrations_summary[source_idx][dest_idx].append(migrant_id)
+                per_island_counts[source_idx] += 1
 
         self.conn.commit()
 
         if migrations_summary:
             self._print_migration_summary(migrations_summary)
 
-        total_migrated = sum(
-            len(progs)
-            for dest_dict in migrations_summary.values()
-            for progs in dest_dict.values()
-        )
+        total_migrated = sum(per_island_counts.values())
         logger.info(f"Migration complete. Migrated {total_migrated} programs.")
-        return total_migrated > 0
+        return MigrationSummary(
+            generation=current_generation,
+            total_migrated=total_migrated,
+            per_island=dict(per_island_counts),
+            migrations={k: dict(v) for k, v in migrations_summary.items()},
+            policies_used=policies_used,
+        )
+
+    def _get_island_size(self, island_idx: int) -> int:
+        self.cursor.execute(
+            "SELECT COUNT(*) FROM programs WHERE island_idx = ?",
+            (island_idx,),
+        )
+        return (self.cursor.fetchone() or [0])[0]
+
+    def _fetch_island_best_scores(self) -> Dict[int, float]:
+        self.cursor.execute(
+            "SELECT island_idx, MAX(combined_score) as best "
+            "FROM programs WHERE island_idx IS NOT NULL AND correct = 1 "
+            "GROUP BY island_idx"
+        )
+        return {
+            row["island_idx"]: row["best"] if row["best"] is not None else 0.0
+            for row in self.cursor.fetchall()
+            if row["island_idx"] is not None
+        }
+
+    def _normalize_elitism(self, value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.1 if value else 0.0
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _apply_size_policy(self, num_migrants: int, policy: Optional[str]) -> int:
+        if policy is None:
+            return num_migrants
+        factors = {"small": 0.5, "medium": 1.0, "large": 1.5}
+        factor = factors.get(policy, 1.0)
+        adjusted = max(1, int(round(num_migrants * factor)))
+        return adjusted
+
+    def _select_destination(
+        self,
+        source_idx: int,
+        dest_islands: List[int],
+        donor_policy: Optional[str],
+        island_best_scores: Dict[int, float],
+    ) -> Optional[int]:
+        if not dest_islands:
+            return None
+        num_islands = getattr(self.config, "num_islands", 0)
+        if donor_policy == "ring" and num_islands > 0:
+            return (source_idx + 1) % num_islands
+        if donor_policy == "topk":
+            ranked = sorted(
+                ((idx, island_best_scores.get(idx, float("-inf"))) for idx in dest_islands),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if ranked:
+                return ranked[0][0]
+        # Default random destination
+        return random.choice(dest_islands)
 
     def _select_migrants(
         self,
         source_idx: int,
+        island_size: int,
         num_migrants: int,
-        island_elitism: bool,
+        island_elitism: float,
+        payload_policy: Optional[str],
     ) -> List[str]:
-        """Select which programs to migrate from an island.
-        Excludes generation 0 programs (initial programs and their copies)
-        and only considers correct programs.
-        """
-        # Base query excludes generation 0 programs and only includes
-        # correct programs
-        selection_query = """
-            SELECT id FROM programs
-            WHERE island_idx = ? AND generation > 0 AND correct = 1
-        """
-
-        if island_elitism:
-            # Get IDs of best program to protect from migration
-            # Also exclude generation 0 programs from elite selection and
-            # only consider correct programs
-            elite_query = """
-                SELECT id FROM programs
-                WHERE island_idx = ? AND generation > 0 AND correct = 1
-                ORDER BY combined_score DESC
-                LIMIT 1
-            """
-
-            self.cursor.execute(elite_query, (source_idx,))
-            elite_ids = [row["id"] for row in self.cursor.fetchall()]
-
-            if elite_ids:
-                # Exclude elites from migration
-                placeholders = ",".join(["?"] * len(elite_ids))
-                selection_query += f" AND id NOT IN ({placeholders})"
-                selection_query += " ORDER BY RANDOM() LIMIT ?"
-                params = [source_idx] + elite_ids + [num_migrants]
-            else:
-                selection_query += " ORDER BY RANDOM() LIMIT ?"
-                params = [source_idx, num_migrants]
-        else:
-            # Simple random selection (excluding generation 0,
-            # only correct programs)
-            selection_query += " ORDER BY RANDOM() LIMIT ?"
-            params = [source_idx, num_migrants]
-
-        # First check how many correct non-generation-0 programs are available
-        self.cursor.execute(
-            "SELECT COUNT(*) FROM programs WHERE island_idx = ? AND "
-            "generation > 0 AND correct = 1",
-            (source_idx,),
+        selection_query = (
+            "SELECT id FROM programs WHERE island_idx = ? "
+            "AND generation > 0 AND correct = 1"
         )
-        available_programs = (self.cursor.fetchone() or [0])[0]
+        params: List[Any] = [source_idx]
 
-        if available_programs == 0:
+        elite_ids = self._get_elite_ids(source_idx, island_size, island_elitism)
+        if elite_ids:
+            placeholders = ",".join(["?"] * len(elite_ids))
+            selection_query += f" AND id NOT IN ({placeholders})"
+            params.extend(elite_ids)
+
+        order_clause = self._payload_order_clause(payload_policy)
+        selection_query += f" {order_clause} LIMIT ?"
+
+        available_programs = self._count_available_programs(source_idx) - len(elite_ids)
+        if available_programs <= 0:
             logger.debug(
-                f"No correct generation > 0 programs available for migration "
-                f"from island {source_idx} (generation 0 programs are "
-                f"protected, "
-                f"only correct programs migrate)"
+                f"No eligible programs available for migration from island {source_idx}"
             )
             return []
 
-        # Adjust num_migrants if there aren't enough eligible programs
-        actual_migrants = min(num_migrants, available_programs)
-        if actual_migrants != num_migrants:
-            logger.debug(
-                f"Reducing migration count from {num_migrants} to "
-                f"{actual_migrants} for island {source_idx} "
-                f"(only {available_programs} correct eligible programs "
-                f"available)"
-            )
-            # Update the params list to use the adjusted count
-            if isinstance(params, list) and len(params) > 0:
-                params[-1] = actual_migrants  # Last param is always the LIMIT
+        actual_migrants = max(0, min(num_migrants, available_programs))
+        if actual_migrants == 0:
+            return []
+        params.append(actual_migrants)
 
-        # Select migrants
         self.cursor.execute(selection_query, params)
         migrants = [row["id"] for row in self.cursor.fetchall()]
-
-        # Validate uniqueness (should always be true, but good to check)
         if len(migrants) != len(set(migrants)):
             logger.warning(
-                f"Duplicate programs selected for migration from island "
-                f"{source_idx}. Expected {len(migrants)} unique, got "
-                f"{len(set(migrants))} unique."
+                f"Duplicate programs selected for migration from island {source_idx}."
             )
-            migrants = list(set(migrants))  # Remove duplicates
+            migrants = list(set(migrants))
 
         logger.debug(
-            f"Selected {len(migrants)} unique correct migrants from island "
-            f"{source_idx} (excluded generation 0 programs and incorrect "
-            f"programs from migration)"
+            f"Selected {len(migrants)} migrants from island {source_idx}"
         )
-
         return migrants
+
+    def _payload_order_clause(self, payload_policy: Optional[str]) -> str:
+        if payload_policy == "elite":
+            return "ORDER BY combined_score DESC"
+        if payload_policy == "novel":
+            return "ORDER BY combined_score ASC"
+        return "ORDER BY RANDOM()"
+
+    def _count_available_programs(self, island_idx: int) -> int:
+        self.cursor.execute(
+            "SELECT COUNT(*) FROM programs WHERE island_idx = ? AND generation > 0 AND correct = 1",
+            (island_idx,),
+        )
+        return (self.cursor.fetchone() or [0])[0]
+
+    def _get_elite_ids(
+        self,
+        island_idx: int,
+        island_size: int,
+        elite_ratio: float,
+    ) -> List[str]:
+        if elite_ratio <= 0 or island_size <= 1:
+            return []
+        elite_count = max(1, int(round(island_size * elite_ratio)))
+        self.cursor.execute(
+            "SELECT id FROM programs WHERE island_idx = ? AND generation > 0 AND correct = 1 "
+            "ORDER BY combined_score DESC LIMIT ?",
+            (island_idx, elite_count),
+        )
+        return [row["id"] for row in self.cursor.fetchall()]
 
     def _migrate_program(
         self,
@@ -513,17 +611,128 @@ class CombinedIslandManager:
         self.assignment_strategy = assignment_strategy or (
             CopyInitialProgramIslandStrategy(cursor, conn, config)
         )
-        self.migration_strategy = migration_strategy or (
-            ElitistMigrationStrategy(cursor, conn, config)
-        )
+
+        self._island_params: Dict[int, IslandMigrationParams] = {}
+        self._pending_islands: Set[int] = set()
+        self._last_migration_generation: Dict[int, int] = {}
+        self._migration_callback: Optional[Callable[[MigrationSummary], None]] = None
+        self._policy_provider: Optional[Callable[[int], Optional[Dict[str, str]]]] = None
+
+        self._initialize_island_params()
+
+        if migration_strategy is None:
+            self.migration_strategy = ElitistMigrationStrategy(
+                cursor,
+                conn,
+                config,
+                param_provider=self._get_island_params,
+                policy_provider=self._resolve_policy,
+            )
+        else:
+            self.migration_strategy = migration_strategy
 
     def assign_island(self, program: Any) -> None:
         """Assign an island to a program using the configured strategy."""
         self.assignment_strategy.assign_island(program)
 
-    def perform_migration(self, current_generation: int) -> bool:
+    def perform_migration(self, current_generation: int) -> MigrationSummary:
         """Perform migration using the configured strategy."""
-        return self.migration_strategy.perform_migration(current_generation)
+        eligible = sorted(self._pending_islands) if self._pending_islands else None
+        summary = self.migration_strategy.perform_migration(
+            current_generation, eligible_islands=eligible
+        )
+        if summary.total_migrated > 0:
+            for island_idx in summary.per_island.keys():
+                self._last_migration_generation[island_idx] = current_generation
+        self._pending_islands.clear()
+        if self._migration_callback:
+            self._migration_callback(summary)
+        return summary
+
+    def set_island_params(
+        self,
+        island_idx: int,
+        *,
+        migration_rate: Optional[float] = None,
+        migration_interval: Optional[int] = None,
+        island_elitism: Optional[float] = None,
+    ) -> IslandMigrationParams:
+        params = self._get_island_params(island_idx)
+        if migration_rate is not None:
+            params.migration_rate = migration_rate
+        if migration_interval is not None:
+            params.migration_interval = max(2, int(migration_interval))
+        if island_elitism is not None:
+            params.island_elitism = max(0.0, float(island_elitism))
+        return params
+
+    def set_island_params_bulk(
+        self, params: Dict[int, IslandMigrationParams]
+    ) -> None:
+        for idx, state in params.items():
+            self._island_params[idx] = IslandMigrationParams(
+                migration_rate=state.migration_rate,
+                migration_interval=state.migration_interval,
+                island_elitism=state.island_elitism,
+            )
+
+    def get_island_params_snapshot(self) -> Dict[int, IslandMigrationParams]:
+        return {
+            idx: IslandMigrationParams(
+                migration_rate=state.migration_rate,
+                migration_interval=state.migration_interval,
+                island_elitism=state.island_elitism,
+            )
+            for idx, state in self._island_params.items()
+        }
+
+    def register_policy_provider(
+        self, provider: Callable[[int], Optional[Dict[str, str]]]
+    ) -> None:
+        self._policy_provider = provider
+
+    def set_migration_callback(
+        self, callback: Callable[[MigrationSummary], None]
+    ) -> None:
+        self._migration_callback = callback
+
+    def _initialize_island_params(self) -> None:
+        num_islands = getattr(self.config, "num_islands", 0)
+        default_params = self._default_params()
+        for idx in range(num_islands):
+            self._island_params[idx] = IslandMigrationParams(
+                migration_rate=default_params.migration_rate,
+                migration_interval=default_params.migration_interval,
+                island_elitism=default_params.island_elitism,
+            )
+            self._last_migration_generation.setdefault(idx, 0)
+
+    def _default_params(self) -> IslandMigrationParams:
+        return IslandMigrationParams(
+            migration_rate=getattr(self.config, "migration_rate", 0.1),
+            migration_interval=max(2, getattr(self.config, "migration_interval", 10)),
+            island_elitism=self._normalize_elitism_value(
+                getattr(self.config, "island_elitism", True)
+            ),
+        )
+
+    def _get_island_params(self, island_idx: int) -> IslandMigrationParams:
+        if island_idx not in self._island_params:
+            self._island_params[island_idx] = self._default_params()
+        return self._island_params[island_idx]
+
+    def _resolve_policy(self, island_idx: int) -> Optional[Dict[str, str]]:
+        if not self._policy_provider:
+            return None
+        return self._policy_provider(island_idx)
+
+    def _normalize_elitism_value(self, value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.1 if value else 0.0
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 0.0
 
     def get_island_idx(self, program_id: str) -> Optional[int]:
         """Get the island index for a given program ID."""
@@ -546,14 +755,20 @@ class CombinedIslandManager:
         return len(initialized_islands) >= num_islands
 
     def should_schedule_migration(self, program: Any) -> bool:
-        """Check if migration should be scheduled based on program
-        generation."""
-        return (
-            program.generation > 0
-            and hasattr(self.config, "migration_interval")
-            and self.config.migration_interval > 0
-            and (program.generation % self.config.migration_interval == 0)
-        )
+        """Check if migration should be scheduled for the program's island."""
+        island_idx = getattr(program, "island_idx", None)
+        if island_idx is None or program.generation <= 0:
+            return False
+
+        params = self._get_island_params(island_idx)
+        interval = max(1, int(params.migration_interval))
+        last_gen = self._last_migration_generation.get(island_idx, 0)
+
+        if (program.generation - last_gen) >= interval:
+            if island_idx not in self._pending_islands:
+                self._pending_islands.add(island_idx)
+            return True
+        return False
 
     def get_island_populations(self) -> Dict[int, int]:
         """Get the population count for each island."""

@@ -127,6 +127,7 @@ runner.run()
 | `migration_interval` | `10` | `int` | Generations between island migrations |
 | `migration_rate` | `0.1` | `float` | Proportion of island population to migrate |
 | `island_elitism` | `True` | `bool` | Keep best programs on their original islands |
+| `migration_adaptation` | `None` | `Optional[dict]` | Optional adaptive migration configuration per island |
 | `enforce_island_separation` | `True` | `bool` | Enforce full separation between islands |
 | `parent_selection_strategy` | `"power_law"` | `str` | Parent selection: "weighted", "power_law", "beam_search" |
 | `exploitation_alpha` | `1.0` | `float` | Power-law exponent (0=uniform, 1=power-law) |
@@ -135,6 +136,11 @@ runner.run()
 | `num_beams` | `5` | `int` | Number of beams for beam search selection |
 
 </details>
+
+Adaptive migration (success/diversity/bandit feedback that updates
+`migration_rate`, `migration_interval`, and `island_elitism` per island) is
+described in `docs/migration_adaptation.md`. A ready-to-run Hydra example lives
+at `configs/database/island_adaptive.yaml`.
 
 <details>
 <summary><strong>JobConfig Parameters</strong> (click to expand)</summary>
