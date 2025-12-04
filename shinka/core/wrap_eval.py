@@ -2,9 +2,15 @@ import importlib.util
 import json
 import os
 import time
+import ast
 import numpy as np
 import pickle
+import logging
+from pathlib import Path
 from typing import Callable, Any, Dict, List, Tuple, Optional
+from shinka.utils.security import validate_file_path, SecurityError
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_METRICS_ON_ERROR = {
     "combined_score": 0.0,
@@ -17,17 +23,119 @@ DEFAULT_METRICS_ON_ERROR = {
 }
 
 
-def load_program(program_path: str) -> Any:
-    """Loads a Python module dynamically from a given file path."""
-    spec = importlib.util.spec_from_file_location("program", program_path)
-    if spec is None:
-        raise ImportError(f"Could not load spec for module at {program_path}")
-    if spec.loader is None:
-        raise ImportError(f"Spec loader is None for module at {program_path}")
+def validate_python_code(code: str, program_path: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate Python code for potentially dangerous operations.
 
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    This is a basic security check - for production use, consider:
+    - Running in a Docker container
+    - Using subprocess with restricted permissions
+    - Implementing a proper sandbox environment
+
+    Args:
+        code: The Python code to validate
+        program_path: Path to the program (for logging)
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    try:
+        tree = ast.parse(code)
+
+        # Check for potentially dangerous operations
+        dangerous_patterns = []
+
+        for node in ast.walk(tree):
+            # Check for dangerous built-ins
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    dangerous_builtins = ['exec', 'eval', 'compile', '__import__']
+                    if node.func.id in dangerous_builtins:
+                        dangerous_patterns.append(
+                            f"Use of potentially dangerous built-in: {node.func.id}"
+                        )
+
+            # Check for file system modifications (beyond results dir)
+            if isinstance(node, ast.Import) or isinstance(node, ast.ImportFrom):
+                if isinstance(node, ast.ImportFrom):
+                    # Allow most imports, but warn about dangerous ones
+                    dangerous_modules = ['subprocess', 'os.system']
+                    if node.module in dangerous_modules:
+                        logger.warning(
+                            f"Program {program_path} imports potentially dangerous module: {node.module}"
+                        )
+
+        if dangerous_patterns:
+            error_msg = "; ".join(dangerous_patterns)
+            logger.warning(f"Potentially dangerous code patterns in {program_path}: {error_msg}")
+            # For now, we'll log but allow - in production, consider blocking
+            # return False, error_msg
+
+        return True, None
+
+    except SyntaxError as e:
+        return False, f"Syntax error: {e}"
+
+
+def load_program(program_path: str) -> Any:
+    """
+    Loads a Python module dynamically from a given file path.
+
+    SECURITY NOTE: This function executes arbitrary code. In production:
+    - Run this in a sandboxed environment (Docker, subprocess with limited permissions)
+    - Validate the code before execution
+    - Use resource limits (timeout, memory, CPU)
+    - Consider using a restricted Python interpreter
+
+    Args:
+        program_path: Path to the Python file to load
+
+    Returns:
+        The loaded module
+
+    Raises:
+        SecurityError: If path validation fails
+        ImportError: If module cannot be loaded
+    """
+    # Validate the file path
+    try:
+        safe_path = validate_file_path(program_path, must_exist=True)
+    except (SecurityError, FileNotFoundError) as e:
+        logger.error(f"Path validation failed for {program_path}: {e}")
+        raise
+
+    # Read and validate the code
+    try:
+        with open(safe_path, 'r', encoding='utf-8') as f:
+            code = f.read()
+
+        is_valid, error_msg = validate_python_code(code, str(safe_path))
+        if not is_valid:
+            raise SecurityError(f"Code validation failed: {error_msg}")
+
+    except Exception as e:
+        logger.error(f"Failed to read/validate program {safe_path}: {e}")
+        raise
+
+    # Load the module
+    try:
+        spec = importlib.util.spec_from_file_location("program", str(safe_path))
+        if spec is None:
+            raise ImportError(f"Could not load spec for module at {safe_path}")
+        if spec.loader is None:
+            raise ImportError(f"Spec loader is None for module at {safe_path}")
+
+        module = importlib.util.module_from_spec(spec)
+
+        # Execute with logging
+        logger.info(f"Loading and executing program: {safe_path}")
+        spec.loader.exec_module(module)
+
+        return module
+
+    except Exception as e:
+        logger.error(f"Failed to load module {safe_path}: {e}")
+        raise
 
 
 def save_json_results(
