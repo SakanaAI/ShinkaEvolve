@@ -78,6 +78,30 @@ async def apply_patch_async(
         return None, 0, None, str(e), None, None
 
 
+async def exec_language_tool(
+    *args: str, timeout: int
+) -> Tuple[bool, Optional[str]]:
+    """Execute a language tool and return the result."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return False, f"Validation timeout after {timeout}s"
+
+    if proc.returncode == 0:
+        return True, None
+    else:
+        error_msg = stderr.decode() if stderr else "Unknown compilation error"
+        return False, error_msg
+
+
 async def validate_code_async(
     code_path: str, language: str = "python", timeout: int = 30
 ) -> Tuple[bool, Optional[str]]:
@@ -94,104 +118,39 @@ async def validate_code_async(
     try:
         if language == "python":
             # Use python -m py_compile for syntax checking
-            proc = await asyncio.create_subprocess_exec(
+            return await exec_language_tool(
                 "python",
                 "-m",
                 "py_compile",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
-
         elif language == "rust":
             # Use rustc for Rust syntax checking
-            proc = await asyncio.create_subprocess_exec(
+            return await exec_language_tool(
                 "rustc",
                 "--crate-type=lib",
                 "-Zparse-only",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         elif language == "cpp":
             # Use g++ for C++ compilation check
-            proc = await asyncio.create_subprocess_exec(
+            return await exec_language_tool(
                 "g++",
                 "-fsyntax-only",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         elif language == "swift":
             # Use swiftc for Swift syntax checking
-            proc = await asyncio.create_subprocess_exec(
+            return await exec_language_tool(
                 "swiftc",
                 "-typecheck",
                 "-parse-as-library",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         else:
             # For other languages, just check if file exists and is readable
             try:
