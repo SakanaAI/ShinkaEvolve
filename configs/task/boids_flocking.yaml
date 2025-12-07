@@ -1,0 +1,44 @@
+# Boids Flocking Task Configuration
+# Task: Evolve flocking behavior to minimize collisions while maintaining tight grouping
+
+task_name: boids_flocking
+
+# Task description for the LLM
+description: |
+  Optimize the Boids flocking simulation. The goal is to evolve the separation,
+  alignment, and cohesion behaviors to:
+  1. Minimize collisions between boids
+  2. Maintain tight grouping (cohesion)
+  3. Achieve good velocity alignment
+
+  The simulation runs for 1000 steps with 50 boids. Improve the scoring function,
+  behavior weights, and physics parameters to achieve a higher combined score.
+
+# File paths (relative to init_support_dir)
+exec_fname: initial.py
+init_support_dir: examples/boids_flocking
+
+# Language
+language: python
+
+# Evaluation command
+eval_command: python3 initial.py --headless --steps 1000
+
+# Output file names
+metrics_fname: metrics.json
+correct_fname: correct.json
+
+# Scoring configuration
+score_key: combined_score
+higher_is_better: true
+
+# Allowed files for editing (multi-file task)
+allowed_files:
+  - initial.py
+  - boid.py
+  - simulation.py
+  - render.py
+  - main.py
+
+# Primary file (main entry point)
+primary_file: initial.py
