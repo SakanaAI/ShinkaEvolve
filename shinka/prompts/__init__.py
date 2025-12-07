@@ -26,6 +26,8 @@ from .prompts_meta import (
     META_STEP3_USER_MSG,
 )
 from .prompts_novelty import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG
+from .prompts_agentic import AGENTIC_SYS_FORMAT, AGENTIC_ITER_MSG
+from .prompts_agentic_eval import AGENTIC_EVAL_SYS, AGENTIC_EVAL_USER
 
 __all__ = [
     "construct_eval_history_msg",
@@ -51,4 +53,8 @@ __all__ = [
     "META_STEP3_USER_MSG",
     "NOVELTY_SYSTEM_MSG",
     "NOVELTY_USER_MSG",
+    "AGENTIC_SYS_FORMAT",
+    "AGENTIC_ITER_MSG",
+    "AGENTIC_EVAL_SYS",
+    "AGENTIC_EVAL_USER",
 ]

@@ -1,3 +1,5 @@
+import difflib
+import json
 import shutil
 import uuid
 import time
@@ -7,7 +9,7 @@ from rich.logging import RichHandler
 from rich.table import Table
 from rich.console import Console
 import rich.box
-from typing import List, Optional, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Union, cast
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -22,17 +24,81 @@ from shinka.llm import (
     AsymmetricUCB,
 )
 from shinka.edit import (
+    AgentContext,
+    AgenticEditor,
+    CommandResult,
     apply_diff_patch,
     apply_full_patch,
     summarize_diff,
     redact_immutable,
 )
+from shinka.edit.codex_cli import (
+    CodexExecutionError,
+    CodexUnavailableError,
+    ensure_codex_available,
+    run_codex_task,
+)
+from shinka.edit.shinka_agent import (
+    ensure_shinka_available,
+    run_shinka_task,
+    ShinkaUnavailableError,
+    ShinkaExecutionError,
+)
 from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
+from shinka.core.embedding_corpus import (
+    build_embedding_corpus,
+    extract_file_content,
+    EmbeddingCorpus,
+)
 from shinka.logo import print_gradient_logo
 
 FOLDER_PREFIX = "gen"
+
+# Directories to exclude when copying workspace files for agentic edits
+WORKSPACE_EXCLUDE_DIRS = {
+    "results",
+    "workspace_snapshot",
+    "agent_sessions",
+    ".hydra",
+    "__pycache__",
+}
+WORKSPACE_EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
+WORKSPACE_EXCLUDE_FILES = {
+    "rewrite.txt",
+    "edit.diff",
+    "session_log.jsonl",
+}
+
+
+@dataclass
+class AgenticConfig:
+    """Configuration options for agentic editing sessions.
+
+    This config supports Codex CLI and ShinkaAgent backends.
+    The `backend` field selects which one to use.
+    """
+
+    backend: str = "shinka"  # "shinka" or "codex"
+    cli_profile: Optional[str] = None
+    sandbox: str = "workspace-write"
+    approval_mode: str = "full-auto"
+    max_turns: int = 50
+    max_seconds: int = 0
+    cli_path: Optional[str] = None
+    extra_cli_config: Dict[str, Any] = field(default_factory=dict)
+    resume_parent_session: bool = False
+    # Base directory for scratch workspaces. Using /tmp ensures scratch dirs are
+    # outside any git repo, preventing CLI from discovering parent AGENTS.md files.
+    scratch_dir_base: Optional[str] = "/tmp/shinka_scratch"
+
+
+@dataclass
+class EvaluatorConfig:
+    """Evaluator selection configuration."""
+
+    mode: Literal["auto", "legacy", "agentic"] = "legacy"
 
 
 @dataclass
@@ -62,6 +128,29 @@ class EvolutionConfig:
     novelty_llm_models: Optional[List[str]] = None
     novelty_llm_kwargs: dict = field(default_factory=lambda: {})
     use_text_feedback: bool = False
+    # Agentic editing configuration
+    agentic_mode: bool = False
+    agentic: AgenticConfig = field(default_factory=AgenticConfig)
+    evaluator: EvaluatorConfig = field(default_factory=EvaluatorConfig)
+    # Multi-file support: directory containing additional files to copy
+    init_support_dir: Optional[str] = None
+    # Embedding corpus configuration for multi-file novelty
+    embedding_include_globs: List[str] = field(default_factory=lambda: ["**/*"])
+    embedding_exclude_globs: List[str] = field(
+        default_factory=lambda: [
+            "results/**",
+            "workspace_snapshot/**",
+            "agent_sessions/**",
+            ".hydra/**",
+            "__pycache__/**",
+            "*.pyc",
+            "*.pyo",
+        ]
+    )
+    embedding_max_files: int = 200
+    embedding_max_total_bytes: int = 500_000
+    embedding_max_bytes_per_file: int = 200_000
+    embedding_use_changed_files_first: bool = True
 
 
 @dataclass
@@ -71,6 +160,7 @@ class RunningJob:
     job_id: Union[str, Popen, ProcessWithLogging]
     exec_fname: str
     results_dir: str
+    generation_dir: Path
     start_time: float
     generation: int
     parent_id: Optional[str]
@@ -81,6 +171,9 @@ class RunningJob:
     code_embedding: List[float] = field(default_factory=list)
     embed_cost: float = 0.0
     novelty_cost: float = 0.0
+    # For multi-file embedding corpus
+    corpus_text: str = ""
+    corpus_meta: dict = field(default_factory=dict)
 
 
 # Set up logging
@@ -626,10 +719,9 @@ class EvolutionRunner:
 
         self.next_generation_to_submit += 1
 
-        exec_fname = (
-            f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/main.{self.lang_ext}"
-        )
-        results_dir = f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/results"
+        generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{current_gen}"
+        exec_fname = str(generation_dir / f"main.{self.lang_ext}")
+        results_dir = str(generation_dir / "results")
         Path(results_dir).mkdir(parents=True, exist_ok=True)
 
         # Get current meta-recommendations for this job
@@ -744,6 +836,7 @@ class EvolutionRunner:
             job_id=job_id,
             exec_fname=exec_fname,
             results_dir=results_dir,
+            generation_dir=generation_dir,
             start_time=time.time(),
             generation=current_gen,
             parent_id=parent_id,
@@ -982,6 +1075,18 @@ class EvolutionRunner:
             top_k_inspirations=top_k_programs,
             meta_recommendations=meta_recs,
         )
+
+        # Route to agentic patch if enabled
+        if self.evo_config.agentic_mode:
+            return self._run_agentic_patch(
+                parent_program=parent_program,
+                generation=generation,
+                patch_sys=patch_sys,
+                patch_msg=patch_msg,
+                patch_type=patch_type,
+                novelty_attempt=novelty_attempt,
+                resample_attempt=resample_attempt,
+            )
 
         if patch_type in ["full", "cross"]:
             apply_patch = apply_full_patch
@@ -1298,3 +1403,349 @@ class EvolutionRunner:
                 )
             else:
                 logger.info("No previous meta memory state found - starting fresh")
+
+    def _collect_parent_workspace_files(
+        self, parent_program: Program
+    ) -> Dict[Path, str]:
+        """Collect workspace files from parent program's generation directory."""
+        workspace_files: Dict[Path, str] = {}
+        parent_metadata = parent_program.metadata or {}
+
+        # Check if parent has stored changed files from agentic edit
+        agent_changed = parent_metadata.get("agent_changed_files")
+        if agent_changed and isinstance(agent_changed, dict):
+            for rel_path_str, content in agent_changed.items():
+                workspace_files[Path(rel_path_str)] = content
+
+        return workspace_files
+
+    def _hydrate_generation_directory(
+        self, parent_program: Program, generation_dir: Path
+    ) -> None:
+        """Copy workspace files from parent to new generation directory."""
+        workspace_files = self._collect_parent_workspace_files(parent_program)
+        for rel_path, content in workspace_files.items():
+            target_path = generation_dir / rel_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding="utf-8")
+
+    def _build_embedding_corpus(
+        self, generation_dir: Path, meta_patch_data: Optional[dict] = None
+    ) -> EmbeddingCorpus:
+        """Build embedding corpus from generation directory for multi-file novelty."""
+        # Get changed files from agentic edit for prioritization
+        changed_first: Optional[List[str]] = None
+        if meta_patch_data and self.evo_config.embedding_use_changed_files_first:
+            agent_changed = meta_patch_data.get("agent_changed_files")
+            if agent_changed:
+                changed_first = list(agent_changed.keys())
+
+        return build_embedding_corpus(
+            root_dir=generation_dir,
+            include_globs=self.evo_config.embedding_include_globs,
+            exclude_globs=self.evo_config.embedding_exclude_globs,
+            max_files=self.evo_config.embedding_max_files,
+            max_total_bytes=self.evo_config.embedding_max_total_bytes,
+            max_bytes_per_file=self.evo_config.embedding_max_bytes_per_file,
+            changed_first=changed_first,
+        )
+
+    def _run_agentic_patch(
+        self,
+        *,
+        parent_program: Program,
+        generation: int,
+        patch_sys: str,
+        patch_msg: str,
+        patch_type: str,
+        novelty_attempt: int,
+        resample_attempt: int,
+    ) -> tuple[Optional[str], dict, int]:
+        """Execute an agentic editing session via CLI backend (Codex or ShinkaAgent)."""
+
+        primary_filename = Path(f"main.{self.lang_ext}")
+
+        # Extract content from corpus; fallback to raw code if not a corpus
+        primary_content = extract_file_content(parent_program.code, str(primary_filename))
+        if primary_content is None:
+            if "=== FILE:" not in parent_program.code:
+                primary_content = parent_program.code
+            else:
+                primary_content = extract_file_content(parent_program.code, "main.py")
+                if primary_content is None:
+                    primary_content = parent_program.code
+
+        base_files: Dict[Path, str] = {primary_filename: primary_content}
+        base_files.update(self._collect_parent_workspace_files(parent_program))
+
+        session_root: Optional[Path] = None
+        parent_metadata = parent_program.metadata or {}
+        resume_session_id: Optional[str] = None
+        resumed_from_parent = False
+
+        if self.evo_config.agentic.resume_parent_session:
+            candidate = parent_metadata.get("agent_session_id")
+            if isinstance(candidate, str) and candidate.strip():
+                resume_session_id = candidate.strip()
+                resumed_from_parent = True
+
+        def _serialize_changed_files(
+            changed_files: Optional[Dict[Path, str]]
+        ) -> Dict[str, str]:
+            if not changed_files:
+                return {}
+            serialized: Dict[str, str] = {}
+            for rel_path, content in changed_files.items():
+                if rel_path == primary_filename:
+                    continue
+                serialized[str(rel_path)] = content
+            return serialized
+
+        def _build_code_diffs(
+            changed_files: Optional[Dict[Path, str]]
+        ) -> List[Dict[str, str]]:
+            """Build multi-file diffs for frontend display."""
+            if not changed_files:
+                return []
+            diffs: List[Dict[str, str]] = []
+            for rel_path, new_content in changed_files.items():
+                before = base_files.get(rel_path, "")
+                before_lines = before.splitlines(keepends=True)
+                after_lines = new_content.splitlines(keepends=True)
+                diff_text = "".join(
+                    difflib.unified_diff(
+                        before_lines,
+                        after_lines,
+                        fromfile=f"a/{rel_path}",
+                        tofile=f"b/{rel_path}",
+                    )
+                )
+                diffs.append({"path": str(rel_path), "diff": diff_text})
+            return diffs
+
+        def _agent_model_name(backend: str, actual_model: Optional[str] = None) -> str:
+            """Determine model name with priority: actual > config > profile > fallback."""
+            if actual_model:
+                return actual_model
+            extra_cli = self.evo_config.agentic.extra_cli_config
+            if extra_cli:
+                model_override = extra_cli.get("model") if isinstance(extra_cli, dict) else None
+                if model_override:
+                    return str(model_override)
+            if self.evo_config.agentic.cli_profile:
+                return self.evo_config.agentic.cli_profile
+            return f"{backend}-default"
+
+        selected_backend = self.evo_config.agentic.backend
+
+        def failure_meta(
+            message: str,
+            *,
+            session_log: Optional[List[str]] = None,
+            commands: Optional[List[CommandResult]] = None,
+            metrics: Optional[Dict[str, float]] = None,
+            session_id: Optional[str] = None,
+            changed_files: Optional[Dict[Path, str]] = None,
+        ) -> tuple[Optional[str], dict, int]:
+            api_cost = 0.0
+            if metrics:
+                api_cost = (
+                    metrics.get("total_cost")
+                    or metrics.get("estimated_total_cost")
+                    or 0.0
+                )
+            serialized_changed = _serialize_changed_files(changed_files)
+            meta_edit_data = {
+                "patch_type": "agentic",
+                "api_costs": api_cost,
+                "num_applied": 0,
+                "patch_name": None,
+                "patch_description": None,
+                "error_attempt": message,
+                "novelty_attempt": novelty_attempt,
+                "resample_attempt": resample_attempt,
+                "patch_attempt": 1,
+                "agent_session_path": str(session_root) if session_root else None,
+                "agent_session_log": session_log or [],
+                "agent_commands": [asdict(cmd) for cmd in commands or []],
+                "agent_metrics": metrics or {},
+                "agent_changed_files": serialized_changed,
+                "agent_code_diffs": _build_code_diffs(changed_files),
+                "agent_primary_file": str(primary_filename),
+                "model_name": _agent_model_name(selected_backend),
+                "agent_backend": selected_backend,
+                "agent_session_id": session_id,
+                "agent_resumed_from_parent": resumed_from_parent,
+            }
+            return None, meta_edit_data, 0
+
+        # Ensure backend is available
+        try:
+            if selected_backend == "shinka":
+                ensure_shinka_available()
+            else:
+                ensure_codex_available(self.evo_config.agentic.cli_path)
+        except (CodexUnavailableError, ShinkaUnavailableError) as exc:
+            return failure_meta(str(exc))
+
+        # Create scratch directory
+        session_uuid = str(uuid.uuid4())
+        if self.evo_config.agentic.scratch_dir_base:
+            scratch_base = Path(self.evo_config.agentic.scratch_dir_base)
+            scratch_base.mkdir(parents=True, exist_ok=True)
+            session_root = scratch_base / session_uuid
+        else:
+            session_root = Path(self.results_dir) / "agent_sessions" / session_uuid
+
+        session_root.mkdir(parents=True, exist_ok=True)
+
+        # Write session metadata
+        session_meta = {
+            "parent_id": parent_program.id,
+            "generation": generation,
+            "patch_type": patch_type,
+            "novelty_attempt": novelty_attempt,
+            "resample_attempt": resample_attempt,
+            "start_time": time.time(),
+            "results_dir": str(self.results_dir),
+        }
+        try:
+            with open(session_root / "session_meta.json", "w") as f:
+                json.dump(session_meta, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write session_meta.json: {e}")
+
+        # Build context for agent
+        helper_files = [p for p in base_files.keys() if p != primary_filename]
+        system_prompt = patch_sys.strip()
+        if helper_files:
+            helper_listing = "\n".join(f"- {path.as_posix()}" for path in sorted(helper_files))
+            system_prompt += (
+                "\n\n# Workspace Files\n"
+                "The following helper files were copied from the parent program:\n"
+                f"{helper_listing}"
+            )
+
+        context = AgentContext(
+            user_prompt=patch_msg.strip(),
+            system_prompt=system_prompt,
+            language=self.evo_config.language,
+            base_files=base_files,
+            primary_file=primary_filename,
+            metadata={
+                "generation": generation,
+                "novelty_attempt": novelty_attempt,
+                "resample_attempt": resample_attempt,
+                "patch_type": patch_type,
+                "results_dir": str(self.results_dir),
+            },
+            resume_session_id=resume_session_id,
+        )
+
+        editor = AgenticEditor(
+            scratch_dir=session_root,
+            config=self.evo_config.agentic,
+            runner=run_shinka_task if selected_backend == "shinka" else run_codex_task,
+        )
+
+        try:
+            agent_result = editor.run_session(context)
+        except (CodexExecutionError, ShinkaExecutionError) as exc:
+            return failure_meta(str(exc))
+
+        # Create generation directory
+        generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{generation}"
+        if generation_dir.exists():
+            shutil.rmtree(generation_dir)
+        generation_dir.mkdir(parents=True, exist_ok=True)
+        self._hydrate_generation_directory(parent_program, generation_dir)
+
+        patch_dir = str(generation_dir)
+
+        # Get primary file content from agent result
+        primary_content = agent_result.changed_files.get(
+            context.primary_file, base_files[context.primary_file]
+        )
+        patch_str = f"```{self.evo_config.language}\n{primary_content}\n```"
+        original_for_patch = base_files[context.primary_file]
+
+        # Apply patch to create output file
+        (
+            _,
+            num_applied,
+            output_path,
+            error_msg,
+            patch_txt,
+            patch_path,
+        ) = apply_full_patch(
+            original_code=original_for_patch,
+            code_response=patch_str,
+            patch_dir=patch_dir,
+            language=self.evo_config.language,
+        )
+
+        if num_applied < 1:
+            return failure_meta(
+                error_msg or "Agent produced no valid code",
+                session_log=agent_result.session_log,
+                commands=agent_result.commands_run,
+                metrics=agent_result.metrics,
+                session_id=agent_result.session_id,
+                changed_files=agent_result.changed_files,
+            )
+
+        # Write helper files to generation directory
+        for rel_path, content in agent_result.changed_files.items():
+            if rel_path == context.primary_file:
+                continue
+            target = generation_dir / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+
+        # Build code diff for display
+        original_lines = original_for_patch.splitlines(keepends=True)
+        new_lines = primary_content.splitlines(keepends=True)
+        code_diff = "".join(
+            difflib.unified_diff(
+                original_lines,
+                new_lines,
+                fromfile="a/main." + self.lang_ext,
+                tofile="b/main." + self.lang_ext,
+            )
+        )
+
+        api_cost = 0.0
+        if agent_result.metrics:
+            api_cost = (
+                agent_result.metrics.get("total_cost")
+                or agent_result.metrics.get("estimated_total_cost")
+                or 0.0
+            )
+
+        serialized_changed = _serialize_changed_files(agent_result.changed_files)
+        actual_model = agent_result.model
+
+        meta_edit_data = {
+            "patch_type": "agentic",
+            "api_costs": api_cost,
+            "num_applied": num_applied,
+            "patch_name": None,
+            "patch_description": None,
+            "error_attempt": None,
+            "novelty_attempt": novelty_attempt,
+            "resample_attempt": resample_attempt,
+            "patch_attempt": 1,
+            "agent_session_path": str(session_root),
+            "agent_session_log": agent_result.session_log,
+            "agent_commands": [asdict(cmd) for cmd in agent_result.commands_run],
+            "agent_metrics": agent_result.metrics,
+            "agent_changed_files": serialized_changed,
+            "agent_code_diffs": _build_code_diffs(agent_result.changed_files),
+            "agent_primary_file": str(primary_filename),
+            "model_name": _agent_model_name(selected_backend, actual_model),
+            "agent_backend": selected_backend,
+            "agent_session_id": agent_result.session_id,
+            "agent_resumed_from_parent": resumed_from_parent,
+        }
+
+        return code_diff, meta_edit_data, num_applied
