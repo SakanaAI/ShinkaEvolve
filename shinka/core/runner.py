@@ -160,7 +160,12 @@ class EvolutionRunner:
 
         # Initialize database and scheduler
         db_config.db_path = str(db_path)
-        self.db = ProgramDatabase(config=db_config)
+        embedding_model_to_use = (
+            evo_config.embedding_model or "text-embedding-3-small"
+        )
+        self.db = ProgramDatabase(
+            config=db_config, embedding_model=embedding_model_to_use
+        )
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type,
             config=job_config,  # type: ignore
@@ -245,6 +250,12 @@ class EvolutionRunner:
             self.lang_ext = "cpp"
         elif self.evo_config.language == "python":
             self.lang_ext = "py"
+        elif self.evo_config.language == "rust":
+            self.lang_ext = "rs"
+        elif self.evo_config.language == "swift":
+            self.lang_ext = "swift"
+        elif self.evo_config.language in ["json", "json5"]:
+            self.lang_ext = "json"
         else:
             msg = f"Language {self.evo_config.language} not supported"
             raise ValueError(msg)
@@ -1124,9 +1135,10 @@ class EvolutionRunner:
                     # error_attempt is already set from apply_patch or default
                     pass
 
-        # Only consider the diff summary for the original.py file!!!
-        if "original.py" in diff_summary:
-            diff_summary = diff_summary["original.py"]
+        # Only consider the diff summary for the original source file
+        original_filename = f"original.{self.lang_ext}"
+        if original_filename in diff_summary:
+            diff_summary = diff_summary[original_filename]
 
         meta_edit_data = {
             "patch_type": patch_type,

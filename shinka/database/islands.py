@@ -897,6 +897,16 @@ class CombinedIslandManager:
                 f"Created copy {new_id[:8]}... of program {program.id[:8]}... "
                 f"for island {island_idx}"
             )
+
+            # Add the copied program to the archive if it's correct
+            # This ensures it can be used as inspiration for that island
+            if program.correct:
+                self.cursor.execute(
+                    "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
+                    (new_id,),
+                )
+                logger.debug(f"Added copy {new_id[:8]}... to archive (correct program)")
+
         self.conn.commit()
         logger.info(
             f"Created {len(created_ids)} copies of program "

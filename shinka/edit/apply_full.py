@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Optional, Union
-from .apply_diff import write_git_diff, _mutable_ranges
+from .apply_diff import write_git_diff, _mutable_ranges, EVOLVE_START, EVOLVE_END
 from shinka.llm import extract_between
 import logging
 
@@ -72,10 +72,15 @@ def apply_full_patch(
         updated_content = ""
         last_end = 0
 
-        # Check if patch_code contains EVOLVE-BLOCK markers
-        patch_mutable_ranges = _mutable_ranges(patch_code)
+        # Detect EVOLVE markers presence in the patch content
+        patch_has_start = EVOLVE_START.search(patch_code) is not None
+        patch_has_end = EVOLVE_END.search(patch_code) is not None
+        patch_has_both = patch_has_start and patch_has_end
+        patch_has_none = not patch_has_start and not patch_has_end
 
-        if patch_mutable_ranges:
+        if patch_has_both:
+            # Patch contains both EVOLVE-BLOCK markers, extract from them
+            patch_mutable_ranges = _mutable_ranges(patch_code)
             # Patch contains EVOLVE-BLOCK markers, extract from them
             for i, (start, end) in enumerate(mutable_ranges):
                 # Add immutable part before this mutable range
@@ -91,47 +96,158 @@ def apply_full_patch(
 
                 updated_content += replacement_content
                 last_end = end
-        else:
+        elif patch_has_none:
             # Patch doesn't contain EVOLVE-BLOCK markers
             # Assume entire patch content should replace all mutable regions
             if len(mutable_ranges) == 1:
-                # Single mutable region, replace with entire patch content
+                # Single mutable region. If the patch appears to be a full-file
+                # rewrite that omitted EVOLVE markers, safely extract only the
+                # content intended for the evolve block by matching immutable
+                # prefix/suffix from the original file.
                 start, end = mutable_ranges[0]
 
-                # The mutable range ends before "EVOLVE-BLOCK-END" text
-                # We need to find the actual start of the comment line
-                if language == "python":
-                    end_marker = "# EVOLVE-BLOCK-END"
-                elif language in ["cuda", "cpp"]:
-                    end_marker = "// EVOLVE-BLOCK-END"
-                else:
-                    end_marker = "# EVOLVE-BLOCK-END"  # Default fallback
+                # Immutable portions that remain outside the evolve block
+                immutable_prefix = original[:start]
+                immutable_suffix = original[end:]
 
-                end_marker_pos = original.find(end_marker, end - 5)
-                if end_marker_pos == -1:
-                    # Fallback: use the original end position
-                    end_marker_pos = end
+                # Also compute the portions strictly outside the marker lines
+                # to detect full-file patches that omitted EVOLVE markers.
+                # Find the start and end marker line boundaries.
+                start_match = None
+                end_match = None
+                for m in EVOLVE_START.finditer(original):
+                    if m.end() == start:
+                        start_match = m
+                        break
+                for m in EVOLVE_END.finditer(original):
+                    if m.start() == end:
+                        end_match = m
+                        break
 
-                # Ensure proper newline handling around the patch content
-                if patch_code and not patch_code.startswith("\n"):
-                    patch_code = "\n" + patch_code
-
-                if patch_code and not patch_code.endswith("\n"):
-                    patch_code = patch_code + "\n"
-
-                updated_content = (
-                    original[:start] + patch_code + original[end_marker_pos:]
+                prefix_outside = (
+                    original[: start_match.start()] if start_match else immutable_prefix
                 )
+                suffix_outside = (
+                    original[end_match.end() :] if end_match else immutable_suffix
+                )
+
+                # Heuristic: if patch includes the same immutable prefix/suffix
+                # outside the markers, treat the middle part as the evolve-block
+                # replacement. Be tolerant to a missing trailing newline in the
+                # footer by checking both versions.
+                suffix_opts = (suffix_outside, suffix_outside.rstrip("\r\n"))
+                if patch_code.startswith(prefix_outside) and any(
+                    patch_code.endswith(sfx) for sfx in suffix_opts
+                ):
+                    mid_start = len(prefix_outside)
+                    # choose the matching suffix option to compute end
+                    sfx = next(sfx for sfx in suffix_opts if patch_code.endswith(sfx))
+                    mid_end = len(patch_code) - len(sfx)
+                    replacement_content = patch_code[mid_start:mid_end]
+                    # Ensure marker boundaries stay on their own lines.
+                    # Add a leading newline only if there is a START marker.
+                    if (
+                        start_match is not None
+                        and replacement_content
+                        and not replacement_content.startswith("\n")
+                    ):
+                        replacement_content = "\n" + replacement_content
+                    # Add a trailing newline only if there is an END marker.
+                    if (
+                        end_match is not None
+                        and replacement_content
+                        and not replacement_content.endswith("\n")
+                    ):
+                        replacement_content = replacement_content + "\n"
+                    updated_content = (
+                        immutable_prefix + replacement_content + immutable_suffix
+                    )
+                else:
+                    # Otherwise, assume the patch_code represents only the
+                    # evolve-block payload and insert it directly between markers.
+                    # Ensure proper newline handling around the patch content.
+                    payload = patch_code
+                    if (
+                        start_match is not None
+                        and payload
+                        and not payload.startswith("\n")
+                    ):
+                        payload = "\n" + payload
+                    if end_match is not None and payload and not payload.endswith("\n"):
+                        payload = payload + "\n"
+                    updated_content = immutable_prefix + payload + immutable_suffix
             else:
-                # Multiple mutable regions, this is ambiguous
+                # Multiple EVOLVE-BLOCK regions found, ambiguous without markers
                 error_message = (
                     "Multiple EVOLVE-BLOCK regions found but patch "
                     "doesn't specify which to replace"
                 )
                 return original, 0, None, error_message, None, None
+        else:
+            # Patch contains exactly one marker (START xor END).
+            # Only safe to apply when original has a single evolve region.
+            if len(mutable_ranges) != 1:
+                error_message = (
+                    "Patch contains only one EVOLVE-BLOCK marker, but the original "
+                    f"has {len(mutable_ranges)} editable regions; cannot determine target"
+                )
+                return original, 0, None, error_message, None, None
+
+            # Single target region in original
+            start, end = mutable_ranges[0]
+            immutable_prefix = original[:start]
+            immutable_suffix = original[end:]
+
+            # Find exact marker locations in original for newline policy
+            start_match = None
+            end_match = None
+            for m in EVOLVE_START.finditer(original):
+                if m.end() == start:
+                    start_match = m
+                    break
+            for m in EVOLVE_END.finditer(original):
+                if m.start() == end:
+                    end_match = m
+                    break
+
+            # Compute outside-of-markers prefix/suffix from original
+            prefix_outside = (
+                original[: start_match.start()] if start_match else immutable_prefix
+            )
+            suffix_outside = (
+                original[end_match.end() :] if end_match else immutable_suffix
+            )
+
+            # Extract payload based on which single marker is present in patch
+            if patch_has_start and not patch_has_end:
+                m = EVOLVE_START.search(patch_code)
+                payload = patch_code[m.end() :] if m else patch_code
+                # Trim footer if the patch included it
+                for sfx in (suffix_outside, suffix_outside.rstrip("\r\n")):
+                    if sfx and payload.endswith(sfx):
+                        payload = payload[: -len(sfx)]
+                        break
+            elif patch_has_end and not patch_has_start:
+                m = EVOLVE_END.search(patch_code)
+                payload = patch_code[: m.start()] if m else patch_code
+                # Trim header if the patch included it
+                for pfx in (prefix_outside, prefix_outside.rstrip("\r\n")):
+                    if pfx and payload.startswith(pfx):
+                        payload = payload[len(pfx) :]
+                        break
+            else:
+                payload = patch_code
+
+            # Normalize newlines so markers remain on their own lines
+            if start_match is not None and payload and not payload.startswith("\n"):
+                payload = "\n" + payload
+            if end_match is not None and payload and not payload.endswith("\n"):
+                payload = payload + "\n"
+
+            updated_content = immutable_prefix + payload + immutable_suffix
 
         # Add remaining immutable content after last mutable range
-        if patch_mutable_ranges and mutable_ranges:
+        if patch_has_both and mutable_ranges:
             updated_content += original[mutable_ranges[-1][1] :]
 
         num_applied = 1
@@ -146,6 +262,12 @@ def apply_full_patch(
         suffix = ".cpp"
     elif language == "cuda":
         suffix = ".cu"
+    elif language == "rust":
+        suffix = ".rs"
+    elif language == "swift":
+        suffix = ".swift"
+    elif language in ["json", "json5"]:
+        suffix = ".json"
     else:
         raise ValueError(f"Language {language} not supported")
 

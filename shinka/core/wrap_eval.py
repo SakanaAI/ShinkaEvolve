@@ -96,6 +96,9 @@ def run_shinka_eval(
     num_valid_runs = 0
     num_invalid_runs = 0
 
+    all_run_results: List[Any] = []
+    execution_times: List[float] = []
+
     try:
         module = load_program(program_path)
         if not hasattr(module, experiment_fn_name):
@@ -104,9 +107,6 @@ def run_shinka_eval(
                 f"{program_path}"
             )
         experiment_fn = getattr(module, experiment_fn_name)
-
-        all_run_results: List[Any] = []
-        execution_times: List[float] = []
 
         for i in range(num_runs):
             kwargs: Dict[str, Any] = {}

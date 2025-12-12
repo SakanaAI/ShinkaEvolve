@@ -16,7 +16,7 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `ShinkaEvolve` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
-![](docs/conceptual.png)
+![evolution](https://github.com/user-attachments/assets/22cf3468-17fe-4995-9e13-d602b490a54e)
 
 ## Documentation 📝
 
@@ -26,6 +26,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 📓 **[Tutorial Notebook](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
 | ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
 | 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
+|🕹️ **[Local LLM Support](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)**| Instructions for Local LLMs | How to setup local LLMs on your machine|
 
 ## Installation & Quick Start 🚀
 

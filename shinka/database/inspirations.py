@@ -72,6 +72,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             self.cursor.execute(
                 """
                 SELECT p.id FROM programs p
+                JOIN archive a ON p.id = a.program_id
                 WHERE p.island_idx = ? AND p.correct = 1
                 ORDER BY p.combined_score DESC
                 LIMIT ?
@@ -93,7 +94,8 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
                 placeholders_rand = ",".join("?" * len(insp_ids))
                 sql_rand = f"""
                     SELECT p.id FROM programs p
-                    WHERE p.island_idx = ? AND p.correct = 1 
+                    JOIN archive a ON p.id = a.program_id
+                    WHERE p.island_idx = ? AND p.correct = 1
                     AND p.id NOT IN ({placeholders_rand})
                     ORDER BY RANDOM() LIMIT ?
                 """
@@ -111,9 +113,10 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             needed = n - len(inspirations)
             if needed > 0:
                 placeholders_rand = ",".join("?" * len(insp_ids))
-                sql_rand = f"""SELECT id FROM programs
-                                 WHERE correct = 1 
-                                 AND id NOT IN ({placeholders_rand})
+                sql_rand = f"""SELECT p.id FROM programs p
+                                 JOIN archive a ON p.id = a.program_id
+                                 WHERE p.correct = 1
+                                 AND p.id NOT IN ({placeholders_rand})
                                  ORDER BY RANDOM() LIMIT ?
                                  """
                 params_rand = list(insp_ids) + [needed]

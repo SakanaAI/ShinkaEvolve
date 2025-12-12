@@ -282,8 +282,8 @@ def analyze_code_metrics(code_string, language="python"):
             # If Python parsing fails, fall back to C++ analysis
             return analyze_cpp_complexity(code_string)
 
-    # For C/C++/CUDA and other languages, use regex-based analysis
-    elif language in ["cpp", "c", "cuda", "c++"]:
+    # For C/C++/CUDA/Rust/Swift/JSON and other languages, use regex-based analysis
+    elif language in ["cpp", "c", "cuda", "c++", "rust", "swift", "json", "json5"]:
         return analyze_cpp_complexity(code_string)
 
     # For unknown languages, use simple line-based complexity

@@ -45,6 +45,7 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
+    "google-generativeai",
 ]
 
 [tool.setuptools]
@@ -56,8 +57,8 @@ include = ["shinka", "shinka.*"]
 [tool.setuptools.package-data]
 "*" = ["*"]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=6.0",
     "black",
     "isort",
