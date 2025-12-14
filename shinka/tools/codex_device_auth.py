@@ -13,7 +13,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 
 class CodexAuthError(RuntimeError):
@@ -96,34 +96,33 @@ def ensure_codex_authenticated(
     api_key: Optional[str] = None,
     timeout_seconds: int = 900,
     allow_interactive: Optional[bool] = None,
-) -> None:
+) -> Literal["status", "device_auth", "api_key"]:
     """Ensure Codex is authenticated, attempting login flows if needed.
 
     Order of operations:
     1) `codex login status` (fast path)
-    2) If not logged in and api_key provided, attempt `codex login --with-api-key`
-    3) If still not logged in and interactive, attempt `codex login --device-auth`
+    2) If not logged in and interactive, attempt `codex login --device-auth`
+    3) If still not logged in and api_key provided, attempt `codex login --with-api-key`
 
     Raises:
         CodexAuthError: If authentication is not available after attempts.
     """
 
     if is_codex_authenticated(codex_bin):
-        return
-
-    if api_key:
-        if _login_with_api_key(codex_bin, api_key, timeout_seconds=timeout_seconds):
-            if is_codex_authenticated(codex_bin):
-                return
+        return "status"
 
     interactive = _is_interactive() if allow_interactive is None else allow_interactive
     if interactive:
         if _login_device_auth(codex_bin, timeout_seconds=timeout_seconds):
             if is_codex_authenticated(codex_bin):
-                return
+                return "device_auth"
+
+    if api_key:
+        if _login_with_api_key(codex_bin, api_key, timeout_seconds=timeout_seconds):
+            if is_codex_authenticated(codex_bin):
+                return "api_key"
 
     raise CodexAuthError(
         "Codex authentication required. Run `codex login --device-auth` "
         "or provide an OpenAI API key via OPENAI_API_KEY / ~/.shinka/credentials.json."
     )
-

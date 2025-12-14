@@ -121,11 +121,11 @@ def run_codex_task(
     # Use cli_path if provided, fall back to codex_path for backward compat
     binary = ensure_codex_available(cli_path or codex_path)
 
-    # Headless-friendly auth: use API key if available, otherwise fall back to device auth.
-    # This avoids requiring users to run `codex login` manually before using Shinka.
+    # Authentication: prefer an existing Codex CLI login (e.g. ChatGPT subscription),
+    # and only fall back to API key auth when no interactive login is available.
     api_key = get_api_key("codex")
     try:
-        ensure_codex_authenticated(binary, api_key=api_key)
+        auth_method = ensure_codex_authenticated(binary, api_key=api_key)
     except CodexAuthError as exc:
         raise CodexExecutionError(str(exc)) from exc
 
@@ -173,9 +173,13 @@ def run_codex_task(
     model_name = profile or "gpt-4.1-mini"  # Default Codex model (in pricing.py)
     session_id: Optional[str] = None
 
+    env = dict(os.environ)
+    if auth_method == "api_key" and api_key:
+        env["OPENAI_API_KEY"] = api_key
+
     process = subprocess.Popen(
         cmd,
-        env={**os.environ, **({"OPENAI_API_KEY": api_key} if api_key else {})},
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

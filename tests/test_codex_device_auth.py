@@ -17,7 +17,8 @@ def test_ensure_codex_authenticated_noop_when_logged_in(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    ensure_codex_authenticated(Path("/bin/codex"), allow_interactive=False)
+    method = ensure_codex_authenticated(Path("/bin/codex"), allow_interactive=False)
+    assert method == "status"
     assert [args for args, _ in calls] == [[str(Path("/bin/codex")), "login", "status"]]
 
 
@@ -41,11 +42,12 @@ def test_ensure_codex_authenticated_uses_api_key_login(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    ensure_codex_authenticated(
+    method = ensure_codex_authenticated(
         Path("/bin/codex"),
         api_key="sk-test",
         allow_interactive=False,
     )
+    assert method == "api_key"
 
     called = [a for a, _ in calls]
     assert called[0][1:] == ["login", "status"]
@@ -63,4 +65,3 @@ def test_ensure_codex_authenticated_raises_when_noninteractive(monkeypatch):
 
     with pytest.raises(CodexAuthError):
         ensure_codex_authenticated(Path("/bin/codex"), allow_interactive=False)
-
