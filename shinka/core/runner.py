@@ -1439,14 +1439,14 @@ class EvolutionRunner:
     ) -> EmbeddingCorpus:
         """Build embedding corpus from generation directory for multi-file novelty."""
         # Get changed files from agentic edit for prioritization
-        changed_first: Optional[List[str]] = None
+        changed_first: Optional[List[Path]] = None
         if meta_patch_data and self.evo_config.embedding_use_changed_files_first:
             agent_changed = meta_patch_data.get("agent_changed_files")
             if agent_changed:
-                changed_first = list(agent_changed.keys())
+                changed_first = [Path(p) for p in agent_changed.keys()]
 
         return build_embedding_corpus(
-            root_dir=generation_dir,
+            root=generation_dir,
             include_globs=self.evo_config.embedding_include_globs,
             exclude_globs=self.evo_config.embedding_exclude_globs,
             max_files=self.evo_config.embedding_max_files,
