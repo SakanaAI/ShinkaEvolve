@@ -1107,6 +1107,9 @@ class EvolutionRunner:
                     # error_attempt is already set from apply_patch or default
                     pass
 
+        if self.llm_selection is not None:
+            self.llm_selection.update_cost(model_name, total_costs)
+  
         # Only consider the diff summary for the original source file
         original_filename = f"original.{self.lang_ext}"
         if original_filename in diff_summary:

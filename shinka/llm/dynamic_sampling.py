@@ -90,7 +90,8 @@ class BanditBase(ABC):
     def _resolve_subset(self, subset: Subset) -> np.ndarray:
         if subset is None:
             return np.arange(self.n_arms, dtype=np.int64)
-        if isinstance(subset, np.ndarray) and np.issubdtype(subset.dtype, np.integer):
+        if isinstance(subset, np.ndarray) and np.issubdtype(
+                subset.dtype, np.integer):
             return subset.astype(np.int64)
         idxs = [self._resolve_arm(a) for a in subset]
         return np.asarray(idxs, dtype=np.int64)
@@ -103,6 +104,14 @@ class BanditBase(ABC):
     def update_submitted(
         self,
         arm: Arm,
+    ) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_cost(
+        self,
+        arm: Arm,
+        cost: float,
     ) -> float:
         raise NotImplementedError
 
@@ -148,6 +157,8 @@ class AsymmetricUCB(BanditBase):
         adaptive_scale: bool = True,
         asymmetric_scaling: bool = True,
         exponential_base: Optional[float] = 1.0,
+        cost_aware_coef: float = 0.0,
+        cost_exploration_coef: Optional[float] = None,
     ):
         super().__init__(
             n_arms=n_arms,
@@ -164,11 +175,18 @@ class AsymmetricUCB(BanditBase):
             )
         if not (0.0 <= epsilon <= 1.0):
             raise ValueError("epsilon must be in [0, 1]")
+        if not (0.0 <= cost_aware_coef <= 1.0):
+            raise ValueError("cost_aware_coefficient must be in [0, 1]")
         self.c = float(exploration_coef)
         self.epsilon = float(epsilon)
         self.adaptive_scale = bool(adaptive_scale)
         self.asymmetric_scaling = bool(asymmetric_scaling)
         self.exponential_base = exponential_base
+        self.cost_aware_coefficient = float(cost_aware_coef)
+        if cost_exploration_coef is None:
+            self.cost_exploration_coef = self.c
+        else:
+            self.cost_exploration_coef = float(cost_exploration_coef)
 
         self.use_exponential_scaling = self.exponential_base is not None
 
@@ -180,6 +198,8 @@ class AsymmetricUCB(BanditBase):
         n = self.n_arms
         self.n_submitted = np.zeros(n, dtype=np.float64)
         self.n_completed = np.zeros(n, dtype=np.float64)
+        self.n_costs = np.zeros(n, dtype=np.float64)
+        self.total_costs = np.zeros(n, dtype=np.float64)
         if self.use_exponential_scaling:
             self.s = np.full(n, -np.inf, dtype=np.float64)
         else:
@@ -196,6 +216,9 @@ class AsymmetricUCB(BanditBase):
         else:
             self._obs_max = -np.inf
             self._obs_min = np.inf
+
+        self.max_cost_observed = -np.inf
+        self.min_cost_observed = np.inf
 
     @property
     def n(self) -> np.ndarray:
@@ -293,7 +316,8 @@ class AsymmetricUCB(BanditBase):
 
         if self._shift_by_parent and self._shift_by_baseline:
             baseline = (
-                self._baseline if baseline is None else max(baseline, self._baseline)
+                self._baseline if baseline is None else max(
+                    baseline, self._baseline)
             )
         elif self._shift_by_baseline:
             baseline = self._baseline
@@ -327,10 +351,70 @@ class AsymmetricUCB(BanditBase):
         self._maybe_decay()
         return r, baseline
 
+    def update_cost(
+        self,
+        arm: Arm,
+        cost: float,
+    ) -> float:
+        i = self._resolve_arm(arm)
+        c = float(cost)
+        self.total_costs[i] += c
+        self.n_costs[i] += 1.0
+
+        if c > self.max_cost_observed:
+            self.max_cost_observed = c
+        if c < self.min_cost_observed:
+            self.min_cost_observed = c
+
+        return c
+
+    def _normalized_cost_ratio(
+        self,
+        idx: np.ndarray,
+        num: float,
+        n_cost_bonus: Optional[np.ndarray] = None,
+        denom_floor_min: float = 1e-7,
+    ) -> Optional[np.ndarray]:
+        if not (
+            np.isfinite(self.max_cost_observed)
+            and np.isfinite(self.min_cost_observed)
+        ):
+            return None
+        if self.max_cost_observed < self.min_cost_observed:
+            return None
+
+        n_cost = np.maximum(self.n_costs[idx], 1.0)
+        mean_costs = self.total_costs[idx] / n_cost
+
+        cost_range = self.max_cost_observed - self.min_cost_observed
+
+        if n_cost_bonus is None:
+            n_cost_bonus = n_cost
+
+        # optimistic "cheapness": use a lower confidence bound on cost
+        cost_bonus = (
+            self.cost_exploration_coef * cost_range
+            * np.sqrt(num / n_cost_bonus)
+        )
+
+        denom_floor = max(float(self.min_cost_observed), denom_floor_min)
+        cost_denom = np.maximum(mean_costs - cost_bonus, denom_floor)
+
+        have_cost = self.n_costs[idx] > 0.0
+
+        # use median of observed costs as reference to avoid imbalance when
+        # interpolating between reward-only and reward/cost scaling
+        if np.any(have_cost):
+            cost_ref = float(np.median(mean_costs[have_cost]))
+        else:
+            cost_ref = denom_floor
+        cost_ref = max(cost_ref, denom_floor)
+
+        return cost_ref / cost_denom
+
     def posterior(self, subset=None, samples=None):
         idx = self._resolve_subset(subset)
         if samples is None or int(samples) <= 1:
-            idx = self._resolve_subset(subset)
             n_sub = self.n[idx]
             probs = np.zeros(self._n_arms, dtype=np.float64)
 
@@ -348,8 +432,16 @@ class AsymmetricUCB(BanditBase):
             t = float(self.n.sum())
             base = self._normalized_means(idx)
             num = 2.0 * np.log(max(t, 2.0))
-            bonus = self.c * np.sqrt(num / n_sub)
+            base_bonus = np.sqrt(num / n_sub)
+            bonus = self.c * base_bonus
             scores = base + bonus
+
+            if self.cost_aware_coefficient > 0.0:
+                cost_ratio = self._normalized_cost_ratio(idx, num)
+                if cost_ratio is not None:
+                    # weighted scaling towards maximizing optimistic reward/cost
+                    scores *= (1.0 - self.cost_aware_coefficient) + (
+                        self.cost_aware_coefficient * cost_ratio)
 
             winners = np.where(scores == scores.max())[0]
             rem = idx.size - winners.size
@@ -403,7 +495,21 @@ class AsymmetricUCB(BanditBase):
         while k > 0:
             num = 2.0 * np.log(max(t0 + step, 2.0))
             den = np.maximum(n_sub + v, 1.0)
-            scores = base + self.c * np.sqrt(num / den)
+            base_bonus = np.sqrt(num / den)
+            scores = base + self.c * base_bonus
+
+            if self.cost_aware_coefficient > 0.0:
+                n_cost = np.maximum(self.n_costs[idx], 1.0)
+                n_cost_bonus = n_cost + v
+                cost_ratio = self._normalized_cost_ratio(
+                    idx,
+                    num,
+                    n_cost_bonus=n_cost_bonus,
+                )
+                if cost_ratio is not None:
+                    # weighted scaling towards maximizing optimistic reward/cost
+                    scores *= (1 - self.cost_aware_coefficient) + (
+                        self.cost_aware_coefficient * cost_ratio)
 
             winners = np.where(scores == scores.max())[0]
             p = np.zeros(A, dtype=np.float64)
@@ -485,7 +591,40 @@ class AsymmetricUCB(BanditBase):
         num = 2.0 * np.log(max(t, 2.0))
         n_sub = np.maximum(self.n[idx], 1.0)
         exploration = self.c * np.sqrt(num / n_sub)
-        score = exploitation + exploration
+        score_raw = exploitation + exploration
+
+        have_costs = (
+            np.isfinite(self.min_cost_observed)
+            and np.isfinite(self.max_cost_observed)
+            and (self.max_cost_observed >= self.min_cost_observed)
+        )
+
+        n_costs = self.n_costs.astype(int)
+        tot_cost = self.total_costs.astype(np.float64)
+
+        mean_costs = np.zeros(self._n_arms, dtype=np.float64)
+        denom_cost = np.full(self._n_arms, np.nan, dtype=np.float64)
+        score_cost = np.full(self._n_arms, np.nan, dtype=np.float64)
+        score_used = score_raw.copy()
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mask_cost = self.n_costs > 0.0
+            mean_costs[mask_cost] = (
+                tot_cost[mask_cost] / self.n_costs[mask_cost]
+            )
+
+        if have_costs:
+            cost_ratio = self._normalized_cost_ratio(
+                idx,
+                num,
+                denom_floor_min=1e-3,
+            )
+            if cost_ratio is not None:
+                score_cost = score_raw * cost_ratio
+
+                k = float(self.cost_aware_coefficient)
+                m = (1.0 - k) + (k * cost_ratio)
+                score_used = score_raw * m
 
         # Create header information
         exp_base_str = (
@@ -498,7 +637,9 @@ class AsymmetricUCB(BanditBase):
             f"adaptive={self.adaptive_scale}, asym={self.asymmetric_scaling}, "
             f"exp_base={exp_base_str}, shift_base={self._shift_by_baseline}, "
             f"shift_parent={self._shift_by_parent}, "
-            f"log_sum={self.use_exponential_scaling})"
+            f"log_sum={self.use_exponential_scaling}, "
+            f"cost_k={self.cost_aware_coefficient:.3f}, "
+            f"cost_c={self.cost_exploration_coef:.3f})"
         )
 
         additional_info = []
@@ -524,16 +665,21 @@ class AsymmetricUCB(BanditBase):
             box=rich.box.ROUNDED,
             show_header=True,
             header_style="bold cyan",
-            width=120,  # Match display.py table width
+            width=150,
         )
 
         # Add columns
-        table.add_column("arm", style="white", width=24)
+        table.add_column("arm", style="white", width=16)
         table.add_column("n", justify="right", style="green")
+        table.add_column("n_cost", justify="right", style="green")
         table.add_column("div", justify="right", style="yellow")
         table.add_column(mean_label, justify="right", style="blue")
+        table.add_column("tot_cost", justify="right", style="yellow")
+        table.add_column("mean_cost", justify="right", style="yellow")
         table.add_column("exploit", justify="right", style="magenta")
         table.add_column("explore", justify="right", style="cyan")
+        table.add_column("score_raw", justify="right", style="white")
+        table.add_column("score_cost", justify="right", style="white")
         table.add_column("score", justify="right", style="bold white")
         table.add_column("post", justify="right", style="bright_green")
 
@@ -544,14 +690,30 @@ class AsymmetricUCB(BanditBase):
                 display_name = name.split("/")[-1][-25:]
             else:
                 display_name = str(name)
+
+            if n_costs[i] > 0:
+                mean_cost_str = f"{mean_costs[i]:.4f}"
+            else:
+                mean_cost_str = "-"
+
+            if have_costs:
+                score_cost_str = f"{score_cost[i]:.4f}"
+            else:
+                score_cost_str = "-"
+
             table.add_row(
                 display_name,
                 f"{n[i]:d}",
+                f"{n_costs[i]:d}",
                 f"{self.divs[i]:.3f}",
                 f"{mean_disp[i]:.4f}",
+                f"{tot_cost[i]:.4f}",
+                mean_cost_str,
                 f"{exploitation[i]:.4f}",
                 f"{exploration[i]:.4f}",
-                f"{score[i]:.4f}",
+                f"{score_raw[i]:.4f}",
+                score_cost_str,
+                f"{score_used[i]:.4f}",
                 f"{post[i]:.4f}",
             )
 
@@ -601,6 +763,13 @@ class FixedSampler(BanditBase):
     ) -> float:
         return 0.0
 
+    def update_cost(
+        self,
+        arm: Arm,
+        cost: float,
+    ) -> float:
+        return 0.0
+
     def update(
         self,
         arm: Arm,
@@ -641,7 +810,7 @@ class FixedSampler(BanditBase):
             box=rich.box.ROUNDED,
             show_header=True,
             header_style="bold cyan",
-            width=120,  # Match display.py table width
+            width=120,
         )
 
         # Add columns
