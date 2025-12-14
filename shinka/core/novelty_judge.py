@@ -1,15 +1,23 @@
-from typing import Optional, Tuple, List
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, List
 import logging
 from pathlib import Path
 from shinka.database import Program
 from shinka.llm import LLMClient
 from shinka.prompts import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG
 
+# Type for agent runner function (used in agentic mode)
+AgentRunner = Callable[..., Iterator[Dict[str, Any]]]
+
 logger = logging.getLogger(__name__)
 
 
 class NoveltyJudge:
-    """Handles novelty assessment for generated code using LLM-based comparison."""
+    """Handles novelty assessment for generated code using LLM-based comparison.
+
+    Supports optional agentic mode where LLM novelty checks can be performed
+    via CLI agents (Codex, ShinkaAgent). When agentic mode is disabled or
+    agent_runner is not provided, falls back to legacy LLMClient-based checks.
+    """
 
     def __init__(
         self,
@@ -17,11 +25,26 @@ class NoveltyJudge:
         language: str = "python",
         similarity_threshold: float = 1.0,
         max_novelty_attempts: int = 3,
+        # Agentic mode parameters (optional, graceful fallback to legacy)
+        agentic_mode: bool = False,
+        agent_runner: Optional[AgentRunner] = None,
+        agent_config: Optional[Any] = None,
     ):
         self.novelty_llm_client = novelty_llm_client
         self.language = language
         self.similarity_threshold = similarity_threshold
         self.max_novelty_attempts = max_novelty_attempts
+        # Store agentic config for future use (not implemented in minimal PR)
+        self.agentic_mode = agentic_mode
+        self.agent_runner = agent_runner
+        self.agent_config = agent_config
+
+        # Log if agentic mode requested but no runner provided
+        if agentic_mode and agent_runner is None:
+            logger.warning(
+                "Agentic mode enabled but no agent_runner provided. "
+                "Falling back to legacy LLMClient-based novelty checks."
+            )
 
     def should_check_novelty(
         self,

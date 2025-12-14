@@ -313,11 +313,16 @@ class EvolutionRunner:
         )
 
         # Initialize NoveltyJudge for novelty assessment
+        # Pass agentic config for potential future use, with graceful fallback
         self.novelty_judge = NoveltyJudge(
             novelty_llm_client=self.novelty_llm,
             language=evo_config.language,
             similarity_threshold=evo_config.code_embed_sim_threshold,
             max_novelty_attempts=evo_config.max_novelty_attempts,
+            # Agentic novelty (falls back to legacy if agent_runner not set)
+            agentic_mode=evo_config.agentic_mode,
+            agent_runner=None,  # Not implemented in minimal PR
+            agent_config=evo_config.agentic if evo_config.agentic_mode else None,
         )
 
         # Initialize rich console for formatted output

@@ -3512,7 +3512,8 @@ ${'='.repeat(80)}
                     'init': d3.symbolDiamond,
                     'full': d3.symbolCircle,
                     'diff': d3.symbolSquare,
-                    'cross': d3.symbolCross
+                    'cross': d3.symbolCross,
+                    'agentic': d3.symbolTriangle  // Triangle for agentic patches
                 };
                 const getShape = (patchType) => shapeMap[patchType] || d3.symbolCircle;
                 const symbol = d3.symbol().size(2500);
@@ -4689,10 +4690,11 @@ ${'='.repeat(80)}
                 codeWrapper.innerHTML = "<p>No code available for this node.</p>";
             }
 
-            // Update diff tab
+            // Update diff tab (supports multi-file diffs from agentic backend)
             const diffWrapper = document.getElementById("code-diff");
-            if (data.code_diff) {
-                diffWrapper.innerHTML = `<pre class="diff">${formatDiff(data.code_diff)}</pre>`;
+            const diffFiles = getDiffFilesForNode(data);
+            if (diffFiles.length > 0) {
+                diffWrapper.innerHTML = renderMultiFileDiff(diffFiles);
             } else {
                 diffWrapper.innerHTML = "<p>No code diff available for this node.</p>";
             }
@@ -4806,6 +4808,120 @@ ${'='.repeat(80)}
                 }
                 return `<span class="diff-line">${escapedLine}</span>`;
             }).join('');
+        }
+
+        // Get diff statistics (additions and deletions count)
+        function getDiffStats(diffText) {
+            if (!diffText) return { additions: 0, deletions: 0 };
+            const lines = diffText.split('\n');
+            let additions = 0, deletions = 0;
+            lines.forEach(line => {
+                if (line.startsWith('+') && !line.startsWith('+++')) additions++;
+                else if (line.startsWith('-') && !line.startsWith('---')) deletions++;
+            });
+            return { additions, deletions };
+        }
+
+        // Get default primary file path based on language
+        function defaultPrimaryPath(language) {
+            const langPaths = { python: 'main.py', javascript: 'main.js', typescript: 'main.ts', swift: 'main.swift' };
+            return langPaths[language] || 'main.py';
+        }
+
+        // Extract diff files from a node (supports multi-file agentic diffs)
+        function getDiffFilesForNode(node) {
+            // Check for array of diffs (multi-file format)
+            if (node && Array.isArray(node.code_diffs) && node.code_diffs.length > 0) {
+                return node.code_diffs.map(diffEntry => ({
+                    path: diffEntry.path || node.metadata?.agent_primary_file || defaultPrimaryPath(node.language),
+                    diff: diffEntry.diff || '',
+                }));
+            }
+
+            // Check metadata.agent_code_diffs (dict format from agentic backend)
+            if (node && node.metadata?.agent_code_diffs && typeof node.metadata.agent_code_diffs === 'object') {
+                const diffs = node.metadata.agent_code_diffs;
+                const entries = Object.entries(diffs);
+                if (entries.length > 0) {
+                    return entries.map(([path, diff]) => ({ path, diff: diff || '' }));
+                }
+            }
+
+            // Fallback to single code_diff
+            if (node && node.code_diff) {
+                return [{
+                    path: node.metadata?.agent_primary_file || defaultPrimaryPath(node.language),
+                    diff: node.code_diff,
+                }];
+            }
+
+            return [];
+        }
+
+        // Render multi-file diff viewer
+        function renderMultiFileDiff(diffFiles) {
+            if (!diffFiles || diffFiles.length === 0) {
+                return '<p>No code diff available for this node.</p>';
+            }
+
+            // Calculate totals
+            const totals = diffFiles.reduce((acc, file) => {
+                const stats = getDiffStats(file.diff);
+                acc.additions += stats.additions;
+                acc.deletions += stats.deletions;
+                return acc;
+            }, { additions: 0, deletions: 0 });
+
+            const filesLabel = diffFiles.length === 1 ? 'file changed' : 'files changed';
+            const autoExpand = diffFiles.length === 1;
+
+            let html = `
+                <div class="diff-summary" style="margin-bottom: 10px; padding: 8px; background: #f6f8fa; border-radius: 4px; font-size: 13px;">
+                    <span style="font-weight: 500;">${diffFiles.length} ${filesLabel}</span>
+                    <span style="margin-left: 10px; color: #22863a;">+${totals.additions}</span>
+                    <span style="margin-left: 5px; color: #cb2431;">-${totals.deletions}</span>
+                </div>
+            `;
+
+            diffFiles.forEach((diffEntry, idx) => {
+                const stats = getDiffStats(diffEntry.diff);
+                const isCollapsed = !autoExpand && idx > 0;
+                const diffContent = diffEntry.diff ? formatDiff(diffEntry.diff) : '<p style="padding: 10px;">No diff content for this file.</p>';
+
+                html += `
+                    <div class="diff-file-section" style="margin-bottom: 10px; border: 1px solid #e1e4e8; border-radius: 4px;">
+                        <div class="diff-file-header" style="padding: 8px 12px; background: #f6f8fa; border-bottom: 1px solid #e1e4e8; cursor: pointer; display: flex; align-items: center;" onclick="this.parentElement.classList.toggle('collapsed')">
+                            <span class="collapse-icon" style="margin-right: 8px; font-family: monospace;">${isCollapsed ? '+' : '-'}</span>
+                            <span style="flex: 1; font-family: monospace; font-size: 12px;">${escapeHtml(diffEntry.path || 'File ' + (idx + 1))}</span>
+                            <span style="color: #22863a; margin-right: 5px;">+${stats.additions}</span>
+                            <span style="color: #cb2431;">-${stats.deletions}</span>
+                        </div>
+                        <div class="diff-file-body" style="display: ${isCollapsed ? 'none' : 'block'};">
+                            <pre class="diff" style="margin: 0; padding: 10px; overflow-x: auto;">${diffContent}</pre>
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Add collapse/expand toggle script
+            html += `
+                <script>
+                    document.querySelectorAll('.diff-file-section').forEach(section => {
+                        const header = section.querySelector('.diff-file-header');
+                        const body = section.querySelector('.diff-file-body');
+                        const icon = section.querySelector('.collapse-icon');
+                        if (header && body && icon) {
+                            header.onclick = () => {
+                                const isHidden = body.style.display === 'none';
+                                body.style.display = isHidden ? 'block' : 'none';
+                                icon.textContent = isHidden ? '-' : '+';
+                            };
+                        }
+                    });
+                </script>
+            `;
+
+            return html;
         }
 
         // Get CSS class for score display
@@ -7196,7 +7312,8 @@ ${'='.repeat(80)}
                 'init': d3.symbolDiamond,
                 'full': d3.symbolCircle,
                 'diff': d3.symbolSquare,
-                'cross': d3.symbolCross
+                'cross': d3.symbolCross,
+                'agentic': d3.symbolTriangle  // Triangle for agentic patches
             };
             const getShape = (patchType) => shapeMap[patchType] || d3.symbolCircle;
             const symbol = d3.symbol().size(1500); // Smaller size for island trees
