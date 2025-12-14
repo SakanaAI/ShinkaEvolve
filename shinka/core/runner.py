@@ -1126,6 +1126,25 @@ class EvolutionRunner:
         else:
             raise ValueError(f"Invalid patch type: {patch_type}")
 
+        # Multi-file support (legacy patch path): ensure helper files are present.
+        # Agentic mode hydrates the workspace explicitly; for legacy patches we
+        # hydrate from the parent generation directory so multi-file tasks can run.
+        generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{generation}"
+        if generation_dir.is_dir():
+            # Clear any stale workspace files from earlier patch attempts/resamples.
+            # Keep evaluation artifacts directories (e.g., results/) intact.
+            for child in generation_dir.iterdir():
+                if child.name in WORKSPACE_EXCLUDE_DIRS:
+                    continue
+                try:
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                except OSError:
+                    continue
+            self._hydrate_generation_directory(parent_program, generation_dir)
+
         total_costs = 0
         msg_history = []
         llm_kwargs = self.llm.get_kwargs()
