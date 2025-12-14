@@ -568,6 +568,29 @@ class EvolutionRunner:
         patch_description = "Initial program from file."
         patch_type = "init"
 
+        # Multi-file support: copy additional support files into generation 0 directory
+        if self.evo_config.init_support_dir:
+            support_dir = Path(self.evo_config.init_support_dir)
+            if support_dir.is_dir():
+                for path in support_dir.rglob("*"):
+                    rel = path.relative_to(support_dir)
+                    # Skip excluded dirs/files
+                    if any(part in WORKSPACE_EXCLUDE_DIRS for part in rel.parts):
+                        continue
+                    if path.is_dir():
+                        continue
+                    if path.suffix in WORKSPACE_EXCLUDE_SUFFIXES:
+                        continue
+                    if path.name in WORKSPACE_EXCLUDE_FILES:
+                        continue
+                    target = Path(initial_dir) / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, target)
+            else:
+                logger.warning(
+                    f"init_support_dir provided but not a directory: {support_dir}"
+                )
+
         if self.evo_config.init_program_path:
             if self.verbose:
                 logger.info(
@@ -1414,9 +1437,27 @@ class EvolutionRunner:
     ) -> Dict[Path, str]:
         """Collect workspace files from parent program's generation directory."""
         workspace_files: Dict[Path, str] = {}
+        parent_generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{parent_program.generation}"
+        if parent_generation_dir.is_dir():
+            for file_path in parent_generation_dir.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                rel_path = file_path.relative_to(parent_generation_dir)
+                if any(part in WORKSPACE_EXCLUDE_DIRS for part in rel_path.parts):
+                    continue
+                if file_path.suffix in WORKSPACE_EXCLUDE_SUFFIXES:
+                    continue
+                if file_path.name in WORKSPACE_EXCLUDE_FILES:
+                    continue
+                try:
+                    workspace_files[rel_path] = file_path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+            return workspace_files
+
         parent_metadata = parent_program.metadata or {}
 
-        # Check if parent has stored changed files from agentic edit
+        # Fallback: Check if parent has stored changed files from agentic edit
         agent_changed = parent_metadata.get("agent_changed_files")
         if agent_changed and isinstance(agent_changed, dict):
             for rel_path_str, content in agent_changed.items():
@@ -1428,6 +1469,24 @@ class EvolutionRunner:
         self, parent_program: Program, generation_dir: Path
     ) -> None:
         """Copy workspace files from parent to new generation directory."""
+        parent_generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{parent_program.generation}"
+        if parent_generation_dir.is_dir():
+            for src_path in parent_generation_dir.rglob("*"):
+                rel_path = src_path.relative_to(parent_generation_dir)
+                if any(part in WORKSPACE_EXCLUDE_DIRS for part in rel_path.parts):
+                    continue
+                if src_path.is_dir():
+                    continue
+                if src_path.suffix in WORKSPACE_EXCLUDE_SUFFIXES:
+                    continue
+                if src_path.name in WORKSPACE_EXCLUDE_FILES:
+                    continue
+                dst_path = generation_dir / rel_path
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+            return
+
+        # Fallback to metadata-stored files
         workspace_files = self._collect_parent_workspace_files(parent_program)
         for rel_path, content in workspace_files.items():
             target_path = generation_dir / rel_path
