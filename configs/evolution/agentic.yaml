@@ -1,6 +1,13 @@
 evo_config:
   _target_: shinka.core.EvolutionConfig
   agentic_mode: true
+  # LLM models for patch generation (used by bandit sampling)
+  llm_models:
+    - "gpt-4.1"
+  llm_dynamic_selection: ucb
+  embedding_model: "text-embedding-3-small"
+  num_generations: 2
+  max_parallel_jobs: 1
   agentic:
     _target_: shinka.core.runner.AgenticConfig
     backend: "shinka"

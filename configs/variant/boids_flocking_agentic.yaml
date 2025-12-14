@@ -1,0 +1,27 @@
+# Variant configuration for Boids Flocking task with agentic editing
+# This enables the multi-turn agentic backend for multi-file evolution
+
+defaults:
+  - /task: boids_flocking
+  - override /evolution@_global_: agentic
+
+variant_suffix: "_boids_agentic"
+exp_name: "shinka_boids_flocking"
+
+# Override evo_config with boids-specific values (applied last)
+evo_config:
+  init_support_dir: examples/boids_flocking
+  task_sys_msg: |
+    You are an expert in emergent behavior simulation and evolutionary algorithms.
+    Optimize the Boids flocking simulation to achieve:
+    1. Minimize collisions between boids (separation)
+    2. Maintain tight grouping (cohesion)
+    3. Achieve good velocity alignment
+
+    The simulation runs 1000 steps with 50 boids. You can edit multiple files:
+    - initial.py: Entry point and configuration
+    - boid.py: Individual boid behavior
+    - simulation.py: Simulation loop and physics
+    - render.py: Visualization (optional)
+
+    Focus on tuning behavior weights, perception radius, and force calculations.
