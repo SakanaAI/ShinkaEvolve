@@ -4890,7 +4890,7 @@ ${'='.repeat(80)}
 
                 html += `
                     <div class="diff-file-section" style="margin-bottom: 10px; border: 1px solid #e1e4e8; border-radius: 4px;">
-                        <div class="diff-file-header" style="padding: 8px 12px; background: #f6f8fa; border-bottom: 1px solid #e1e4e8; cursor: pointer; display: flex; align-items: center;" onclick="this.parentElement.classList.toggle('collapsed')">
+                        <div class="diff-file-header" style="padding: 8px 12px; background: #f6f8fa; border-bottom: 1px solid #e1e4e8; cursor: pointer; display: flex; align-items: center;" onclick="var body=this.nextElementSibling; var icon=this.querySelector('.collapse-icon'); var hidden=body.style.display==='none'; body.style.display=hidden?'block':'none'; icon.textContent=hidden?'-':'+';">
                             <span class="collapse-icon" style="margin-right: 8px; font-family: monospace;">${isCollapsed ? '+' : '-'}</span>
                             <span style="flex: 1; font-family: monospace; font-size: 12px;">${escapeHtml(diffEntry.path || 'File ' + (idx + 1))}</span>
                             <span style="color: #22863a; margin-right: 5px;">+${stats.additions}</span>
@@ -4902,24 +4902,6 @@ ${'='.repeat(80)}
                     </div>
                 `;
             });
-
-            // Add collapse/expand toggle script
-            html += `
-                <script>
-                    document.querySelectorAll('.diff-file-section').forEach(section => {
-                        const header = section.querySelector('.diff-file-header');
-                        const body = section.querySelector('.diff-file-body');
-                        const icon = section.querySelector('.collapse-icon');
-                        if (header && body && icon) {
-                            header.onclick = () => {
-                                const isHidden = body.style.display === 'none';
-                                body.style.display = isHidden ? 'block' : 'none';
-                                icon.textContent = isHidden ? '-' : '+';
-                            };
-                        }
-                    });
-                </script>
-            `;
 
             return html;
         }
