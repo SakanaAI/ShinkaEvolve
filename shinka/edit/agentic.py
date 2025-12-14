@@ -9,12 +9,16 @@ import time
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .codex_cli import run_codex_task
 from .types import AgentRunner
 
 logger = logging.getLogger(__name__)
+
+MAX_BASE_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_BINARY_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_FILES_TO_SCAN = 10_000
 
 
 @dataclass
@@ -94,9 +98,11 @@ class AgenticEditor:
             except Exception:
                 pass
         
+        scratch_resolved = self.scratch_dir.resolve()
+
         if self.scratch_dir.exists():
             shutil.rmtree(self.scratch_dir)
-        self.scratch_dir.mkdir(parents=True, exist_ok=True)
+        self.scratch_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         
         # Restore session_meta.json
         if preserved_meta is not None:
@@ -110,6 +116,22 @@ class AgenticEditor:
             if relative_path.is_absolute():
                 raise ValueError("Base file paths must be relative to the scratch root")
             target = self.scratch_dir / relative_path
+            try:
+                if not target.resolve().is_relative_to(scratch_resolved):
+                    raise ValueError(
+                        f"Base file path '{relative_path}' escapes scratch directory"
+                    )
+            except (OSError, ValueError) as e:
+                raise ValueError(
+                    f"Invalid base file path '{relative_path}': {e}"
+                ) from e
+
+            content_bytes = len(content.encode("utf-8"))
+            if content_bytes > MAX_BASE_FILE_SIZE:
+                raise ValueError(
+                    f"Base file {relative_path} exceeds max size "
+                    f"({content_bytes} > {MAX_BASE_FILE_SIZE} bytes)"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             baseline[relative_path] = content
@@ -209,27 +231,44 @@ class AgenticEditor:
 
         changed_files: Dict[Path, str] = {}
         files_checked = 0
-        
+        scratch_resolved = self.scratch_dir.resolve()
+
         for file_path in self.scratch_dir.rglob("*"):
+            # Prevent unbounded scans in pathological scratch trees.
+            if files_checked >= MAX_FILES_TO_SCAN:
+                break
+
             if not file_path.is_file():
                 continue
-            
+
+            # Avoid following symlinks/paths that escape the sandbox.
+            try:
+                if not file_path.resolve().is_relative_to(scratch_resolved):
+                    continue
+            except (OSError, ValueError):
+                continue
+
             rel_path = file_path.relative_to(self.scratch_dir)
-            
+
             # Skip internal session files - they shouldn't be part of the program
             if str(rel_path) in ("session_log.jsonl", "session_meta.json"):
                 continue
-                
+
             files_checked += 1
             try:
                 new_content = file_path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
+                try:
+                    if file_path.stat().st_size > MAX_BINARY_FILE_SIZE:
+                        continue
+                except OSError:
+                    continue
                 raw_bytes = file_path.read_bytes()
                 binary_changed_files[rel_path] = base64.b64encode(raw_bytes).decode(
                     "ascii"
                 )
                 continue
-            
+
             baseline_content = baseline.get(rel_path)
             if baseline_content is None:
                 # New file created

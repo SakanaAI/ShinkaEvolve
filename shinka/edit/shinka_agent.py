@@ -16,7 +16,6 @@ Reference: https://github.com/SWE-agent/mini-swe-agent
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re

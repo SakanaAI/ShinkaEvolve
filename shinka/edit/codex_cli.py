@@ -148,6 +148,9 @@ def run_codex_task(
     if system_prompt:
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
 
+    # Prevent the prompt from being interpreted as extra CLI options when it begins
+    # with '-' / '--' (e.g. "--sandbox host") by terminating option parsing.
+    cmd.append("--")
     cmd.append(full_prompt)
 
     start_time = time.monotonic()
@@ -270,7 +273,14 @@ def run_codex_task(
             )
     finally:
         if process.poll() is None:
-            process.kill()
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
         remove_session_process(process.pid)
 
 

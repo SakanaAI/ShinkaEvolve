@@ -4329,11 +4329,11 @@ ${'='.repeat(80)}
             
             // Update node summary
             document.getElementById("node-summary").innerHTML = `
-                <h3>${agentName} (Gen ${data.generation})</h3>
-                <p><strong>ID:</strong> <span style="font-family: monospace;">${data.id}</span></p>
-                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${data.parent_id || 'None'}</span></p>
+                <h3>${escapeHtml(agentName)} (Gen ${data.generation})</h3>
+                <p><strong>ID:</strong> <span style="font-family: monospace;">${escapeHtml(String(data.id))}</span></p>
+                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${escapeHtml(String(data.parent_id || 'None'))}</span></p>
                 <p><strong>Score:</strong> <span class="${getScoreClass(score)}">${formatScore(score)}</span></p>
-                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${data.error}</span></p>` : ''}
+                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${escapeHtml(String(data.error))}</span></p>` : ''}
             `;
             
 
@@ -4369,7 +4369,7 @@ ${'='.repeat(80)}
             
             if (data.metadata) {
                 for (const [key, value] of Object.entries(data.metadata)) {
-                    if (key !== 'thought' && key !== 'code_analysis_metrics' && key !== 'patch_description' && key !== 'stdout_log' && key !== 'stderr_log' && key !== 'llm_result') {
+                    if (key !== 'thought' && key !== 'code_analysis_metrics' && key !== 'patch_description' && key !== 'stdout_log' && key !== 'stderr_log' && key !== 'llm_result' && key !== 'agent_code_diffs') {
                         
                         let valueHtml;
                         if (typeof value === 'object' && value !== null) {

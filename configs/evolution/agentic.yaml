@@ -3,7 +3,7 @@ evo_config:
   agentic_mode: true
   agentic:
     _target_: shinka.core.runner.AgenticConfig
-    backend: "gemini"
+    backend: "shinka"
     cli_profile: null
     sandbox: "workspace-write"
     approval_mode: "full-auto"
@@ -18,13 +18,4 @@ evo_config:
   evaluator:
     _target_: shinka.core.runner.EvaluatorConfig
     mode: auto
-    agentic:
-      _target_: shinka.core.runner.AgenticEvaluatorConfig
-      cli_profile: null
-      sandbox: "workspace-write"
-      approval_mode: "full-auto"
-      max_turns: 80
-      max_seconds: 0
-      cli_path: null
-      extra_cli_config: {}
   results_dir: ${output_dir}
