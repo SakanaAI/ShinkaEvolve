@@ -12,7 +12,7 @@ import rich.box
 from typing import Any, Dict, List, Literal, Optional, Union, cast
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from subprocess import Popen
 from shinka.launch import JobScheduler, JobConfig, ProcessWithLogging
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
@@ -1621,6 +1621,14 @@ class EvolutionRunner:
 
         selected_backend = self.evo_config.agentic.backend
 
+        # Bandit model selection (same as legacy path at lines 1150-1153)
+        bandit_model: Optional[str] = None
+        if self.llm_selection is not None:
+            llm_kwargs = self.llm.get_kwargs()
+            bandit_model = llm_kwargs.get("model_name")
+            if bandit_model:
+                self.llm_selection.update_submitted(bandit_model)
+
         def failure_meta(
             message: str,
             *,
@@ -1655,7 +1663,8 @@ class EvolutionRunner:
                 "agent_changed_files": serialized_changed,
                 "agent_code_diffs": _build_code_diffs(changed_files),
                 "agent_primary_file": str(primary_filename),
-                "model_name": _agent_model_name(selected_backend),
+                # Use bandit-selected model for bandit learning, fall back to backend default
+                "model_name": bandit_model or _agent_model_name(selected_backend),
                 "agent_backend": selected_backend,
                 "agent_session_id": session_id,
                 "agent_resumed_from_parent": resumed_from_parent,
@@ -1725,9 +1734,20 @@ class EvolutionRunner:
             resume_session_id=resume_session_id,
         )
 
+        # Create config with bandit-selected model if available
+        agentic_config = self.evo_config.agentic
+        if bandit_model:
+            # Create modified extra_cli_config with bandit model
+            modified_extra_cli = dict(agentic_config.extra_cli_config)
+            modified_extra_cli["model"] = bandit_model
+            # Create new config with modified extra_cli_config
+            agentic_config = replace(
+                agentic_config, extra_cli_config=modified_extra_cli
+            )
+
         editor = AgenticEditor(
             scratch_dir=session_root,
-            config=self.evo_config.agentic,
+            config=agentic_config,
             runner=run_shinka_task if selected_backend == "shinka" else run_codex_task,
         )
 
@@ -1761,8 +1781,8 @@ class EvolutionRunner:
             patch_txt,
             patch_path,
         ) = apply_full_patch(
-            original_code=original_for_patch,
-            code_response=patch_str,
+            patch_str,
+            original_str=original_for_patch,
             patch_dir=patch_dir,
             language=self.evo_config.language,
         )
@@ -1825,10 +1845,15 @@ class EvolutionRunner:
             "agent_changed_files": serialized_changed,
             "agent_code_diffs": _build_code_diffs(agent_result.changed_files),
             "agent_primary_file": str(primary_filename),
-            "model_name": _agent_model_name(selected_backend, actual_model),
+            # Use bandit-selected model for bandit learning, fall back to actual model
+            "model_name": bandit_model or _agent_model_name(selected_backend, actual_model),
             "agent_backend": selected_backend,
             "agent_session_id": agent_result.session_id,
             "agent_resumed_from_parent": resumed_from_parent,
+            "bandit_selected_model": bandit_model,
         }
+
+        # Note: Bandit update happens in _process_completed_job() after evaluation,
+        # using the model_name stored in metadata (same pattern as legacy path)
 
         return code_diff, meta_edit_data, num_applied

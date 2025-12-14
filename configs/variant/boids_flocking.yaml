@@ -5,11 +5,10 @@ defaults:
   - /task: boids_flocking
   - /evolution: small_budget
 
+variant_suffix: "_boids"
+
 # Task-specific evolution overrides
 evo_config:
-  # Use smaller population for faster iterations
-  n_pop: 8
-
   # Enable agentic mode for multi-file editing
   agentic_mode: false  # Set to true for agentic experiments
 
