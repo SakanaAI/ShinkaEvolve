@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -14,6 +15,8 @@ from shinka.tools.codex_session_registry import (
     remove_session_process,
     update_session_process,
 )
+from shinka.tools.codex_device_auth import CodexAuthError, ensure_codex_authenticated
+from shinka.tools.credentials import get_api_key
 from shinka.edit.cost_utils import calculate_cost
 
 
@@ -42,7 +45,7 @@ def ensure_codex_available(codex_path: Optional[str] = None) -> Path:
     if not candidate:
         raise CodexUnavailableError(
             "Codex CLI not found. Install it with `npm install -g @openai/codex` "
-            "or add it to PATH, then authenticate via `codex login`."
+            "or add it to PATH, then authenticate via `codex login --device-auth`."
         )
 
     resolved = Path(candidate)
@@ -118,6 +121,14 @@ def run_codex_task(
     # Use cli_path if provided, fall back to codex_path for backward compat
     binary = ensure_codex_available(cli_path or codex_path)
 
+    # Headless-friendly auth: use API key if available, otherwise fall back to device auth.
+    # This avoids requiring users to run `codex login` manually before using Shinka.
+    api_key = get_api_key("codex")
+    try:
+        ensure_codex_authenticated(binary, api_key=api_key)
+    except CodexAuthError as exc:
+        raise CodexExecutionError(str(exc)) from exc
+
     cmd = [str(binary), "exec"]
     if resume_session_id:
         cmd.append("resume")
@@ -164,6 +175,7 @@ def run_codex_task(
 
     process = subprocess.Popen(
         cmd,
+        env={**os.environ, **({"OPENAI_API_KEY": api_key} if api_key else {})},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
