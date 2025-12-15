@@ -170,8 +170,15 @@ def run_codex_task(
     # Token estimation for cost tracking (Codex CLI doesn't emit usage data)
     estimated_input_tokens = len(full_prompt) // 4 if full_prompt else 0
     estimated_output_tokens = 0
-    # Model priority: extra_cli_config > profile > default (matching ShinkaAgent pattern)
-    model_name = extra_cli_config.get("model") or profile or "gpt-4.1-mini"
+    # Model priority: extra_cli_config["model"] > profile > FAIL
+    # We intentionally fail instead of silently falling back to an old model
+    model_name = extra_cli_config.get("model") or profile
+    if not model_name:
+        raise CodexExecutionError(
+            "No model configured for Codex CLI. "
+            "Set evo_config.agentic.extra_cli_config.model or evo_config.agentic.cli_profile. "
+            "Example: evo_config.agentic.extra_cli_config.model=gpt-4.1"
+        )
     session_id: Optional[str] = None
 
     env = dict(os.environ)

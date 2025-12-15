@@ -76,6 +76,11 @@ The PR addresses Robert Tjarko Lange's specific requests: native control (not bl
   2. `shinka/core/sampler.py` - Added agentic_mode param, implemented _sample_agentic()
   3. `shinka/core/runner.py` - Passed agentic_mode to PromptSampler
 
+- **FIX IMPLEMENTED (2025-12-15 16:00Z):** Empty embedding input when no EVOLVE-BLOCK markers
+  Cause: `redact_immutable()` returned empty string when code has no EVOLVE-BLOCK markers
+  Impact: Embedding API failed with 400 error for tasks like boids_flocking
+  Fix: Return full text for embedding when no markers present (shinka/edit/apply_diff.py)
+
 ## Decision Log
 
 - Decision: Add gpt-5.2 to pricing.py and use it as default model

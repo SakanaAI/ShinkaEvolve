@@ -215,9 +215,15 @@ def run_shinka_task(
     start_time = time.monotonic()
 
     # Determine model(s) to use
-    # Default to gpt-4.1-mini - good balance of cost/capability for agentic tasks
-    # Can be overridden via config: evo_config.agentic.extra_cli_config.model
-    model_name = profile or extra_cli_config.get("model") or "gpt-4.1-mini"
+    # Priority: extra_cli_config["model"] > profile > FAIL
+    # We intentionally fail instead of silently falling back to an old model
+    model_name = extra_cli_config.get("model") or profile
+    if not model_name:
+        raise ShinkaExecutionError(
+            "No model configured for ShinkaAgent. "
+            "Set evo_config.agentic.extra_cli_config.model or evo_config.agentic.cli_profile. "
+            "Example: evo_config.agentic.extra_cli_config.model=gpt-4.1"
+        )
     model_names = [model_name] if isinstance(model_name, str) else list(model_name)
 
     # Extract LLM kwargs from extra_cli_config with proper key mapping
