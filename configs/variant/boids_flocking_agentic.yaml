@@ -10,6 +10,7 @@ exp_name: "shinka_boids_flocking"
 
 # Override evo_config with boids-specific values (applied last)
 evo_config:
+  init_program_path: "examples/boids_flocking/initial.py"
   init_support_dir: examples/boids_flocking
   task_sys_msg: |
     You are an expert in emergent behavior simulation and evolutionary algorithms.

@@ -1,21 +1,16 @@
-from typing import List, Optional, Tuple
-import numpy as np
-from shinka.database import Program
-from shinka.prompts import (
-    construct_eval_history_msg,
-    perf_str,
-    format_text_feedback_section,
-    BASE_SYSTEM_MSG,
-    DIFF_SYS_FORMAT,
-    DIFF_ITER_MSG,
-    FULL_ITER_MSG,
-    FULL_SYS_FORMATS,
-    CROSS_SYS_FORMAT,
-    CROSS_ITER_MSG,
-    get_cross_component,
-)
-from shinka.prompts.prompts_init import INIT_SYSTEM_MSG, INIT_USER_MSG
 import logging
+from typing import List, Optional, Tuple
+
+import numpy as np
+
+from shinka.database import Program
+from shinka.prompts import (BASE_SYSTEM_MSG, CROSS_ITER_MSG, CROSS_SYS_FORMAT,
+                            DIFF_ITER_MSG, DIFF_SYS_FORMAT, FULL_ITER_MSG,
+                            FULL_SYS_FORMATS, construct_eval_history_msg,
+                            format_text_feedback_section, get_cross_component,
+                            perf_str)
+from shinka.prompts.prompts_agentic import AGENTIC_ITER_MSG, AGENTIC_SYS_FORMAT
+from shinka.prompts.prompts_init import INIT_SYSTEM_MSG, INIT_USER_MSG
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +23,7 @@ class PromptSampler:
         patch_types: Optional[List[str]] = None,
         patch_type_probs: Optional[List[float]] = None,
         use_text_feedback: bool = False,
+        agentic_mode: bool = False,
     ):
         if patch_types is None:
             patch_types = ["diff"]
@@ -46,6 +42,8 @@ class PromptSampler:
             )
         # Whether to use text feedback in the prompt
         self.use_text_feedback = use_text_feedback
+        # Agentic mode: CLI harness owns system prompt, we only provide task context
+        self.agentic_mode = agentic_mode
 
     def initial_program_prompt(self) -> Tuple[str, str]:
         """Generate the prompt for the initial program."""
@@ -69,6 +67,10 @@ class PromptSampler:
         top_k_inspirations: List[Program],
         meta_recommendations: Optional[str] = None,
     ) -> Tuple[str, str, str]:
+        # Agentic mode: CLI harness owns system prompt, we provide task in user msg
+        if self.agentic_mode:
+            return self._sample_agentic(parent, meta_recommendations)
+
         if self.task_sys_msg is None:
             sys_msg = BASE_SYSTEM_MSG
         else:
@@ -179,3 +181,45 @@ class PromptSampler:
             eval_history_msg + "\n" + iter_msg,
             patch_type,
         )
+
+    def _sample_agentic(
+        self,
+        parent: Program,
+        meta_recommendations: Optional[str] = None,
+    ) -> Tuple[str, str, str]:
+        """Generate prompts for agentic mode.
+
+        In agentic mode, the CLI harness (Codex, Claude CLI, Gemini CLI) owns the
+        system prompt. We only provide task context in the user message.
+
+        Returns:
+            Tuple of (system_msg, user_msg, patch_type) where:
+            - system_msg is empty (harness provides its own)
+            - user_msg contains task context and current score
+            - patch_type is "agentic"
+        """
+        # Task context from config
+        task_context = self.task_sys_msg or "Improve the program."
+
+        # Score context
+        score_context = perf_str(parent.combined_score, parent.public_metrics)
+
+        # Text feedback section
+        text_feedback_section = ""
+        if self.use_text_feedback and parent.text_feedback:
+            text_feedback_section = "\n" + format_text_feedback_section(
+                parent.text_feedback
+            )
+
+        # Add meta-recommendations if provided
+        if meta_recommendations not in [None, "none"]:
+            task_context += "\n\n# Potential Recommendations\n"
+            task_context += meta_recommendations
+
+        user_msg = AGENTIC_ITER_MSG.format(
+            task_context=task_context,
+            score_context=score_context,
+            text_feedback_section=text_feedback_section,
+        )
+
+        return (AGENTIC_SYS_FORMAT, user_msg, "agentic")

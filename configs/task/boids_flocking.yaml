@@ -31,6 +31,7 @@ task:
 
 # Evolution config overrides (merged into global evo_config)
 evo_config:
+  init_program_path: "examples/boids_flocking/initial.py"
   task_sys_msg: |
     You are an expert in emergent behavior simulation and evolutionary algorithms.
     Optimize the Boids flocking simulation to achieve:

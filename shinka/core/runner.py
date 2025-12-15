@@ -16,44 +16,24 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from shinka.core.embedding_corpus import (
-    EmbeddingCorpus,
-    build_embedding_corpus,
-    extract_file_content,
-)
+from shinka.core.embedding_corpus import (EmbeddingCorpus,
+                                          build_embedding_corpus,
+                                          extract_file_content)
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
-from shinka.edit import (
-    AgentContext,
-    AgenticEditor,
-    CommandResult,
-    apply_diff_patch,
-    apply_full_patch,
-    redact_immutable,
-    summarize_diff,
-)
-from shinka.edit.codex_cli import (
-    CodexExecutionError,
-    CodexUnavailableError,
-    ensure_codex_available,
-    run_codex_task,
-)
-from shinka.edit.shinka_agent import (
-    ShinkaExecutionError,
-    ShinkaUnavailableError,
-    ensure_shinka_available,
-    run_shinka_task,
-)
+from shinka.edit import (AgentContext, AgenticEditor, CommandResult,
+                         apply_diff_patch, apply_full_patch, redact_immutable,
+                         summarize_diff)
+from shinka.edit.codex_cli import (CodexExecutionError, CodexUnavailableError,
+                                   ensure_codex_available, run_codex_task)
+from shinka.edit.shinka_agent import (ShinkaExecutionError,
+                                      ShinkaUnavailableError,
+                                      ensure_shinka_available, run_shinka_task)
 from shinka.launch import JobConfig, JobScheduler, ProcessWithLogging
-from shinka.llm import (
-    AsymmetricUCB,
-    BanditBase,
-    EmbeddingClient,
-    LLMClient,
-    extract_between,
-)
+from shinka.llm import (AsymmetricUCB, BanditBase, EmbeddingClient, LLMClient,
+                        extract_between)
 from shinka.logo import print_gradient_logo
 
 FOLDER_PREFIX = "gen"
@@ -302,6 +282,7 @@ class EvolutionRunner:
             patch_types=evo_config.patch_types,
             patch_type_probs=evo_config.patch_type_probs,
             use_text_feedback=evo_config.use_text_feedback,
+            agentic_mode=evo_config.agentic_mode,
         )
 
         # Initialize MetaSummarizer for meta-recommendations
