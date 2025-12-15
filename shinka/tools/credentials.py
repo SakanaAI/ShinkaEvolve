@@ -12,9 +12,12 @@ logging.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CREDENTIALS_PATH = Path.home() / ".shinka" / "credentials.json"
 
@@ -92,25 +95,30 @@ def get_api_key(
     if env_var:
         value = os.environ.get(env_var)
         if isinstance(value, str) and value.strip():
+            logger.debug(f"Using API key for '{provider}' from environment variable ${env_var}")
             return value.strip()
 
     path = credentials_path or DEFAULT_CREDENTIALS_PATH
     if not path.exists():
+        logger.debug(f"No API key found for '{provider}': env var ${env_var} not set, {path} does not exist")
         return None
 
     doc = _load_credentials(path)
     if not doc:
+        logger.debug(f"No API key found for '{provider}': credential file {path} is empty or invalid")
         return None
 
     # Common: store keys by env var name.
     if env_var:
         value = _safe_get_str(doc, env_var)
         if value:
+            logger.debug(f"Using API key for '{provider}' from {path} (key: {env_var})")
             return value
 
     # Convenience: store keys by provider name.
     value = _safe_get_str(doc, provider_lower)
     if value:
+        logger.debug(f"Using API key for '{provider}' from {path} (key: {provider_lower})")
         return value
 
     # Nested structure: {"providers": {"codex": {"api_key": "..."} }}
@@ -119,6 +127,8 @@ def get_api_key(
         provider_section = providers.get(provider_lower)
         value = _safe_get_str(provider_section, "api_key")
         if value:
+            logger.debug(f"Using API key for '{provider}' from {path} (nested: providers.{provider_lower}.api_key)")
             return value
 
+    logger.debug(f"No API key found for '{provider}' in {path}")
     return None

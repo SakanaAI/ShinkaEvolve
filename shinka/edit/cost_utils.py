@@ -4,9 +4,16 @@ Provides shared cost calculation using pricing tables from shinka/llm/models/pri
 Used by gemini_cli.py and codex_cli.py to calculate costs from estimated tokens.
 """
 
+import logging
 from typing import Optional
 
 from shinka.llm.models.pricing import GEMINI_MODELS, OPENAI_MODELS
+
+logger = logging.getLogger(__name__)
+
+# Fallback rate when model pricing is unknown
+# Set conservatively high so users notice something is wrong
+FALLBACK_RATE_PER_TOKEN = 0.00001  # $10/1M tokens (high to be noticeable)
 
 
 def calculate_cost(
@@ -24,11 +31,14 @@ def calculate_cost(
         backend: Backend hint ("gemini", "codex", or "auto" to detect).
 
     Returns:
-        Estimated cost in USD.
+        Estimated cost in USD. Returns fallback estimate with warning if model unknown.
     """
     if not model:
-        # No model specified - use conservative fallback
-        return (input_tokens + output_tokens) * 0.000002  # $0.002/1K tokens
+        logger.warning(
+            "No model specified for cost calculation - using fallback rate. "
+            "Cost estimate will be inaccurate. Configure model explicitly."
+        )
+        return (input_tokens + output_tokens) * FALLBACK_RATE_PER_TOKEN
 
     # Try to find model in pricing tables
     pricing = None
@@ -42,9 +52,11 @@ def calculate_cost(
         pricing = GEMINI_MODELS.get(model) or OPENAI_MODELS.get(model)
 
     if not pricing:
-        # Model not found in pricing tables - use conservative fallback
-        # This handles unknown models gracefully
-        return (input_tokens + output_tokens) * 0.000002  # $0.002/1K tokens
+        logger.warning(
+            f"Model '{model}' not found in pricing tables (backend={backend}). "
+            f"Using fallback rate. Add model to shinka/llm/models/pricing.py."
+        )
+        return (input_tokens + output_tokens) * FALLBACK_RATE_PER_TOKEN
 
     return (
         input_tokens * pricing["input_price"] + output_tokens * pricing["output_price"]
