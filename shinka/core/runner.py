@@ -1,36 +1,38 @@
 import difflib
 import json
-import shutil
-import uuid
-import time
 import logging
-import yaml
-from rich.logging import RichHandler
-from rich.table import Table
-from rich.console import Console
-import rich.box
-from typing import Any, Dict, List, Literal, Optional, Union, cast
+import shutil
+import time
+import uuid
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass, field, asdict, replace
 from subprocess import Popen
-from shinka.launch import JobScheduler, JobConfig, ProcessWithLogging
-from shinka.database import ProgramDatabase, DatabaseConfig, Program
-from shinka.llm import (
-    LLMClient,
-    extract_between,
-    EmbeddingClient,
-    BanditBase,
-    AsymmetricUCB,
+from typing import Any, Dict, List, Literal, Optional, Union, cast
+
+import rich.box
+import yaml
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.table import Table
+
+from shinka.core.embedding_corpus import (
+    EmbeddingCorpus,
+    build_embedding_corpus,
+    extract_file_content,
 )
+from shinka.core.novelty_judge import NoveltyJudge
+from shinka.core.sampler import PromptSampler
+from shinka.core.summarizer import MetaSummarizer
+from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.edit import (
     AgentContext,
     AgenticEditor,
     CommandResult,
     apply_diff_patch,
     apply_full_patch,
-    summarize_diff,
     redact_immutable,
+    summarize_diff,
 )
 from shinka.edit.codex_cli import (
     CodexExecutionError,
@@ -39,18 +41,18 @@ from shinka.edit.codex_cli import (
     run_codex_task,
 )
 from shinka.edit.shinka_agent import (
+    ShinkaExecutionError,
+    ShinkaUnavailableError,
     ensure_shinka_available,
     run_shinka_task,
-    ShinkaUnavailableError,
-    ShinkaExecutionError,
 )
-from shinka.core.sampler import PromptSampler
-from shinka.core.summarizer import MetaSummarizer
-from shinka.core.novelty_judge import NoveltyJudge
-from shinka.core.embedding_corpus import (
-    build_embedding_corpus,
-    extract_file_content,
-    EmbeddingCorpus,
+from shinka.launch import JobConfig, JobScheduler, ProcessWithLogging
+from shinka.llm import (
+    AsymmetricUCB,
+    BanditBase,
+    EmbeddingClient,
+    LLMClient,
+    extract_between,
 )
 from shinka.logo import print_gradient_logo
 
@@ -251,9 +253,7 @@ class EvolutionRunner:
 
         # Initialize database and scheduler
         db_config.db_path = str(db_path)
-        embedding_model_to_use = (
-            evo_config.embedding_model or "text-embedding-3-small"
-        )
+        embedding_model_to_use = evo_config.embedding_model or "text-embedding-3-small"
         self.db = ProgramDatabase(
             config=db_config, embedding_model=embedding_model_to_use
         )
@@ -1456,7 +1456,9 @@ class EvolutionRunner:
     ) -> Dict[Path, str]:
         """Collect workspace files from parent program's generation directory."""
         workspace_files: Dict[Path, str] = {}
-        parent_generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{parent_program.generation}"
+        parent_generation_dir = (
+            Path(self.results_dir) / f"{FOLDER_PREFIX}_{parent_program.generation}"
+        )
         if parent_generation_dir.is_dir():
             for file_path in parent_generation_dir.rglob("*"):
                 if not file_path.is_file():
@@ -1488,7 +1490,9 @@ class EvolutionRunner:
         self, parent_program: Program, generation_dir: Path
     ) -> None:
         """Copy workspace files from parent to new generation directory."""
-        parent_generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{parent_program.generation}"
+        parent_generation_dir = (
+            Path(self.results_dir) / f"{FOLDER_PREFIX}_{parent_program.generation}"
+        )
         if parent_generation_dir.is_dir():
             for src_path in parent_generation_dir.rglob("*"):
                 rel_path = src_path.relative_to(parent_generation_dir)
@@ -1549,7 +1553,9 @@ class EvolutionRunner:
         primary_filename = Path(f"main.{self.lang_ext}")
 
         # Extract content from corpus; fallback to raw code if not a corpus
-        primary_content = extract_file_content(parent_program.code, str(primary_filename))
+        primary_content = extract_file_content(
+            parent_program.code, str(primary_filename)
+        )
         if primary_content is None:
             if "=== FILE:" not in parent_program.code:
                 primary_content = parent_program.code
@@ -1573,7 +1579,7 @@ class EvolutionRunner:
                 resumed_from_parent = True
 
         def _serialize_changed_files(
-            changed_files: Optional[Dict[Path, str]]
+            changed_files: Optional[Dict[Path, str]],
         ) -> Dict[str, str]:
             if not changed_files:
                 return {}
@@ -1585,7 +1591,7 @@ class EvolutionRunner:
             return serialized
 
         def _build_code_diffs(
-            changed_files: Optional[Dict[Path, str]]
+            changed_files: Optional[Dict[Path, str]],
         ) -> List[Dict[str, str]]:
             """Build multi-file diffs for frontend display."""
             if not changed_files:
@@ -1612,7 +1618,9 @@ class EvolutionRunner:
                 return actual_model
             extra_cli = self.evo_config.agentic.extra_cli_config
             if extra_cli:
-                model_override = extra_cli.get("model") if isinstance(extra_cli, dict) else None
+                model_override = (
+                    extra_cli.get("model") if isinstance(extra_cli, dict) else None
+                )
                 if model_override:
                     return str(model_override)
             if self.evo_config.agentic.cli_profile:
@@ -1711,7 +1719,9 @@ class EvolutionRunner:
         helper_files = [p for p in base_files.keys() if p != primary_filename]
         system_prompt = patch_sys.strip()
         if helper_files:
-            helper_listing = "\n".join(f"- {path.as_posix()}" for path in sorted(helper_files))
+            helper_listing = "\n".join(
+                f"- {path.as_posix()}" for path in sorted(helper_files)
+            )
             system_prompt += (
                 "\n\n# Workspace Files\n"
                 "The following helper files were copied from the parent program:\n"
@@ -1846,7 +1856,8 @@ class EvolutionRunner:
             "agent_code_diffs": _build_code_diffs(agent_result.changed_files),
             "agent_primary_file": str(primary_filename),
             # Use bandit-selected model for bandit learning, fall back to actual model
-            "model_name": bandit_model or _agent_model_name(selected_backend, actual_model),
+            "model_name": bandit_model
+            or _agent_model_name(selected_backend, actual_model),
             "agent_backend": selected_backend,
             "agent_session_id": agent_result.session_id,
             "agent_resumed_from_parent": resumed_from_parent,

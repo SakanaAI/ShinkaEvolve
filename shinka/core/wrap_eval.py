@@ -1,11 +1,12 @@
 import importlib.util
 import json
 import os
+import pickle
 import sys
 import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import numpy as np
-import pickle
-from typing import Callable, Any, Dict, List, Tuple, Optional
 
 DEFAULT_METRICS_ON_ERROR = {
     "combined_score": 0.0,

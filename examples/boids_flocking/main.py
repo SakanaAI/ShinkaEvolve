@@ -16,35 +16,30 @@ import json
 import sys
 from pathlib import Path
 
-from simulation import SimulationEnvironment, SimulationConfig
 from render import create_renderer
+from simulation import SimulationConfig, SimulationEnvironment
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Boids Flocking Simulation")
     parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run without graphical output"
+        "--headless", action="store_true", help="Run without graphical output"
     )
     parser.add_argument(
         "--steps",
         type=int,
         default=1000,
-        help="Number of simulation steps (default: 1000)"
+        help="Number of simulation steps (default: 1000)",
     )
     parser.add_argument(
         "--boids",
         type=int,
         default=50,
-        help="Number of boids in the simulation (default: 50)"
+        help="Number of boids in the simulation (default: 50)",
     )
     parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=".",
-        help="Directory for output files"
+        "--output-dir", type=str, default=".", help="Directory for output files"
     )
     return parser.parse_args()
 
@@ -74,10 +69,10 @@ def calculate_combined_score(metrics: dict) -> float:
 
     # Combined score (higher is better)
     combined = (
-        0.25 * separation_score +
-        0.25 * alignment_score +
-        0.25 * cohesion_score +
-        0.25 * (1 - collision_penalty)
+        0.25 * separation_score
+        + 0.25 * alignment_score
+        + 0.25 * cohesion_score
+        + 0.25 * (1 - collision_penalty)
     )
 
     return max(0, min(100, combined * 100))
@@ -96,7 +91,7 @@ def evaluate_simulation(args) -> dict:
         max_speed=4.0,
         max_force=0.1,
         perception_radius=50.0,
-        separation_radius=25.0
+        separation_radius=25.0,
     )
 
     # Create and run simulation
@@ -107,9 +102,7 @@ def evaluate_simulation(args) -> dict:
     if not args.headless:
         try:
             renderer = create_renderer(
-                headless=False,
-                width=config.width,
-                height=config.height
+                headless=False, width=config.width, height=config.height
             )
         except Exception as e:
             print(f"Warning: Could not create graphical renderer: {e}")
@@ -149,7 +142,7 @@ def evaluate_simulation(args) -> dict:
     return {
         "metrics": final_metrics,
         "combined_score": combined_score,
-        "correct": combined_score >= 40  # SUBOPTIMAL threshold (should be higher)
+        "correct": combined_score >= 40,  # SUBOPTIMAL threshold (should be higher)
     }
 
 

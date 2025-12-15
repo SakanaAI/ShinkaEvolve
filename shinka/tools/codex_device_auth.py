@@ -55,9 +55,7 @@ def is_codex_authenticated(codex_bin: Path) -> bool:
     return _status_looks_authenticated(result.stdout or "", result.stderr or "")
 
 
-def _login_with_api_key(
-    codex_bin: Path, api_key: str, *, timeout_seconds: int
-) -> bool:
+def _login_with_api_key(codex_bin: Path, api_key: str, *, timeout_seconds: int) -> bool:
     """Attempt a non-interactive login using an API key via stdin."""
 
     try:

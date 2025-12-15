@@ -34,7 +34,7 @@ def register_session_process(
     filename_key: Optional[str] = None,
 ) -> None:
     """Persist minimal metadata about a newly spawned Codex CLI process.
-    
+
     Args:
         pid: The OS process ID to check for liveness.
         results_dir: The run's results directory (for matching sessions to runs).
@@ -55,14 +55,16 @@ def register_session_process(
         "patch_type": patch_type,
         "results_dir": results_dir,
     }
-    
+
     key = filename_key if filename_key else pid
     _entry_path(key).write_text(json.dumps(entry), encoding="utf-8")
 
 
-def update_session_process(pid: int, filename_key: Optional[str] = None, **updates: Any) -> None:
+def update_session_process(
+    pid: int, filename_key: Optional[str] = None, **updates: Any
+) -> None:
     """Merge updates into an existing registry entry.
-    
+
     Args:
         pid: Legacy argument, used as key if filename_key is None.
         filename_key: The specific file key to update.
@@ -94,7 +96,7 @@ def _is_pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    except ValueError: 
+    except ValueError:
         # Handle case where pid is invalid (e.g. 0 or negative if passed incorrectly)
         return False
     else:

@@ -1,10 +1,11 @@
 import json
 import logging
 import time
+from typing import Any, Callable, Optional
+
 import numpy as np
-from typing import Optional, Callable, Any
-import rich.box  # type: ignore
 import rich  # type: ignore
+import rich.box  # type: ignore
 from rich.columns import Columns as RichColumns  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
@@ -208,9 +209,11 @@ class DatabaseDisplay:
         # Add Best Score to the top of the summary table
         summary_table.add_row(
             "Overall Best Score",
-            f"[bold cyan]{best_score:.2f}[/bold cyan]"
-            if num_with_scores > 0
-            else "[dim]N/A[/dim]",
+            (
+                f"[bold cyan]{best_score:.2f}[/bold cyan]"
+                if num_with_scores > 0
+                else "[dim]N/A[/dim]"
+            ),
         )
 
         # Gather data for summary

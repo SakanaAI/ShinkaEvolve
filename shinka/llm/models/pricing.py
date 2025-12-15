@@ -154,7 +154,7 @@ GEMINI_MODELS = {
         "input_price": 0.1 / M,
         "output_price": 0.4 / M,
     },
-    "gemini-3-pro-preview" : {
+    "gemini-3-pro-preview": {
         "input_price": 2.0 / M,
         "output_price": 12.0 / M,
     },

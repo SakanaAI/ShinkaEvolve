@@ -1,11 +1,10 @@
 import fnmatch
 import hashlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Set
 
-
-import re
 
 @dataclass
 class EmbeddingCorpus:
@@ -26,19 +25,18 @@ def extract_file_content(corpus_text: str, filename: str) -> Optional[str]:
     """
     if not corpus_text:
         return None
-    
+
     # Regex to find the file header and capture content until the next header or end of string
     # Header format: === FILE: {filename} ({size} bytes)[TRUNCATED?] ===
     escaped_filename = re.escape(filename)
     # Look for header at start of string or after a newline
     pattern = rf"(?:^|\n)=== FILE: {escaped_filename} \(\d+ bytes\)(?: \[TRUNCATED\])? ===\n(.*?)(?=\n=== FILE: |$)"
-    
+
     match = re.search(pattern, corpus_text, re.DOTALL)
     if match:
         return match.group(1)
-    
-    return None
 
+    return None
 
 
 def _is_text_bytes(buf: bytes) -> bool:
@@ -147,7 +145,9 @@ def build_embedding_corpus(
     for rel in ordered_candidates:
         if len(included_files) >= max_files:
             truncated = True
-            skipped_files.extend([r.as_posix() for r in ordered_candidates[len(included_files) :]])
+            skipped_files.extend(
+                [r.as_posix() for r in ordered_candidates[len(included_files) :]]
+            )
             break
 
         abs_path = root / rel
@@ -158,7 +158,7 @@ def build_embedding_corpus(
             continue
 
         size = len(raw)
-        to_embed = raw[: max_bytes_per_file]
+        to_embed = raw[:max_bytes_per_file]
         file_truncated = size > max_bytes_per_file
 
         if total_bytes >= max_total_bytes:

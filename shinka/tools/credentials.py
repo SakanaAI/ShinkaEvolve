@@ -58,7 +58,9 @@ def _load_credentials(path: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def get_api_key(provider: str, *, credentials_path: Optional[Path] = None) -> Optional[str]:
+def get_api_key(
+    provider: str, *, credentials_path: Optional[Path] = None
+) -> Optional[str]:
     """Return an API key for a provider, if available.
 
     Resolution order:
@@ -120,4 +122,3 @@ def get_api_key(provider: str, *, credentials_path: Optional[Path] = None) -> Op
             return value
 
     return None
-

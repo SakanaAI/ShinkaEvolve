@@ -1,6 +1,7 @@
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple, List
 import logging
 from pathlib import Path
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
 from shinka.database import Program
 from shinka.llm import LLMClient
 from shinka.prompts import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG

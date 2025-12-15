@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Protocol
 
+
 class AgentRunner(Protocol):
     """Protocol for an agent runner that executes a prompt in a workspace."""
 
@@ -21,5 +22,4 @@ class AgentRunner(Protocol):
         codex_path: Optional[str] = None,
         resume_session_id: Optional[str] = None,
         session_kind: str = "unknown",
-    ) -> Iterator[Dict[str, Any]]:
-        ...
+    ) -> Iterator[Dict[str, Any]]: ...

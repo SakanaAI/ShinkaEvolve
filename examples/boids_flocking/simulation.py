@@ -2,10 +2,10 @@
 Simulation environment for managing a flock of boids.
 """
 
-import random
 import math
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Tuple
+import random
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
 
 from boid import Boid, Vector2D
 
@@ -13,6 +13,7 @@ from boid import Boid, Vector2D
 @dataclass
 class SimulationConfig:
     """Configuration for the boids simulation."""
+
     width: float = 800.0
     height: float = 600.0
     num_boids: int = 50
@@ -44,14 +45,11 @@ class SimulationEnvironment:
         for _ in range(self.config.num_boids):
             position = Vector2D(
                 random.uniform(0, self.config.width),
-                random.uniform(0, self.config.height)
+                random.uniform(0, self.config.height),
             )
             angle = random.uniform(0, 2 * math.pi)
             speed = random.uniform(2, self.config.max_speed)
-            velocity = Vector2D(
-                math.cos(angle) * speed,
-                math.sin(angle) * speed
-            )
+            velocity = Vector2D(math.cos(angle) * speed, math.sin(angle) * speed)
 
             boid = Boid(
                 position=position,
@@ -62,7 +60,7 @@ class SimulationEnvironment:
                 max_speed=self.config.max_speed,
                 max_force=self.config.max_force,
                 perception_radius=self.config.perception_radius,
-                separation_radius=self.config.separation_radius
+                separation_radius=self.config.separation_radius,
             )
             self.boids.append(boid)
 
@@ -95,7 +93,7 @@ class SimulationEnvironment:
         collisions = 0
 
         for i, boid1 in enumerate(self.boids):
-            for boid2 in self.boids[i + 1:]:
+            for boid2 in self.boids[i + 1 :]:
                 distance = boid1.position.distance_to(boid2.position)
                 if distance < collision_threshold:
                     collisions += 1
@@ -124,8 +122,10 @@ class SimulationEnvironment:
         alignment_scores = []
         for boid in self.boids:
             neighbors = [
-                b for b in self.boids
-                if b is not boid and boid.position.distance_to(b.position) < boid.perception_radius
+                b
+                for b in self.boids
+                if b is not boid
+                and boid.position.distance_to(b.position) < boid.perception_radius
             ]
             if neighbors:
                 # Calculate average velocity direction
@@ -135,11 +135,13 @@ class SimulationEnvironment:
 
                 if boid.velocity.magnitude() > 0 and avg_vel.magnitude() > 0:
                     # Dot product normalized (1 = perfect alignment)
-                    dot = (boid.velocity.x * avg_vel.x + boid.velocity.y * avg_vel.y)
+                    dot = boid.velocity.x * avg_vel.x + boid.velocity.y * avg_vel.y
                     alignment = dot / (boid.velocity.magnitude() * avg_vel.magnitude())
                     alignment_scores.append((alignment + 1) / 2)  # Normalize to 0-1
 
-        alignment_score = sum(alignment_scores) / len(alignment_scores) if alignment_scores else 0.5
+        alignment_score = (
+            sum(alignment_scores) / len(alignment_scores) if alignment_scores else 0.5
+        )
 
         # Cohesion score (how close are boids to the flock center)
         center_x = sum(b.position.x for b in self.boids) / len(self.boids)
@@ -150,14 +152,16 @@ class SimulationEnvironment:
         avg_distance = sum(distances_to_center) / len(distances_to_center)
 
         # Normalize cohesion (lower distance = better cohesion)
-        max_expected_distance = math.sqrt(self.config.width**2 + self.config.height**2) / 4
+        max_expected_distance = (
+            math.sqrt(self.config.width**2 + self.config.height**2) / 4
+        )
         cohesion_score = max(0, 1 - avg_distance / max_expected_distance)
 
         return {
             "avg_separation": avg_separation,
             "alignment_score": alignment_score,
             "cohesion_score": cohesion_score,
-            "avg_distance_to_center": avg_distance
+            "avg_distance_to_center": avg_distance,
         }
 
     def run(self, steps: int = None) -> Dict[str, Any]:
@@ -175,15 +179,21 @@ class SimulationEnvironment:
             return {}
 
         # Average over last 100 steps for stability
-        recent = self.metrics_history[-100:] if len(self.metrics_history) >= 100 else self.metrics_history
+        recent = (
+            self.metrics_history[-100:]
+            if len(self.metrics_history) >= 100
+            else self.metrics_history
+        )
 
         return {
             "avg_separation": sum(m["avg_separation"] for m in recent) / len(recent),
             "alignment_score": sum(m["alignment_score"] for m in recent) / len(recent),
             "cohesion_score": sum(m["cohesion_score"] for m in recent) / len(recent),
             "total_collisions": self.collision_count,
-            "collision_rate": self.collision_count / self.step_count if self.step_count > 0 else 0,
-            "steps_completed": self.step_count
+            "collision_rate": (
+                self.collision_count / self.step_count if self.step_count > 0 else 0
+            ),
+            "steps_completed": self.step_count,
         }
 
     def get_boid_positions(self) -> List[Tuple[float, float]]:

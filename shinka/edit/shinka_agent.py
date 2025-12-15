@@ -48,7 +48,7 @@ class ShinkaExecutionError(RuntimeError):
 ACTION_RE = re.compile(r"```bash\s*\n(.*?)\n```", re.DOTALL)
 
 # System prompt for bash-only agent
-SHINKA_SYSTEM_PROMPT = '''You are an expert software engineer working inside a sandboxed repository.
+SHINKA_SYSTEM_PROMPT = """You are an expert software engineer working inside a sandboxed repository.
 
 IMPORTANT RULES:
 1. You can ONLY interact via bash commands in ```bash...``` blocks
@@ -67,12 +67,12 @@ cat main.py
 ```
 
 After seeing the output, make targeted edits to improve the score.
-'''
+"""
 
 # Observation template
-OBSERVATION_TEMPLATE = '''OBSERVATION:
+OBSERVATION_TEMPLATE = """OBSERVATION:
 Exit code: {exit_code}
-{output}'''
+{output}"""
 
 # Max characters for observation to avoid context overflow
 MAX_OBSERVATION_CHARS = 16000
@@ -116,7 +116,7 @@ def ensure_shinka_available() -> bool:
     # Then check the unified credential store
     try:
         from shinka.tools.credentials import get_api_key
-        
+
         for provider in PROVIDER_ENV_VAR_MAP.keys():
             key = get_api_key(provider)
             if key:
@@ -340,7 +340,9 @@ def run_shinka_task(
 
             # Parse bash action FIRST - execute any pending commands before terminating
             action_match = ACTION_RE.search(response.content)
-            has_termination = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in response.content
+            has_termination = (
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in response.content
+            )
 
             # If there's a bash action, execute it even if termination signal is present
             # This handles the case where the agent says "I'll do X" + bash + "done"

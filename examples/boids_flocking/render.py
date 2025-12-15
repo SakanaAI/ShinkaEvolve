@@ -3,14 +3,19 @@ Renderer for visualizing the boids simulation.
 Supports both matplotlib (graphical) and terminal (headless) output.
 """
 
-import math
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 
 class TerminalRenderer:
     """Simple ASCII renderer for headless mode."""
 
-    def __init__(self, width: int = 80, height: int = 24, sim_width: float = 800, sim_height: float = 600):
+    def __init__(
+        self,
+        width: int = 80,
+        height: int = 24,
+        sim_width: float = 800,
+        sim_height: float = 600,
+    ):
         self.width = width
         self.height = height
         self.sim_width = sim_width
@@ -20,7 +25,7 @@ class TerminalRenderer:
         self,
         positions: List[Tuple[float, float]],
         velocities: List[Tuple[float, float]],
-        step: int = 0
+        step: int = 0,
     ) -> None:
         """Render boids to ASCII art and print to terminal."""
         grid = [[" " for _ in range(self.width)] for _ in range(self.height)]
@@ -65,7 +70,6 @@ class MatplotlibRenderer:
         """Initialize matplotlib figure."""
         try:
             import matplotlib.pyplot as plt
-            from matplotlib.animation import FuncAnimation
 
             plt.ion()
             self.fig, self.ax = plt.subplots(figsize=(10, 8))
@@ -83,7 +87,7 @@ class MatplotlibRenderer:
         self,
         positions: List[Tuple[float, float]],
         velocities: List[Tuple[float, float]],
-        step: int = 0
+        step: int = 0,
     ) -> None:
         """Render current frame."""
         import matplotlib.pyplot as plt
@@ -106,14 +110,8 @@ class MatplotlibRenderer:
 
             # Draw velocity vectors
             if vxs and vys:
-                # Normalize velocities for arrow display
-                scale = 5.0
                 self.ax.quiver(
-                    xs, ys, vxs, vys,
-                    color="#ff6b6b",
-                    alpha=0.5,
-                    scale=50,
-                    width=0.003
+                    xs, ys, vxs, vys, color="#ff6b6b", alpha=0.5, scale=50, width=0.003
                 )
 
         self.ax.set_title(f"Step: {step}", color="white", fontsize=12)
@@ -128,10 +126,13 @@ class MatplotlibRenderer:
         """Close the renderer."""
         if self.fig:
             import matplotlib.pyplot as plt
+
             plt.close(self.fig)
 
 
-def create_renderer(headless: bool = False, width: float = 800, height: float = 600, **kwargs) -> Optional[object]:
+def create_renderer(
+    headless: bool = False, width: float = 800, height: float = 600, **kwargs
+) -> Optional[object]:
     """Factory function to create appropriate renderer."""
     if headless:
         return TerminalRenderer(sim_width=width, sim_height=height, **kwargs)

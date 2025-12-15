@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from shinka.edit.agentic import CommandResult
 from shinka.edit.codex_cli import CodexExecutionError, run_codex_task

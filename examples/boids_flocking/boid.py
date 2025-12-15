@@ -4,12 +4,13 @@ Boid class implementing separation, alignment, and cohesion behaviors.
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List
 
 
 @dataclass
 class Vector2D:
     """Simple 2D vector for boid physics."""
+
     x: float = 0.0
     y: float = 0.0
 
@@ -49,6 +50,7 @@ class Vector2D:
 @dataclass
 class Boid:
     """A single boid in the flock."""
+
     position: Vector2D = field(default_factory=lambda: Vector2D(0, 0))
     velocity: Vector2D = field(default_factory=lambda: Vector2D(0, 0))
     acceleration: Vector2D = field(default_factory=lambda: Vector2D(0, 0))

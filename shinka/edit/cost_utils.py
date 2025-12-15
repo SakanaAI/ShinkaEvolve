@@ -47,6 +47,5 @@ def calculate_cost(
         return (input_tokens + output_tokens) * 0.000002  # $0.002/1K tokens
 
     return (
-        input_tokens * pricing["input_price"]
-        + output_tokens * pricing["output_price"]
+        input_tokens * pricing["input_price"] + output_tokens * pricing["output_price"]
     )

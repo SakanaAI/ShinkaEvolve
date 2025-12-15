@@ -10,14 +10,14 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
+from shinka.edit.cost_utils import calculate_cost
+from shinka.tools.codex_device_auth import CodexAuthError, ensure_codex_authenticated
 from shinka.tools.codex_session_registry import (
     register_session_process,
     remove_session_process,
     update_session_process,
 )
-from shinka.tools.codex_device_auth import CodexAuthError, ensure_codex_authenticated
 from shinka.tools.credentials import get_api_key
-from shinka.edit.cost_utils import calculate_cost
 
 
 class CodexUnavailableError(RuntimeError):
@@ -241,11 +241,7 @@ def run_codex_task(
                     update_session_process(process.pid, session_id=extracted_sid)
 
                 # Track output content for token estimation
-                content = (
-                    event.get("content")
-                    or event.get("text")
-                    or ""
-                )
+                content = event.get("content") or event.get("text") or ""
                 # Also check nested message content
                 msg = event.get("message")
                 if isinstance(msg, dict):

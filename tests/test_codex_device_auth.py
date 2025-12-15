@@ -31,7 +31,9 @@ def test_ensure_codex_authenticated_uses_api_key_login(monkeypatch):
         if args[1:] == ["login", "status"]:
             status_calls["count"] += 1
             if status_calls["count"] == 1:
-                return subprocess.CompletedProcess(args, 1, stdout="", stderr="Not logged in")
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="Not logged in"
+                )
             return subprocess.CompletedProcess(args, 0, stdout="Logged in", stderr="")
 
         if args[1:] == ["login", "--with-api-key"]:
@@ -58,7 +60,9 @@ def test_ensure_codex_authenticated_uses_api_key_login(monkeypatch):
 def test_ensure_codex_authenticated_raises_when_noninteractive(monkeypatch):
     def fake_run(args, **kwargs):
         if args[1:] == ["login", "status"]:
-            return subprocess.CompletedProcess(args, 1, stdout="", stderr="Not logged in")
+            return subprocess.CompletedProcess(
+                args, 1, stdout="", stderr="Not logged in"
+            )
         raise AssertionError(f"Unexpected call: {args}")
 
     monkeypatch.setattr(subprocess, "run", fake_run)

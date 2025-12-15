@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import shutil
 import time
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -51,7 +51,7 @@ class AgentResult:
 @dataclass
 class AgentContext:
     """Inputs required to run an agentic editing session.
-    
+
     Note on system_prompt: In agentic mode, the harness (Codex/Gemini/Claude CLI)
     owns the system prompt. This field contains only AGENTIC_SYS_FORMAT (operational
     instructions for sandbox editing), NOT task-specific context. Task context
@@ -97,13 +97,13 @@ class AgenticEditor:
                 preserved_meta = meta_path.read_text(encoding="utf-8")
             except Exception:
                 pass
-        
+
         scratch_resolved = self.scratch_dir.resolve()
 
         if self.scratch_dir.exists():
             shutil.rmtree(self.scratch_dir)
         self.scratch_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        
+
         # Restore session_meta.json
         if preserved_meta is not None:
             try:
@@ -206,7 +206,7 @@ class AgenticEditor:
                                 stderr=item.get("stderr"),
                             )
                         )
-                
+
                 # Handle direct event types
                 event_type = event.get("type")
 
@@ -219,13 +219,20 @@ class AgenticEditor:
                 if event_type == "usage":
                     usage = event.get("usage")
                     if isinstance(usage, dict):
-                        usage_metrics["input_tokens"] += float(usage.get("input_tokens", 0))
-                        usage_metrics["output_tokens"] += float(usage.get("output_tokens", 0))
-                        usage_metrics["total_tokens"] += float(usage.get("total_tokens", 0))
+                        usage_metrics["input_tokens"] += float(
+                            usage.get("input_tokens", 0)
+                        )
+                        usage_metrics["output_tokens"] += float(
+                            usage.get("output_tokens", 0)
+                        )
+                        usage_metrics["total_tokens"] += float(
+                            usage.get("total_tokens", 0)
+                        )
                         # Use real cost from Claude CLI if available
                         if "total_cost_usd" in usage:
-                            usage_metrics["total_cost_usd"] += float(usage.get("total_cost_usd", 0.0))
-
+                            usage_metrics["total_cost_usd"] += float(
+                                usage.get("total_cost_usd", 0.0)
+                            )
 
         elapsed = time.monotonic() - start_time
 
@@ -284,7 +291,9 @@ class AgenticEditor:
                 f"Baseline files: {len(baseline)}"
             )
         elif changed_files:
-             logger.info(f"Agentic session changed {len(changed_files)} files: {[str(p) for p in changed_files.keys()]}")
+            logger.info(
+                f"Agentic session changed {len(changed_files)} files: {[str(p) for p in changed_files.keys()]}"
+            )
 
         # Use real cost if available (Claude CLI provides total_cost_usd),
         # otherwise fallback to token-based placeholder estimate
