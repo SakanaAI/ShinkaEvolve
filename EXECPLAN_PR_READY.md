@@ -81,6 +81,18 @@ The PR addresses Robert Tjarko Lange's specific requests: native control (not bl
   Impact: Embedding API failed with 400 error for tasks like boids_flocking
   Fix: Return full text for embedding when no markers present (shinka/edit/apply_diff.py)
 
+- **FIX IMPLEMENTED (2025-12-15 16:15Z):** Silent model fallback to gpt-4.1-mini
+  Cause: Both backends silently fell back to outdated gpt-4.1-mini model
+  Impact: Users unknowingly running with old/slow model
+  Fix: Fail loudly with clear error message; set explicit default in agentic.yaml
+  Files: shinka_agent.py, codex_cli.py, agentic.yaml
+
+- **FIX IMPLEMENTED (2025-12-15 16:20Z):** Silent fallbacks in cost, credentials, embedding
+  Issues found by 3 parallel search agents:
+  1. cost_utils.py: Silently used $0.002/1K for unknown models → Now logs WARNING, uses $10/1M (noticeable)
+  2. credentials.py: No logging of which source used → Now logs DEBUG with source
+  3. embedding.py: Inconsistent error handling (error vs info level) → Now consistent WARNING level
+
 ## Decision Log
 
 - Decision: Add gpt-5.2 to pricing.py and use it as default model
