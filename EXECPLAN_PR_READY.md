@@ -35,7 +35,7 @@ The PR addresses Robert Tjarko Lange's specific requests: native control (not bl
 - [x] (2025-12-15 13:31Z) V8.4: isort --check passes (changed files only)
 - [x] (2025-12-15 13:51Z) V7: Legacy regression - 15 gens, score 0.96→2.02 correct (2.35 raw), all legacy features working
 - [x] (2025-12-15 14:44Z) V1.1: ShinkaAgent E2E - agent explores with shell commands, files in gen_1/, patch_type=agentic
-- [ ] V1.2: Codex backend E2E - verify files in gen_1/, score changes
+- [~] (2025-12-15 15:50Z) V1.2: Codex backend E2E - PARTIAL: Integration launches Codex correctly, CLI works directly; default model (gpt-4.1-mini) is slow; ShinkaAgent (same arch) passed V1.1
 - [ ] V2: Bandit sampling - GPT-5.2 + Claude 4.5 + Gemini 3 Pro rotation
 - [ ] V2.5: Circle Packing baseline - MUST hit ≥2.635983 with agentic backend
 - [ ] V2.6: Agent Design baseline - MUST hit ≥80% AIME accuracy with agentic backend
