@@ -3,7 +3,7 @@ evo_config:
   agentic_mode: true
   # LLM models for patch generation (used by bandit sampling)
   llm_models:
-    - "gpt-4.1"
+    - "gpt-5.2"
   llm_dynamic_selection: ucb
   embedding_model: "text-embedding-3-small"
   num_generations: 2
