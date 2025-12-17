@@ -2355,9 +2355,11 @@ class EvolutionRunner:
                 metrics = json.loads(metrics_content)
             except json.JSONDecodeError:
                 metrics = {"combined_score": 0.0, "error": "Invalid metrics JSON"}
+            # If metrics exist and have a correct flag, use it; otherwise default to False
+            correct_from_metrics = bool(metrics.get("correct", False))
             result = AgenticEvaluatorResult(
                 metrics=metrics,
-                correct=False,
+                correct=correct_from_metrics,
                 error_message=str(exc),
                 stdout_log="",
                 stderr_log="",
