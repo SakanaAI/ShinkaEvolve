@@ -52,7 +52,7 @@ SHINKA_SYSTEM_PROMPT = """You are an expert software engineer working inside a s
 
 IMPORTANT RULES:
 1. You can ONLY interact via bash commands in ```bash...``` blocks
-2. ONE bash block per response - additional blocks are ignored
+2. You can include multiple bash blocks per response - all will be executed in order
 3. Only edit code between EVOLVE-BLOCK-START and EVOLVE-BLOCK-END markers
 4. Use standard tools: cat, sed, echo, python, etc.
 5. Keep responses concise - avoid lengthy explanations
@@ -233,6 +233,15 @@ def run_shinka_task(
         llm_kwargs["temperatures"] = extra_cli_config["temperature"]
     if "max_tokens" in extra_cli_config:
         llm_kwargs["max_tokens"] = extra_cli_config["max_tokens"]
+    # IMPORTANT: reasoning_efforts controls thinking tokens for reasoning models
+    # Without this, Gemini and other reasoning models may return empty responses
+    # Default to "auto" (no thinking) for agentic mode to avoid response format issues
+    if "reasoning_efforts" in extra_cli_config:
+        llm_kwargs["reasoning_efforts"] = extra_cli_config["reasoning_efforts"]
+    else:
+        # Explicitly set to "auto" to disable thinking tokens in agentic mode
+        # This avoids Gemini returning empty/None content due to thinking mode
+        llm_kwargs["reasoning_efforts"] = "auto"
 
     # Initialize LLMClient with configured models
     llm = LLMClient(model_names=model_names, verbose=False, **llm_kwargs)
@@ -344,15 +353,16 @@ def run_shinka_task(
                 "session_id": session_id,
             }
 
-            # Parse bash action FIRST - execute any pending commands before terminating
-            action_match = ACTION_RE.search(response.content)
+            # Parse ALL bash actions - execute all commands before checking termination
+            # (Some models output multiple bash blocks in one response)
+            action_matches = list(ACTION_RE.finditer(response.content))
             has_termination = (
                 "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in response.content
             )
 
-            # If there's a bash action, execute it even if termination signal is present
-            # This handles the case where the agent says "I'll do X" + bash + "done"
-            if action_match:
+            # Execute ALL bash blocks in sequence
+            observations = []
+            for action_match in action_matches:
                 command = action_match.group(1).strip()
 
                 # Execute command
@@ -365,6 +375,7 @@ def run_shinka_task(
                     exit_code=exit_code,
                     output=output or "(no output)",
                 )
+                observations.append(observation)
 
                 # Emit command execution event
                 yield {
@@ -380,8 +391,9 @@ def run_shinka_task(
                     "session_id": session_id,
                 }
 
-                # Set next message to observation
-                current_msg = observation
+            # Combine all observations for next message
+            if observations:
+                current_msg = "\n\n".join(observations)
 
             # Check for termination AFTER executing any bash commands
             if has_termination:
@@ -392,7 +404,7 @@ def run_shinka_task(
                 break
 
             # If no bash action and no termination, prompt for one
-            if not action_match:
+            if not action_matches:
                 current_msg = (
                     "Please provide a bash command in ```bash...``` block, "
                     "or say COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT if done."
