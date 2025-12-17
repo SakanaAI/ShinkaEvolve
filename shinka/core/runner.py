@@ -297,13 +297,14 @@ class EvolutionRunner:
         self.agentic_eval_sessions_dir = (
             Path(self.results_dir) / "agentic_eval_sessions"
         )
-        # Thread pool for async agentic evaluations (uses max_parallel_jobs workers)
+        # Thread pool for parallel job execution (uses max_parallel_jobs workers)
+        # Enabled when agentic editing mode is on (works with both legacy and agentic eval)
         self._eval_executor: Optional[ThreadPoolExecutor] = None
-        if self.evaluator_mode == "agentic":
+        if evo_config.agentic_mode:
             max_workers = evo_config.max_parallel_jobs or 6
             self._eval_executor = ThreadPoolExecutor(max_workers=max_workers)
             if self.verbose:
-                logger.info(f"Async agentic evaluation enabled with {max_workers} workers")
+                logger.info(f"Parallel agentic editing enabled with {max_workers} workers")
 
         self.llm = LLMClient(
             model_names=evo_config.llm_models,
@@ -489,13 +490,13 @@ class EvolutionRunner:
                     len(self.running_jobs) < max_jobs
                     and self.next_generation_to_submit < target_gens
                 ):
-                    if self.evaluator_mode == "agentic":
+                    if self.evo_config.agentic_mode:
                         # Full parallelism: parent sampling in main thread (thread-safe),
-                        # edit + eval in worker threads
+                        # edit + eval in worker threads (works with both legacy and agentic eval)
                         self._submit_agentic_job_async()
                     else:
                         self._submit_new_job()
-                        break  # Legacy mode submits one job at a time
+                        break  # Legacy editing mode submits one job at a time
 
                 # Wait a bit before checking again
                 time.sleep(2)
@@ -1092,14 +1093,20 @@ class EvolutionRunner:
             meta_patch_data["meta_summary"] = meta_summary
             meta_patch_data["meta_scratch_pad"] = meta_scratch
 
-        # Run evaluation
-        results, rtime = self._run_agentic_evaluation(
-            exec_fname=exec_fname,
-            results_dir=results_dir,
-            generation_dir=generation_dir,
-            generation=current_gen,
-            parent_id=parent_id,
-        )
+        # Run evaluation (legacy or agentic based on evaluator_mode)
+        if self.evaluator_mode == "legacy":
+            results, rtime = self._run_legacy_evaluation_sync(
+                exec_fname=exec_fname,
+                results_dir=results_dir,
+            )
+        else:
+            results, rtime = self._run_agentic_evaluation(
+                exec_fname=exec_fname,
+                results_dir=results_dir,
+                generation_dir=generation_dir,
+                generation=current_gen,
+                parent_id=parent_id,
+            )
 
         # Return all data needed to process the job
         # Note: novelty_cost is 0 because we skip novelty checks in parallel mode
@@ -2132,6 +2139,72 @@ class EvolutionRunner:
         if mode == "auto":
             return "agentic" if self.evo_config.agentic_mode else "legacy"
         raise ValueError(f"Unknown evaluator mode: {self.evo_config.evaluator.mode}")
+
+    def _run_legacy_evaluation_sync(
+        self, exec_fname: str, results_dir: str
+    ) -> tuple[dict, float]:
+        """Run legacy evaluation synchronously via subprocess.
+
+        This is thread-safe and can be called from worker threads.
+        Returns (results_dict, runtime_seconds) in the expected format:
+        {"correct": {"correct": bool}, "metrics": {...}}
+        """
+        import subprocess
+
+        eval_command = self._build_eval_command(exec_fname, results_dir)
+        if not eval_command:
+            logger.warning("No eval command configured for legacy evaluation")
+            return {"correct": {"correct": False}, "metrics": {"combined_score": 0.0}}, 0.0
+
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        metrics_path = Path(results_dir) / "metrics.json"
+        correct_path = Path(results_dir) / "correct.json"
+
+        start_time = time.time()
+        try:
+            result = subprocess.run(
+                eval_command,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    f"Legacy eval failed (exit {result.returncode}): {result.stderr[:500]}"
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("Legacy eval timed out after 5 minutes")
+        except Exception as e:
+            logger.warning(f"Legacy eval error: {e}")
+
+        rtime = time.time() - start_time
+
+        # Parse correct.json
+        correct_val = False
+        if correct_path.exists():
+            try:
+                content = correct_path.read_text(encoding="utf-8").strip()
+                if content:
+                    correct_data = json.loads(content)
+                    correct_val = correct_data.get("correct", False)
+            except Exception as e:
+                logger.warning(f"Failed to parse correct.json: {e}")
+
+        # Parse metrics.json
+        metrics_val = {"combined_score": 0.0}
+        if metrics_path.exists():
+            try:
+                content = metrics_path.read_text(encoding="utf-8").strip()
+                if content:
+                    metrics_val = json.loads(content)
+            except Exception as e:
+                logger.warning(f"Failed to parse metrics.json: {e}")
+
+        # Return in expected format
+        return {
+            "correct": {"correct": correct_val},
+            "metrics": metrics_val,
+        }, rtime
 
     def _build_eval_command(self, exec_fname: str, results_dir: str) -> List[str]:
         """Build the evaluation command from job config."""
