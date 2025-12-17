@@ -1,10 +1,12 @@
 import difflib
+import hashlib
 import json
 import logging
 import shutil
 import time
 import uuid
-from dataclasses import asdict, dataclass, field, replace
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from subprocess import Popen
@@ -16,27 +18,47 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from shinka.core.embedding_corpus import (EmbeddingCorpus,
-                                          build_embedding_corpus,
-                                          extract_file_content)
+from shinka.core.embedding_corpus import extract_file_content
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
-from shinka.edit import (AgentContext, AgenticEditor, CommandResult,
-                         apply_diff_patch, apply_full_patch, redact_immutable,
-                         summarize_diff)
-from shinka.edit.codex_cli import (CodexExecutionError, CodexUnavailableError,
-                                   ensure_codex_available, run_codex_task)
-from shinka.edit.shinka_agent import (ShinkaExecutionError,
-                                      ShinkaUnavailableError,
-                                      ensure_shinka_available, run_shinka_task)
+from shinka.edit import (
+    AgentContext,
+    AgenticEditor,
+    CommandResult,
+    apply_diff_patch,
+    apply_full_patch,
+    redact_immutable,
+    summarize_diff,
+)
+from shinka.edit.codex_cli import (
+    CodexExecutionError,
+    CodexUnavailableError,
+    ensure_codex_available,
+    run_codex_task,
+)
+from shinka.edit.shinka_agent import (
+    ShinkaExecutionError,
+    ShinkaUnavailableError,
+    ensure_shinka_available,
+    run_shinka_task,
+)
 from shinka.launch import JobConfig, JobScheduler, ProcessWithLogging
-from shinka.llm import (AsymmetricUCB, BanditBase, EmbeddingClient, LLMClient,
-                        extract_between)
+from shinka.llm import (
+    AsymmetricUCB,
+    BanditBase,
+    EmbeddingClient,
+    LLMClient,
+    extract_between,
+)
 from shinka.logo import print_gradient_logo
+from shinka.eval.agentic import AgenticEvaluator, AgenticEvaluatorResult
 
 FOLDER_PREFIX = "gen"
+
+# Number of session events to include in agentic evaluator metadata
+AGENTIC_EVAL_PREVIEW_LIMIT = 50
 
 # Directories to exclude when copying workspace files for agentic edits
 WORKSPACE_EXCLUDE_DIRS = {
@@ -77,10 +99,30 @@ class AgenticConfig:
 
 
 @dataclass
+class AgenticEvaluatorConfig:
+    """Configuration for agentic evaluation sessions.
+
+    The evaluator can use a different backend than the editor.
+    If backend is None, inherits from AgenticConfig.backend.
+    """
+
+    backend: Optional[str] = None  # If None, use agentic.backend
+    cli_profile: Optional[str] = None
+    sandbox: str = "workspace-write"
+    approval_mode: str = "full-auto"
+    max_events: int = 80
+    max_seconds: int = 0
+    cli_path: Optional[str] = None
+    extra_cli_config: Dict[str, Any] = field(default_factory=dict)
+    eval_prompt: Optional[str] = None  # Custom evaluation criteria for LLM judge
+
+
+@dataclass
 class EvaluatorConfig:
     """Evaluator selection configuration."""
 
-    mode: Literal["auto", "legacy", "agentic"] = "legacy"
+    mode: Literal["auto", "legacy", "agentic"] = "auto"
+    agentic: AgenticEvaluatorConfig = field(default_factory=AgenticEvaluatorConfig)
 
 
 @dataclass
@@ -114,25 +156,10 @@ class EvolutionConfig:
     agentic_mode: bool = False
     agentic: AgenticConfig = field(default_factory=AgenticConfig)
     evaluator: EvaluatorConfig = field(default_factory=EvaluatorConfig)
+    # Maximum possible score for evaluation (used by agentic evaluator prompts)
+    max_score: float = 100.0
     # Multi-file support: directory containing additional files to copy
     init_support_dir: Optional[str] = None
-    # Embedding corpus configuration for multi-file novelty
-    embedding_include_globs: List[str] = field(default_factory=lambda: ["**/*"])
-    embedding_exclude_globs: List[str] = field(
-        default_factory=lambda: [
-            "results/**",
-            "workspace_snapshot/**",
-            "agent_sessions/**",
-            ".hydra/**",
-            "__pycache__/**",
-            "*.pyc",
-            "*.pyo",
-        ]
-    )
-    embedding_max_files: int = 200
-    embedding_max_total_bytes: int = 500_000
-    embedding_max_bytes_per_file: int = 200_000
-    embedding_use_changed_files_first: bool = True
 
 
 @dataclass
@@ -156,6 +183,10 @@ class RunningJob:
     # For multi-file embedding corpus
     corpus_text: str = ""
     corpus_meta: dict = field(default_factory=dict)
+    # For agentic evaluator results (pre-computed when agentic mode)
+    agentic_result: Optional[tuple] = None
+    # For async agentic evaluation (Future object)
+    agentic_future: Optional[Future] = None
 
 
 # Set up logging
@@ -242,6 +273,37 @@ class EvolutionRunner:
             config=job_config,  # type: ignore
             verbose=verbose,
         )
+
+        # Initialize agentic evaluator if enabled
+        self.evaluator_mode = self._resolve_evaluator_mode()
+        if self.evaluator_mode == "agentic":
+            # Use evaluator-specific backend if set, else fall back to agentic backend
+            eval_backend = (
+                self.evo_config.evaluator.agentic.backend
+                or self.evo_config.agentic.backend
+            )
+            if eval_backend == "shinka":
+                runner_fn = run_shinka_task
+            else:
+                runner_fn = run_codex_task
+            self.agentic_evaluator: Optional[AgenticEvaluator] = AgenticEvaluator(
+                self.evo_config.evaluator.agentic,
+                agent_runner=runner_fn,
+            )
+            if self.verbose:
+                logger.info(f"Agentic evaluator using backend: {eval_backend}")
+        else:
+            self.agentic_evaluator = None
+        self.agentic_eval_sessions_dir = (
+            Path(self.results_dir) / "agentic_eval_sessions"
+        )
+        # Thread pool for async agentic evaluations (uses max_parallel_jobs workers)
+        self._eval_executor: Optional[ThreadPoolExecutor] = None
+        if self.evaluator_mode == "agentic":
+            max_workers = evo_config.max_parallel_jobs or 6
+            self._eval_executor = ThreadPoolExecutor(max_workers=max_workers)
+            if self.verbose:
+                logger.info(f"Async agentic evaluation enabled with {max_workers} workers")
 
         self.llm = LLMClient(
             model_names=evo_config.llm_models,
@@ -423,11 +485,17 @@ class EvolutionRunner:
                     break
 
                 # Submit new jobs to fill the queue (only if we have capacity)
-                if (
+                while (
                     len(self.running_jobs) < max_jobs
                     and self.next_generation_to_submit < target_gens
                 ):
-                    self._submit_new_job()
+                    if self.evaluator_mode == "agentic":
+                        # Full parallelism: parent sampling in main thread (thread-safe),
+                        # edit + eval in worker threads
+                        self._submit_agentic_job_async()
+                    else:
+                        self._submit_new_job()
+                        break  # Legacy mode submits one job at a time
 
                 # Wait a bit before checking again
                 time.sleep(2)
@@ -447,6 +515,11 @@ class EvolutionRunner:
         end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"Evolution run ended at {end_time}")
         logger.info("=" * 80)
+
+        # Cleanup thread pool executor
+        if self._eval_executor is not None:
+            self._eval_executor.shutdown(wait=False)
+            self._eval_executor = None
 
     def generate_initial_program(self):
         """Generate initial program with LLM, with retries."""
@@ -594,7 +667,16 @@ class EvolutionRunner:
                 logger.info(f"Initial program generated and saved to {exec_fname}")
 
         # Run the evaluation synchronously
-        results, rtime = self.scheduler.run(exec_fname, results_dir)
+        if self.evaluator_mode == "agentic":
+            results, rtime = self._run_agentic_evaluation(
+                exec_fname=exec_fname,
+                results_dir=results_dir,
+                generation_dir=Path(initial_dir),
+                generation=0,
+                parent_id=None,
+            )
+        else:
+            results, rtime = self.scheduler.run(exec_fname, results_dir)
 
         code_embedding, e_cost = self.get_code_embedding(exec_fname)
 
@@ -837,12 +919,113 @@ class EvolutionRunner:
             meta_patch_data["novelty_cost"] = novelty_cost
             meta_patch_data["novelty_explanation"] = novelty_explanation
 
-        # Submit the job asynchronously
-        job_id = self.scheduler.submit_async(exec_fname, results_dir)
+        # Submit the job (agentic uses async thread pool, legacy uses async scheduler)
+        if self.evaluator_mode == "agentic":
+            # Submit agentic evaluation to thread pool for parallel execution
+            future = self._eval_executor.submit(
+                self._run_agentic_evaluation,
+                exec_fname=exec_fname,
+                results_dir=results_dir,
+                generation_dir=generation_dir,
+                generation=current_gen,
+                parent_id=parent_id,
+            )
+            # Create job with future for async completion checking
+            running_job = RunningJob(
+                job_id=f"agentic_gen_{current_gen}",
+                exec_fname=exec_fname,
+                results_dir=results_dir,
+                generation_dir=generation_dir,
+                start_time=time.time(),
+                generation=current_gen,
+                parent_id=parent_id,
+                archive_insp_ids=archive_insp_ids,
+                top_k_insp_ids=top_k_insp_ids,
+                code_diff=code_diff,
+                meta_patch_data=meta_patch_data,
+                code_embedding=code_embedding,
+                embed_cost=embed_cost,
+                novelty_cost=novelty_cost,
+                agentic_future=future,  # Store future for completion checking
+            )
+            self.running_jobs.append(running_job)
+        else:
+            job_id = self.scheduler.submit_async(exec_fname, results_dir)
+            # Add to running jobs queue
+            running_job = RunningJob(
+                job_id=job_id,
+                exec_fname=exec_fname,
+                results_dir=results_dir,
+                generation_dir=generation_dir,
+                start_time=time.time(),
+                generation=current_gen,
+                parent_id=parent_id,
+                archive_insp_ids=archive_insp_ids,
+                top_k_insp_ids=top_k_insp_ids,
+                code_diff=code_diff,
+                meta_patch_data=meta_patch_data,
+                code_embedding=code_embedding,
+                embed_cost=embed_cost,
+                novelty_cost=novelty_cost,
+            )
+            self.running_jobs.append(running_job)
 
-        # Add to running jobs queue
+        if self.verbose:
+            logger.info(
+                f"Submitted job for generation {current_gen}, "
+                f"queue size: {len(self.running_jobs)}"
+            )
+
+    def _submit_agentic_job_async(self):
+        """Submit an agentic job asynchronously (non-blocking).
+
+        This method samples the parent in the main thread (thread-safe DB access),
+        then submits the edit + eval to the thread pool for parallel execution.
+        """
+        current_gen = self.next_generation_to_submit
+
+        if current_gen >= self.evo_config.num_generations:
+            return
+
+        self.next_generation_to_submit += 1
+
+        generation_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_{current_gen}"
+        exec_fname = str(generation_dir / f"main.{self.lang_ext}")
+        results_dir = str(generation_dir / "results")
+
+        # Sample parent in main thread (DB access is NOT thread-safe)
+        parent_program, archive_programs, top_k_programs = self.db.sample(
+            target_generation=current_gen,
+            novelty_attempt=1,
+            max_novelty_attempts=self.evo_config.max_novelty_attempts,
+            resample_attempt=1,
+            max_resample_attempts=self.evo_config.max_patch_resamples,
+        )
+        parent_id = parent_program.id
+        archive_insp_ids = [p.id for p in archive_programs]
+        top_k_insp_ids = [p.id for p in top_k_programs]
+
+        # Get meta-recommendations in main thread
+        meta_recs, meta_summary, meta_scratch = self.meta_summarizer.get_current()
+
+        # Submit the edit + eval to thread pool (no DB access in worker)
+        future = self._eval_executor.submit(
+            self._run_full_agentic_job,
+            current_gen=current_gen,
+            generation_dir=generation_dir,
+            exec_fname=exec_fname,
+            results_dir=results_dir,
+            parent_program=parent_program,
+            archive_programs=archive_programs,
+            top_k_programs=top_k_programs,
+            meta_recs=meta_recs,
+            meta_summary=meta_summary,
+            meta_scratch=meta_scratch,
+        )
+
+        # Create job with known parent info
         running_job = RunningJob(
-            job_id=job_id,
+            job_id=f"agentic_async_gen_{current_gen}",
             exec_fname=exec_fname,
             results_dir=results_dir,
             generation_dir=generation_dir,
@@ -851,19 +1034,88 @@ class EvolutionRunner:
             parent_id=parent_id,
             archive_insp_ids=archive_insp_ids,
             top_k_insp_ids=top_k_insp_ids,
-            code_diff=code_diff,
-            meta_patch_data=meta_patch_data,
-            code_embedding=code_embedding,
-            embed_cost=embed_cost,
-            novelty_cost=novelty_cost,
+            code_diff=None,
+            meta_patch_data={},
+            agentic_future=future,
         )
         self.running_jobs.append(running_job)
 
         if self.verbose:
             logger.info(
-                f"Submitted job for generation {current_gen}, "
+                f"Submitted async agentic job for gen {current_gen}, "
                 f"queue size: {len(self.running_jobs)}"
             )
+
+    def _run_full_agentic_job(
+        self,
+        current_gen: int,
+        generation_dir: Path,
+        exec_fname: str,
+        results_dir: str,
+        parent_program: "Program",
+        archive_programs: List["Program"],
+        top_k_programs: List["Program"],
+        meta_recs: Optional[str],
+        meta_summary: Optional[str],
+        meta_scratch: Optional[str],
+    ) -> tuple:
+        """Run the full agentic job (edit + eval) in a thread.
+
+        NOTE: This runs in a worker thread. It must NOT access self.db directly
+        because SQLite connections are not thread-safe. All parent/inspiration
+        data is passed in from the main thread.
+
+        Returns tuple of (results, rtime, job_metadata).
+        """
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+
+        parent_id = parent_program.id
+        archive_insp_ids = [p.id for p in archive_programs]
+        top_k_insp_ids = [p.id for p in top_k_programs]
+
+        # Run the edit (patch generation)
+        code_diff, meta_patch_data, num_applied = self.run_patch(
+            parent_program,
+            archive_programs,
+            top_k_programs,
+            current_gen,
+            novelty_attempt=1,
+            resample_attempt=1,
+        )
+
+        # Get code embedding (thread-safe - uses HTTP calls)
+        code_embedding, embed_cost = self.get_code_embedding(exec_fname)
+
+        # Add meta info
+        if meta_recs is not None:
+            meta_patch_data["meta_recommendations"] = meta_recs
+            meta_patch_data["meta_summary"] = meta_summary
+            meta_patch_data["meta_scratch_pad"] = meta_scratch
+
+        # Run evaluation
+        results, rtime = self._run_agentic_evaluation(
+            exec_fname=exec_fname,
+            results_dir=results_dir,
+            generation_dir=generation_dir,
+            generation=current_gen,
+            parent_id=parent_id,
+        )
+
+        # Return all data needed to process the job
+        # Note: novelty_cost is 0 because we skip novelty checks in parallel mode
+        # (novelty checks require DB access which is not thread-safe)
+        job_metadata = {
+            "parent_id": parent_id,
+            "archive_insp_ids": archive_insp_ids,
+            "top_k_insp_ids": top_k_insp_ids,
+            "code_diff": code_diff,
+            "meta_patch_data": meta_patch_data,
+            "code_embedding": code_embedding,
+            "embed_cost": embed_cost,
+            "novelty_cost": 0.0,
+        }
+
+        return (results, rtime, job_metadata)
 
     def _check_completed_jobs(self) -> List[RunningJob]:
         """Check for completed jobs and return them."""
@@ -871,15 +1123,56 @@ class EvolutionRunner:
         still_running = []
 
         for job in self.running_jobs:
-            is_running = self.scheduler.check_job_status(job)
-            if not is_running:
-                # Job completed
+            # Agentic jobs with pre-computed results are already complete
+            if job.agentic_result is not None:
                 if self.verbose:
-                    logger.info(f"Job {job.job_id} completed!")
+                    logger.info(f"Agentic job for gen {job.generation} completed!")
                 completed.append(job)
+            # Agentic jobs with futures - check if future is done
+            elif job.agentic_future is not None:
+                if job.agentic_future.done():
+                    # Future completed - get results and store them
+                    try:
+                        future_result = job.agentic_future.result()
+                        # Handle both 2-tuple (results, rtime) and 3-tuple (results, rtime, metadata)
+                        if len(future_result) == 3:
+                            results, rtime, job_metadata = future_result
+                            # Update job with metadata from async execution
+                            job.parent_id = job_metadata.get("parent_id")
+                            job.archive_insp_ids = job_metadata.get("archive_insp_ids", [])
+                            job.top_k_insp_ids = job_metadata.get("top_k_insp_ids", [])
+                            job.code_diff = job_metadata.get("code_diff")
+                            job.meta_patch_data = job_metadata.get("meta_patch_data", {})
+                            job.code_embedding = job_metadata.get("code_embedding", [])
+                            job.embed_cost = job_metadata.get("embed_cost", 0.0)
+                            job.novelty_cost = job_metadata.get("novelty_cost", 0.0)
+                        else:
+                            results, rtime = future_result
+                        job.agentic_result = (results, rtime)
+                        if self.verbose:
+                            logger.info(f"Agentic job for gen {job.generation} completed (async)!")
+                        completed.append(job)
+                    except Exception as e:
+                        # Evaluation failed - create error result
+                        logger.error(f"Agentic evaluation for gen {job.generation} failed: {e}")
+                        job.agentic_result = (
+                            {"correct": {"correct": False}, "metrics": {"error": str(e)}},
+                            time.time() - job.start_time,
+                        )
+                        completed.append(job)
+                else:
+                    # Future still running
+                    still_running.append(job)
             else:
-                # Job still running
-                still_running.append(job)
+                is_running = self.scheduler.check_job_status(job)
+                if not is_running:
+                    # Job completed
+                    if self.verbose:
+                        logger.info(f"Job {job.job_id} completed!")
+                    completed.append(job)
+                else:
+                    # Job still running
+                    still_running.append(job)
 
         self.running_jobs = still_running
         return completed
@@ -887,10 +1180,13 @@ class EvolutionRunner:
     def _process_completed_job(self, job: RunningJob):
         """Process a completed job and add results to database."""
         end_time = time.time()
-        rtime = end_time - job.start_time
 
-        # Get job results
-        results = self.scheduler.get_job_results(job.job_id, job.results_dir)
+        # Get job results (agentic has pre-computed results, legacy uses scheduler)
+        if job.agentic_result is not None:
+            results, rtime = job.agentic_result
+        else:
+            rtime = end_time - job.start_time
+            results = self.scheduler.get_job_results(job.job_id, job.results_dir)
 
         # Read the evaluated code
         try:
@@ -1497,27 +1793,6 @@ class EvolutionRunner:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(content, encoding="utf-8")
 
-    def _build_embedding_corpus(
-        self, generation_dir: Path, meta_patch_data: Optional[dict] = None
-    ) -> EmbeddingCorpus:
-        """Build embedding corpus from generation directory for multi-file novelty."""
-        # Get changed files from agentic edit for prioritization
-        changed_first: Optional[List[Path]] = None
-        if meta_patch_data and self.evo_config.embedding_use_changed_files_first:
-            agent_changed = meta_patch_data.get("agent_changed_files")
-            if agent_changed:
-                changed_first = [Path(p) for p in agent_changed.keys()]
-
-        return build_embedding_corpus(
-            root=generation_dir,
-            include_globs=self.evo_config.embedding_include_globs,
-            exclude_globs=self.evo_config.embedding_exclude_globs,
-            max_files=self.evo_config.embedding_max_files,
-            max_total_bytes=self.evo_config.embedding_max_total_bytes,
-            max_bytes_per_file=self.evo_config.embedding_max_bytes_per_file,
-            changed_first=changed_first,
-        )
-
     def _run_agentic_patch(
         self,
         *,
@@ -1530,6 +1805,7 @@ class EvolutionRunner:
         resample_attempt: int,
     ) -> tuple[Optional[str], dict, int]:
         """Execute an agentic editing session via CLI backend (Codex or ShinkaAgent)."""
+        logger.info(f"_run_agentic_patch: START gen={generation} nov={novelty_attempt} resamp={resample_attempt}")
 
         primary_filename = Path(f"main.{self.lang_ext}")
 
@@ -1732,9 +2008,16 @@ class EvolutionRunner:
             modified_extra_cli = dict(agentic_config.extra_cli_config)
             modified_extra_cli["model"] = bandit_model
             # Create new config with modified extra_cli_config
-            agentic_config = replace(
-                agentic_config, extra_cli_config=modified_extra_cli
-            )
+            # Handle both dataclass instances and DictConfig from Hydra CLI overrides
+            if is_dataclass(agentic_config) and not isinstance(agentic_config, type):
+                agentic_config = replace(
+                    agentic_config, extra_cli_config=modified_extra_cli
+                )
+            else:
+                # DictConfig from Hydra - create a mutable copy preserving attribute access
+                from omegaconf import OmegaConf
+                agentic_config = OmegaConf.create(OmegaConf.to_container(agentic_config, resolve=True))
+                agentic_config.extra_cli_config = modified_extra_cli
 
         editor = AgenticEditor(
             scratch_dir=session_root,
@@ -1744,7 +2027,9 @@ class EvolutionRunner:
 
         try:
             agent_result = editor.run_session(context)
+            logger.info(f"_run_agentic_patch: session completed, changed_files={list(agent_result.changed_files.keys())}")
         except (CodexExecutionError, ShinkaExecutionError) as exc:
+            logger.info(f"_run_agentic_patch: session FAILED with {type(exc).__name__}: {exc}")
             return failure_meta(str(exc))
 
         # Create generation directory
@@ -1754,47 +2039,34 @@ class EvolutionRunner:
         generation_dir.mkdir(parents=True, exist_ok=True)
         self._hydrate_generation_directory(parent_program, generation_dir)
 
-        patch_dir = str(generation_dir)
-
         # Get primary file content from agent result
         primary_content = agent_result.changed_files.get(
             context.primary_file, base_files[context.primary_file]
         )
-        patch_str = f"```{self.evo_config.language}\n{primary_content}\n```"
         original_for_patch = base_files[context.primary_file]
 
-        # Apply patch to create output file
-        (
-            _,
-            num_applied,
-            output_path,
-            error_msg,
-            patch_txt,
-            patch_path,
-        ) = apply_full_patch(
-            patch_str,
-            original_str=original_for_patch,
-            patch_dir=patch_dir,
-            language=self.evo_config.language,
+        # Write ALL changed files directly to generation directory
+        # (Agentic mode: no EVOLVE-BLOCK markers needed)
+        logger.info(
+            f"Agentic edit: writing {len(agent_result.changed_files)} changed files "
+            f"to {generation_dir}"
         )
-
-        if num_applied < 1:
-            return failure_meta(
-                error_msg or "Agent produced no valid code",
-                session_log=agent_result.session_log,
-                commands=agent_result.commands_run,
-                metrics=agent_result.metrics,
-                session_id=agent_result.session_id,
-                changed_files=agent_result.changed_files,
-            )
-
-        # Write helper files to generation directory
         for rel_path, content in agent_result.changed_files.items():
-            if rel_path == context.primary_file:
-                continue
             target = generation_dir / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
+            logger.info(f"  Wrote: {rel_path} ({len(content)} bytes)")
+
+        # If agent didn't change the primary file, ensure it exists
+        primary_target = generation_dir / context.primary_file
+        if not primary_target.exists():
+            primary_target.write_text(primary_content, encoding="utf-8")
+            logger.info(f"  Wrote primary (unchanged): {context.primary_file}")
+
+        # In agentic mode, we consider the patch applied if any files were written
+        # (either changed files or the primary file was created)
+        num_applied = 1 if agent_result.changed_files or primary_target.exists() else 0
+        logger.info(f"Agentic edit: num_applied={num_applied}")
 
         # Build code diff for display
         original_lines = original_for_patch.splitlines(keepends=True)
@@ -1849,3 +2121,255 @@ class EvolutionRunner:
         # using the model_name stored in metadata (same pattern as legacy path)
 
         return code_diff, meta_edit_data, num_applied
+
+    def _resolve_evaluator_mode(self) -> str:
+        """Resolve evaluator mode after considering agentic defaults."""
+        mode = (self.evo_config.evaluator.mode or "auto").lower()
+        if mode == "legacy":
+            return "legacy"
+        if mode == "agentic":
+            return "agentic"
+        if mode == "auto":
+            return "agentic" if self.evo_config.agentic_mode else "legacy"
+        raise ValueError(f"Unknown evaluator mode: {self.evo_config.evaluator.mode}")
+
+    def _build_eval_command(self, exec_fname: str, results_dir: str) -> List[str]:
+        """Build the evaluation command from job config."""
+        eval_program = self.job_config.eval_program_path
+        if not eval_program:
+            return []
+        # Build command: python3 <eval_program> --program_path <exec_fname> --results_dir <results_dir>
+        # Or use the raw eval_command if set in job_config
+        if hasattr(self.job_config, "eval_command") and self.job_config.eval_command:
+            return self.job_config.eval_command.split()
+        # Resolve to absolute path if relative (important for agentic eval which changes workdir)
+        eval_program_path = Path(eval_program)
+        if not eval_program_path.is_absolute():
+            eval_program_path = (Path.cwd() / eval_program_path).resolve()
+        # Resolve exec_fname and results_dir to absolute paths too
+        exec_fname_path = Path(exec_fname)
+        if not exec_fname_path.is_absolute():
+            exec_fname_path = (Path.cwd() / exec_fname_path).resolve()
+        results_dir_path = Path(results_dir)
+        if not results_dir_path.is_absolute():
+            results_dir_path = (Path.cwd() / results_dir_path).resolve()
+        return [
+            "python3", str(eval_program_path),
+            "--program_path", str(exec_fname_path),
+            "--results_dir", str(results_dir_path),
+        ]
+
+    def _run_agentic_evaluation(
+        self,
+        *,
+        exec_fname: str,
+        results_dir: str,
+        generation_dir: Path,
+        generation: int,
+        parent_id: Optional[str] = None,
+        patch_type: Optional[str] = None,
+    ) -> tuple[Dict[str, Any], float]:
+        """Run evaluation using the agentic evaluator (LLM-powered)."""
+        if self.agentic_evaluator is None:
+            raise RuntimeError("Agentic evaluator not initialized")
+
+        repo_root = generation_dir.resolve()
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        metrics_path = Path(results_dir) / "metrics.json"
+        eval_sessions_root = self.agentic_eval_sessions_dir
+        eval_sessions_root.mkdir(parents=True, exist_ok=True)
+        eval_command = self._build_eval_command(exec_fname, results_dir)
+        run_root = Path(self.results_dir).resolve()
+
+        def _rel_to_run_path(raw: Union[str, Path]) -> str:
+            try:
+                resolved = Path(raw).resolve()
+                return str(resolved.relative_to(run_root))
+            except Exception:
+                return str(raw)
+
+        # --- Evaluation integrity snapshot ---
+        # Policy: evaluator may create new artifacts but must not modify pre-existing files
+        results_path = Path(results_dir).resolve()
+        try:
+            results_rel = results_path.relative_to(repo_root)
+        except Exception:
+            results_rel = None
+
+        ignored_dir_parts = {"__pycache__", ".pytest_cache", ".hydra", ".git", ".venv"}
+        ignored_suffixes = {".pyc", ".pyo"}
+
+        def _should_ignore_integrity_path(rel_path: Path) -> bool:
+            if not rel_path.parts:
+                return True
+            if (
+                results_rel is not None
+                and rel_path.parts[: len(results_rel.parts)] == results_rel.parts
+            ):
+                return True
+            if rel_path.suffix in ignored_suffixes:
+                return True
+            if any(part in ignored_dir_parts for part in rel_path.parts):
+                return True
+            return False
+
+        def _snapshot_integrity(root: Path) -> Dict[str, str]:
+            snapshot: Dict[str, str] = {}
+            for abs_path in root.rglob("*"):
+                if not abs_path.is_file():
+                    continue
+                rel = abs_path.relative_to(root)
+                if _should_ignore_integrity_path(rel):
+                    continue
+                try:
+                    digest = hashlib.sha256(abs_path.read_bytes()).hexdigest()
+                except Exception:
+                    continue
+                snapshot[rel.as_posix()] = digest
+            return snapshot
+
+        integrity_pre = _snapshot_integrity(repo_root)
+
+        # Convert paths to be relative to repo_root for the evaluator
+        # The agent runs with workdir=repo_root, so paths need to be relative
+        try:
+            rel_program_path = Path(exec_fname).resolve().relative_to(repo_root)
+        except ValueError:
+            rel_program_path = Path(exec_fname).name  # Fallback to just filename
+
+        try:
+            rel_results_path = Path(results_dir).resolve().relative_to(repo_root)
+        except ValueError:
+            rel_results_path = Path("results")  # Fallback
+
+        try:
+            rel_metrics_path = metrics_path.resolve().relative_to(repo_root)
+        except ValueError:
+            rel_metrics_path = Path("results/metrics.json")  # Fallback
+
+        start = time.time()
+        result = None
+        try:
+            result = self.agentic_evaluator.evaluate(
+                repo_root=repo_root,
+                eval_command=eval_command,
+                program_path=rel_program_path,
+                results_path=rel_results_path,
+                metrics_path=rel_metrics_path,
+                eval_sessions_root=eval_sessions_root,
+                task_name=self.job_config.eval_program_path or "agentic_evaluator",
+                results_dir=str(self.results_dir),
+                eval_prompt=getattr(
+                    self.evo_config.evaluator.agentic, "eval_prompt", None
+                ),
+                max_score=self.evo_config.max_score,
+            )
+        except (CodexExecutionError, ShinkaExecutionError) as exc:
+            # If metrics missing or empty, emit fallback so run can proceed
+            metrics_content = ""
+            if metrics_path.exists():
+                metrics_content = metrics_path.read_text(encoding="utf-8").strip()
+            if not metrics_content:
+                metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                fallback = {
+                    "combined_score": 0.0,
+                    "correct": False,
+                    "details": f"Agentic evaluator failed: {exc}",
+                }
+                metrics_path.write_text(json.dumps(fallback), encoding="utf-8")
+                metrics_content = json.dumps(fallback)
+            try:
+                metrics = json.loads(metrics_content)
+            except json.JSONDecodeError:
+                metrics = {"combined_score": 0.0, "error": "Invalid metrics JSON"}
+            result = AgenticEvaluatorResult(
+                metrics=metrics,
+                correct=False,
+                error_message=str(exc),
+                stdout_log="",
+                stderr_log="",
+                session_log=[],
+                commands_run=[],
+                session_log_path=metrics_path.parent / "session_log.missing",
+                session_events=[],
+                session_id=None,
+                session_dir=metrics_path.parent,
+                elapsed_seconds=time.time() - start,
+            )
+        rtime = time.time() - start
+
+        integrity_post = _snapshot_integrity(repo_root)
+        modified_existing = sorted(
+            p
+            for p in integrity_pre.keys()
+            if p in integrity_post and integrity_pre[p] != integrity_post[p]
+        )
+        deleted_existing = sorted(
+            p for p in integrity_pre.keys() if p not in integrity_post
+        )
+        new_files_created = sorted(
+            p for p in integrity_post.keys() if p not in integrity_pre
+        )
+
+        integrity_status = "clean"
+        if modified_existing or deleted_existing:
+            integrity_status = "violation"
+        elif new_files_created:
+            integrity_status = "artifacts_only"
+
+        integrity_meta = {
+            "policy": "no_modify_preexisting_files",
+            "status": integrity_status,
+            "modified_existing_count": len(modified_existing),
+            "deleted_existing_count": len(deleted_existing),
+            "new_files_created_count": len(new_files_created),
+        }
+
+        # If integrity violated, force incorrect
+        effective_correct = result.correct
+        effective_error = result.error_message
+        effective_metrics = dict(result.metrics or {})
+
+        if integrity_status == "violation":
+            effective_correct = False
+            sample_paths = (modified_existing + deleted_existing)[:10]
+            integrity_msg = f"Evaluation integrity violation: evaluator modified files ({', '.join(sample_paths)})"
+            effective_error = (
+                f"{effective_error} | {integrity_msg}"
+                if effective_error
+                else integrity_msg
+            )
+
+        events_preview = result.session_events[-AGENTIC_EVAL_PREVIEW_LIMIT:]
+        agentic_meta = {
+            "session_dir": _rel_to_run_path(result.session_dir),
+            "session_log_path": _rel_to_run_path(result.session_log_path),
+            "session_id": result.session_id,
+            "commands_run": [asdict(cmd) for cmd in result.commands_run],
+            "generation": generation,
+            "elapsed_seconds": result.elapsed_seconds,
+            "status": "error" if effective_error else "success",
+            "correct": effective_correct,
+            "metrics_path": _rel_to_run_path(metrics_path),
+            "metrics": effective_metrics,
+            "error_message": effective_error,
+            "stdout_log": result.stdout_log,
+            "stderr_log": result.stderr_log,
+            "events_preview": events_preview,
+            "system_prompt": result.system_prompt,
+            "user_prompt": result.user_prompt,
+            "integrity": integrity_meta,
+        }
+
+        results_payload = {
+            "metrics": effective_metrics,
+            "correct": {
+                "correct": effective_correct,
+                "error": effective_error,
+            },
+            "stdout_log": result.stdout_log,
+            "stderr_log": result.stderr_log,
+            "agentic_eval": agentic_meta,
+        }
+
+        return results_payload, rtime
