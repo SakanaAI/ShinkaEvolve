@@ -1,0 +1,26 @@
+# Variant configuration for Circle Packing task with agentic editing
+# This enables the multi-turn agentic backend for evolution
+
+defaults:
+  - override /database@_global_: island_large
+  - override /task@_global_: circle_packing
+  - override /evolution@_global_: agentic
+  - override /cluster@_global_: local
+
+variant_suffix: "_agentic"
+exp_name: "shinka_circle_packing"
+
+# Override evo_config with agentic-specific values for circle packing
+evo_config:
+  num_generations: 50
+  max_parallel_jobs: 4
+  llm_models:
+    - "gemini-2.5-flash"  # Only Gemini - OpenAI quota exhausted
+  llm_dynamic_selection: ucb
+  # Override agentic model settings (OpenAI quota exhausted)
+  agentic:
+    extra_cli_config:
+      model: "gemini-2.5-flash"
+  # Use legacy evaluator for circle packing (deterministic metric: sum of radii)
+  evaluator:
+    mode: legacy
