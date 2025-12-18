@@ -122,9 +122,11 @@ def _clean_evolve_markers(text: str) -> str:
         r"^\s*#\s*EVOLVE-BLOCK-START\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-START\s*$",  # C/C++/CUDA style
         r"^\s*EVOLVE-BLOCK-START\s*$",  # Plain text
+        r"^\s*--\s*EVOLVE-BLOCK-START\s*$",  # LEAN 4
         r"^\s*#\s*EVOLVE-BLOCK-END\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-END\s*$",  # C/C++/CUDA
         r"^\s*EVOLVE-BLOCK-END\s*$",  # Plain text
+        r"^\s*--\s*EVOLVE-BLOCK-END\s*$",  # LEAN 4
     ]
 
     cleaned_text = text
@@ -553,7 +555,7 @@ def _create_no_evolve_block_error(original_text: str, operation: str) -> str:
             "",
             "Suggestions:",
             "1. Add EVOLVE-BLOCK-START and EVOLVE-BLOCK-END markers around editable code",
-            "2. Ensure the markers are properly formatted (with # for Python, // for C/C++)",
+            "2. Ensure the markers are properly formatted (with # for Python, // for C/C++ and -- for LEAN)",
             "3. Check that there's at least one EVOLVE-BLOCK region in the file",
         ]
     )
@@ -704,6 +706,9 @@ def apply_diff_patch(
     elif language == "python":
         patch_str = re.sub(r"# EVOLVE-BLOCK-START\\n", "", patch_str)
         patch_str = re.sub(r"# EVOLVE-BLOCK-END\\n", "", patch_str)
+    elif language.lower() == "lean":
+        patch_str = re.sub(r"-- EVOLVE-BLOCK START\\n", "", patch_str)
+        patch_str = re.sub(r"-- EVOLVE-BLOCK END\\n", "", patch_str)
     else:
         raise ValueError(f"Language {language} not supported")
 
@@ -736,6 +741,8 @@ def apply_diff_patch(
         suffix = ".swift"
     elif language in ["json", "json5"]:
         suffix = ".json"
+    elif language.lower() == "lean":  # Run full lean files with the `LeanInteract` `FileCommand`.
+        suffix = ".lean"
     else:
         raise ValueError(f"Language {language} not supported")
 
