@@ -27,11 +27,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from shinka.llm import LLMClient
-from shinka.tools.codex_session_registry import (
-    register_session_process,
-    remove_session_process,
-    update_session_process,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +39,8 @@ class ShinkaExecutionError(RuntimeError):
     """Raised when the agent loop fails or times out."""
 
 
-# Regex to extract bash code block
-ACTION_RE = re.compile(r"```bash\s*\n(.*?)\n```", re.DOTALL)
+# Regex to extract bash code block (trailing newline optional for robustness)
+ACTION_RE = re.compile(r"```bash\s*\n(.*?)(?:\n)?```", re.DOTALL)
 
 # System prompt for bash-only agent
 SHINKA_SYSTEM_PROMPT = """You are an expert software engineer working inside a sandboxed repository.
@@ -142,6 +137,14 @@ def _truncate_output(text: str, max_chars: int = MAX_OBSERVATION_CHARS) -> str:
 
 def _execute_bash(command: str, cwd: Path, timeout: int = 120) -> tuple[int, str, str]:
     """Execute a bash command and return (exit_code, stdout, stderr)."""
+    # Skip empty commands
+    if not command.strip():
+        return 0, "", "(empty command skipped)"
+
+    # Validate workdir exists and is directory
+    if not cwd.exists() or not cwd.is_dir():
+        return 1, "", f"Invalid working directory: {cwd}"
+
     try:
         result = subprocess.run(
             command,
@@ -263,164 +266,146 @@ def run_shinka_task(
     total_output_tokens = 0
     total_cost = 0.0
 
-    # Register session (use negative PID to indicate in-process)
-    pseudo_pid = -abs(hash(session_id)) % 100000
-    register_session_process(
-        pseudo_pid,
-        prompt_preview=user_prompt[:160],
-        workdir=workdir,
-        session_kind=session_kind,
-        parent_id=parent_id,
-        generation=generation,
-        patch_type=patch_type,
-        results_dir=results_dir,
-    )
-    update_session_process(pseudo_pid, session_id=session_id)
+    # Emit init event
+    yield {
+        "type": "init",
+        "session_id": session_id,
+        "model": model_names[0],
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
-    try:
-        # Emit init event
-        yield {
-            "type": "init",
-            "session_id": session_id,
-            "model": model_names[0],
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
+    # Add initial user message
+    current_msg = user_prompt
+    turn_count = 0
 
-        # Add initial user message
-        current_msg = user_prompt
-        turn_count = 0
-
-        while True:
-            # Check time limit
-            elapsed = time.monotonic() - start_time
-            if max_seconds > 0 and elapsed > max_seconds:
-                yield {
-                    "type": "agent_message",
-                    "item": {
-                        "type": "agent_message",
-                        "text": f"[Session timed out after {elapsed:.1f}s]",
-                    },
-                    "session_id": session_id,
-                }
-                break
-
-            # Check turn limit
-            turn_count += 1
-            if max_events > 0 and turn_count > max_events:
-                yield {
-                    "type": "agent_message",
-                    "item": {
-                        "type": "agent_message",
-                        "text": f"[Session reached max turns: {max_events}]",
-                    },
-                    "session_id": session_id,
-                }
-                break
-
-            # Query LLM
-            llm_call_kwargs = llm.get_kwargs()
-            response = llm.query(
-                msg=current_msg,
-                system_msg=base_system,
-                msg_history=messages,
-                llm_kwargs=llm_call_kwargs,
-            )
-
-            if response is None or response.content is None:
-                yield {
-                    "type": "agent_message",
-                    "item": {
-                        "type": "agent_message",
-                        "text": "[LLM returned empty response]",
-                    },
-                    "session_id": session_id,
-                }
-                break
-
-            # Track costs using actual values from QueryResult
-            total_cost += response.cost or 0.0
-            total_input_tokens += response.input_tokens or 0
-            total_output_tokens += response.output_tokens or 0
-
-            # Update message history
-            messages.append({"role": "user", "content": current_msg})
-            messages.append({"role": "assistant", "content": response.content})
-
-            # Emit agent message event
+    while True:
+        # Check time limit
+        elapsed = time.monotonic() - start_time
+        if max_seconds > 0 and elapsed > max_seconds:
             yield {
                 "type": "agent_message",
-                "item": {"type": "agent_message", "text": response.content},
+                "item": {
+                    "type": "agent_message",
+                    "text": f"[Session timed out after {elapsed:.1f}s]",
+                },
+                "session_id": session_id,
+            }
+            break
+
+        # Check turn limit
+        turn_count += 1
+        if max_events > 0 and turn_count > max_events:
+            yield {
+                "type": "agent_message",
+                "item": {
+                    "type": "agent_message",
+                    "text": f"[Session reached max turns: {max_events}]",
+                },
+                "session_id": session_id,
+            }
+            break
+
+        # Query LLM
+        llm_call_kwargs = llm.get_kwargs()
+        response = llm.query(
+            msg=current_msg,
+            system_msg=base_system,
+            msg_history=messages,
+            llm_kwargs=llm_call_kwargs,
+        )
+
+        if response is None or response.content is None:
+            yield {
+                "type": "agent_message",
+                "item": {
+                    "type": "agent_message",
+                    "text": "[LLM returned empty response]",
+                },
+                "session_id": session_id,
+            }
+            break
+
+        # Track costs using actual values from QueryResult
+        total_cost += response.cost or 0.0
+        total_input_tokens += response.input_tokens or 0
+        total_output_tokens += response.output_tokens or 0
+
+        # Update message history
+        messages.append({"role": "user", "content": current_msg})
+        messages.append({"role": "assistant", "content": response.content})
+
+        # Emit agent message event
+        yield {
+            "type": "agent_message",
+            "item": {"type": "agent_message", "text": response.content},
+            "session_id": session_id,
+        }
+
+        # Parse ALL bash actions - execute all commands before checking termination
+        # (Some models output multiple bash blocks in one response)
+        action_matches = list(ACTION_RE.finditer(response.content))
+        has_termination = (
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in response.content
+        )
+
+        # Execute ALL bash blocks in sequence
+        observations = []
+        for action_match in action_matches:
+            command = action_match.group(1).strip()
+
+            # Execute command
+            exit_code, stdout, stderr = _execute_bash(command, workdir)
+
+            # Format observation
+            output = stdout + stderr
+            output = _truncate_output(output)
+            observation = OBSERVATION_TEMPLATE.format(
+                exit_code=exit_code,
+                output=output or "(no output)",
+            )
+            observations.append(observation)
+
+            # Emit command execution event
+            yield {
+                "type": "command_execution",
+                "item": {
+                    "type": "command_execution",
+                    "command": command,
+                    "status": "success" if exit_code == 0 else "error",
+                    "exit_code": exit_code,
+                    "stdout": _truncate_output(stdout, 8000),
+                    "stderr": _truncate_output(stderr, 8000),
+                },
                 "session_id": session_id,
             }
 
-            # Parse ALL bash actions - execute all commands before checking termination
-            # (Some models output multiple bash blocks in one response)
-            action_matches = list(ACTION_RE.finditer(response.content))
-            has_termination = (
-                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in response.content
+        # Combine all observations for next message
+        if observations:
+            current_msg = "\n\n".join(observations)
+
+        # Check for termination AFTER executing any bash commands
+        if has_termination:
+            logger.info(
+                f"ShinkaAgent completed task in {turn_count} turns, "
+                f"{elapsed:.1f}s, cost=${total_cost:.4f}"
+            )
+            break
+
+        # If no bash action and no termination, prompt for one
+        if not action_matches:
+            current_msg = (
+                "Please provide a bash command in ```bash...``` block, "
+                "or say COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT if done."
             )
 
-            # Execute ALL bash blocks in sequence
-            observations = []
-            for action_match in action_matches:
-                command = action_match.group(1).strip()
-
-                # Execute command
-                exit_code, stdout, stderr = _execute_bash(command, workdir)
-
-                # Format observation
-                output = stdout + stderr
-                output = _truncate_output(output)
-                observation = OBSERVATION_TEMPLATE.format(
-                    exit_code=exit_code,
-                    output=output or "(no output)",
-                )
-                observations.append(observation)
-
-                # Emit command execution event
-                yield {
-                    "type": "command_execution",
-                    "item": {
-                        "type": "command_execution",
-                        "command": command,
-                        "status": "success" if exit_code == 0 else "error",
-                        "exit_code": exit_code,
-                        "stdout": _truncate_output(stdout, 8000),
-                        "stderr": _truncate_output(stderr, 8000),
-                    },
-                    "session_id": session_id,
-                }
-
-            # Combine all observations for next message
-            if observations:
-                current_msg = "\n\n".join(observations)
-
-            # Check for termination AFTER executing any bash commands
-            if has_termination:
-                logger.info(
-                    f"ShinkaAgent completed task in {turn_count} turns, "
-                    f"{elapsed:.1f}s, cost=${total_cost:.4f}"
-                )
-                break
-
-            # If no bash action and no termination, prompt for one
-            if not action_matches:
-                current_msg = (
-                    "Please provide a bash command in ```bash...``` block, "
-                    "or say COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT if done."
-                )
-
-        # Emit usage event at end
-        yield {
-            "type": "usage",
-            "session_id": session_id,
-            "usage": {
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-                "total_tokens": total_input_tokens + total_output_tokens,
-                "total_cost_usd": total_cost,
-            },
-        }
-
-    finally:
-        remove_session_process(pseudo_pid)
+    # Emit usage event at end
+    yield {
+        "type": "usage",
+        "session_id": session_id,
+        "usage": {
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "total_tokens": total_input_tokens + total_output_tokens,
+            "total_cost_usd": total_cost,
+        },
+    }

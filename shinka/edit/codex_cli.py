@@ -16,11 +16,6 @@ from typing import Dict, Iterable, Iterator, Literal, Optional
 
 from shinka.edit.cost_utils import calculate_cost
 from shinka.edit.event_utils import extract_session_id
-from shinka.tools.codex_session_registry import (
-    register_session_process,
-    remove_session_process,
-    update_session_process,
-)
 from shinka.tools.credentials import get_api_key
 
 
@@ -340,18 +335,6 @@ def run_codex_task(
         text=True,
     )
 
-    prompt_preview = full_prompt.strip().splitlines()[0][:160] if full_prompt else ""
-    register_session_process(
-        process.pid,
-        prompt_preview=prompt_preview,
-        workdir=workdir,
-        session_kind=session_kind,
-        parent_id=parent_id,
-        generation=generation,
-        patch_type=patch_type,
-        results_dir=results_dir,
-    )
-
     try:
         if not process.stdout:
             raise CodexExecutionError("Codex CLI did not provide stdout pipe.")
@@ -395,7 +378,6 @@ def run_codex_task(
                 extracted_sid = extract_session_id(event)
                 if extracted_sid:
                     session_id = extracted_sid
-                    update_session_process(process.pid, session_id=extracted_sid)
 
                 # Track output content for token estimation
                 content = event.get("content") or event.get("text") or ""
@@ -459,4 +441,3 @@ def run_codex_task(
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
-        remove_session_process(process.pid)
