@@ -15,12 +15,12 @@ evo_config:
   num_generations: 50
   max_parallel_jobs: 4
   llm_models:
-    - "gemini-3-flash-preview"  # Gemini 3 Flash (Dec 2025)
+    - "gemini-2.5-flash"
   llm_dynamic_selection: ucb
   # Override agentic model settings
   agentic:
     extra_cli_config:
-      model: "gemini-3-flash-preview"
+      model: "gemini-2.5-flash"
   # Use legacy evaluator for circle packing (deterministic metric: sum of radii)
   evaluator:
     mode: legacy

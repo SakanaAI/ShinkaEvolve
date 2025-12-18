@@ -16,10 +16,10 @@ evo_config:
   num_generations: 30
   max_parallel_jobs: 2
   llm_models:
-    - "gemini-3-flash-preview"
+    - "gemini-2.5-flash"
   agentic:
     extra_cli_config:
-      model: "gemini-3-flash-preview"
+      model: "gemini-2.5-flash"
   task_sys_msg: |
     You are an expert in emergent behavior simulation and evolutionary algorithms.
     Optimize the Boids flocking simulation to achieve beautiful, natural flocking behavior.
@@ -34,7 +34,7 @@ evo_config:
   evaluator:
     agentic:
       extra_cli_config:
-        model: "gemini-3-flash-preview"
+        model: "gemini-2.5-flash"
       eval_prompt: |
         Evaluate this boids simulation using BOTH quantitative metrics AND code quality.
 
