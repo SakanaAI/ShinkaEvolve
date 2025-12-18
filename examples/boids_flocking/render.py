@@ -1,58 +1,8 @@
 """
 Renderer for visualizing the boids simulation.
-Supports both matplotlib (graphical) and terminal (headless) output.
 """
 
 from typing import List, Optional, Tuple
-
-
-class TerminalRenderer:
-    """Simple ASCII renderer for headless mode."""
-
-    def __init__(
-        self,
-        width: int = 80,
-        height: int = 24,
-        sim_width: float = 800,
-        sim_height: float = 600,
-    ):
-        self.width = width
-        self.height = height
-        self.sim_width = sim_width
-        self.sim_height = sim_height
-
-    def render(
-        self,
-        positions: List[Tuple[float, float]],
-        velocities: List[Tuple[float, float]],
-        step: int = 0,
-    ) -> None:
-        """Render boids to ASCII art and print to terminal."""
-        grid = [[" " for _ in range(self.width)] for _ in range(self.height)]
-
-        for x, y in positions:
-            # Map simulation coords to terminal coords
-            tx = int((x / self.sim_width) * (self.width - 1))
-            ty = int((y / self.sim_height) * (self.height - 1))
-
-            # Clamp to bounds
-            tx = max(0, min(self.width - 1, tx))
-            ty = max(0, min(self.height - 1, ty))
-
-            grid[ty][tx] = "*"
-
-        # Build output string
-        output = f"Step: {step}\n"
-        output += "+" + "-" * self.width + "+\n"
-        for row in grid:
-            output += "|" + "".join(row) + "|\n"
-        output += "+" + "-" * self.width + "+"
-
-        print(output)
-
-    def close(self) -> None:
-        """No cleanup needed for terminal renderer."""
-        pass
 
 
 class MatplotlibRenderer:
@@ -135,12 +85,10 @@ def create_renderer(
 ) -> Optional[object]:
     """Factory function to create appropriate renderer."""
     if headless:
-        return TerminalRenderer(sim_width=width, sim_height=height, **kwargs)
-    else:
-        renderer = MatplotlibRenderer(width=width, height=height, **kwargs)
-        try:
-            renderer.initialize()
-            return renderer
-        except RuntimeError:
-            # Fall back to terminal if matplotlib not available
-            return TerminalRenderer(sim_width=width, sim_height=height)
+        return None  # No rendering needed in headless mode
+    renderer = MatplotlibRenderer(width=width, height=height, **kwargs)
+    try:
+        renderer.initialize()
+        return renderer
+    except RuntimeError:
+        return None  # No rendering if matplotlib unavailable
