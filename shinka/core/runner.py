@@ -18,7 +18,11 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from shinka.core.embedding_corpus import extract_file_content
+from shinka.core.embedding_corpus import (
+    EmbeddingCorpus,
+    build_embedding_corpus,
+    extract_file_content,
+)
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
@@ -148,6 +152,13 @@ class EvolutionConfig:
     meta_llm_kwargs: dict = field(default_factory=lambda: {})
     meta_max_recommendations: int = 5
     embedding_model: Optional[str] = None
+    # Multi-file embedding configuration
+    embedding_use_corpus: bool = False  # Use multi-file corpus instead of single file
+    embedding_include_globs: List[str] = field(default_factory=lambda: ["**/*.py"])
+    embedding_exclude_globs: List[str] = field(default_factory=list)
+    embedding_max_files: int = 20
+    embedding_max_bytes_per_file: int = 50000
+    embedding_max_total_bytes: int = 200000
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
     max_novelty_attempts: int = 3
@@ -1583,43 +1594,81 @@ class EvolutionRunner:
         # Delete generation from meta_edit_data
         return code_diff, meta_edit_data, num_applied_attempt
 
-    def get_code_embedding(self, exec_fname: str) -> tuple[List[float], float]:
-        """Get the embedding of the code."""
-        # Read the evaluated code
-        try:
-            evaluated_code = Path(exec_fname).read_text(encoding="utf-8")
-        except Exception as e:
-            logger.warning(f"Could not read code for job {exec_fname}. Error: {e}")
-            evaluated_code = ""
-        if evaluated_code != "":
-            # Get the embedding of the initial program
-            try:
-                if self.embedding is not None:
-                    redacted_code = redact_immutable(evaluated_code, no_state=True)
-                    if self.verbose:
-                        logger.debug(
-                            "=> EMBED: Code length - "
-                            f"Original: {len(evaluated_code)} - "
-                            f"Redacted: {len(redacted_code)}"
-                        )
+    def get_code_embedding(
+        self,
+        exec_fname: str,
+        changed_files: Optional[List[Path]] = None,
+    ) -> tuple[List[float], float]:
+        """Get the embedding of the code.
 
-                    embedding_result, e_cost = self.embedding.get_embedding(
-                        redacted_code
+        Args:
+            exec_fname: Path to the main executable file.
+            changed_files: Optional list of files that were changed (for multi-file
+                corpus mode, these will be prioritized in the embedding).
+
+        Returns:
+            Tuple of (embedding vector, API cost).
+        """
+        if self.embedding is None:
+            if self.verbose:
+                logger.debug("=> EMBED: No embedding model configured.")
+            return [], 0.0
+
+        try:
+            # Multi-file corpus mode: build corpus from generation directory
+            if self.evo_config.embedding_use_corpus:
+                generation_dir = Path(exec_fname).parent
+                corpus = build_embedding_corpus(
+                    root=generation_dir,
+                    include_globs=self.evo_config.embedding_include_globs,
+                    exclude_globs=self.evo_config.embedding_exclude_globs,
+                    max_files=self.evo_config.embedding_max_files,
+                    max_total_bytes=self.evo_config.embedding_max_total_bytes,
+                    max_bytes_per_file=self.evo_config.embedding_max_bytes_per_file,
+                    changed_first=changed_files,
+                    exclude_dirs={"__pycache__", ".git", "venv", ".venv"},
+                    exclude_suffixes={".pyc", ".pyo", ".so", ".dll"},
+                )
+                text_to_embed = corpus.text
+
+                if self.verbose:
+                    logger.debug(
+                        f"=> EMBED: Corpus built - "
+                        f"Files: {len(corpus.included_files)}, "
+                        f"Bytes: {corpus.total_bytes}, "
+                        f"Truncated: {corpus.truncated}"
                     )
-                else:
-                    if self.verbose:
-                        logger.debug("=> EMBED: No embedding model configured.")
-                    embedding_result = []
-                    e_cost = 0.0
-                code_embedding = cast(List[float], embedding_result)
-            except Exception as e:
-                logger.warning(f"Could not embed code for job {exec_fname}. Error: {e}")
-                code_embedding = []
-                e_cost = 0.0
-        else:
-            code_embedding = []
-            e_cost = 0.0
-        return code_embedding, e_cost
+            else:
+                # Single-file mode: read and redact the main executable
+                try:
+                    evaluated_code = Path(exec_fname).read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not read code for job {exec_fname}. Error: {e}"
+                    )
+                    return [], 0.0
+
+                if not evaluated_code:
+                    return [], 0.0
+
+                text_to_embed = redact_immutable(evaluated_code, no_state=True)
+
+                if self.verbose:
+                    logger.debug(
+                        "=> EMBED: Code length - "
+                        f"Original: {len(evaluated_code)} - "
+                        f"Redacted: {len(text_to_embed)}"
+                    )
+
+            if not text_to_embed:
+                return [], 0.0
+
+            embedding_result, e_cost = self.embedding.get_embedding(text_to_embed)
+            return cast(List[float], embedding_result), e_cost
+
+        except Exception as e:
+            logger.warning(f"Could not embed code for job {exec_fname}. Error: {e}")
+            return [], 0.0
 
     def _print_metadata_table(self, meta_data: dict, generation: int):
         """Display metadata in a formatted rich table."""
