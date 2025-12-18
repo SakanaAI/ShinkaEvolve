@@ -72,58 +72,23 @@ Exit code: {exit_code}
 # Max characters for observation to avoid context overflow
 MAX_OBSERVATION_CHARS = 16000
 
-# Supported API key environment variables
-API_KEY_VARS = [
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "GOOGLE_API_KEY",
-    "AWS_ACCESS_KEY_ID",  # For Bedrock
-]
-
-# Map provider names to env vars for credential store lookup
-PROVIDER_ENV_VAR_MAP = {
-    "codex": "OPENAI_API_KEY",
-    "claude": "ANTHROPIC_API_KEY",
-    "gemini": "GOOGLE_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-}
-
-
 def ensure_shinka_available() -> bool:
-    """Check that at least one LLM provider API key is configured.
+    """Check that at least one LLM provider API key is configured."""
+    from shinka.tools.credentials import PROVIDER_ENV_VAR_MAP, get_api_key
 
-    Checks:
-    1. Environment variables
-    2. Unified credential store (~/.shinka/credentials.json)
-
-    Returns:
-        True if at least one API key is found.
-
-    Raises:
-        ShinkaUnavailableError: If no API keys are configured.
-    """
-    # First check environment variables
-    for var in API_KEY_VARS:
-        if os.environ.get(var):
+    # Check environment variables
+    for env_var in set(PROVIDER_ENV_VAR_MAP.values()):
+        if os.environ.get(env_var):
             return True
 
-    # Then check the unified credential store
-    try:
-        from shinka.tools.credentials import get_api_key
-
-        for provider in PROVIDER_ENV_VAR_MAP.keys():
-            key = get_api_key(provider)
-            if key:
-                # Also set it in the environment so other code can use it
-                env_var = PROVIDER_ENV_VAR_MAP[provider]
-                os.environ[env_var] = key
-                return True
-    except ImportError:
-        pass  # credentials module not available
+    # Check credential store
+    for provider, env_var in PROVIDER_ENV_VAR_MAP.items():
+        if key := get_api_key(provider):
+            os.environ[env_var] = key
+            return True
 
     raise ShinkaUnavailableError(
-        "No LLM API keys found. Set at least one of: " + ", ".join(API_KEY_VARS)
+        "No LLM API keys found. Set one of: " + ", ".join(set(PROVIDER_ENV_VAR_MAP.values()))
     )
 
 
