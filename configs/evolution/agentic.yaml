@@ -3,7 +3,9 @@ evo_config:
   agentic_mode: true
   # LLM models for patch generation (used by bandit sampling)
   llm_models:
-    - "gpt-5.2"
+    - "gpt-4.1"
+    - "claude-sonnet-4-20250514"
+    - "gemini-2.5-flash"
   llm_dynamic_selection: ucb
   embedding_model: "text-embedding-3-small"
   num_generations: 2
@@ -28,4 +30,16 @@ evo_config:
   evaluator:
     _target_: shinka.core.runner.EvaluatorConfig
     mode: auto
+    agentic:
+      _target_: shinka.core.runner.AgenticEvaluatorConfig
+      # If null, inherits backend from agentic.backend
+      backend: null
+      sandbox: "workspace-write"
+      approval_mode: "full-auto"
+      max_events: 80
+      max_seconds: 0
+      extra_cli_config:
+        model: "gpt-4.1"
+      # Custom evaluation criteria (null for default quantitative eval)
+      eval_prompt: null
   results_dir: ${output_dir}

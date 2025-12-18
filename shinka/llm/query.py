@@ -139,13 +139,12 @@ def sample_model_kwargs(
         if think_bool:
             t = THINKING_TOKENS[r_effort]
             thinking_tokens = t if t < kwargs_dict["max_tokens"] else 1024
+            # Note: extra_body is passed directly to the API, not double-nested
             kwargs_dict["extra_body"] = {
-                "extra_body": {
-                    "google": {
-                        "thinking_config": {
-                            "thinking_budget": thinking_tokens,
-                            "include_thoughts": True,
-                        }
+                "google": {
+                    "thinking_config": {
+                        "thinking_budget": thinking_tokens,
+                        "include_thoughts": True,
                     }
                 }
             }
@@ -187,12 +186,14 @@ def query(
     model_name: str,
     msg: str,
     system_msg: str,
-    msg_history: List = [],
+    msg_history: Optional[List] = None,
     output_model: Optional[BaseModel] = None,
     model_posteriors: Optional[Dict[str, float]] = None,
     **kwargs,
 ) -> QueryResult:
     """Query the LLM."""
+    if msg_history is None:
+        msg_history = []
     client, model_name = get_client_llm(
         model_name, structured_output=output_model is not None
     )

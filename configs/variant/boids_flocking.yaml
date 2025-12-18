@@ -11,6 +11,3 @@ variant_suffix: "_boids"
 evo_config:
   # Enable agentic mode for multi-file editing
   agentic_mode: false  # Set to true for agentic experiments
-
-  # Multi-file embedding support
-  embedding_use_changed_files_first: true

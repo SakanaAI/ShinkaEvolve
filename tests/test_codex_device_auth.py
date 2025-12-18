@@ -3,7 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from shinka.tools.codex_device_auth import CodexAuthError, ensure_codex_authenticated
+from shinka.edit.codex_cli import (
+    CodexAuthError,
+    _ensure_codex_authenticated as ensure_codex_authenticated,
+)
 
 
 def test_ensure_codex_authenticated_noop_when_logged_in(monkeypatch):

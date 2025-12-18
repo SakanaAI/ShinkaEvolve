@@ -77,6 +77,22 @@
             display: flex;
             flex-direction: column;
         }
+
+        /* Remove horizontal padding when displaying code to maximize width */
+        #details-panel:has(#agent-code.active),
+        #details-panel:has(#code-diff.active) {
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        /* Add back horizontal padding to non-code elements when code tab is active */
+        #details-panel:has(#agent-code.active) #node-summary,
+        #details-panel:has(#agent-code.active) #tabs,
+        #details-panel:has(#code-diff.active) #node-summary,
+        #details-panel:has(#code-diff.active) #tabs {
+            padding-left: 20px;
+            padding-right: 20px;
+        }
         
         .node {
             cursor: pointer;
@@ -171,15 +187,28 @@
             border-top: none;
             overflow: auto;
         }
+
+        /* Reduce horizontal padding when code tab is active */
+        #tab-content:has(#agent-code.active),
+        #tab-content:has(#code-diff.active) {
+            padding: 15px 0;
+        }
         
         .content-section {
             display: none;
             background-color: #f8f9fa;
             padding: 20px;
         }
-        
+
         .content-section.active {
             display: block;
+        }
+
+        /* Remove extra padding from code sections to maximize width */
+        #agent-code.content-section,
+        #code-diff.content-section {
+            padding: 0;
+            background-color: #fff;
         }
         
         pre {
@@ -221,7 +250,7 @@
         #agent-code, #solution-code {
             background-color: #f8f8f8;
             border-radius: 4px;
-            padding-bottom: 5px;
+            padding: 0;
         }
         
         /* Make sure code blocks in Python tabs have good contrast */
@@ -1057,6 +1086,17 @@
 
         .code-container {
             display: flex;
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        .code-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 15px;
+            background-color: #f8f8f8;
+            border-bottom: 1px solid #e1e4e8;
         }
 
         .line-numbers-gutter {
@@ -1073,6 +1113,11 @@
 
         .line-numbers-gutter span {
             display: block;
+        }
+
+        #agent-code-wrapper {
+            width: 100%;
+            overflow-x: auto;
         }
 
         #agent-code-wrapper pre {
@@ -1412,6 +1457,7 @@
                     <div class="code-controls">
                         <button id="copy-code-btn" title="Copy code to clipboard">📋 Copy</button>
                         <button id="download-code-btn" title="Download code as file">💾 Download</button>
+                        <span id="code-file-selector-container" style="margin-left: 10px;"></span>
                     </div>
                     <div id="agent-code-wrapper">
                         <p>Select a node from the tree to view code.</p>
@@ -1604,7 +1650,7 @@
                     downloadBtn.addEventListener('click', () => {
                         const codeElement = document.querySelector('#agent-code-wrapper pre code');
                         const selectedNodeId = getSelectedNodeId();
-                        
+
                         if (codeElement && window.treeData && selectedNodeId) {
                             const nodeData = window.treeData.find(d => d.id === selectedNodeId);
                             if (nodeData) {
@@ -1614,17 +1660,36 @@
                                     const url = URL.createObjectURL(blob);
                                     const a = document.createElement('a');
                                     a.href = url;
-                                    const agentName = (nodeData.metadata.patch_name || 'agent').replace(/\s+/g, '_');
-                                    const gen = nodeData.generation;
-                                    const language = nodeData.language || 'py';
-                                    const extension = {
-                                        'python': 'py',
-                                        'cpp': 'cpp',
-                                        'javascript': 'js',
-                                        'cuda': 'cu'
-                                    }[language] || language;
 
-                                    a.download = `${agentName}_gen${gen}.${extension}`;
+                                    // Use the selected file's path if in multi-file mode
+                                    let filename;
+                                    const fileSelector = document.getElementById('code-file-selector');
+                                    if (window._codeFiles && window._codeFiles.length > 1 && fileSelector) {
+                                        const selectedIdx = parseInt(fileSelector.value, 10) || 0;
+                                        const selectedFile = window._codeFiles[selectedIdx];
+                                        if (selectedFile && selectedFile.path) {
+                                            // Use just the filename part, prefixed with gen
+                                            const pathParts = selectedFile.path.split('/');
+                                            const basename = pathParts[pathParts.length - 1];
+                                            filename = `gen${nodeData.generation}_${basename}`;
+                                        }
+                                    }
+
+                                    // Fallback to generic naming if not multi-file
+                                    if (!filename) {
+                                        const agentName = (nodeData.metadata.patch_name || 'agent').replace(/\s+/g, '_');
+                                        const gen = nodeData.generation;
+                                        const language = nodeData.language || 'py';
+                                        const extension = {
+                                            'python': 'py',
+                                            'cpp': 'cpp',
+                                            'javascript': 'js',
+                                            'cuda': 'cu'
+                                        }[language] || language;
+                                        filename = `${agentName}_gen${gen}.${extension}`;
+                                    }
+
+                                    a.download = filename;
                                     document.body.appendChild(a);
                                     a.click();
                                     document.body.removeChild(a);
@@ -4657,37 +4722,31 @@ ${'='.repeat(80)}
             
             nodeDetailsContainer.innerHTML = nodeDetailsHtml;
             
-            // Update code tab
+            // Update code tab (supports multi-file code from agentic backend)
             const codeWrapper = document.getElementById("agent-code-wrapper");
-            if (data.code) {
+            const dropdownContainer = document.getElementById("code-file-selector-container");
+            const codeFiles = getCodeFilesForNode(data);
+            if (codeFiles.length > 0) {
                 document.querySelector('#agent-code .code-controls').style.display = 'flex';
-                
-                const sanitizedCode = escapeHtml(data.code);
-                const lines = data.code.split('\n');
-                const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
+                const rendered = renderMultiFileCode(codeFiles, data.language);
+                codeWrapper.innerHTML = rendered.content;
+                dropdownContainer.innerHTML = rendered.dropdown;
 
-                codeWrapper.innerHTML = `
-                    <div class="code-container">
-                        <div class="line-numbers-gutter">${lineNumbers}</div>
-                        <pre><code class="language-${data.language || 'python'}">${sanitizedCode}</code></pre>
-                    </div>
-                `;
-
-                // Use a slight delay to ensure the DOM has updated
+                // Use a slight delay to ensure the DOM has updated, then apply highlighting
                 setTimeout(() => {
-                    const codeBlock = codeWrapper.querySelector('code');
-                    if (codeBlock) {
+                    codeWrapper.querySelectorAll('code').forEach(codeBlock => {
                         // Ensure hljs is available
                         if (typeof hljs !== 'undefined') {
                             hljs.highlightElement(codeBlock);
                         } else {
                             console.warn('highlight.js not found, skipping syntax highlighting.');
                         }
-                    }
+                    });
                 }, 50);
             } else {
                 document.querySelector('#agent-code .code-controls').style.display = 'none';
                 codeWrapper.innerHTML = "<p>No code available for this node.</p>";
+                dropdownContainer.innerHTML = '';
             }
 
             // Update diff tab (supports multi-file diffs from agentic backend)
@@ -4838,12 +4897,22 @@ ${'='.repeat(80)}
                 }));
             }
 
-            // Check metadata.agent_code_diffs (dict format from agentic backend)
-            if (node && node.metadata?.agent_code_diffs && typeof node.metadata.agent_code_diffs === 'object') {
+            // Check metadata.agent_code_diffs (array or dict format from agentic backend)
+            if (node && node.metadata?.agent_code_diffs) {
                 const diffs = node.metadata.agent_code_diffs;
-                const entries = Object.entries(diffs);
-                if (entries.length > 0) {
-                    return entries.map(([path, diff]) => ({ path, diff: diff || '' }));
+                // Handle array format: [{path: "file.py", diff: "..."}, ...]
+                if (Array.isArray(diffs) && diffs.length > 0) {
+                    return diffs.map(diffEntry => ({
+                        path: diffEntry.path || node.metadata?.agent_primary_file || defaultPrimaryPath(node.language),
+                        diff: diffEntry.diff || '',
+                    }));
+                }
+                // Handle dict format: {"file.py": "diff content", ...}
+                if (typeof diffs === 'object' && !Array.isArray(diffs)) {
+                    const entries = Object.entries(diffs);
+                    if (entries.length > 0) {
+                        return entries.map(([path, diff]) => ({ path, diff: diff || '' }));
+                    }
                 }
             }
 
@@ -4905,6 +4974,106 @@ ${'='.repeat(80)}
 
             return html;
         }
+
+        // Extract code files from a node (supports multi-file agentic code)
+        function getCodeFilesForNode(node) {
+            const files = [];
+
+            // Check for agent_changed_files in metadata (dict format: {filepath: content})
+            if (node && node.metadata?.agent_changed_files && typeof node.metadata.agent_changed_files === 'object') {
+                const changedFiles = node.metadata.agent_changed_files;
+                const primaryFile = node.metadata?.agent_primary_file;
+
+                // Add primary file first if it exists
+                if (primaryFile && changedFiles[primaryFile]) {
+                    files.push({ path: primaryFile, code: changedFiles[primaryFile] });
+                }
+
+                // Add remaining files
+                Object.entries(changedFiles).forEach(([path, code]) => {
+                    if (path !== primaryFile) {
+                        files.push({ path, code: code || '' });
+                    }
+                });
+            }
+
+            // If no multi-file data but we have single code, return that
+            if (files.length === 0 && node && node.code) {
+                const primaryPath = node.metadata?.agent_primary_file || defaultPrimaryPath(node.language);
+                files.push({ path: primaryPath, code: node.code });
+            }
+
+            return files;
+        }
+
+        // Render multi-file code viewer with dropdown selector
+        function renderMultiFileCode(codeFiles, language) {
+            if (!codeFiles || codeFiles.length === 0) {
+                return { content: '<p>No code available for this node.</p>', dropdown: '' };
+            }
+
+            // Store files globally for dropdown switching
+            window._codeFiles = codeFiles;
+            window._codeLanguage = language;
+
+            // Build dropdown (for placing in header)
+            let dropdownHtml = '';
+            if (codeFiles.length > 1) {
+                const options = codeFiles.map((f, i) =>
+                    `<option value="${i}">${escapeHtml(f.path)}</option>`
+                ).join('');
+                dropdownHtml = `
+                    <select id="code-file-selector" onchange="window._switchCodeFile(this.value)"
+                            style="font-family: monospace; font-size: 12px; padding: 4px 8px; border: 1px solid #e1e4e8; border-radius: 4px; background: white;">
+                        ${options}
+                    </select>
+                `;
+            }
+
+            // Render first file by default
+            const file = codeFiles[0];
+            const sanitizedCode = escapeHtml(file.code);
+            const lines = file.code.split('\n');
+            const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
+
+            const contentHtml = `
+                <div id="code-file-content" class="code-container">
+                    <div style="display: flex;">
+                        <div class="line-numbers-gutter">${lineNumbers}</div>
+                        <pre style="flex: 1; margin: 0; overflow-x: auto;"><code class="language-${language || 'python'}">${sanitizedCode}</code></pre>
+                    </div>
+                </div>
+            `;
+
+            return { content: contentHtml, dropdown: dropdownHtml };
+        }
+
+        // Switch displayed code file via dropdown
+        window._switchCodeFile = function(index) {
+            const files = window._codeFiles;
+            const language = window._codeLanguage || 'python';
+            if (!files || !files[index]) return;
+
+            const file = files[index];
+            const sanitizedCode = escapeHtml(file.code);
+            const lines = file.code.split('\n');
+            const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
+
+            const container = document.getElementById('code-file-content');
+            if (container) {
+                container.innerHTML = `
+                    <div style="display: flex;">
+                        <div class="line-numbers-gutter">${lineNumbers}</div>
+                        <pre style="flex: 1; margin: 0; overflow-x: auto;"><code class="language-${language}">${sanitizedCode}</code></pre>
+                    </div>
+                `;
+                // Re-apply syntax highlighting
+                const codeBlock = container.querySelector('code');
+                if (codeBlock && typeof hljs !== 'undefined') {
+                    hljs.highlightElement(codeBlock);
+                }
+            }
+        };
 
         // Get CSS class for score display
         function getScoreClass(score) {
@@ -5468,12 +5637,26 @@ ${'='.repeat(80)}
             
             window.resizeTimeout = setTimeout(function() {
                 if (window.treeData) {
+                    // Get selected node ID from URL (more reliable than DOM after redraw)
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const selectedNodeId = urlParams.get('selected_node') || getSelectedNodeId();
+
                     renderGraph(window.treeData);
+
+                    // Restore the selected node after redraw
+                    if (selectedNodeId && window.treeData) {
+                        const nodeStillExists = window.treeData.find(d => d.id === selectedNodeId);
+                        if (nodeStillExists) {
+                            setTimeout(() => {
+                                selectNodeById(selectedNodeId, false, false);
+                            }, 100);
+                        }
+                    }
                 } else {
                     // Full reload only if necessary
-                                    const resultSelect = document.getElementById('result-select');
-                if (resultSelect.value) {
-                    loadDatabase(resultSelect.value);
+                    const resultSelect = document.getElementById('result-select');
+                    if (resultSelect.value) {
+                        loadDatabase(resultSelect.value);
                     }
                 }
             }, 300);

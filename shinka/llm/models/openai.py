@@ -48,10 +48,21 @@ def query_openai(
             ],
             **kwargs,
         )
+        # Handle None response.output defensively
+        if response.output is None or len(response.output) == 0:
+            raise ValueError(
+                f"OpenAI model '{model}' returned empty output. "
+                "This model may not support the responses API or returned an invalid response."
+            )
         try:
             content = response.output[0].content[0].text
-        except Exception:
-            # Reasoning models - ResponseOutputMessage
+        except (TypeError, IndexError, AttributeError):
+            # Reasoning models - ResponseOutputMessage (output[1] contains the text)
+            if len(response.output) < 2:
+                raise ValueError(
+                    f"OpenAI model '{model}' returned unexpected response structure. "
+                    f"Expected reasoning model format but got {len(response.output)} output items."
+                )
             content = response.output[1].content[0].text
         new_msg_history.append({"role": "assistant", "content": content})
     else:

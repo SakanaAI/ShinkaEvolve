@@ -27,6 +27,9 @@ def parse_args():
         "--headless", action="store_true", help="Run without graphical output"
     )
     parser.add_argument(
+        "--gui", action="store_true", help="Run with graphical output (opposite of --headless)"
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=1000,
@@ -40,6 +43,13 @@ def parse_args():
     )
     parser.add_argument(
         "--output-dir", type=str, default=".", help="Directory for output files"
+    )
+    # For framework compatibility (--results_dir is passed by shinka legacy evaluator)
+    parser.add_argument(
+        "--results_dir", type=str, default=None, help="Alias for --output-dir (framework compat)"
+    )
+    parser.add_argument(
+        "--program_path", type=str, default=None, help="Ignored (framework compat)"
     )
     return parser.parse_args()
 
@@ -97,9 +107,10 @@ def evaluate_simulation(args) -> dict:
     # Create and run simulation
     sim = SimulationEnvironment(config)
 
-    # Create renderer if not headless
+    # Create renderer if --gui is set (default is headless for framework eval)
     renderer = None
-    if not args.headless:
+    headless = args.headless or not args.gui  # Default to headless unless --gui is set
+    if not headless:
         try:
             renderer = create_renderer(
                 headless=False, width=config.width, height=config.height
@@ -149,14 +160,16 @@ def evaluate_simulation(args) -> dict:
 def main():
     """Main entry point."""
     args = parse_args()
-    output_dir = Path(args.output_dir)
+    # Use --results_dir if provided (framework compat), otherwise --output-dir
+    output_dir = Path(args.results_dir if args.results_dir else args.output_dir)
 
     print("=" * 60)
     print("BOIDS FLOCKING SIMULATION")
     print("=" * 60)
     print(f"Boids: {args.boids}")
     print(f"Steps: {args.steps}")
-    print(f"Mode: {'Headless' if args.headless else 'Graphical'}")
+    headless = args.headless or not args.gui  # Default to headless unless --gui
+    print(f"Mode: {'Headless' if headless else 'Graphical'}")
     print("=" * 60)
 
     # Run evaluation
@@ -180,8 +193,17 @@ def main():
     metrics_file = output_dir / "metrics.json"
     correct_file = output_dir / "correct.json"
 
+    # Write full evaluation results including combined_score
+    eval_output = {
+        **metrics,
+        "combined_score": result["combined_score"],
+        "correct": result["correct"],
+        "details": f"Collisions: {metrics.get('total_collisions', 0)}, "
+                   f"Alignment: {metrics.get('alignment_score', 0):.3f}, "
+                   f"Cohesion: {metrics.get('cohesion_score', 0):.3f}"
+    }
     with open(metrics_file, "w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(eval_output, f, indent=2)
     print(f"Metrics written to: {metrics_file}")
 
     with open(correct_file, "w") as f:

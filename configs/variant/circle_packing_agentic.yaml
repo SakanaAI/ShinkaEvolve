@@ -15,12 +15,12 @@ evo_config:
   num_generations: 50
   max_parallel_jobs: 4
   llm_models:
-    - "gemini-2.5-flash"  # Only Gemini - OpenAI quota exhausted
+    - "gemini-3-flash-preview"  # Gemini 3 Flash (Dec 2025)
   llm_dynamic_selection: ucb
-  # Override agentic model settings (OpenAI quota exhausted)
+  # Override agentic model settings
   agentic:
     extra_cli_config:
-      model: "gemini-2.5-flash"
+      model: "gemini-3-flash-preview"
   # Use legacy evaluator for circle packing (deterministic metric: sum of radii)
   evaluator:
     mode: legacy

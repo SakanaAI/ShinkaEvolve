@@ -444,6 +444,101 @@ Generate animations showing how code evolves:
 python code_path_anim.py --results_dir examples/circle_packing/results_20250101_120000
 ```
 
+## Agentic Mode (Multi-Turn Editing)
+
+Shinka supports **agentic mode** for multi-turn, multi-file code editing. Instead of single LLM calls, an agent can execute bash commands and modify multiple files over multiple turns.
+
+### Backends
+
+Agentic mode supports two backends:
+
+| Backend | Description | Setup Required |
+|---------|-------------|----------------|
+| **ShinkaAgent** (default) | Native in-process agent using LLMClient | Just API keys in `.env` |
+| **Codex** | OpenAI's Codex CLI wrapper | Requires CLI installation + authentication |
+
+### Using ShinkaAgent (Recommended for Getting Started)
+
+ShinkaAgent is the default backend and requires no additional setup beyond your API keys:
+
+```bash
+# Run with agentic mode using ShinkaAgent
+shinka_launch variant=boids_flocking_agentic
+```
+
+### Setting Up Codex Backend
+
+If you want to use the Codex backend, follow these steps:
+
+#### Step 1: Install Codex CLI
+
+```bash
+npm install -g @openai/codex
+```
+
+Verify installation:
+```bash
+codex --version
+```
+
+#### Step 2: Authenticate Codex
+
+```bash
+codex login
+```
+
+This opens your browser for OAuth authentication with your ChatGPT account.
+
+#### Step 3: Verify Authentication
+
+```bash
+codex login status
+# Should show: "Logged in using ChatGPT" or similar
+```
+
+#### Step 4: Run with Codex Backend
+
+```bash
+# Override the backend to use Codex
+shinka_launch variant=circle_packing_agentic evo_config.agentic.backend=codex
+```
+
+### Agentic Mode Configuration
+
+Key configuration options in your variant YAML:
+
+```yaml
+evo_config:
+  agentic_mode: true  # Enable agentic editing
+  agentic:
+    backend: "shinka"  # or "codex"
+    max_turns: 50      # Max conversation turns
+    sandbox: "workspace-write"
+    approval_mode: "full-auto"
+```
+
+### Troubleshooting Agentic Mode
+
+**Codex not found:**
+```
+CodexUnavailableError: Codex CLI not found
+```
+Solution: `npm install -g @openai/codex`
+
+**Codex not authenticated:**
+```
+CodexAuthError: Codex CLI is not authenticated
+```
+Solution: `codex login`
+
+**ShinkaAgent API key missing:**
+```
+ShinkaUnavailableError: No API keys configured
+```
+Solution: Ensure `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is set in your `.env` file
+
+---
+
 ## Troubleshooting
 
 ### Common Issues

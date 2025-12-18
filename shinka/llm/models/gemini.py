@@ -58,23 +58,17 @@ def query_gemini(
     else:
         raise ValueError("Gemini does not support structured output.")
 
-    thought_match = re.search(
-        r"<thought>(.*?)</thought>", response.choices[0].message.content, re.DOTALL
-    )
+    # Handle None content gracefully (can happen with reasoning models)
+    raw_content = text if text else ""
 
+    # Extract thought if present
+    thought_match = re.search(
+        r"<thought>(.*?)</thought>", raw_content, re.DOTALL
+    )
     thought = thought_match.group(1) if thought_match else ""
 
-    content_match = re.search(
-        r"<thought>(.*?)</thought>", response.choices[0].message.content, re.DOTALL
-    )
-    if content_match:
-        # Extract everything before and after the <thought> tag as content
-        content = (
-            response.choices[0].message.content[: content_match.start()]
-            + response.choices[0].message.content[content_match.end() :]
-        ).strip()
-    else:
-        content = response.choices[0].message.content
+    # Content is everything outside thought tags
+    content = re.sub(r"<thought>.*?</thought>", "", raw_content, flags=re.DOTALL).strip()
 
     input_cost = GEMINI_MODELS[model]["input_price"] * response.usage.prompt_tokens
     output_tokens = response.usage.total_tokens - response.usage.prompt_tokens

@@ -2,7 +2,7 @@
 # This enables the multi-turn agentic backend for multi-file evolution
 
 defaults:
-  - /task: boids_flocking
+  - override /task@_global_: boids_flocking
   - override /evolution@_global_: agentic
 
 variant_suffix: "_boids_agentic"
@@ -10,19 +10,65 @@ exp_name: "shinka_boids_flocking"
 
 # Override evo_config with boids-specific values (applied last)
 evo_config:
-  init_program_path: "examples/boids_flocking/initial.py"
+  init_program_path: "examples/boids_flocking/main.py"
   init_support_dir: examples/boids_flocking
+  max_score: 100.0
+  num_generations: 30
+  max_parallel_jobs: 2
+  llm_models:
+    - "gemini-3-flash-preview"
+  agentic:
+    extra_cli_config:
+      model: "gemini-3-flash-preview"
   task_sys_msg: |
     You are an expert in emergent behavior simulation and evolutionary algorithms.
-    Optimize the Boids flocking simulation to achieve:
-    1. Minimize collisions between boids (separation)
-    2. Maintain tight grouping (cohesion)
-    3. Achieve good velocity alignment
+    Optimize the Boids flocking simulation to achieve beautiful, natural flocking behavior.
 
     The simulation runs 1000 steps with 50 boids. You can edit multiple files:
-    - initial.py: Entry point and configuration
+    - main.py: Entry point and configuration
     - boid.py: Individual boid behavior
     - simulation.py: Simulation loop and physics
     - render.py: Visualization (optional)
 
-    Focus on tuning behavior weights, perception radius, and force calculations.
+    Focus on creating emergent patterns, smooth motion, and natural group dynamics.
+  evaluator:
+    agentic:
+      extra_cli_config:
+        model: "gemini-3-flash-preview"
+      eval_prompt: |
+        Evaluate this boids simulation using BOTH quantitative metrics AND code quality.
+
+        ## Part 1: Performance Metrics (0-50 points)
+        Run the simulation and read the ACTUAL metrics from stdout.
+
+        **Collision Avoidance** (0-20 points):
+        - 0 collisions = 20 pts | <100 = 15 pts | <500 = 10 pts | <1000 = 5 pts | >=1000 = 0 pts
+
+        **Alignment** (0-15 points): Read final alignment_score (0.0-1.0)
+        - >=0.95 = 15 pts | >=0.85 = 12 pts | >=0.70 = 8 pts | <0.70 = 4 pts
+
+        **Cohesion** (0-15 points): Read final cohesion_score (0.0-1.0)
+        - >=0.70 = 15 pts | >=0.50 = 12 pts | >=0.30 = 8 pts | <0.30 = 4 pts
+
+        ## Part 2: Solution Quality (0-50 points)
+        Review the code in boid.py, simulation.py, and main.py.
+
+        **Algorithm Elegance** (0-20 points):
+        - Novel/creative approach to flocking behavior?
+        - Clean separation of concerns?
+        - Efficient force calculations?
+        - Smart use of spatial partitioning or other optimizations?
+
+        **Parameter Tuning** (0-15 points):
+        - Well-reasoned weight values for separation/alignment/cohesion?
+        - Appropriate perception/separation radii?
+        - Good balance between stability and responsiveness?
+
+        **Code Quality** (0-15 points):
+        - Readable and well-structured?
+        - No hacky workarounds or magic numbers without explanation?
+        - Would this scale to more boids?
+
+        IMPORTANT: Base performance scores on ACTUAL simulation output, not guesses.
+        combined_score = Part 1 + Part 2 (0-100)
+        correct = true if simulation runs without crashes

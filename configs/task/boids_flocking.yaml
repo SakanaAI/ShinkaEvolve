@@ -13,25 +13,23 @@ task:
 
     The simulation runs for 1000 steps with 50 boids. Improve the scoring function,
     behavior weights, and physics parameters to achieve a higher combined score.
-  exec_fname: initial.py
+  exec_fname: main.py
   init_support_dir: examples/boids_flocking
   language: python
-  eval_command: python3 initial.py --headless --steps 1000
   metrics_fname: metrics.json
   correct_fname: correct.json
   score_key: combined_score
   higher_is_better: true
   allowed_files:
-    - initial.py
     - boid.py
     - simulation.py
     - render.py
     - main.py
-  primary_file: initial.py
+  primary_file: main.py
 
 # Evolution config overrides (merged into global evo_config)
 evo_config:
-  init_program_path: "examples/boids_flocking/initial.py"
+  init_program_path: "examples/boids_flocking/main.py"
   task_sys_msg: |
     You are an expert in emergent behavior simulation and evolutionary algorithms.
     Optimize the Boids flocking simulation to achieve:
@@ -40,7 +38,7 @@ evo_config:
     3. Achieve good velocity alignment
 
     The simulation runs 1000 steps with 50 boids. You can edit multiple files:
-    - initial.py: Entry point and configuration
+    - main.py: Entry point and configuration
     - boid.py: Individual boid behavior
     - simulation.py: Simulation loop and physics
     - render.py: Visualization (optional)
@@ -49,5 +47,9 @@ evo_config:
   language: python
   init_support_dir: examples/boids_flocking
   job_type: local
+
+distributed_job_config:
+  eval_program_path: "examples/boids_flocking/main.py"
+  # Don't set eval_command - let framework pass --results_dir dynamically
 
 exp_name: shinka_boids_flocking
