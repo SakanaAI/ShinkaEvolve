@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .codex_cli import run_codex_task
+from .event_utils import extract_session_id
 from .types import AgentRunner
 
 logger = logging.getLogger(__name__)
@@ -168,7 +169,7 @@ class AgenticEditor:
                 sandbox=self.config.sandbox,
                 approval_mode=self.config.approval_mode,
                 max_seconds=self.config.max_seconds,
-                max_events=self.config.max_turns,
+                max_events=self.config.max_events,
                 extra_cli_config=self.config.extra_cli_config,
                 cli_path=self.config.cli_path,
                 resume_session_id=context.resume_session_id,
@@ -184,7 +185,7 @@ class AgenticEditor:
                     event_count += 1
                     session_events.append(event)
                     if session_id is None:
-                        candidate = _extract_session_id(event)
+                        candidate = extract_session_id(event)
                         if candidate:
                             session_id = candidate
 
@@ -331,28 +332,3 @@ class AgenticEditor:
             session_id=session_id,
             model=model_from_event,
         )
-
-
-def _extract_session_id(event: Dict[str, Any]) -> Optional[str]:
-    """Attempt to pull a Codex session/thread id from an event payload."""
-
-    if not isinstance(event, dict):
-        return None
-
-    event_type = event.get("type")
-    if isinstance(event_type, str) and event_type.startswith("thread."):
-        thread_id = event.get("thread_id")
-        if isinstance(thread_id, str) and thread_id:
-            return thread_id
-
-    session_id = event.get("session_id")
-    if isinstance(session_id, str) and session_id:
-        return session_id
-
-    session_obj = event.get("session")
-    if isinstance(session_obj, dict):
-        candidate = session_obj.get("id") or session_obj.get("session_id")
-        if isinstance(candidate, str) and candidate:
-            return candidate
-
-    return None

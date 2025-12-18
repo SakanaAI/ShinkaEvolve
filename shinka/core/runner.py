@@ -33,10 +33,12 @@ from shinka.edit import (
     summarize_diff,
 )
 from shinka.edit.codex_cli import (
+    CodexAuthError,
     CodexExecutionError,
     CodexUnavailableError,
     ensure_codex_available,
     run_codex_task,
+    validate_codex_setup,
 )
 from shinka.edit.shinka_agent import (
     ShinkaExecutionError,
@@ -89,6 +91,7 @@ class AgenticConfig:
     sandbox: str = "workspace-write"
     approval_mode: str = "full-auto"
     max_turns: int = 50
+    max_events: int = 240  # Event limit for Codex CLI streaming (3x default)
     max_seconds: int = 0
     cli_path: Optional[str] = None
     extra_cli_config: Dict[str, Any] = field(default_factory=dict)
@@ -110,7 +113,7 @@ class AgenticEvaluatorConfig:
     cli_profile: Optional[str] = None
     sandbox: str = "workspace-write"
     approval_mode: str = "full-auto"
-    max_events: int = 80
+    max_events: int = 240  # Event limit for Codex CLI streaming (3x default)
     max_seconds: int = 0
     cli_path: Optional[str] = None
     extra_cli_config: Dict[str, Any] = field(default_factory=dict)
@@ -240,6 +243,17 @@ class EvolutionRunner:
             logger.info(f"Results directory: {self.results_dir}")
             logger.info(f"Log file: {log_filename}")
             logger.info("=" * 80)
+
+        # Validate agentic backend setup early (fail fast, not mid-evolution)
+        if evo_config.agentic_mode:
+            if evo_config.agentic.backend == "codex":
+                logger.info("Validating Codex backend setup...")
+                validate_codex_setup(evo_config.agentic.cli_path)
+                logger.info("Codex backend validated successfully")
+            else:
+                logger.info("Validating ShinkaAgent backend setup...")
+                ensure_shinka_available()
+                logger.info("ShinkaAgent backend validated successfully")
 
         # Check if we are resuming a run
         resuming_run = False
@@ -517,10 +531,12 @@ class EvolutionRunner:
         logger.info(f"Evolution run ended at {end_time}")
         logger.info("=" * 80)
 
-        # Cleanup thread pool executor
+        # Cleanup thread pool executors
         if self._eval_executor is not None:
             self._eval_executor.shutdown(wait=False)
             self._eval_executor = None
+        if hasattr(self, 'scheduler') and self.scheduler is not None:
+            self.scheduler.shutdown()
 
     def generate_initial_program(self):
         """Generate initial program with LLM, with retries."""

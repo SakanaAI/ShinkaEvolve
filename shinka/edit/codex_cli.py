@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional
+from typing import Dict, Iterable, Iterator, Literal, Optional
 
 from shinka.edit.cost_utils import calculate_cost
-from shinka.tools.codex_device_auth import CodexAuthError, ensure_codex_authenticated
+from shinka.edit.event_utils import extract_session_id
 from shinka.tools.codex_session_registry import (
     register_session_process,
     remove_session_process,
@@ -26,6 +30,110 @@ class CodexUnavailableError(RuntimeError):
 
 class CodexExecutionError(RuntimeError):
     """Raised when a Codex run fails or exceeds configured limits."""
+
+
+class CodexAuthError(RuntimeError):
+    """Raised when Codex authentication cannot be established."""
+
+
+def _is_interactive() -> bool:
+    """Check if running in interactive context (avoid hanging in CI/background)."""
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _status_looks_authenticated(stdout: str, stderr: str) -> bool:
+    combined = f"{stdout}\n{stderr}".lower()
+    if "not logged" in combined:
+        return False
+    if "unauthorized" in combined:
+        return False
+    if "please login" in combined or "please log in" in combined:
+        return False
+    return True
+
+
+def _is_codex_authenticated(codex_bin: Path) -> bool:
+    """Return True if Codex CLI reports an authenticated session."""
+    try:
+        result = subprocess.run(
+            [str(codex_bin), "login", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    return _status_looks_authenticated(result.stdout or "", result.stderr or "")
+
+
+def _login_with_api_key(codex_bin: Path, api_key: str, *, timeout_seconds: int) -> bool:
+    """Attempt a non-interactive login using an API key via stdin."""
+    try:
+        result = subprocess.run(
+            [str(codex_bin), "login", "--with-api-key"],
+            input=f"{api_key}\n",
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _login_device_auth(codex_bin: Path, *, timeout_seconds: int) -> bool:
+    """Attempt a device auth login, inheriting stdio so the user sees the code."""
+    try:
+        result = subprocess.run(
+            [str(codex_bin), "login", "--device-auth"],
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _ensure_codex_authenticated(
+    codex_bin: Path,
+    *,
+    api_key: Optional[str] = None,
+    timeout_seconds: int = 900,
+    allow_interactive: Optional[bool] = None,
+) -> Literal["status", "device_auth", "api_key"]:
+    """Ensure Codex is authenticated, attempting login flows if needed.
+
+    Order of operations:
+    1) `codex login status` (fast path)
+    2) If not logged in and interactive, attempt `codex login --device-auth`
+    3) If still not logged in and api_key provided, attempt `codex login --with-api-key`
+
+    Raises:
+        CodexAuthError: If authentication is not available after attempts.
+    """
+    if _is_codex_authenticated(codex_bin):
+        return "status"
+
+    interactive = _is_interactive() if allow_interactive is None else allow_interactive
+    if interactive:
+        if _login_device_auth(codex_bin, timeout_seconds=timeout_seconds):
+            if _is_codex_authenticated(codex_bin):
+                return "device_auth"
+
+    if api_key:
+        if _login_with_api_key(codex_bin, api_key, timeout_seconds=timeout_seconds):
+            if _is_codex_authenticated(codex_bin):
+                return "api_key"
+
+    raise CodexAuthError(
+        "Codex authentication required. Options:\n"
+        "  1. Run `codex login --device-auth` (requires enabling device code auth in ChatGPT Security Settings first)\n"
+        "  2. Run `echo $OPENAI_API_KEY | codex login --with-api-key`\n"
+        "  3. Set OPENAI_API_KEY environment variable or add to ~/.shinka/credentials.json"
+    )
 
 
 def ensure_codex_available(codex_path: Optional[str] = None) -> Path:
@@ -45,7 +153,9 @@ def ensure_codex_available(codex_path: Optional[str] = None) -> Path:
     if not candidate:
         raise CodexUnavailableError(
             "Codex CLI not found. Install it with `npm install -g @openai/codex` "
-            "or add it to PATH, then authenticate via `codex login --device-auth`."
+            "or add it to PATH, then authenticate via `codex login --device-auth` "
+            "(requires enabling device code auth in ChatGPT Security Settings) "
+            "or `codex login --with-api-key`."
         )
 
     resolved = Path(candidate)
@@ -55,6 +165,43 @@ def ensure_codex_available(codex_path: Optional[str] = None) -> Path:
         )
 
     return resolved
+
+
+def validate_codex_setup(codex_path: Optional[str] = None) -> None:
+    """Validate Codex CLI is installed and authenticated at startup.
+
+    This should be called early (e.g., in EvolutionRunner.__init__) to fail fast
+    before evolution starts, rather than failing mid-evolution on the first edit.
+
+    Args:
+        codex_path: Optional override pointing directly to the CLI executable.
+
+    Raises:
+        CodexUnavailableError: If Codex CLI is not installed.
+        CodexAuthError: If Codex CLI is not authenticated.
+    """
+    # Check binary is available
+    codex_bin = ensure_codex_available(codex_path)
+
+    # Check authentication status (without triggering interactive login)
+    if not _is_codex_authenticated(codex_bin):
+        raise CodexAuthError(
+            "Codex CLI is not authenticated. Please run:\n\n"
+            "  $ codex login\n\n"
+            "This will open your browser for OAuth authentication.\n"
+            "After authenticating, verify with: codex login status"
+        )
+
+
+def _to_primitive(obj: object) -> object:
+    """Convert OmegaConf DictConfig/ListConfig to primitive Python types."""
+    try:
+        from omegaconf import DictConfig, ListConfig, OmegaConf
+        if isinstance(obj, (DictConfig, ListConfig)):
+            return OmegaConf.to_container(obj, resolve=True)
+    except ImportError:
+        pass
+    return obj
 
 
 def _format_extra_config(extra: Dict[str, object]) -> Iterable[str]:
@@ -68,7 +215,7 @@ def _format_extra_config(extra: Dict[str, object]) -> Iterable[str]:
             yield f"{key}={value}"
         else:
             yield "-c"
-            yield f"{key}={json.dumps(value)}"
+            yield f"{key}={json.dumps(_to_primitive(value))}"
 
 
 def run_codex_task(
@@ -125,7 +272,7 @@ def run_codex_task(
     # and only fall back to API key auth when no interactive login is available.
     api_key = get_api_key("codex")
     try:
-        auth_method = ensure_codex_authenticated(binary, api_key=api_key)
+        auth_method = _ensure_codex_authenticated(binary, api_key=api_key)
     except CodexAuthError as exc:
         raise CodexExecutionError(str(exc)) from exc
 
@@ -236,13 +383,16 @@ def run_codex_task(
 
             events_emitted += 1
             if max_events and events_emitted > max_events:
-                process.kill()
-                raise CodexExecutionError(
-                    "Codex emitted more events than allowed (max_events)."
+                # Don't kill immediately - let this event finish and break gracefully
+                logger.warning(
+                    f"Codex emitted {events_emitted} events (max: {max_events}) - "
+                    "stopping gracefully with results collected so far"
                 )
+                process.kill()
+                break  # Exit loop gracefully instead of raising error
 
             if isinstance(event, dict):
-                extracted_sid = _extract_session_id(event)
+                extracted_sid = extract_session_id(event)
                 if extracted_sid:
                     session_id = extracted_sid
                     update_session_process(process.pid, session_id=extracted_sid)
@@ -288,9 +438,17 @@ def run_codex_task(
         returncode = process.wait(timeout=1)
         if returncode != 0:
             stderr_out = process.stderr.read() if process.stderr else ""
-            raise CodexExecutionError(
-                f"Codex CLI exited with status {returncode}: {stderr_out.strip()}"
-            )
+            # Don't fail if we have actual results (events processed)
+            # Exit code 1 can happen for benign reasons (e.g., hit max_turns)
+            if events_emitted > 0:
+                logger.warning(
+                    f"Codex CLI exited with status {returncode} but produced "
+                    f"{events_emitted} events - continuing with results"
+                )
+            else:
+                raise CodexExecutionError(
+                    f"Codex CLI exited with status {returncode}: {stderr_out.strip()}"
+                )
     finally:
         if process.poll() is None:
             try:
@@ -302,24 +460,3 @@ def run_codex_task(
             except subprocess.TimeoutExpired:
                 pass
         remove_session_process(process.pid)
-
-
-def _extract_session_id(event: Dict[str, object]) -> Optional[str]:
-    """Attempt to pull a session/thread id from a Codex CLI event."""
-
-    if not isinstance(event, dict):
-        return None
-    event_type = event.get("type")
-    if isinstance(event_type, str) and event_type.startswith("thread."):
-        thread_id = event.get("thread_id")
-        if isinstance(thread_id, str) and thread_id:
-            return thread_id
-    session_id = event.get("session_id")
-    if isinstance(session_id, str) and session_id:
-        return session_id
-    session_obj = event.get("session")
-    if isinstance(session_obj, dict):
-        candidate = session_obj.get("id") or session_obj.get("session_id")
-        if isinstance(candidate, str) and candidate:
-            return candidate
-    return None
