@@ -9,14 +9,14 @@ import shutil
 import subprocess
 import sys
 import time
-
-logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Literal, Optional
 
 from shinka.edit.cost_utils import calculate_cost
 from shinka.edit.event_utils import extract_session_id
 from shinka.tools.credentials import get_api_key
+
+logger = logging.getLogger(__name__)
 
 
 class CodexUnavailableError(RuntimeError):
