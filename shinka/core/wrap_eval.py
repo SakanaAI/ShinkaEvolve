@@ -6,6 +6,8 @@ import numpy as np
 import pickle
 from typing import Callable, Any, Dict, List, Tuple, Optional
 
+from shinka.utils.utils_lean import generate_proof
+
 DEFAULT_METRICS_ON_ERROR = {
     "combined_score": 0.0,
     "execution_time_mean": 0.0,
@@ -100,13 +102,16 @@ def run_shinka_eval(
     execution_times: List[float] = []
 
     try:
-        module = load_program(program_path)
-        if not hasattr(module, experiment_fn_name):
-            raise AttributeError(
-                f"Experiment function '{experiment_fn_name}' not found in "
-                f"{program_path}"
-            )
-        experiment_fn = getattr(module, experiment_fn_name)
+        if program_path.endswith(".lean"):
+            experiment_fn = generate_proof
+        else:
+            module = load_program(program_path)
+            if not hasattr(module, experiment_fn_name):
+                raise AttributeError(
+                    f"Experiment function '{experiment_fn_name}' not found in "
+                    f"{program_path}"
+                )
+            experiment_fn = getattr(module, experiment_fn_name)
 
         for i in range(num_runs):
             kwargs: Dict[str, Any] = {}
