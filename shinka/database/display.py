@@ -1,10 +1,11 @@
 import json
 import logging
 import time
+from typing import Any, Callable, Optional
+
 import numpy as np
-from typing import Optional, Callable, Any
-import rich.box  # type: ignore
 import rich  # type: ignore
+import rich.box  # type: ignore
 from rich.columns import Columns as RichColumns  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
@@ -208,9 +209,11 @@ class DatabaseDisplay:
         # Add Best Score to the top of the summary table
         summary_table.add_row(
             "Overall Best Score",
-            f"[bold cyan]{best_score:.2f}[/bold cyan]"
-            if num_with_scores > 0
-            else "[dim]N/A[/dim]",
+            (
+                f"[bold cyan]{best_score:.2f}[/bold cyan]"
+                if num_with_scores > 0
+                else "[dim]N/A[/dim]"
+            ),
         )
 
         # Gather data for summary
@@ -469,8 +472,8 @@ class DatabaseDisplay:
                 correct_str,
                 score_str,
                 f"{prog.complexity:.1f}",
-                prog.metadata.get("patch_name", "N/A")[:30],
-                prog.metadata.get("patch_type", "N/A")[:6],
+                (prog.metadata.get("patch_name") or "N/A")[:30],
+                (prog.metadata.get("patch_type") or "N/A")[:6],
                 island_display,
                 str(children_count),
                 ts_str,
@@ -600,8 +603,9 @@ class DatabaseDisplay:
                     time_display = f"{time_val:.1f}s"
 
             # Patch name and type
-            patch_name = prog.metadata.get("patch_name", "[dim]N/A[/dim]")[:30]
-            patch_type = prog.metadata.get("patch_type", "[dim]N/A[/dim]")
+            metadata = prog.metadata or {}
+            patch_name = (metadata.get("patch_name") or "[dim]N/A[/dim]")[:30]
+            patch_type = metadata.get("patch_type") or "[dim]N/A[/dim]"
 
             return [
                 role_name,

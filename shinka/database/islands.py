@@ -488,7 +488,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
                             f"{generation}",
                             score_str,
                             str(children),
-                            (patch_name[:28] if patch_name != "N/A" else "N/A"),
+                            (patch_name[:28] if patch_name and patch_name != "N/A" else "N/A"),
                             patch_type,
                             f"{complexity:.1f}" if complexity else "N/A",
                         )

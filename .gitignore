@@ -173,3 +173,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+results/
+examples/boids_flocking/metrics.json
+examples/boids_flocking/correct.json

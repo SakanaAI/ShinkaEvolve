@@ -30,6 +30,8 @@ evo_config:
     7. The math literature suggests special arrangements for specific values of n
 
     Be creative and try to find a new solution.
+
+    IMPORTANT: Your solution must be in main.py - this is the file that gets evaluated.
   language: "python"
   init_program_path: "examples/circle_packing/initial.py"
   job_type: "slurm_conda"

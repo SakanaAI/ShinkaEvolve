@@ -1,10 +1,11 @@
-import os
-import openai
-import google.generativeai as genai
-import pandas as pd
-from typing import Union, List, Optional, Tuple
-import numpy as np
 import logging
+import os
+from typing import List, Optional, Tuple, Union
+
+import google.generativeai as genai
+import numpy as np
+import openai
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class EmbeddingClient:
             try:
                 embeddings = []
                 total_tokens = 0
-                
+
                 for text in code:
                     result = genai.embed_content(
                         model=f"models/{self.model}",
@@ -110,15 +111,22 @@ class EmbeddingClient:
                     )
                     embeddings.append(result['embedding'])
                     total_tokens += len(text.split())
-                
-                cost = total_tokens * GEMINI_EMBEDDING_COSTS.get(self.model, 0.0)
-                
+
+                cost_per_token = GEMINI_EMBEDDING_COSTS.get(self.model)
+                if cost_per_token is None:
+                    logger.warning(
+                        f"Gemini embedding model '{self.model}' not in pricing table. "
+                        "Using 0 cost. Add to GEMINI_EMBEDDING_COSTS if needed."
+                    )
+                    cost_per_token = 0.0
+                cost = total_tokens * cost_per_token
+
                 if single_code:
                     return embeddings[0] if embeddings else [], cost
                 else:
                     return embeddings, cost
             except Exception as e:
-                logger.error(f"Error getting Gemini embedding: {e}")
+                logger.warning(f"Gemini embedding failed for model '{self.model}': {e}")
                 if single_code:
                     return [], 0.0
                 else:
@@ -128,14 +136,21 @@ class EmbeddingClient:
             response = self.client.embeddings.create(
                 model=self.model, input=code, encoding_format="float"
             )
-            cost = response.usage.total_tokens * OPENAI_EMBEDDING_COSTS[self.model]
+            cost_per_token = OPENAI_EMBEDDING_COSTS.get(self.model)
+            if cost_per_token is None:
+                logger.warning(
+                    f"OpenAI embedding model '{self.model}' not in pricing table. "
+                    "Using 0 cost. Add to OPENAI_EMBEDDING_COSTS if needed."
+                )
+                cost_per_token = 0.0
+            cost = response.usage.total_tokens * cost_per_token
             # Extract embedding from response
             if single_code:
                 return response.data[0].embedding, cost
             else:
                 return [d.embedding for d in response.data], cost
         except Exception as e:
-            logger.info(f"Error getting embedding: {e}")
+            logger.warning(f"OpenAI/Azure embedding failed for model '{self.model}': {e}")
             if single_code:
                 return [], 0.0
             else:
@@ -506,8 +521,8 @@ def plot_3d_scatter(
     patch_type: Optional[list] = None,
 ):
     import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
     from matplotlib.colors import ListedColormap
+    from matplotlib.lines import Line2D
 
     # Create figure and 3D axes with adjusted size and spacing
     fig = plt.figure(figsize=(8, 6))

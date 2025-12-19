@@ -142,8 +142,12 @@ def _clean_evolve_markers(text: str) -> str:
 
 
 def redact_immutable(text: str, no_state: bool = False) -> str:
+    ranges = _mutable_ranges(text)
+    # If no EVOLVE-BLOCK markers found, return the full text for embedding
+    if not ranges:
+        return text
     out = []
-    for a, b in _mutable_ranges(text):
+    for a, b in ranges:
         # keep immutable gap as a 1-liner placeholder
         if not no_state:
             out.append("<… non-evolvable code omitted …>")

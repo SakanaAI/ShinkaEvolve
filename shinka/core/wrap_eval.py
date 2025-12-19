@@ -1,10 +1,12 @@
 import importlib.util
 import json
 import os
-import time
-import numpy as np
 import pickle
-from typing import Callable, Any, Dict, List, Tuple, Optional
+import sys
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
 
 DEFAULT_METRICS_ON_ERROR = {
     "combined_score": 0.0,
@@ -19,15 +21,23 @@ DEFAULT_METRICS_ON_ERROR = {
 
 def load_program(program_path: str) -> Any:
     """Loads a Python module dynamically from a given file path."""
-    spec = importlib.util.spec_from_file_location("program", program_path)
-    if spec is None:
-        raise ImportError(f"Could not load spec for module at {program_path}")
-    if spec.loader is None:
-        raise ImportError(f"Spec loader is None for module at {program_path}")
+    program_dir = os.path.abspath(os.path.dirname(program_path) or ".")
+    sys_path_before = list(sys.path)
+    if program_dir not in sys.path:
+        sys.path.insert(0, program_dir)
 
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    try:
+        spec = importlib.util.spec_from_file_location("program", program_path)
+        if spec is None:
+            raise ImportError(f"Could not load spec for module at {program_path}")
+        if spec.loader is None:
+            raise ImportError(f"Spec loader is None for module at {program_path}")
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = sys_path_before
 
 
 def save_json_results(

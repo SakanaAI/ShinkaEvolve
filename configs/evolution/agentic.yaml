@@ -1,0 +1,45 @@
+evo_config:
+  _target_: shinka.core.EvolutionConfig
+  agentic_mode: true
+  # LLM models for patch generation (used by bandit sampling)
+  llm_models:
+    - "gpt-4.1"
+    - "claude-sonnet-4-20250514"
+    - "gemini-2.5-flash"
+  llm_dynamic_selection: ucb
+  embedding_model: "text-embedding-3-small"
+  num_generations: 2
+  max_parallel_jobs: 1
+  agentic:
+    _target_: shinka.core.runner.AgenticConfig
+    backend: "shinka"
+    cli_profile: null
+    sandbox: "workspace-write"
+    approval_mode: "full-auto"
+    max_turns: 50
+    max_seconds: 0
+    cli_path: null
+    extra_cli_config:
+      # Model used for agentic editing sessions
+      # REQUIRED: Will fail if not set (no silent fallbacks to old models)
+      model: "gpt-4.1"
+    resume_parent_session: false
+    # Use /tmp to isolate scratch dirs from git repos, preventing Codex CLI
+    # from discovering parent AGENTS.md files. Set to null to use results_dir.
+    scratch_dir_base: "/tmp/shinka_scratch"
+  evaluator:
+    _target_: shinka.core.runner.EvaluatorConfig
+    mode: auto
+    agentic:
+      _target_: shinka.core.runner.AgenticEvaluatorConfig
+      # If null, inherits backend from agentic.backend
+      backend: null
+      sandbox: "workspace-write"
+      approval_mode: "full-auto"
+      max_events: 80
+      max_seconds: 0
+      extra_cli_config:
+        model: "gpt-4.1"
+      # Custom evaluation criteria (null for default quantitative eval)
+      eval_prompt: null
+  results_dir: ${output_dir}

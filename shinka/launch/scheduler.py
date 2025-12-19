@@ -21,6 +21,7 @@ class JobConfig:
     """Base job configuration"""
 
     eval_program_path: Optional[str] = "evaluate.py"
+    eval_command: Optional[str] = None  # e.g. "python3 main.py --headless"
     extra_cmd_args: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -84,6 +85,7 @@ class JobScheduler:
         self.config = config
         self.verbose = verbose
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._shutdown = False
 
         if self.job_type == "local":
             self.monitor = monitor_local
@@ -376,4 +378,11 @@ class JobScheduler:
 
     def shutdown(self):
         """Shutdown the thread pool executor."""
-        self.executor.shutdown(wait=True)
+        if not self._shutdown:
+            self.executor.shutdown(wait=True)
+            self._shutdown = True
+
+    def __del__(self):
+        """Ensure executor is shut down on garbage collection."""
+        if not self._shutdown:
+            self.shutdown()

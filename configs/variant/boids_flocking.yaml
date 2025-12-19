@@ -1,0 +1,13 @@
+# Variant configuration for Boids Flocking task
+# This defines default overrides for the boids task
+
+defaults:
+  - /task: boids_flocking
+  - /evolution: small_budget
+
+variant_suffix: "_boids"
+
+# Task-specific evolution overrides
+evo_config:
+  # Enable agentic mode for multi-file editing
+  agentic_mode: false  # Set to true for agentic experiments

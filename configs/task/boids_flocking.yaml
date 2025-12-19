@@ -1,0 +1,55 @@
+# Boids Flocking Task Configuration
+# Task: Evolve flocking behavior to minimize collisions while maintaining tight grouping
+
+# Task metadata (used by UI/logging)
+task:
+  task_name: boids_flocking
+  description: |
+    Optimize the Boids flocking simulation. The goal is to evolve the separation,
+    alignment, and cohesion behaviors to:
+    1. Minimize collisions between boids
+    2. Maintain tight grouping (cohesion)
+    3. Achieve good velocity alignment
+
+    The simulation runs for 1000 steps with 50 boids. Improve the scoring function,
+    behavior weights, and physics parameters to achieve a higher combined score.
+  exec_fname: main.py
+  init_support_dir: examples/boids_flocking
+  language: python
+  metrics_fname: metrics.json
+  correct_fname: correct.json
+  score_key: combined_score
+  higher_is_better: true
+  allowed_files:
+    - boid.py
+    - simulation.py
+    - render.py
+    - main.py
+  primary_file: main.py
+
+# Evolution config overrides (merged into global evo_config)
+evo_config:
+  init_program_path: "examples/boids_flocking/main.py"
+  task_sys_msg: |
+    You are an expert in emergent behavior simulation and evolutionary algorithms.
+    Optimize the Boids flocking simulation to achieve:
+    1. Minimize collisions between boids (separation)
+    2. Maintain tight grouping (cohesion)
+    3. Achieve good velocity alignment
+
+    The simulation runs 1000 steps with 50 boids. You can edit multiple files:
+    - main.py: Entry point and configuration
+    - boid.py: Individual boid behavior
+    - simulation.py: Simulation loop and physics
+    - render.py: Visualization (optional)
+
+    Focus on tuning behavior weights, perception radius, and force calculations.
+  language: python
+  init_support_dir: examples/boids_flocking
+  job_type: local
+
+distributed_job_config:
+  eval_program_path: "examples/boids_flocking/main.py"
+  # Don't set eval_command - let framework pass --results_dir dynamically
+
+exp_name: shinka_boids_flocking

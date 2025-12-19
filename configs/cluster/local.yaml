@@ -1,6 +1,7 @@
 job_config:
   _target_: shinka.launch.LocalJobConfig
   eval_program_path: ${distributed_job_config.eval_program_path}
-  
+  eval_command: ${oc.select:distributed_job_config.eval_command,null}
+
 evo_config:
   job_type: "local"

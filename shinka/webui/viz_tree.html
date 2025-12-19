@@ -77,6 +77,22 @@
             display: flex;
             flex-direction: column;
         }
+
+        /* Remove horizontal padding when displaying code to maximize width */
+        #details-panel:has(#agent-code.active),
+        #details-panel:has(#code-diff.active) {
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        /* Add back horizontal padding to non-code elements when code tab is active */
+        #details-panel:has(#agent-code.active) #node-summary,
+        #details-panel:has(#agent-code.active) #tabs,
+        #details-panel:has(#code-diff.active) #node-summary,
+        #details-panel:has(#code-diff.active) #tabs {
+            padding-left: 20px;
+            padding-right: 20px;
+        }
         
         .node {
             cursor: pointer;
@@ -171,15 +187,28 @@
             border-top: none;
             overflow: auto;
         }
+
+        /* Reduce horizontal padding when code tab is active */
+        #tab-content:has(#agent-code.active),
+        #tab-content:has(#code-diff.active) {
+            padding: 15px 0;
+        }
         
         .content-section {
             display: none;
             background-color: #f8f9fa;
             padding: 20px;
         }
-        
+
         .content-section.active {
             display: block;
+        }
+
+        /* Remove extra padding from code sections to maximize width */
+        #agent-code.content-section,
+        #code-diff.content-section {
+            padding: 0;
+            background-color: #fff;
         }
         
         pre {
@@ -221,7 +250,7 @@
         #agent-code, #solution-code {
             background-color: #f8f8f8;
             border-radius: 4px;
-            padding-bottom: 5px;
+            padding: 0;
         }
         
         /* Make sure code blocks in Python tabs have good contrast */
@@ -1057,6 +1086,17 @@
 
         .code-container {
             display: flex;
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        .code-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 15px;
+            background-color: #f8f8f8;
+            border-bottom: 1px solid #e1e4e8;
         }
 
         .line-numbers-gutter {
@@ -1073,6 +1113,11 @@
 
         .line-numbers-gutter span {
             display: block;
+        }
+
+        #agent-code-wrapper {
+            width: 100%;
+            overflow-x: auto;
         }
 
         #agent-code-wrapper pre {
@@ -1412,6 +1457,7 @@
                     <div class="code-controls">
                         <button id="copy-code-btn" title="Copy code to clipboard">📋 Copy</button>
                         <button id="download-code-btn" title="Download code as file">💾 Download</button>
+                        <span id="code-file-selector-container" style="margin-left: 10px;"></span>
                     </div>
                     <div id="agent-code-wrapper">
                         <p>Select a node from the tree to view code.</p>
@@ -1604,7 +1650,7 @@
                     downloadBtn.addEventListener('click', () => {
                         const codeElement = document.querySelector('#agent-code-wrapper pre code');
                         const selectedNodeId = getSelectedNodeId();
-                        
+
                         if (codeElement && window.treeData && selectedNodeId) {
                             const nodeData = window.treeData.find(d => d.id === selectedNodeId);
                             if (nodeData) {
@@ -1614,17 +1660,36 @@
                                     const url = URL.createObjectURL(blob);
                                     const a = document.createElement('a');
                                     a.href = url;
-                                    const agentName = (nodeData.metadata.patch_name || 'agent').replace(/\s+/g, '_');
-                                    const gen = nodeData.generation;
-                                    const language = nodeData.language || 'py';
-                                    const extension = {
-                                        'python': 'py',
-                                        'cpp': 'cpp',
-                                        'javascript': 'js',
-                                        'cuda': 'cu'
-                                    }[language] || language;
 
-                                    a.download = `${agentName}_gen${gen}.${extension}`;
+                                    // Use the selected file's path if in multi-file mode
+                                    let filename;
+                                    const fileSelector = document.getElementById('code-file-selector');
+                                    if (window._codeFiles && window._codeFiles.length > 1 && fileSelector) {
+                                        const selectedIdx = parseInt(fileSelector.value, 10) || 0;
+                                        const selectedFile = window._codeFiles[selectedIdx];
+                                        if (selectedFile && selectedFile.path) {
+                                            // Use just the filename part, prefixed with gen
+                                            const pathParts = selectedFile.path.split('/');
+                                            const basename = pathParts[pathParts.length - 1];
+                                            filename = `gen${nodeData.generation}_${basename}`;
+                                        }
+                                    }
+
+                                    // Fallback to generic naming if not multi-file
+                                    if (!filename) {
+                                        const agentName = (nodeData.metadata.patch_name || 'agent').replace(/\s+/g, '_');
+                                        const gen = nodeData.generation;
+                                        const language = nodeData.language || 'py';
+                                        const extension = {
+                                            'python': 'py',
+                                            'cpp': 'cpp',
+                                            'javascript': 'js',
+                                            'cuda': 'cu'
+                                        }[language] || language;
+                                        filename = `${agentName}_gen${gen}.${extension}`;
+                                    }
+
+                                    a.download = filename;
                                     document.body.appendChild(a);
                                     a.click();
                                     document.body.removeChild(a);
@@ -3512,7 +3577,8 @@ ${'='.repeat(80)}
                     'init': d3.symbolDiamond,
                     'full': d3.symbolCircle,
                     'diff': d3.symbolSquare,
-                    'cross': d3.symbolCross
+                    'cross': d3.symbolCross,
+                    'agentic': d3.symbolTriangle  // Triangle for agentic patches
                 };
                 const getShape = (patchType) => shapeMap[patchType] || d3.symbolCircle;
                 const symbol = d3.symbol().size(2500);
@@ -4328,11 +4394,11 @@ ${'='.repeat(80)}
             
             // Update node summary
             document.getElementById("node-summary").innerHTML = `
-                <h3>${agentName} (Gen ${data.generation})</h3>
-                <p><strong>ID:</strong> <span style="font-family: monospace;">${data.id}</span></p>
-                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${data.parent_id || 'None'}</span></p>
+                <h3>${escapeHtml(agentName)} (Gen ${data.generation})</h3>
+                <p><strong>ID:</strong> <span style="font-family: monospace;">${escapeHtml(String(data.id))}</span></p>
+                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${escapeHtml(String(data.parent_id || 'None'))}</span></p>
                 <p><strong>Score:</strong> <span class="${getScoreClass(score)}">${formatScore(score)}</span></p>
-                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${data.error}</span></p>` : ''}
+                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${escapeHtml(String(data.error))}</span></p>` : ''}
             `;
             
 
@@ -4368,7 +4434,7 @@ ${'='.repeat(80)}
             
             if (data.metadata) {
                 for (const [key, value] of Object.entries(data.metadata)) {
-                    if (key !== 'thought' && key !== 'code_analysis_metrics' && key !== 'patch_description' && key !== 'stdout_log' && key !== 'stderr_log' && key !== 'llm_result') {
+                    if (key !== 'thought' && key !== 'code_analysis_metrics' && key !== 'patch_description' && key !== 'stdout_log' && key !== 'stderr_log' && key !== 'llm_result' && key !== 'agent_code_diffs') {
                         
                         let valueHtml;
                         if (typeof value === 'object' && value !== null) {
@@ -4656,43 +4722,38 @@ ${'='.repeat(80)}
             
             nodeDetailsContainer.innerHTML = nodeDetailsHtml;
             
-            // Update code tab
+            // Update code tab (supports multi-file code from agentic backend)
             const codeWrapper = document.getElementById("agent-code-wrapper");
-            if (data.code) {
+            const dropdownContainer = document.getElementById("code-file-selector-container");
+            const codeFiles = getCodeFilesForNode(data);
+            if (codeFiles.length > 0) {
                 document.querySelector('#agent-code .code-controls').style.display = 'flex';
-                
-                const sanitizedCode = escapeHtml(data.code);
-                const lines = data.code.split('\n');
-                const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
+                const rendered = renderMultiFileCode(codeFiles, data.language);
+                codeWrapper.innerHTML = rendered.content;
+                dropdownContainer.innerHTML = rendered.dropdown;
 
-                codeWrapper.innerHTML = `
-                    <div class="code-container">
-                        <div class="line-numbers-gutter">${lineNumbers}</div>
-                        <pre><code class="language-${data.language || 'python'}">${sanitizedCode}</code></pre>
-                    </div>
-                `;
-
-                // Use a slight delay to ensure the DOM has updated
+                // Use a slight delay to ensure the DOM has updated, then apply highlighting
                 setTimeout(() => {
-                    const codeBlock = codeWrapper.querySelector('code');
-                    if (codeBlock) {
+                    codeWrapper.querySelectorAll('code').forEach(codeBlock => {
                         // Ensure hljs is available
                         if (typeof hljs !== 'undefined') {
                             hljs.highlightElement(codeBlock);
                         } else {
                             console.warn('highlight.js not found, skipping syntax highlighting.');
                         }
-                    }
+                    });
                 }, 50);
             } else {
                 document.querySelector('#agent-code .code-controls').style.display = 'none';
                 codeWrapper.innerHTML = "<p>No code available for this node.</p>";
+                dropdownContainer.innerHTML = '';
             }
 
-            // Update diff tab
+            // Update diff tab (supports multi-file diffs from agentic backend)
             const diffWrapper = document.getElementById("code-diff");
-            if (data.code_diff) {
-                diffWrapper.innerHTML = `<pre class="diff">${formatDiff(data.code_diff)}</pre>`;
+            const diffFiles = getDiffFilesForNode(data);
+            if (diffFiles.length > 0) {
+                diffWrapper.innerHTML = renderMultiFileDiff(diffFiles);
             } else {
                 diffWrapper.innerHTML = "<p>No code diff available for this node.</p>";
             }
@@ -4807,6 +4868,212 @@ ${'='.repeat(80)}
                 return `<span class="diff-line">${escapedLine}</span>`;
             }).join('');
         }
+
+        // Get diff statistics (additions and deletions count)
+        function getDiffStats(diffText) {
+            if (!diffText) return { additions: 0, deletions: 0 };
+            const lines = diffText.split('\n');
+            let additions = 0, deletions = 0;
+            lines.forEach(line => {
+                if (line.startsWith('+') && !line.startsWith('+++')) additions++;
+                else if (line.startsWith('-') && !line.startsWith('---')) deletions++;
+            });
+            return { additions, deletions };
+        }
+
+        // Get default primary file path based on language
+        function defaultPrimaryPath(language) {
+            const langPaths = { python: 'main.py', javascript: 'main.js', typescript: 'main.ts', swift: 'main.swift' };
+            return langPaths[language] || 'main.py';
+        }
+
+        // Extract diff files from a node (supports multi-file agentic diffs)
+        function getDiffFilesForNode(node) {
+            // Check for array of diffs (multi-file format)
+            if (node && Array.isArray(node.code_diffs) && node.code_diffs.length > 0) {
+                return node.code_diffs.map(diffEntry => ({
+                    path: diffEntry.path || node.metadata?.agent_primary_file || defaultPrimaryPath(node.language),
+                    diff: diffEntry.diff || '',
+                }));
+            }
+
+            // Check metadata.agent_code_diffs (array or dict format from agentic backend)
+            if (node && node.metadata?.agent_code_diffs) {
+                const diffs = node.metadata.agent_code_diffs;
+                // Handle array format: [{path: "file.py", diff: "..."}, ...]
+                if (Array.isArray(diffs) && diffs.length > 0) {
+                    return diffs.map(diffEntry => ({
+                        path: diffEntry.path || node.metadata?.agent_primary_file || defaultPrimaryPath(node.language),
+                        diff: diffEntry.diff || '',
+                    }));
+                }
+                // Handle dict format: {"file.py": "diff content", ...}
+                if (typeof diffs === 'object' && !Array.isArray(diffs)) {
+                    const entries = Object.entries(diffs);
+                    if (entries.length > 0) {
+                        return entries.map(([path, diff]) => ({ path, diff: diff || '' }));
+                    }
+                }
+            }
+
+            // Fallback to single code_diff
+            if (node && node.code_diff) {
+                return [{
+                    path: node.metadata?.agent_primary_file || defaultPrimaryPath(node.language),
+                    diff: node.code_diff,
+                }];
+            }
+
+            return [];
+        }
+
+        // Render multi-file diff viewer
+        function renderMultiFileDiff(diffFiles) {
+            if (!diffFiles || diffFiles.length === 0) {
+                return '<p>No code diff available for this node.</p>';
+            }
+
+            // Calculate totals
+            const totals = diffFiles.reduce((acc, file) => {
+                const stats = getDiffStats(file.diff);
+                acc.additions += stats.additions;
+                acc.deletions += stats.deletions;
+                return acc;
+            }, { additions: 0, deletions: 0 });
+
+            const filesLabel = diffFiles.length === 1 ? 'file changed' : 'files changed';
+            const autoExpand = diffFiles.length === 1;
+
+            let html = `
+                <div class="diff-summary" style="margin-bottom: 10px; padding: 8px; background: #f6f8fa; border-radius: 4px; font-size: 13px;">
+                    <span style="font-weight: 500;">${diffFiles.length} ${filesLabel}</span>
+                    <span style="margin-left: 10px; color: #22863a;">+${totals.additions}</span>
+                    <span style="margin-left: 5px; color: #cb2431;">-${totals.deletions}</span>
+                </div>
+            `;
+
+            diffFiles.forEach((diffEntry, idx) => {
+                const stats = getDiffStats(diffEntry.diff);
+                const isCollapsed = !autoExpand && idx > 0;
+                const diffContent = diffEntry.diff ? formatDiff(diffEntry.diff) : '<p style="padding: 10px;">No diff content for this file.</p>';
+
+                html += `
+                    <div class="diff-file-section" style="margin-bottom: 10px; border: 1px solid #e1e4e8; border-radius: 4px;">
+                        <div class="diff-file-header" style="padding: 8px 12px; background: #f6f8fa; border-bottom: 1px solid #e1e4e8; cursor: pointer; display: flex; align-items: center;" onclick="var body=this.nextElementSibling; var icon=this.querySelector('.collapse-icon'); var hidden=body.style.display==='none'; body.style.display=hidden?'block':'none'; icon.textContent=hidden?'-':'+';">
+                            <span class="collapse-icon" style="margin-right: 8px; font-family: monospace;">${isCollapsed ? '+' : '-'}</span>
+                            <span style="flex: 1; font-family: monospace; font-size: 12px;">${escapeHtml(diffEntry.path || 'File ' + (idx + 1))}</span>
+                            <span style="color: #22863a; margin-right: 5px;">+${stats.additions}</span>
+                            <span style="color: #cb2431;">-${stats.deletions}</span>
+                        </div>
+                        <div class="diff-file-body" style="display: ${isCollapsed ? 'none' : 'block'};">
+                            <pre class="diff" style="margin: 0; padding: 10px; overflow-x: auto;">${diffContent}</pre>
+                        </div>
+                    </div>
+                `;
+            });
+
+            return html;
+        }
+
+        // Extract code files from a node (supports multi-file agentic code)
+        function getCodeFilesForNode(node) {
+            const files = [];
+
+            // Check for agent_changed_files in metadata (dict format: {filepath: content})
+            if (node && node.metadata?.agent_changed_files && typeof node.metadata.agent_changed_files === 'object') {
+                const changedFiles = node.metadata.agent_changed_files;
+                const primaryFile = node.metadata?.agent_primary_file;
+
+                // Add primary file first if it exists
+                if (primaryFile && changedFiles[primaryFile]) {
+                    files.push({ path: primaryFile, code: changedFiles[primaryFile] });
+                }
+
+                // Add remaining files
+                Object.entries(changedFiles).forEach(([path, code]) => {
+                    if (path !== primaryFile) {
+                        files.push({ path, code: code || '' });
+                    }
+                });
+            }
+
+            // If no multi-file data but we have single code, return that
+            if (files.length === 0 && node && node.code) {
+                const primaryPath = node.metadata?.agent_primary_file || defaultPrimaryPath(node.language);
+                files.push({ path: primaryPath, code: node.code });
+            }
+
+            return files;
+        }
+
+        // Render multi-file code viewer with dropdown selector
+        function renderMultiFileCode(codeFiles, language) {
+            if (!codeFiles || codeFiles.length === 0) {
+                return { content: '<p>No code available for this node.</p>', dropdown: '' };
+            }
+
+            // Store files globally for dropdown switching
+            window._codeFiles = codeFiles;
+            window._codeLanguage = language;
+
+            // Build dropdown (for placing in header)
+            let dropdownHtml = '';
+            if (codeFiles.length > 1) {
+                const options = codeFiles.map((f, i) =>
+                    `<option value="${i}">${escapeHtml(f.path)}</option>`
+                ).join('');
+                dropdownHtml = `
+                    <select id="code-file-selector" onchange="window._switchCodeFile(this.value)"
+                            style="font-family: monospace; font-size: 12px; padding: 4px 8px; border: 1px solid #e1e4e8; border-radius: 4px; background: white;">
+                        ${options}
+                    </select>
+                `;
+            }
+
+            // Render first file by default
+            const file = codeFiles[0];
+            const sanitizedCode = escapeHtml(file.code);
+            const lines = file.code.split('\n');
+            const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
+
+            const contentHtml = `
+                <div id="code-file-content" class="code-container">
+                    <div style="display: flex;">
+                        <div class="line-numbers-gutter">${lineNumbers}</div>
+                        <pre style="flex: 1; margin: 0; overflow-x: auto;"><code class="language-${language || 'python'}">${sanitizedCode}</code></pre>
+                    </div>
+                </div>
+            `;
+
+            return { content: contentHtml, dropdown: dropdownHtml };
+        }
+
+        // Switch displayed code file via dropdown
+        window._switchCodeFile = function(index) {
+            const files = window._codeFiles;
+            const language = window._codeLanguage || 'python';
+            if (!files || !files[index]) return;
+
+            const file = files[index];
+            const sanitizedCode = escapeHtml(file.code);
+            const lines = file.code.split('\n');
+            const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
+
+            const container = document.getElementById('code-file-content');
+            if (container) {
+                container.innerHTML = `
+                    <div style="display: flex;">
+                        <div class="line-numbers-gutter">${lineNumbers}</div>
+                        <pre style="flex: 1; margin: 0; overflow-x: auto;"><code class="language-${language}">${sanitizedCode}</code></pre>
+                    </div>
+                `;
+                // Re-apply syntax highlighting
+                const codeBlock = container.querySelector('code');
+                if (codeBlock && typeof hljs !== 'undefined') {
+                    hljs.highlightElement(codeBlock);
+                }
+            }
+        };
 
         // Get CSS class for score display
         function getScoreClass(score) {
@@ -5370,12 +5637,26 @@ ${'='.repeat(80)}
             
             window.resizeTimeout = setTimeout(function() {
                 if (window.treeData) {
+                    // Get selected node ID from URL (more reliable than DOM after redraw)
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const selectedNodeId = urlParams.get('selected_node') || getSelectedNodeId();
+
                     renderGraph(window.treeData);
+
+                    // Restore the selected node after redraw
+                    if (selectedNodeId && window.treeData) {
+                        const nodeStillExists = window.treeData.find(d => d.id === selectedNodeId);
+                        if (nodeStillExists) {
+                            setTimeout(() => {
+                                selectNodeById(selectedNodeId, false, false);
+                            }, 100);
+                        }
+                    }
                 } else {
                     // Full reload only if necessary
-                                    const resultSelect = document.getElementById('result-select');
-                if (resultSelect.value) {
-                    loadDatabase(resultSelect.value);
+                    const resultSelect = document.getElementById('result-select');
+                    if (resultSelect.value) {
+                        loadDatabase(resultSelect.value);
                     }
                 }
             }, 300);
@@ -7196,7 +7477,8 @@ ${'='.repeat(80)}
                 'init': d3.symbolDiamond,
                 'full': d3.symbolCircle,
                 'diff': d3.symbolSquare,
-                'cross': d3.symbolCross
+                'cross': d3.symbolCross,
+                'agentic': d3.symbolTriangle  // Triangle for agentic patches
             };
             const getShape = (patchType) => shapeMap[patchType] || d3.symbolCircle;
             const symbol = d3.symbol().size(1500); // Smaller size for island trees

@@ -39,6 +39,11 @@ CLAUDE_MODELS = {
         "input_price": 3.0 / M,
         "output_price": 15.0 / M,
     },
+    # Claude Haiku 4.5 (Oct 2025) - $1/$5 per million tokens
+    "claude-haiku-4-5-20251001": {
+        "input_price": 1.0 / M,
+        "output_price": 5.0 / M,
+    },
 }
 
 OPENAI_MODELS = {
@@ -122,6 +127,16 @@ OPENAI_MODELS = {
         "input_price": 1.25 / M,
         "output_price": 10.0 / M,
     },
+    # GPT-5.1 Codex Mini - optimized for agentic coding tasks
+    "gpt-5.1-codex-mini": {
+        "input_price": 0.75 / M,
+        "output_price": 3.0 / M,
+    },
+    # GPT-5.2 pricing (Dec 2025)
+    "gpt-5.2": {
+        "input_price": 1.75 / M,
+        "output_price": 14.0 / M,
+    },
 }
 
 
@@ -149,9 +164,13 @@ GEMINI_MODELS = {
         "input_price": 0.1 / M,
         "output_price": 0.4 / M,
     },
-    "gemini-3-pro-preview" : {
+    "gemini-3-pro-preview": {
         "input_price": 2.0 / M,
         "output_price": 12.0 / M,
+    },
+    "gemini-3-flash-preview": {
+        "input_price": 0.5 / M,
+        "output_price": 3.0 / M,
     },
 }
 
@@ -183,6 +202,9 @@ REASONING_OAI_MODELS = [
     "gpt-5",
     "gpt-5-mini",
     "gpt-5-nano",
+    "gpt-5.1",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
 ]
 
 REASONING_CLAUDE_MODELS = [
@@ -200,6 +222,7 @@ REASONING_GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite-preview-06-17",
     "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
 ]
 
 REASONING_AZURE_MODELS = [
