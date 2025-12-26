@@ -153,6 +153,10 @@ GEMINI_MODELS = {
         "input_price": 2.0 / M,
         "output_price": 12.0 / M,
     },
+    "gemini-3-flash-preview" : {
+        "input_price": 0.5 / M,
+        "output_price": 3.0 / M,
+    },
 }
 
 BEDROCK_MODELS = {
@@ -200,6 +204,7 @@ REASONING_GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite-preview-06-17",
     "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
 ]
 
 REASONING_AZURE_MODELS = [
