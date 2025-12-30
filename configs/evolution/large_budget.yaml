@@ -13,12 +13,7 @@ evo_config:
   max_patch_resamples: 3
   max_patch_attempts: 3
   llm_models:
-    - "gpt-4.1"
-    - "gpt-4.1-mini"
-    - "gpt-4.1-nano"
-    - "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
-    - "o4-mini"
-  llm_dynamic_selection: ucb
+    - "qwen3"
   llm_kwargs:
     temperatures:
       - 0.0
@@ -27,10 +22,10 @@ evo_config:
     max_tokens: 16384
   meta_rec_interval: 10
   meta_llm_models:
-    - "gpt-4.1"
+    - "qwen3"
   meta_llm_kwargs:
     temperatures:
       - 0.0
-  embedding_model: "text-embedding-3-small"
+  embedding_model: "local-qwen3"
   results_dir: ${output_dir}
   
