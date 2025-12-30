@@ -54,10 +54,10 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
     elif model_name.startswith("azure-"):
         # get rid of the azure- prefix
         model_name = model_name.split("azure-")[-1]
-        client = openai.AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_API_VERSION"),
-            azure_endpoint=os.getenv("AZURE_API_ENDPOINT"),
+        # https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle?view=foundry-classic&tabs=python#api-evolution
+        client = openai.OpenAI(
+            api_key=os.environ["AZURE_OPENAI_API_KEY"],
+            base_url=os.environ["AZURE_API_ENDPOINT"] + 'openai/v1/'
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
