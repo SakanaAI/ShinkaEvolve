@@ -122,6 +122,10 @@ OPENAI_MODELS = {
         "input_price": 1.25 / M,
         "output_price": 10.0 / M,
     },
+    "gpt-5.2": {
+        "input_price": 1.75 / M,
+        "output_price": 14.0 / M,
+    },
 }
 
 
@@ -153,6 +157,10 @@ GEMINI_MODELS = {
         "input_price": 2.0 / M,
         "output_price": 12.0 / M,
     },
+    "gemini-3-flash-preview" : {
+        "input_price": 0.5 / M,
+        "output_price": 3.0 / M,
+    },
 }
 
 BEDROCK_MODELS = {
@@ -183,6 +191,8 @@ REASONING_OAI_MODELS = [
     "gpt-5",
     "gpt-5-mini",
     "gpt-5-nano",
+    "gpt-5.1",
+    "gpt-5.2",
 ]
 
 REASONING_CLAUDE_MODELS = [
@@ -200,6 +210,7 @@ REASONING_GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite-preview-06-17",
     "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
 ]
 
 REASONING_AZURE_MODELS = [

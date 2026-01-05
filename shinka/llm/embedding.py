@@ -34,7 +34,7 @@ OPENAI_EMBEDDING_COSTS = {
 # Gemini embedding costs (approximate - check current pricing)
 GEMINI_EMBEDDING_COSTS = {
     "gemini-embedding-exp-03-07": 0.0 / M,  # Experimental model, often free
-    "gemini-embedding-001": 0.0 / M,  # Check current pricing
+    "gemini-embedding-001": 0.15 / M,  # Check current pricing
 }
 
 def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
