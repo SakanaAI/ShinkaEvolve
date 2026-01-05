@@ -116,7 +116,7 @@ def run_shinka_eval(
         for i in range(num_runs):
             kwargs: Dict[str, Any] = {}
             if get_experiment_kwargs:
-                kwargs = get_experiment_kwargs(i)
+                kwargs = get_experiment_kwargs(i) | {"file_path": program_path}
             else:
                 kwargs = {"seed": i + 1}
 
