@@ -71,7 +71,8 @@ def aggregate_hypothesis_generation_metrics(results: Tuple[str, str], results_di
 
 def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
     """
-    Provides keyword arguments for generating proofs.
+    Provides keyword arguments for generating proofs. Insert your sampling parameters here. The timeout is provided
+    in seconds.
 
     Args:
         run_index (int): the index of the run, added for compatibility with ShinkaEvolve and not used.
@@ -82,12 +83,8 @@ def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
     del run_index  # Unused
     return {
         "sampling_params": {
-            "temperature": 0.2,
-            "max_tokens": 1024,
-            "n": 1,
-            "top_p": 0.95,
         },
-        "timeout": 60,
+        "timeout": 180,
     }
 
 
