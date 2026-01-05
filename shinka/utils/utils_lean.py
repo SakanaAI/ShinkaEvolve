@@ -73,7 +73,11 @@ def generate_proof(
             timeout=timeout,
         )
         proof_text = response.choices[0].message.content
-        proof_text = proof_text.split("```lean4")[1].replace("`", "")
+
+        try:
+            proof_text = proof_text.split("```lean4")[1].replace("`", "")
+        except IndexError:
+            proof_text = proof_text.replace("`", "")
         proof_text = validate_imports(proof_text=proof_text)
 
         logger.info(f"The generated proof text is:\n{proof_text}")
