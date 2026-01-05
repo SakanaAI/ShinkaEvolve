@@ -12,8 +12,8 @@ PATCH_PATTERN = re.compile(
 )
 
 
-EVOLVE_START = re.compile(r"(?:#|//|)?\s*EVOLVE-BLOCK-START")
-EVOLVE_END = re.compile(r"(?:#|//|)?\s*EVOLVE-BLOCK-END")
+EVOLVE_START = re.compile(r"(?:#|//|--|)?\s*EVOLVE-BLOCK-START")
+EVOLVE_END = re.compile(r"(?:#|//|--|)?\s*EVOLVE-BLOCK-END")
 
 
 def _mutable_ranges(text: str) -> list[tuple[int, int]]:
