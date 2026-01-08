@@ -35,9 +35,17 @@ CLAUDE_MODELS = {
         "input_price": 3.0 / M,
         "output_price": 15.0 / M,
     },
+    "claude-haiku-4-5-20251001": {
+        "input_price": 1.0 / M,
+        "output_price": 5.0 / M,
+    },
     "claude-sonnet-4-5-20250929": {
         "input_price": 3.0 / M,
         "output_price": 15.0 / M,
+    },
+    "claude-opus-4-5-20251101": {
+        "input_price": 5.0 / M,
+        "output_price": 25.0 / M,
     },
 }
 
@@ -179,6 +187,15 @@ BEDROCK_MODELS = {
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": CLAUDE_MODELS[
         "claude-4-sonnet-20250514"
     ],
+    "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_MODELS[
+        "claude-haiku-4-5-20251001"
+    ],
+    "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0": CLAUDE_MODELS[
+        "claude-sonnet-4-5-20250929"
+    ],
+    "bedrock/anthropic.claude-opus-4-5-20251101-v1:0": CLAUDE_MODELS[
+        "claude-opus-4-5-20251101"
+    ],
 }
 
 REASONING_OAI_MODELS = [
@@ -199,6 +216,8 @@ REASONING_CLAUDE_MODELS = [
     "claude-3-7-sonnet-20250219",
     "claude-4-sonnet-20250514",
     "claude-sonnet-4-5-20250929",
+    "claude-haiku-4-5-20251001",
+    "claude-opus-4-5-20251101",
 ]
 
 REASONING_DEEPSEEK_MODELS = [
