@@ -173,3 +173,25 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# -----------------------------------------------------------------------------
+# Shinka / local run outputs & developer helpers
+# - Ignore experiment results, logs, and runtime artifacts produced by Shinka
+# -----------------------------------------------------------------------------
+# Results produced by `shinka` runs (gen_*/results/...)
+results/
+# Other runtime output directories
+outputs/
+# Hydra temporary run directory
+.hydra/
+# Ignore job logs in results dirs (more specific)
+results/**/job_log.*
+# Ignore generated program wrappers and main files under results
+results/**/main.*
+# Local IDE/editor settings
+.vscode/
+.idea/
+# Local temporary test directories created during manual runs
+/tmp_test_*
+# Local environment (explicit duplication for clarity)
+.venv/

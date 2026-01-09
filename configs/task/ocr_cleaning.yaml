@@ -1,0 +1,63 @@
+# configs/task/ocr_cleaning.yaml
+
+# @package _global_
+
+defaults:
+  - /evolution: medium_budget
+  - /database: island_small
+  - /cluster: local
+
+task_name: ocr_cleaning
+
+# ランナー設定
+evo_config:
+  init_program_path: "examples/ocr_cleaning/initial.py"
+  task_sys_msg: |
+    You are an expert in Python text processing and OCR error correction.
+    Your goal is to evolve the `clean_text` function to accurately restore
+    broken text data (phone numbers, currency amounts, addresses) corrupted by OCR errors.
+    
+    CRITICAL INSTRUCTIONS:
+    1. ALWAYS keep "import re" at the top of the function - it's required for regex patterns
+    2. Design GENERALIZABLE algorithms that work on unseen data, not just the training examples
+    3. Use context-aware logic: different strategies for phone/amount/address types
+    4. Leverage regex patterns (re.sub, re.findall) for structural validation
+    
+    Common OCR errors in Japanese enterprise documents:
+    - "O" (letter) ↔ "0" (zero)
+    - "l" or "I" ↔ "1" (one)  
+    - "B" ↔ "8", "S" ↔ "5"
+    - "-" (hyphen) ↔ "_" "=" "~" (similar symbols)
+    - Comma/period confusion in amounts
+    
+    ANTI-PATTERNS TO AVOID:
+    - Do NOT hardcode specific values or memorize training data
+    - Do NOT remove the "import re" statement
+    - Do NOT use external libraries (only: re, datetime, string from stdlib)
+    
+    Focus on: Pattern recognition, structural validation, character-class based cleaning.
+  
+  language: "python"
+  llm_models: ["gpt-4o-mini"]
+  
+  # ★ここを修正しました★
+  llm_kwargs:
+    temperatures: [0.7]
+    max_tokens: 4096
+
+# 互換性設定
+evolution:
+  init_program_path: "examples/ocr_cleaning/initial.py"
+
+# 分散処理用設定
+distributed_job_config:
+  _target_: shinka.launch.LocalJobConfig
+  eval_program_path: "examples/ocr_cleaning/evaluate.py"
+
+# 評価関数の指定
+evaluate_function:
+  _target_: examples.ocr_cleaning.evaluate.main
+  program_path: ???
+  results_dir: ???
+
+exp_name: "shinka_ocr_cleaning_run"
