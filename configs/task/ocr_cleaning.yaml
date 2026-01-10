@@ -12,6 +12,7 @@ task_name: ocr_cleaning
 # ランナー設定
 evo_config:
   init_program_path: "examples/ocr_cleaning/initial.py"
+  num_generations: 50  # INCREASED: Hard mode needs more exploration
   task_sys_msg: |
     You are an expert in Python text processing and OCR error correction.
     Your goal is to evolve the `clean_text` function to accurately restore
