@@ -54,11 +54,20 @@ if __name__ == "__main__":
         default="results",
         help="Directory to save results and logs",
     )
+
+    parser.add_argument(
+        "--prover_model",
+        type=str,
+        default="gpt-5-nano",  # or an actual prover like "deepseek-ai/DeepSeek-Prover-V2-7B" (requires local LLM support)
+        help="LLM agent used to construct LEAN proofs based on the initial header and formalization.",
+    )
+
     args = parser.parse_args()
     Path(args.results_dir).mkdir(parents=True, exist_ok=True)
     cfg = load_hydra_config(args.results_dir, max_parent_depth=2)
     cfg.evaluate_function.program_path = os.path.abspath(args.program_path)
     cfg.evaluate_function.results_dir = os.path.abspath(args.results_dir)
+    cfg.evaluate_function.prover_model = args.prover_model
     print(os.getcwd())
     print("Launching evaluation of function:")
     print(omegaconf.OmegaConf.to_yaml(cfg.evaluate_function))

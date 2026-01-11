@@ -10,6 +10,8 @@ from pathlib import Path
 from .apply_diff import apply_diff_patch
 from .apply_full import apply_full_patch
 
+from shinka.utils.utils_lean import async_validate_lean
+
 try:
     import aiofiles
 except ImportError:
@@ -192,6 +194,23 @@ async def validate_code_async(
             else:
                 error_msg = stderr.decode() if stderr else "Unknown compilation error"
                 return False, error_msg
+        elif language == "lean":  # Compile LEAN 4 using LeanInteract
+            try:
+                is_valid, msg = await asyncio.wait_for(
+                    async_validate_lean(
+                        code_path,
+                        allow_sorry=False,
+                        timeout=timeout,
+                        verbose=True,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                return False, f"Validation timeout after {timeout}s"
+            if is_valid:
+                return True, None
+            else:
+                return False, msg
         else:
             # For other languages, just check if file exists and is readable
             try:

@@ -95,7 +95,7 @@ class JobScheduler:
                 f"Must be 'local', 'slurm_docker', or 'slurm_conda'"
             )
 
-    def _build_command(self, exec_fname_t: str, results_dir_t: str) -> List[str]:
+    def _build_command(self, exec_fname_t: str, results_dir_t: str, prover_model: Optional[str]) -> List[str]:
         # Docker requires workspace to be mounted
         if self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
@@ -145,13 +145,25 @@ class JobScheduler:
                 else:
                     # For non-boolean values, append both flag and value
                     cmd.extend([f"--{k}", str(v)])
+
+        if exec_fname_t.endswith(".lean"):
+            if prover_model:
+                cmd.extend([f"--prover_model", prover_model])
+            else:
+                logger.warning(
+                    f"'prover_model' has not been specified. "
+                    f"Using default 'gpt-5-nano'."
+                    f"You can specify the proving model in configs/evolution/*.yaml"
+                )
+                cmd.extend([f"--prover_model", "gpt-5-nano"])
+
         return cmd
 
     def run(
-        self, exec_fname_t: str, results_dir_t: str
+        self, exec_fname_t: str, prover_model: Optional[str], results_dir_t: str
     ) -> Tuple[Dict[str, Any], float]:
         job_id: Union[str, ProcessWithLogging]
-        cmd = self._build_command(exec_fname_t, results_dir_t)
+        cmd = self._build_command(exec_fname_t, results_dir_t, prover_model=prover_model)
         start_time = time.time()
 
         if self.job_type == "local":
@@ -204,10 +216,10 @@ class JobScheduler:
         return results, rtime
 
     def submit_async(
-        self, exec_fname_t: str, results_dir_t: str
+        self, exec_fname_t: str, results_dir_t: str, prover_model: Optional[str]
     ) -> Union[str, ProcessWithLogging]:
         """Submit a job asynchronously and return the job ID or process."""
-        cmd = self._build_command(exec_fname_t, results_dir_t)
+        cmd = self._build_command(exec_fname_t, results_dir_t, prover_model=prover_model)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
             return submit_local(results_dir_t, cmd, verbose=self.verbose)
