@@ -28,8 +28,9 @@ evo_config:
     5. Consider strategic placement of circles at square corners and edges
     6. Adjusting the pattern to place larger circles at the center and smaller at the edges
     7. The math literature suggests special arrangements for specific values of n
+    8. You can use the scipy optimize package (e.g. LP or SLSQP) to optimize the radii given center locations and constraints
 
-    Be creative and try to find a new solution.
+    Be creative and try to find a new solution better than the best known result.
   language: "python"
   init_program_path: "examples/circle_packing/initial.py"
   job_type: "slurm_conda"
