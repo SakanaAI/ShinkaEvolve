@@ -26,6 +26,10 @@ GEMINI_EMBEDDING_MODELS = [
     "gemini-embedding-001",
 ]
 
+LOCAL_EMBEDDING_MODELS = [
+    "local-qwen3",  # Local embedding model name
+]
+
 OPENAI_EMBEDDING_COSTS = {
     "text-embedding-3-small": 0.02 / M,
     "text-embedding-3-large": 0.13 / M,
@@ -35,6 +39,11 @@ OPENAI_EMBEDDING_COSTS = {
 GEMINI_EMBEDDING_COSTS = {
     "gemini-embedding-exp-03-07": 0.0 / M,  # Experimental model, often free
     "gemini-embedding-001": 0.15 / M,  # Check current pricing
+}
+
+# Local embedding costs (free)
+LOCAL_EMBEDDING_COSTS = {
+    "qwen3": 0.0 / M,  # Free local model
 }
 
 def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
@@ -57,6 +66,13 @@ def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
         genai.configure(api_key=api_key)
         client = "gemini"  # Use string identifier for Gemini
         model_to_use = model_name
+    elif model_name in LOCAL_EMBEDDING_MODELS:
+        # Local OpenAI-compatible embedding model
+        client = openai.OpenAI(
+            api_key="not-needed",  # Local models don't need API key
+            base_url="http://localhost:8000/v1",
+        )
+        model_to_use = "qwen3"  # Use the actual model name for the API
     else:
         raise ValueError(f"Invalid embedding model: {model_name}")
 
@@ -128,8 +144,26 @@ class EmbeddingClient:
             response = self.client.embeddings.create(
                 model=self.model, input=code, encoding_format="float"
             )
-            cost = response.usage.total_tokens * OPENAI_EMBEDDING_COSTS[self.model]
+            # Get cost - use local cost if it's a local model, otherwise use OpenAI cost
+            # Handle cases where usage might be None (local models)
+            if response.usage and hasattr(response.usage, 'total_tokens'):
+                total_tokens = response.usage.total_tokens
+            else:
+                # Estimate tokens for local models (rough approximation)
+                total_tokens = sum(len(text.split()) for text in code)
+            
+            if self.model_name in LOCAL_EMBEDDING_MODELS:
+                cost = total_tokens * LOCAL_EMBEDDING_COSTS.get(self.model, 0.0)
+            else:
+                cost = total_tokens * OPENAI_EMBEDDING_COSTS.get(self.model, 0.0)
             # Extract embedding from response
+            if response.data is None:
+                logger.error("Embedding response data is None")
+                if single_code:
+                    return [], cost
+                else:
+                    return [[]], cost
+            
             if single_code:
                 return response.data[0].embedding, cost
             else:

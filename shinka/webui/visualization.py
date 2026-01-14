@@ -160,13 +160,19 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Extract the actual path by removing the task name prefix if present
         actual_db_path = self._get_actual_db_path(db_path)
 
-        # Check cache first
+        # Check cache first - but reduce cache time for active databases
+        # Clear cache if it's been more than 2 seconds (for active experiments)
         if db_path in db_cache:
             last_fetch_time, cached_data = db_cache[db_path]
-            if time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS:
-                print(f"[SERVER] Serving from cache for DB: {db_path}")
+            cache_age = time.time() - last_fetch_time
+            if cache_age < 2.0:  # Reduced from 5 to 2 seconds for more frequent updates
+                print(f"[SERVER] Serving from cache for DB: {db_path} (age: {cache_age:.1f}s, {len(cached_data)} programs)")
                 self.send_json_response(cached_data)
                 return
+            else:
+                # Cache expired, remove it
+                del db_cache[db_path]
+                print(f"[SERVER] Cache expired for DB: {db_path}, fetching fresh data")
 
         # Construct absolute path to the database from search root using actual path
         abs_db_path = os.path.join(self.search_root, actual_db_path)
@@ -183,14 +189,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db = None
             try:
                 config = DatabaseConfig(db_path=abs_db_path)
+                # Use read_only=True to avoid locking issues
+                # SQLite URI read-only connections should see WAL data if properly configured
                 db = ProgramDatabase(config, read_only=True)
-
-                # Set WAL mode compatible settings for read-only connections
+                
                 if db.cursor:
-                    db.cursor.execute(
-                        "PRAGMA busy_timeout = 10000;"
-                    )  # 10 second timeout
-                    db.cursor.execute("PRAGMA journal_mode = WAL;")  # Ensure WAL mode
+                    db.cursor.execute("PRAGMA busy_timeout = 10000;")
+                    # Ensure WAL mode is enabled (should already be set by database)
+                    db.cursor.execute("PRAGMA journal_mode = WAL;")
 
                 programs = db.get_all_programs()
 
