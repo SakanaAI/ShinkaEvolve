@@ -3,6 +3,7 @@ import openai
 import google.generativeai as genai
 import pandas as pd
 from typing import Union, List, Optional, Tuple
+import requests
 import numpy as np
 import logging
 
@@ -37,6 +38,32 @@ GEMINI_EMBEDDING_COSTS = {
     "gemini-embedding-001": 0.15 / M,  # Check current pricing
 }
 
+def get_openrouter_embedding_model_price(model: str):
+    or_api_key = os.getenv("OPENROUTER_API_KEY")
+    headers = {}
+    if or_api_key:
+        headers["Authorization"] = f"Bearer {or_api_key}"
+        
+    response = requests.get(
+        "https://openrouter.ai/api/v1/embeddings/models",
+        headers={
+            "Authorization": f"Bearer {or_api_key}"
+        },
+    )
+    
+    response.raise_for_status()
+
+    data = response.json()["data"]
+    
+    for item in data:
+        if model == item["id"]:
+            pricing = item.get("pricing", {})
+            p_prompt = float(pricing.get("prompt", 0))
+
+            return p_prompt
+
+    raise ValueError(f"Model {model} not found in OpenRouter pricing list")
+    
 def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
     if model_name in OPENAI_EMBEDDING_MODELS:
         client = openai.OpenAI()
@@ -56,6 +83,25 @@ def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
             raise ValueError("GEMINI_API_KEY environment variable not set for Gemini models")
         genai.configure(api_key=api_key)
         client = "gemini"  # Use string identifier for Gemini
+        model_to_use = model_name
+    elif "/" in model_name:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError(
+                f"Model '{model_name}' detected as OpenRouter model, "
+                "but OPENROUTER_API_KEY is not set in environment variables."
+            )
+        client = openai.OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            default_headers={
+                "HTTP-Referer": os.getenv(
+                    "SHINKA_SITE_URL", "https://github.com/SakanaAI/ShinkaEvolve"
+                ),
+                "X-Title": os.getenv("SHINKA_APP_NAME", "ShinkaEvolve"),
+            },
+        )
+
         model_to_use = model_name
     else:
         raise ValueError(f"Invalid embedding model: {model_name}")
@@ -123,13 +169,21 @@ class EmbeddingClient:
                     return [], 0.0
                 else:
                     return [[]], 0.0
-        # Handle OpenAI and Azure models (same interface)
+        # Handle OpenAI, Azure, and OpenRouter models
         try:
             response = self.client.embeddings.create(
-                model=self.model, input=code, encoding_format="float"
+                model=self.model, input=code, encoding_format="float", timeout=30.0
             )
-            cost = response.usage.total_tokens * OPENAI_EMBEDDING_COSTS[self.model]
-            # Extract embedding from response
+            
+            if self.model in OPENAI_EMBEDDING_COSTS:
+                cost_per_token = OPENAI_EMBEDDING_COSTS[self.model]
+            elif "/" in self.model: # Assume OpenRouter
+                cost_per_token = get_openrouter_embedding_model_price(self.model)
+            else:
+                cost_per_token = 1.0 / M
+                
+            cost = response.usage.total_tokens * cost_per_token
+
             if single_code:
                 return response.data[0].embedding, cost
             else:
