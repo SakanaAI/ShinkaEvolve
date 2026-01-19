@@ -20,6 +20,7 @@ from .models import (
     query_openai,
     query_deepseek,
     query_gemini,
+    query_openrouter,
     QueryResult,
 )
 import logging
@@ -175,6 +176,7 @@ def sample_model_kwargs(
             or kwargs_dict["model_name"] in REASONING_BEDROCK_MODELS
             or kwargs_dict["model_name"] in DEEPSEEK_MODELS
             or kwargs_dict["model_name"] in REASONING_DEEPSEEK_MODELS
+            or "/" in kwargs_dict["model_name"] 
         ):
             kwargs_dict["max_tokens"] = random.choice(max_tokens)
         else:
@@ -204,6 +206,8 @@ def query(
         query_fn = query_deepseek
     elif model_name in GEMINI_MODELS.keys():
         query_fn = query_gemini
+    elif "/" in model_name and not model_name.startswith("bedrock/"):
+        query_fn = query_openrouter
     else:
         raise ValueError(f"Model {model_name} not supported.")
     result = query_fn(

@@ -244,3 +244,44 @@ REASONING_BEDROCK_MODELS = [
     "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
 ]
+
+import requests
+import backoff
+
+_OPENROUTER_PRICING_CACHE = {}
+
+@backoff.on_exception(
+        backoff.expo,
+        (requests.exceptions.RequestException, ValueError),
+        max_tries=5
+    )
+def get_openrouter_model_price(model, or_api_key):
+    global _OPENROUTER_PRICING_CACHE
+
+    if model in _OPENROUTER_PRICING_CACHE:
+        return _OPENROUTER_PRICING_CACHE[model]
+
+    if not _OPENROUTER_PRICING_CACHE:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/models", 
+            headers={
+                "Authorization": f"Bearer {or_api_key}"
+            },
+            timeout=10
+        )
+        
+        response.raise_for_status()
+
+        data = response.json()["data"]
+        
+        for item in data:
+            m_id = item["id"]
+            pricing = item.get("pricing", {})
+            p_prompt = float(pricing.get("prompt", 0))
+            p_completion = float(pricing.get("completion", 0))
+            _OPENROUTER_PRICING_CACHE[m_id] = (p_prompt, p_completion)
+
+    if model in _OPENROUTER_PRICING_CACHE:
+        return _OPENROUTER_PRICING_CACHE[model]
+
+    raise ValueError(f"Model {model} not found in OpenRouter pricing list")

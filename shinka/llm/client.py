@@ -78,6 +78,26 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
                 client,
                 mode=instructor.Mode.GEMINI_JSON,
             )
+
+    elif "/" in model_name and not model_name.startswith("bedrock/"):
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError(
+                f"Model '{model_name}' detected as OpenRouter model, "
+                "but OPENROUTER_API_KEY is not set in environment variables."
+            )
+        client = openai.OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            default_headers={
+                "HTTP-Referer": os.getenv(
+                    "SHINKA_SITE_URL", "https://github.com/SakanaAI/ShinkaEvolve"
+                ),
+                "X-Title": os.getenv("SHINKA_APP_NAME", "ShinkaEvolve"),
+            },
+        )
+        if structured_output:
+            client = instructor.from_openai(client, mode=instructor.Mode.JSON)
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
