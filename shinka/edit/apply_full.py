@@ -268,6 +268,8 @@ def apply_full_patch(
         suffix = ".swift"
     elif language in ["json", "json5"]:
         suffix = ".json"
+    elif language == "lean":
+        suffix = ".lean"
     else:
         raise ValueError(f"Language {language} not supported")
 
