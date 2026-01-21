@@ -21,8 +21,6 @@
 # Lazy access so importing shinka.utils doesn't eagerly import heavy submodules.
 # Only import what is actually accessed (PEP 562).
 
-# Lazy, per-symbol import (PEP 562) so importing shinka.utils doesn't eagerly import submodules.
-# Each exported name maps to the specific module + attribute that defines it.
 
 from importlib import import_module
 
