@@ -35,6 +35,7 @@ class LocalJobConfig(JobConfig):
 
     time: Optional[str] = None
     conda_env: Optional[str] = None
+    python_path: str = "python"                     # Support for python envs - if no python from env indicated, just defaults to 'python' - ignored if conda_env is provided
 
 
 @dataclass
@@ -127,15 +128,29 @@ class JobScheduler:
                     "--results_dir",
                     results_dir_t,
                 ]
+            # else:
+            #     cmd = [
+            #         "python",
+            #         f"{self.config.eval_program_path}",
+            #         "--program_path",
+            #         f"{exec_fname_t}",
+            #         "--results_dir",
+            #         results_dir_t,
+            #     ]
             else:
+                python_cmd = "python"
+                if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
+                    python_cmd = self.config.python_path
+                print("\n\nUsing python command:", python_cmd)
                 cmd = [
-                    "python",
+                    python_cmd,
                     f"{self.config.eval_program_path}",
                     "--program_path",
                     f"{exec_fname_t}",
                     "--results_dir",
                     results_dir_t,
                 ]
+                
         if self.config.extra_cmd_args:
             for k, v in self.config.extra_cmd_args.items():
                 # Handle boolean flags
