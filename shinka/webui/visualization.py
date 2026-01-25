@@ -101,6 +101,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     if f.lower().endswith((".db", ".sqlite")):
                         full_path = os.path.join(root, f)
                         client_path = os.path.relpath(full_path, self.search_root)
+                        # Normalize Windows paths to use forward slashes for consistency
+                        # with JavaScript path parsing in the frontend
+                        if os.name == 'nt':  # Windows
+                            client_path = client_path.replace('\\', '/')
                         display_name = f"{Path(f).stem} - {Path(client_path).parent}"
 
                         # Extract date for sorting
