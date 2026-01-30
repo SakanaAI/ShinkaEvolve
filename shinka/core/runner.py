@@ -55,6 +55,7 @@ class EvolutionConfig:
     meta_llm_kwargs: dict = field(default_factory=lambda: {})
     meta_max_recommendations: int = 5
     embedding_model: Optional[str] = None
+    prover_model: Optional[str] = None
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
     max_novelty_attempts: int = 3
@@ -242,6 +243,8 @@ class EvolutionRunner:
             self.lang_ext = "swift"
         elif self.evo_config.language in ["json", "json5"]:
             self.lang_ext = "json"
+        elif self.evo_config.language == "lean":
+            self.lang_ext = "lean"
         else:
             msg = f"Language {self.evo_config.language} not supported"
             raise ValueError(msg)
@@ -492,7 +495,7 @@ class EvolutionRunner:
                 logger.info(f"Initial program generated and saved to {exec_fname}")
 
         # Run the evaluation synchronously
-        results, rtime = self.scheduler.run(exec_fname, results_dir)
+        results, rtime = self.scheduler.run(exec_fname, self.evo_config.prover_model, results_dir,)
 
         code_embedding, e_cost = self.get_code_embedding(exec_fname)
 
@@ -737,7 +740,7 @@ class EvolutionRunner:
             meta_patch_data["novelty_explanation"] = novelty_explanation
 
         # Submit the job asynchronously
-        job_id = self.scheduler.submit_async(exec_fname, results_dir)
+        job_id = self.scheduler.submit_async(exec_fname, results_dir, self.evo_config.prover_model)
 
         # Add to running jobs queue
         running_job = RunningJob(

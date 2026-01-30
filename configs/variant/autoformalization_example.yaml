@@ -1,0 +1,8 @@
+defaults:
+  - override /database@_global_: island_small
+  - override /evolution@_global_: small_budget
+  - override /task@_global_: autoformalization
+  - override /cluster@_global_: local
+  - _self_
+
+variant_suffix: "_example"
