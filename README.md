@@ -147,6 +147,7 @@ runner.run()
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
 | `time` | `None` | `Optional[str]` | Time limit for job execution |
 | `conda_env` | `None` | `Optional[str]` | Conda environment to run jobs in |
+| `python_path` | `python` | `str` | Python environment to run jobs in. Ignored if conda_env is set|
 
 **SlurmDockerJobConfig** (for SLURM with Docker):
 | Key | Default Value | Type | Explanation |
