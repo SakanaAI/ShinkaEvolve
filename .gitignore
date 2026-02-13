@@ -173,3 +173,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# ignored by moru
+uv.lock
+examples/circle_packing/results_cpack

@@ -5,6 +5,7 @@ import openai
 import instructor
 from pathlib import Path
 from dotenv import load_dotenv
+import re
 from .models.pricing import (
     CLAUDE_MODELS,
     BEDROCK_MODELS,
@@ -30,7 +31,30 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
         The client and model for the given model name.
     """
     # print(f"Getting client for model {model_name}")
-    if model_name in CLAUDE_MODELS.keys():
+
+    if model_name.startswith("local-"):
+        # Extract URL from model name
+        pattern = r"https?://"
+        match = re.search(pattern, model_name)
+        if match:
+            start_index = match.start()
+            url = model_name[start_index:]
+        else:
+            raise ValueError(f"Invalid URL in model name: {model_name}")
+        
+        # Create OpenAI-compatible client
+        client = openai.OpenAI(
+            api_key="filler",
+            base_url=url
+        )
+
+        # Structured output mode (if required)
+        if structured_output:
+            client = instructor.from_openai(
+                client,
+                mode=instructor.Mode.JSON,
+            )
+    elif model_name in CLAUDE_MODELS.keys():
         client = anthropic.Anthropic()
         if structured_output:
             client = instructor.from_anthropic(

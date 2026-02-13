@@ -21,6 +21,7 @@ from .models import (
     query_deepseek,
     query_gemini,
     query_openrouter,
+    query_local_ollama,
     QueryResult,
 )
 import logging
@@ -200,6 +201,8 @@ def query(
     )
     if model_name in CLAUDE_MODELS.keys() or "anthropic" in model_name:
         query_fn = query_anthropic
+    elif model_name.startswith("local-"):
+        query_fn = query_local_ollama
     elif model_name in OPENAI_MODELS.keys():
         query_fn = query_openai
     elif model_name in DEEPSEEK_MODELS.keys():

@@ -6,6 +6,7 @@ from typing import Union, List, Optional, Tuple
 import requests
 import numpy as np
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,19 @@ def get_client_model(model_name: str) -> tuple[Union[openai.OpenAI, str], str]:
     if model_name in OPENAI_EMBEDDING_MODELS:
         client = openai.OpenAI()
         model_to_use = model_name
+    elif model_name.startswith("local-"):
+        # Pattern: local-(model-name)-(http or https url)
+        match = re.match(r"local-(.+?)-(https?://.+)", model_name)
+        if match:
+            model_to_use = match.group(1)
+            url = match.group(2)
+        else:
+            raise ValueError(f"Invalid local model format: {model_name}")
+
+        client = openai.OpenAI(
+            base_url=url,
+            api_key="filler"
+        )
     elif model_name in AZURE_EMBEDDING_MODELS:
         # get rid of the azure- prefix
         model_to_use = model_name.split("azure-")[-1]
