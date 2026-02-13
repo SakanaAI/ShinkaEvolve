@@ -141,7 +141,7 @@ class JobScheduler:
                 python_cmd = "python"
                 if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
                     python_cmd = self.config.python_path
-                print("\n\nUsing python command:", python_cmd)
+                #print("\n\nUsing python command:", python_cmd)
                 cmd = [
                     python_cmd,
                     f"{self.config.eval_program_path}",
