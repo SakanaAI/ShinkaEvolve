@@ -63,29 +63,29 @@ db_config = DatabaseConfig(
     **parent_config,
 )
 
-search_task_sys_msg = """You are an expert mathematician specializing in circle packing problems and computational geometry. The best known result for the sum of radii when packing 26 circles in a unit square is 2.635.
+search_task_sys_msg = """You are an expert mathematician specializing in circle packing problems and computational geometry. 
+The best known result for the sum of radii when packing 26 circles in a unit square is 2.635.
 
 Key directions to explore:
-1. The optimal arrangement likely involves variable-sized circles
-2. A pure hexagonal arrangement may not be optimal due to edge effects
-3. The densest known circle packings often use a hybrid approach
-4. The optimization routine is critically important - simple physics-based models with carefully tuned parameters
-5. Consider strategic placement of circles at square corners and edges
-6. Adjusting the pattern to place larger circles at the center and smaller at the edges
-7. The math literature suggests special arrangements for specific values of n
-8. You can use the scipy optimize package (e.g. LP or SLSQP) to optimize the radii given center locations and constraints
+1. Variable-sized circles with strategic placement (large in center, small at edges).
+2. Hexagonal center arrangement combined with boundary adjustments.
+3. Use `scipy.optimize.minimize` (SLSQP) for radius optimization.
 
-Make sure that all circles are disjoint and lie inside the unit square.
-
-Be creative and try to find a new solution better than the best known result."""
+*** CRITICAL OUTPUT RULES ***
+1. **Output ONLY the python code.** No explanations, no markdown outside the code block.
+2. The code must be enclosed in ```python and ``` tags.
+3. The function signature MUST remain: `def construct_packing():`
+4. The return statement MUST be exactly: `return centers, radii`
+5. Ensure all imports (numpy, scipy) are explicitly included inside the code block.
+"""
 
 
 evo_config = EvolutionConfig(
     task_sys_msg=search_task_sys_msg,
     patch_types=["diff", "full", "cross"],
-    patch_type_probs=[0.2, 0.7, 0.1],
+    patch_type_probs=[0.1, 0.8, 0.1],
     num_generations=400,
-    max_parallel_jobs=1,
+    max_parallel_jobs=12,
     max_patch_resamples=3,
     max_patch_attempts=3,
     job_type="local",
@@ -94,17 +94,17 @@ evo_config = EvolutionConfig(
         "local-rnj-1:8b-http://localhost:11434/v1",
     ],
     llm_kwargs=dict(
-        temperatures=[0.0, 0.2, 0.5],
+        temperatures=[0.0, 0.2, 0.3],
         reasoning_efforts=["auto", "low", "medium", "high"],
-        max_tokens=16384,
+        max_tokens=8192,
     ),
     meta_rec_interval=10,
     meta_llm_models=["local-rnj-1:8b-http://localhost:11434/v1"],
-    meta_llm_kwargs=dict(temperatures=[0.0], max_tokens=16384),
+    meta_llm_kwargs=dict(temperatures=[0.0], max_tokens=8192),
     embedding_model="local-nomic-embed-text:latest-http://localhost:11434/v1",
     code_embed_sim_threshold=0.995,
     novelty_llm_models=["local-rnj-1:8b-http://localhost:11434/v1"],
-    novelty_llm_kwargs=dict(temperatures=[0.0], max_tokens=16384),
+    novelty_llm_kwargs=dict(temperatures=[0.0], max_tokens=8192),
     llm_dynamic_selection="ucb1",
     llm_dynamic_selection_kwargs=dict(exploration_coef=1.0),
     init_program_path="initial.py",
