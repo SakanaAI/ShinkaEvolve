@@ -64,13 +64,6 @@ db_config = DatabaseConfig(
 )
 
 search_task_sys_msg = """You are an expert mathematician specializing in circle packing problems and computational geometry. 
-The best known result for the sum of radii when packing 26 circles in a unit square is 2.635.
-
-Key directions to explore:
-1. Variable-sized circles with strategic placement (large in center, small at edges).
-2. Hexagonal center arrangement combined with boundary adjustments.
-3. Use `scipy.optimize.minimize` (SLSQP) for radius optimization.
-
 *** CRITICAL OUTPUT RULES ***
 1. **Output ONLY the python code.** No explanations, no markdown outside the code block.
 2. The code must be enclosed in ```python and ``` tags.
