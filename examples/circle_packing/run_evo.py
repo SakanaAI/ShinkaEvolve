@@ -91,7 +91,7 @@ evo_config = EvolutionConfig(
     job_type="local",
     language="python",
     llm_models=[
-        "local-local-model-http://localhost:11434/v1",
+        "local-gpt-oss:20b-http://localhost:11434/v1",
     ],
     llm_kwargs=dict(
         temperatures=[0.0, 0.5, 1.0],
@@ -99,11 +99,11 @@ evo_config = EvolutionConfig(
         max_tokens=32768,
     ),
     meta_rec_interval=10,
-    meta_llm_models="local-local-model-http://localhost:11434/v1",
+    meta_llm_models=["local-gpt-oss:20b-http://localhost:11434/v1"],
     meta_llm_kwargs=dict(temperatures=[0.0], max_tokens=16384),
     embedding_model="local-nomic-embed-text:latest-http://localhost:11434/v1",
     code_embed_sim_threshold=0.995,
-    novelty_llm_models="local-local-model-http://localhost:11434/v1",
+    novelty_llm_models=["local-gpt-oss:20b-http://localhost:11434/v1"],
     novelty_llm_kwargs=dict(temperatures=[0.0], max_tokens=16384),
     llm_dynamic_selection="ucb1",
     llm_dynamic_selection_kwargs=dict(exploration_coef=1.0),
