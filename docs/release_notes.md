@@ -1,4 +1,4 @@
-# Release Notes (Unreleased)
+# Release Notes Version 1.1
 
 These notes summarize local changes since the last commit.
 
@@ -62,7 +62,10 @@ These notes summarize local changes since the last commit.
   - `shinka/llm/models/*` replaced by `shinka/llm/providers/*`
   - embeddings moved to `shinka/embed/*`
 - Evaluation wrapper (`shinka/core/wrap_eval.py`) now supports:
+  - per-run process parallelism via `run_workers` (with optional `max_workers_cap`)
+  - deterministic result ordering and clearer worker/serialization error surfacing
   - early stopping (`bayesian`, `ci`, `hybrid`)
+    - early stopping remains sequential-only (`run_workers=1`)
   - optional plot artifact generation
   - NaN/Inf score guards
 - WebUI backend and frontend expanded:
@@ -85,3 +88,4 @@ These notes summarize local changes since the last commit.
 - `tests/test_dynamic_islands.py`
 - `tests/test_island_sampler.py`
 - `tests/test_prompt_evolution.py`
+- `tests/test_wrap_eval_parallel.py`
