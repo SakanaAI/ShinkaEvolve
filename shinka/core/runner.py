@@ -35,6 +35,7 @@ from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.logo import print_gradient_logo
 from shinka.utils import get_language_extension
+from shinka.utils.languages import get_evolve_comment_prefix
 
 FOLDER_PREFIX = "gen"
 
@@ -709,10 +710,7 @@ class EvolutionRunner:
                 patch_description = extract_between(
                     response.content, "<DESCRIPTION>", "</DESCRIPTION>", False
                 )
-                if self.evo_config.language == "python":
-                    comment_char = "#"
-                else:
-                    comment_char = "//"
+                comment_char = get_evolve_comment_prefix(self.evo_config.language)
 
                 initial_code = (
                     f"{comment_char} EVOLVE-BLOCK-START\n"

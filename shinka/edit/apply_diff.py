@@ -4,6 +4,8 @@ import difflib
 import logging
 from typing import Union, Optional, List, Tuple
 
+from shinka.utils.languages import get_language_extension
+
 logger = logging.getLogger(__name__)
 
 PATCH_PATTERN = re.compile(
@@ -714,15 +716,8 @@ def apply_diff_patch(
     # Strip trailing whitespace from patch text
     patch_str = _strip_trailing_whitespace(patch_str)
 
-    # Remove the EVOLVE-BLOCK START and EVOLVE-BLOCK END markers
-    if language in ["cuda", "cpp", "rust", "swift", "json", "json5"]:
-        patch_str = re.sub(r"// EVOLVE-BLOCK-START\\n", "", patch_str)
-        patch_str = re.sub(r"// EVOLVE-BLOCK-END\\n", "", patch_str)
-    elif language == "python":
-        patch_str = re.sub(r"# EVOLVE-BLOCK-START\\n", "", patch_str)
-        patch_str = re.sub(r"# EVOLVE-BLOCK-END\\n", "", patch_str)
-    else:
-        raise ValueError(f"Language {language} not supported")
+    # Remove EVOLVE-BLOCK markers before parsing SEARCH/REPLACE sections.
+    patch_str = _clean_evolve_markers(patch_str)
 
     if patch_dir is not None:
         patch_dir = Path(patch_dir)
@@ -741,20 +736,7 @@ def apply_diff_patch(
         # Return original content, 0 applied, no output path, error msg
         return updated_content, 0, None, error_message, None, None
 
-    if language == "python":
-        suffix = ".py"
-    elif language == "cpp":
-        suffix = ".cpp"
-    elif language == "cuda":
-        suffix = ".cu"
-    elif language == "rust":
-        suffix = ".rs"
-    elif language == "swift":
-        suffix = ".swift"
-    elif language in ["json", "json5"]:
-        suffix = ".json"
-    else:
-        raise ValueError(f"Language {language} not supported")
+    suffix = f".{get_language_extension(language)}"
 
     # If successful, proceed to write files if patch_dir is specified
     if patch_dir is not None:
