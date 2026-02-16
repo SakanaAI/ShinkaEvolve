@@ -1,18 +1,21 @@
-from .llm import LLMClient, extract_between
-from .embedding import EmbeddingClient
-from .models import QueryResult
-from .dynamic_sampling import (
+from .llm import LLMClient, AsyncLLMClient, extract_between
+from .providers import QueryResult
+from .prioritization import (
     BanditBase,
     AsymmetricUCB,
     FixedSampler,
+    ThompsonSampler,
 )
 
 __all__ = [
     "LLMClient",
+    "AsyncLLMClient",
     "extract_between",
     "QueryResult",
     "EmbeddingClient",
+    "AsyncEmbeddingClient",
     "BanditBase",
     "AsymmetricUCB",
     "FixedSampler",
+    "ThompsonSampler",
 ]
