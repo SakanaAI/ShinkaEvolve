@@ -57,9 +57,12 @@ script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
 [tool.setuptools.package-data]
 "*" = ["*"]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=6.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
     "black",
     "isort",
     "flake8",
