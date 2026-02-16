@@ -58,6 +58,7 @@ For detailed installation instructions and usage examples, see the [Getting Star
 |---------|-------------|-------------------|
 | ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
 | 🎮 [Game 2048](examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
+| ∑ [Julia Prime Counting](examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
 | ✨ [Novelty Generator](examples/novelty_generator_bck) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
@@ -245,6 +246,7 @@ def main(program_path: str,
         results_dir=results_dir,
         experiment_fn_name="run_experiment",
         num_runs=3, # Multi-evals to aggreg.
+        run_workers=1,  # >1 enables per-run process parallelism
         get_experiment_kwargs=get_kwargs,
         aggregate_metrics_fn=aggregate_fn,
         validate_fn=validate_fn,  # Optional
