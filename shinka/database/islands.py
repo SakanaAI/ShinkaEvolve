@@ -704,3 +704,319 @@ class CombinedIslandManager:
         return program.metadata is not None and program.metadata.get(
             "_needs_island_copies", False
         )
+
+    def get_initial_program(self) -> Optional[Dict]:
+        """Get the initial program (generation 0, no parent).
+
+        Returns:
+            Dictionary with program data or None if not found
+        """
+        self.cursor.execute(
+            """SELECT * FROM programs
+               WHERE generation = 0 AND parent_id IS NULL
+               ORDER BY timestamp ASC LIMIT 1"""
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_best_program(self) -> Optional[Dict]:
+        """Get the best program by combined_score.
+
+        Returns:
+            Dictionary with program data or None if not found
+        """
+        self.cursor.execute(
+            """SELECT * FROM programs
+               WHERE correct = 1
+               ORDER BY combined_score DESC LIMIT 1"""
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_random_archive_program(self) -> Optional[Dict]:
+        """Get a random program from the archive.
+
+        Returns:
+            Dictionary with program data or None if archive is empty
+        """
+        self.cursor.execute(
+            """SELECT p.* FROM programs p
+               INNER JOIN archive a ON p.id = a.program_id
+               ORDER BY RANDOM() LIMIT 1"""
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_next_island_index(self) -> int:
+        """Get the next available island index.
+
+        Returns:
+            The next island index (max existing + 1, or num_islands if no spawned islands)
+        """
+        # Get the maximum island index currently in use
+        self.cursor.execute("SELECT MAX(island_idx) as max_idx FROM programs")
+        row = self.cursor.fetchone()
+        max_idx = row["max_idx"] if row and row["max_idx"] is not None else -1
+
+        # Get configured num_islands
+        num_islands = getattr(self.config, "num_islands", 1)
+
+        # Next index is max of (max existing + 1) or num_islands
+        return max(max_idx + 1, num_islands)
+
+    def _get_spawn_source_program(self, strategy: str) -> Optional[Dict]:
+        """Get the source program for spawning based on strategy.
+
+        Args:
+            strategy: One of "initial", "best", "archive_random"
+
+        Returns:
+            Dictionary with program data or None if not found
+        """
+        if strategy == "initial":
+            return self.get_initial_program()
+        elif strategy == "best":
+            return self.get_best_program()
+        elif strategy == "archive_random":
+            return self.get_random_archive_program()
+        else:
+            logger.warning(
+                f"Unknown island_spawn_strategy '{strategy}', falling back to 'initial'"
+            )
+            return self.get_initial_program()
+
+    def _copy_program_to_island(
+        self,
+        source_program: Dict,
+        new_island_idx: int,
+        new_parent_id: Optional[str],
+        strategy: str,
+        is_root: bool = False,
+    ) -> str:
+        """Copy a single program to a new island.
+
+        Args:
+            source_program: Dict with source program data
+            new_island_idx: Target island index
+            new_parent_id: Parent ID in the new island (None for root)
+            strategy: Spawn strategy for metadata
+            is_root: Whether this is the root of the spawned subtree
+
+        Returns:
+            The new program's ID
+        """
+        new_id = str(uuid.uuid4())
+
+        # Parse and update metadata
+        metadata = json.loads(source_program.get("metadata") or "{}")
+        metadata["_spawned_island"] = True
+        metadata["_spawned_from_program_id"] = source_program["id"]
+        metadata["_spawn_island_idx"] = new_island_idx
+        metadata["_spawn_strategy"] = strategy
+        if not is_root:
+            metadata["_spawned_as_child"] = True
+
+        # Serialize JSON data
+        public_metrics_json = source_program.get("public_metrics") or "{}"
+        private_metrics_json = source_program.get("private_metrics") or "{}"
+        metadata_json = json.dumps(metadata)
+        archive_insp_ids_json = source_program.get("archive_inspiration_ids") or "[]"
+        top_k_insp_ids_json = source_program.get("top_k_inspiration_ids") or "[]"
+        embedding_json = source_program.get("embedding") or "[]"
+        embedding_pca_2d_json = source_program.get("embedding_pca_2d") or "[]"
+        embedding_pca_3d_json = source_program.get("embedding_pca_3d") or "[]"
+        migration_history_json = source_program.get("migration_history") or "[]"
+        text_feedback_str = source_program.get("text_feedback") or ""
+
+        # Insert the new program
+        self.cursor.execute(
+            """
+            INSERT INTO programs
+               (id, code, language, parent_id, archive_inspiration_ids,
+                top_k_inspiration_ids, generation, timestamp, code_diff,
+                combined_score, public_metrics, private_metrics,
+                text_feedback, complexity, embedding, embedding_pca_2d,
+                embedding_pca_3d, embedding_cluster_id, correct,
+                children_count, metadata, island_idx, migration_history)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id,
+                source_program["code"],
+                source_program["language"],
+                new_parent_id,
+                archive_insp_ids_json,
+                top_k_insp_ids_json,
+                source_program.get("generation", 0),
+                time.time(),
+                None,  # No code diff
+                source_program.get("combined_score"),
+                public_metrics_json,
+                private_metrics_json,
+                text_feedback_str,
+                source_program.get("complexity"),
+                embedding_json,
+                embedding_pca_2d_json,
+                embedding_pca_3d_json,
+                source_program.get("embedding_cluster_id"),
+                source_program.get("correct", 0),
+                0,  # Children count will be updated as children are added
+                metadata_json,
+                new_island_idx,
+                migration_history_json,
+            ),
+        )
+
+        # Add to archive if correct
+        if source_program.get("correct"):
+            self.cursor.execute(
+                "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
+                (new_id,),
+            )
+
+        # Update parent's children_count
+        if new_parent_id:
+            self.cursor.execute(
+                "UPDATE programs SET children_count = children_count + 1 WHERE id = ?",
+                (new_parent_id,),
+            )
+
+        return new_id
+
+    def _get_correct_children(
+        self, parent_id: str, limit: Optional[int] = None
+    ) -> List[Dict]:
+        """Get correct children of a program, ordered by score.
+
+        Args:
+            parent_id: ID of the parent program
+            limit: Maximum number of children to return
+
+        Returns:
+            List of child program dicts
+        """
+        query = """
+            SELECT * FROM programs
+            WHERE parent_id = ? AND correct = 1
+            ORDER BY combined_score DESC
+        """
+        if limit:
+            query += f" LIMIT {limit}"
+
+        self.cursor.execute(query, (parent_id,))
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def _collect_subtree_programs(
+        self,
+        root_program: Dict,
+        max_size: int,
+    ) -> List[Dict]:
+        """Collect programs for a subtree, breadth-first by score.
+
+        Args:
+            root_program: The root program dict
+            max_size: Maximum total programs to collect (including root)
+
+        Returns:
+            List of program dicts to copy, with root first
+        """
+        if max_size <= 1:
+            return [root_program]
+
+        collected = [root_program]
+        # Queue of (program, depth) - we use depth to potentially prioritize
+        queue = [(root_program, 0)]
+        remaining = max_size - 1
+
+        while queue and remaining > 0:
+            current, depth = queue.pop(0)
+            children = self._get_correct_children(current["id"], limit=remaining)
+
+            for child in children:
+                if remaining <= 0:
+                    break
+                collected.append(child)
+                queue.append((child, depth + 1))
+                remaining -= 1
+
+        return collected
+
+    def spawn_new_island(self) -> bool:
+        """Spawn a new island by copying a program (or subtree) based on config.
+
+        The strategy is determined by config.island_spawn_strategy:
+        - "initial": Copy the initial program (generation 0) for a fresh start
+        - "best": Copy the current best program to seed with proven quality
+        - "archive_random": Copy a random archive program for diversity
+
+        The subtree size is controlled by config.island_spawn_subtree_size:
+        - 1: Copy only the root program (default, original behavior)
+        - >1: Copy root + correct children up to this limit
+
+        Returns:
+            True if island was successfully spawned, False otherwise
+        """
+        # Get spawn strategy from config
+        strategy = getattr(self.config, "island_spawn_strategy", "initial")
+        subtree_size = getattr(self.config, "island_spawn_subtree_size", 1)
+
+        # Get the source program based on strategy
+        source_program = self._get_spawn_source_program(strategy)
+        if not source_program:
+            logger.warning(
+                f"Cannot spawn island: no source program found for strategy '{strategy}'"
+            )
+            return False
+
+        # Get the next island index
+        new_island_idx = self.get_next_island_index()
+
+        # Collect programs to copy (root + children if subtree_size > 1)
+        programs_to_copy = self._collect_subtree_programs(source_program, subtree_size)
+
+        # Map old IDs to new IDs for parent remapping
+        old_to_new_id: Dict[str, str] = {}
+
+        # Copy all programs, maintaining parent-child relationships
+        for i, prog in enumerate(programs_to_copy):
+            is_root = i == 0
+            old_parent_id = prog.get("parent_id")
+
+            # Determine new parent ID
+            if is_root:
+                new_parent_id = None
+            elif old_parent_id and old_parent_id in old_to_new_id:
+                new_parent_id = old_to_new_id[old_parent_id]
+            else:
+                # Parent wasn't copied, make this a root in the new island
+                new_parent_id = None
+
+            new_id = self._copy_program_to_island(
+                prog, new_island_idx, new_parent_id, strategy, is_root=is_root
+            )
+            old_to_new_id[prog["id"]] = new_id
+
+        self.conn.commit()
+
+        strategy_desc = {
+            "initial": "initial program",
+            "best": "best program",
+            "archive_random": "random archive program",
+        }.get(strategy, strategy)
+
+        programs_copied = len(programs_to_copy)
+        root_new_id = old_to_new_id[source_program["id"]]
+
+        if programs_copied == 1:
+            logger.info(
+                f"🏝️ Spawned new island {new_island_idx} with program {root_new_id[:8]}... "
+                f"(copy of {strategy_desc} {source_program['id'][:8]}...)"
+            )
+        else:
+            logger.info(
+                f"🏝️ Spawned new island {new_island_idx} with {programs_copied} programs "
+                f"(subtree from {strategy_desc} {source_program['id'][:8]}...)"
+            )
+
+        return True
