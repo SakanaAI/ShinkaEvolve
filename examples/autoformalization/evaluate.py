@@ -4,14 +4,34 @@ import argparse
 from typing import Optional, List, Tuple, Dict, Any
 
 import numpy as np
+from lean_interact import LeanREPLConfig, AutoLeanServer, Command, TempRequireProject, FileCommand
+from lean_interact.interface import BaseREPLResponse, LeanError
 
+from .utils_lean import validate_lean, generate_proof
 from shinka.llm.client import get_client_llm
-from shinka.utils import validate_lean
 from shinka.core import run_shinka_eval
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def check_lean(path_or_str: str) -> BaseREPLResponse | LeanError:
+    """
+    Plug the generated proof through the Lean 4 compiler.
+
+    Args:
+        path_or_str (str): The path to the proof or the proof itself.
+
+    Returns:
+        BaseREPLResponse: the output of the Lean compiler.
+    """
+    project = TempRequireProject(lean_version="v4.24.0", require="mathlib")
+    config = LeanREPLConfig(project=project)
+    server = AutoLeanServer(config)  # start Lean REPL
+    command = FileCommand(path=path_or_str) if path_or_str.endswith(".lean") else Command(cmd=path_or_str)
+    server_output = server.run(command)
+    logger.info(server_output.messages)
+    return server_output
 
 def validate_proof(run_output: Tuple[str, Optional[str]]) -> Tuple[bool, Optional[str]]:
     """
@@ -46,17 +66,35 @@ def aggregate_hypothesis_generation_metrics(results: Tuple[str, str], results_di
     if not results:
         return {"combined_score": 0.0, "error": "No results to aggregate"}
 
-    path, proof = results
+    path, lean_cmd = results
+
+    server_output = check_lean(lean_cmd)
+    if not server_output.lean_code_is_valid(allow_sorry=False):
+        penalty = 0
+        for message in server_output.messages:
+            if "error" in message.severity:
+                penalty += -1
+
+        messages = server_output
+        text_feedback = (
+            f"The generated proof:\n{lean_cmd} was invalid. Each error or sorry leads to a -1 penalty."
+            f"Please consider the following compiler feedback and update the formalization accordingly:\n"
+            f"{messages}"
+        )
+    else:
+        text_feedback = ""
+        penalty = 0
 
     public_metrics = {
-        "proof_length": len(proof),
+        "proof_length": len(lean_cmd),
     }
 
     private_metrics = {}
     metrics = {
-        "combined_score": len(proof),
+        "combined_score": len(lean_cmd),
         "public": public_metrics,
         "private": private_metrics,
+        "text_feedback": text_feedback,
     }
 
     extra_file = os.path.join(results_dir, "extra.npz")
@@ -88,7 +126,7 @@ def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
     }
 
 
-def main(program_path: str, results_dir: str, prover_model: str) -> None:
+def main(program_path: str, results_dir: str, prover_model: str='gpt-5-nano') -> None:
     """
     Run the hypothesis evaluation using shinka.eval
 
@@ -123,7 +161,7 @@ def main(program_path: str, results_dir: str, prover_model: str) -> None:
     metrics, correct, error_msg = run_shinka_eval(
         program_path=program_path,
         results_dir=results_dir,
-        experiment_fn_name="run_autoformalization",
+        experiment_fn_name=generate_proof,
         num_runs=num_experiment_runs,
         get_experiment_kwargs=_kwargs_with_context,
         validate_fn=validate_proof,

@@ -1,4 +1,6 @@
 import json
+import re
+import os
 import logging
 from pathlib import Path
 from typing import Tuple, Optional, List
@@ -74,13 +76,15 @@ def generate_proof(
         )
         proof_text = response.choices[0].message.content
 
-        try:
-            proof_text = proof_text.split("```lean4")[1].replace("`", "")
-        except IndexError:
-            proof_text = proof_text.replace("`", "")
-        proof_text = validate_imports(proof_text=proof_text)
+        results_dir, _ = os.path.split(file_path)
+        fname = os.path.join(results_dir, fr"unprocessed_proof.lean")
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(proof_text)
 
-        logger.info(f"The generated proof text is:\n{proof_text}")
+        proof_text = postprocess(proof_text)
+        fname = os.path.join(results_dir, fr"processed_proof.lean")
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(proof_text)
 
         # Reformat proofs by removing comments, as they can sometimes cause issues when validating the proofs
         return file_path, remove_lean_comments(proof_text)
@@ -90,26 +94,98 @@ def generate_proof(
         return file_path, None
 
 
-def validate_imports(proof_text: str, required_imports: Optional[List] = None) -> str:
+def postprocess(proof: str) -> str:
+    """
+    Postprocess the ``proof``, fixing common syntax errors.
+
+    Args:
+        proof (str): a Lean 4 proof.
+
+    Returns:
+        (str): the post-processed and cleaned proof.
+    """
+    try:
+        proof = proof.split("```lean4")[1].replace("`", "")
+    except IndexError:
+        proof = proof.replace("`", "")
+    proof = validate_imports(proof_text=proof)
+    # Reformat proofs by removing comments, as they can sometimes cause issues when validating the proofs
+    clean_lean = remove_lean_comments(proof)
+    if clean_lean.endswith("D"):
+        clean_lean = clean_lean[:-1]
+    # Replace "∑ n in range" with "∑ n ∈ range"
+    lean_txt = fix_range_notation(clean_lean)
+    # Replace " pi " with π
+    lean_txt = re.sub(r'\s+pi\s+', ' π ', lean_txt)
+    return lean_txt
+
+
+def fix_range_notation(text: str) -> str:
+    """
+    Replace '∑/∏ variable in range' with '∑/∏ variable ∈ range' in Lean 4 code, regardless of the variable name.
+
+    Args:
+        text (str): The input string containing Lean code.
+
+    Returns:
+        str: The string with all sum notations fixed.
+    """
+    pattern = r"([∑∏]\s+)(\w+)(\s+)in(\s+)"
+    replacement = r"\1\2\3∈\4"
+    return re.sub(pattern, replacement, text)
+
+
+def validate_imports(
+    proof_text: str,
+    standard_imports: Optional[str] = None,
+    open_imports: Optional[str] = None,
+) -> str:
     """
     Check whether the imports are present in the proof header. Add missing imports if required.
 
     Args:
         proof_text (str): the proof text.
-        required_imports (Optional[List]): a list of required imports. Default is ["import Mathlib.Data.Real.Basic",
-            "import Mathlib.Tactic"]
+        standard_imports (Optional[List]): a list of the standard imports required to solve most proofs in chemical
+            physics.
+        open_imports (Optional[List]): a list of the standard opens required to solve mst proofs in chemical physics.
 
     Returns:
         str: the proof text including the required imports.
 
     """
-    if not required_imports:  # Default argument
-        required_imports = ["import Mathlib.Data.Real.Basic", "import Mathlib.Tactic"]
+    if not standard_imports: # Default argument
+        standard_imports = ["import mathlib", ]
 
-    for statement in required_imports:
-        if statement not in proof_text:
-            proof_text = statement + "\n" + proof_text
-    return proof_text
+    if not open_imports:
+        open_imports = ["Real", "BigOperators", "Topology", "Set", "Filter", "Finset"]
+
+    imports, opens, proof = [], [], []
+
+    proof_lines = proof_text.split("\n")
+    for line in proof_lines:
+        if line.startswith("import"):  # Verify imports
+            continue
+
+        if line.lower() == "lean":  # fix parsing issues
+            continue
+
+        elif line.startswith("open"):  # Open statement
+            curated_line = line
+            for statement in open_imports:
+                if statement not in curated_line:
+                    curated_line += f" {statement}"
+            opens.append(curated_line)
+
+        else:  # The rest of the proof text
+            proof.append(line)
+
+    for statement in standard_imports:  # Add the remaining standard imports
+        if statement not in imports:
+            imports.append(statement)
+
+    proof_text = "\n".join(imports) + "\n" + "\n".join(opens) + "\n" + "\n".join(proof)
+
+    return proof_text.strip()
 
 
 def validate_lean(
