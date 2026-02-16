@@ -279,16 +279,15 @@ class ProgramDatabase:
         read_only: bool = False,
     ):
         self.config = config
+        self.embedding_model = embedding_model
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
 
-        # Only create embedding client if not in read-only mode
-        # (e.g., WebUI doesn't need it for visualization)
-        if not read_only and embedding_model:
-            self.embedding_client = EmbeddingClient(model_name=embedding_model)
-        else:
-            self.embedding_client = None
+        # Lazy-init embedding client to avoid requiring API credentials for
+        # database-only operations and tests that do not compute embeddings.
+        self.embedding_client: Optional[EmbeddingClient] = None
+        self._embedding_client_init_failed = False
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
@@ -374,6 +373,33 @@ class ProgramDatabase:
         logger.debug(
             f"Last iter: {self.last_iteration}. Best ID: {self.best_program_id}"
         )
+
+    def _ensure_embedding_client(self) -> Optional[EmbeddingClient]:
+        """Create embedding client on demand.
+
+        Returns:
+            EmbeddingClient if available, otherwise None.
+        """
+        if self.read_only or not self.embedding_model:
+            return None
+        if self.embedding_client is not None:
+            return self.embedding_client
+        if self._embedding_client_init_failed:
+            return None
+
+        try:
+            self.embedding_client = EmbeddingClient(model_name=self.embedding_model)
+        except Exception as e:
+            self._embedding_client_init_failed = True
+            logger.warning(
+                "Embedding client init failed for model '%s'; "
+                "continuing without embedding recomputation: %s",
+                self.embedding_model,
+                e,
+            )
+            return None
+
+        return self.embedding_client
 
     def _create_tables(self):
         if not self.cursor or not self.conn:
@@ -2485,6 +2511,9 @@ class ProgramDatabase:
 
         program_ids = [row["id"] for row in rows]
         embeddings = [json.loads(row["embedding"]) for row in rows]
+        embedding_client = self._ensure_embedding_client()
+        if embedding_client is None:
+            return
 
         # Use EmbeddingClient for dim reduction and clustering
         try:
@@ -2492,13 +2521,13 @@ class ProgramDatabase:
                 "Recomputing PCA-reduced embedding features for %s programs.",
                 len(program_ids),
             )
-            reduced_2d = self.embedding_client.get_dim_reduction(
+            reduced_2d = embedding_client.get_dim_reduction(
                 embeddings, method="pca", dims=2
             )
-            reduced_3d = self.embedding_client.get_dim_reduction(
+            reduced_3d = embedding_client.get_dim_reduction(
                 embeddings, method="pca", dims=3
             )
-            cluster_ids = self.embedding_client.get_embedding_clusters(
+            cluster_ids = embedding_client.get_embedding_clusters(
                 embeddings, num_clusters=num_clusters
             )
         except Exception as e:
@@ -2570,6 +2599,9 @@ class ProgramDatabase:
 
             program_ids = [row["id"] for row in rows]
             embeddings = [json.loads(row["embedding"]) for row in rows]
+            embedding_client = self._ensure_embedding_client()
+            if embedding_client is None:
+                return
 
             # Use EmbeddingClient for dim reduction and clustering
             try:
@@ -2579,19 +2611,19 @@ class ProgramDatabase:
                 )
 
                 logger.info("Computing 2D PCA reduction...")
-                reduced_2d = self.embedding_client.get_dim_reduction(
+                reduced_2d = embedding_client.get_dim_reduction(
                     embeddings, method="pca", dims=2
                 )
                 logger.info("2D PCA reduction completed")
 
                 logger.info("Computing 3D PCA reduction...")
-                reduced_3d = self.embedding_client.get_dim_reduction(
+                reduced_3d = embedding_client.get_dim_reduction(
                     embeddings, method="pca", dims=3
                 )
                 logger.info("3D PCA reduction completed")
 
                 logger.info(f"Computing GMM clustering with {num_clusters} clusters...")
-                cluster_ids = self.embedding_client.get_embedding_clusters(
+                cluster_ids = embedding_client.get_embedding_clusters(
                     embeddings, num_clusters=num_clusters
                 )
                 logger.info("GMM clustering completed")
