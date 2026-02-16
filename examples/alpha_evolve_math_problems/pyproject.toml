@@ -10,7 +10,9 @@ dependencies = [
     "sympy",
     "tqdm",
     "hydra-core==1.3.2",
-    "jax",  # Standard CPU version
+    "jax",                  # Standard CPU version
+    "matplotlib"            # for visualization purposes, in the notebooks that accompany the tasks
+    "jupyter"               # For use inside a jupyter notebook
 ]
 
 [build-system]
