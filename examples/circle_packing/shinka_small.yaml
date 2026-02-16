@@ -1,0 +1,93 @@
+max_evaluation_jobs: 2   # Higher concurrency with multiple workers
+max_proposal_jobs: 2    # Higher concurrency with proper coordination  
+max_db_workers: 2       # Multiple database workers for better throughput
+
+db_config:
+  num_islands: 1
+  archive_size: 40
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.1
+  island_elitism: true
+  enforce_island_separation: true
+  parent_selection_strategy: weighted
+  parent_selection_lambda: 10
+  archive_selection_strategy: "crowding"
+  island_selection_strategy: equal
+  archive_criteria:
+    combined_score: 1.0
+    loc: -0.3
+
+  enable_dynamic_islands: true
+  stagnation_threshold: 10
+  island_spawn_strategy: "best"
+  island_spawn_subtree_size: 2
+
+evo_config:
+  patch_types:
+    - diff
+    - full
+    - cross
+  patch_type_probs:
+    - 0.6
+    - 0.3
+    - 0.1
+  num_generations: 100
+  max_patch_resamples: 3
+  max_patch_attempts: 3
+  max_novelty_attempts: 3
+  job_type: local
+  language: python
+  llm_models:
+    # - "gemini-2.5-pro"
+    - "gemini-2.5-flash"
+    # - "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
+    # - "o4-mini"
+    # - "gpt-5"
+    - "gpt-5-mini"
+    - "gpt-5-nano"
+  llm_kwargs:
+    temperatures:
+      - 0
+      - 0.5
+      - 1.0
+    reasoning_efforts:
+      - low
+      - medium
+      - high
+    max_tokens: 32768
+
+  meta_rec_interval: 5
+  meta_llm_models:
+    - gpt-5-mini
+  meta_llm_kwargs:
+    temperatures:
+      - 0
+    max_tokens: 16384
+
+  embedding_model: text-embedding-3-small
+  code_embed_sim_threshold: 0.99
+
+  novelty_llm_models:
+    - gpt-5-nano
+  novelty_llm_kwargs:
+    temperatures:
+      - 0
+  init_program_path: initial.py
+
+  llm_dynamic_selection: ucb1
+  llm_dynamic_selection_kwargs:
+    exploration_coef: 1.0
+    cost_aware_coef: 0.7
+  results_dir: results/results_circle_async_small
+
+  evolve_prompts: True
+  prompt_evolution_interval: 5  # Evolve every 4 programs
+  prompt_patch_types: ["diff", "full"]
+  prompt_patch_type_probs: [0.5, 0.5]
+  prompt_archive_size: 10
+  prompt_percentile_recompute_interval: 1
+  prompt_ucb_exploration_constant: 2.0  # Higher = more exploration in UCB
+  prompt_epsilon: 0.25  # 15% chance of random sampling for exploration
