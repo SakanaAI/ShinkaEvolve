@@ -7,18 +7,37 @@ from shinka.utils import get_path_to_best_node
 import matplotlib.transforms as transforms
 
 
-def plot_improvement(
+def plot_evals_performance(
     df: pd.DataFrame,
     title: str = "Best Combined Score Over Time",
     fig: Optional[Figure] = None,
     ax: Optional[Axes] = None,
-    xlabel: str = "Number of Evaluated LLM Program Proposals",
+    xlabel: str = "# Evaluated Programs",
     ylabel: str = "Evolved Performance Score",
     ylim: Optional[Tuple[float, float]] = None,
     plot_path_to_best_node: bool = True,
+    scatter_improvements_only: bool = False,
+    annotate: bool = True,
+    show_cost: bool = True,
 ):
     """
     Plots the improvement of a program over generations.
+
+    Args:
+        df: DataFrame containing program evaluation data
+        title: Plot title
+        fig: Optional existing figure to plot on
+        ax: Optional existing axes to plot on
+        xlabel: Label for x-axis
+        ylabel: Label for y-axis
+        ylim: Optional tuple of (min, max) for y-axis limits
+        plot_path_to_best_node: Whether to plot path to best node
+        scatter_improvements_only: If True, only show scatter points where
+            the cummax improves. If False, show all evaluation points.
+        annotate: If True, annotate points with patch names. If False,
+            no annotations are shown.
+        show_cost: If True, show cumulative cost on second y-axis. If False,
+            hide the cost information.
     """
     if fig is None or ax is None:
         fig, ax = plt.subplots(figsize=(20, 10))
@@ -29,23 +48,41 @@ def plot_improvement(
     df = df.sort_values(by="generation")
     df_filtered = df[df["correct"]].copy()
 
+    cummax_scores = df_filtered["combined_score"].cummax()
+
     line1 = ax.plot(
         df_filtered["generation"],
-        df_filtered["combined_score"].cummax(),
+        cummax_scores,
         linewidth=3,
         color="red",
         label="Best Score",
     )
 
     # Plot individual evaluations as scatter points
-    scatter1 = ax.scatter(
-        df_filtered["generation"],
-        df_filtered["combined_score"],
-        alpha=1.0,
-        s=40,
-        color="black",
-        label="Individual Evals",
-    )
+    if scatter_improvements_only:
+        # Only plot points where cummax changes (improvements)
+        improvements = df_filtered[
+            cummax_scores != cummax_scores.shift(1).fillna(-float("inf"))
+        ]
+        scatter1 = ax.scatter(
+            improvements["generation"],
+            improvements["combined_score"],
+            alpha=1.0,
+            s=100,
+            color="red",
+            marker="o",
+            zorder=5,
+        )
+    else:
+        # Plot all evaluation points
+        scatter1 = ax.scatter(
+            df_filtered["generation"],
+            df_filtered["combined_score"],
+            alpha=1.0,
+            s=40,
+            color="black",
+            label="Individual Evals",
+        )
 
     if ylim is not None:
         ax.set_ylim(*ylim)
@@ -69,25 +106,47 @@ def plot_improvement(
             markersize=5,
             linewidth=2,
         )
-        # Add annotations if 'patch_name' column exists
-        if "patch_name" in best_path_df.columns:
+        # Add annotations if 'patch_name' column exists and annotate is True
+        if annotate and "patch_name" in best_path_df.columns:
             _place_non_overlapping_annotations(
                 ax, best_path_df, "generation", "combined_score", "patch_name"
             )
 
-    # Create a second y-axis for cumulative API cost
-    ax2 = ax.twinx()
+    # Create handles and labels for legend
     handles = line1 + [scatter1]
     if line_best_path_plot:  # If the best path was plotted
         handles.extend(line_best_path_plot)
 
-    labels = [h.get_label() for h in handles]
+    # Get labels and filter out matplotlib auto-generated ones (starting _)
+    labels = [h.get_label() for h in handles if not h.get_label().startswith("_")]
+    handles = [h for h in handles if not h.get_label().startswith("_")]
 
-    if "api_costs" in df_filtered.columns:
+    # Create a second y-axis for cumulative API cost (if show_cost is True)
+    if show_cost and "api_costs" in df_filtered.columns:
+        ax2 = ax.twinx()
         cumulative_api_cost = df["api_costs"].cumsum().bfill()
+        cumulative_embed_cost = (
+            df["embed_cost"].cumsum().bfill() if "embed_cost" in df.columns else 0
+        )
+        cumulative_novelty_cost = (
+            df["novelty_cost"].cumsum().bfill() if "novelty_cost" in df.columns else 0
+        )
+
+        cumulative_meta_cost = (
+            df["meta_cost"].cumsum().bfill() if "meta_cost" in df.columns else 0
+        )
+
+        # Sum all costs together
+        total_cumulative_cost = (
+            cumulative_api_cost
+            + cumulative_embed_cost
+            + cumulative_novelty_cost
+            + cumulative_meta_cost
+        )
+
         line2 = ax2.plot(
             df["generation"],
-            cumulative_api_cost,
+            total_cumulative_cost,
             linewidth=2,
             color="orange",
             linestyle="--",
@@ -104,6 +163,10 @@ def plot_improvement(
         handles.extend(line2)
         labels = [h.get_label() for h in handles]  # Recreate labels
 
+        # Configure ax2 spines
+        ax2.spines["top"].set_visible(False)
+        ax2.tick_params(axis="y", which="major", labelsize=30)
+
     ax.legend(handles, labels, fontsize=25, loc="lower right")
 
     # Customize plot
@@ -115,16 +178,127 @@ def plot_improvement(
 
     # Remove top and right spines for the primary axis
     ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(
-        False
-    )  # Keep right spine if ax2 is present, or manage ax2 spines
-
-    if "api_cost" in df_filtered.columns and ax2:
-        # Ensure ax2 spine is visible if it exists
-        ax2.spines["top"].set_visible(False)  # Match primary axis top spine
-        ax2.tick_params(axis="y", which="major", labelsize=30)
+    ax.spines["right"].set_visible(False)
 
     fig.tight_layout()  # Adjust layout to prevent overlapping labels
+
+    return fig, ax
+
+
+def plot_evals_performance_compare(
+    dfs: List[pd.DataFrame],
+    labels: List[str],
+    title: str = "Best Combined Score Over Time - Comparison",
+    fig: Optional[Figure] = None,
+    ax: Optional[Axes] = None,
+    xlabel: str = "# Evaluated Programs",
+    ylabel: str = "Evolved Performance Score",
+    ylim: Optional[Tuple[float, float]] = None,
+    scatter_improvements_only: bool = False,
+    colors: Optional[List[str]] = None,
+):
+    """
+    Plots comparison of multiple runs over generations.
+
+    Args:
+        dfs: List of DataFrames containing program evaluation data
+        labels: List of labels for each dataset
+        title: Plot title
+        fig: Optional existing figure to plot on
+        ax: Optional existing axes to plot on
+        xlabel: Label for x-axis
+        ylabel: Label for y-axis
+        ylim: Optional tuple of (min, max) for y-axis limits
+        scatter_improvements_only: If True, only show scatter at improvements
+        colors: Optional list of colors for each dataset
+    """
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=(20, 10))
+
+    # Default colors if not provided
+    if colors is None:
+        colors = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
+        ]
+
+    handles = []
+    all_labels = []
+
+    for idx, (df, label) in enumerate(zip(dfs, labels)):
+        color = colors[idx % len(colors)]
+
+        # Sort and filter
+        df = df.sort_values(by="generation")
+        df_filtered = df[df["correct"]].copy()
+
+        if df_filtered.empty:
+            continue
+
+        cummax_scores = df_filtered["combined_score"].cummax()
+
+        # Plot best score line
+        line = ax.plot(
+            df_filtered["generation"],
+            cummax_scores,
+            linewidth=3,
+            color=color,
+            label=f"{label}",
+            alpha=0.8,
+        )
+        handles.extend(line)
+        all_labels.append(f"{label}")
+
+        # Plot scatter points
+        if scatter_improvements_only:
+            improvements = df_filtered[
+                cummax_scores != cummax_scores.shift(1).fillna(-float("inf"))
+            ]
+            if not improvements.empty:
+                ax.scatter(
+                    improvements["generation"],
+                    improvements["combined_score"],
+                    alpha=0.6,
+                    s=80,
+                    color=color,
+                    marker="*",
+                    zorder=5,
+                )
+        else:
+            ax.scatter(
+                df_filtered["generation"],
+                df_filtered["combined_score"],
+                alpha=0.4,
+                s=30,
+                color=color,
+            )
+
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+
+    # Customize plot
+    ax.set_xlabel(xlabel, fontsize=30, weight="bold")
+    ax.set_ylabel(ylabel, fontsize=30, weight="bold", labelpad=25)
+    ax.set_title(title, fontsize=40, weight="bold")
+    ax.tick_params(axis="both", which="major", labelsize=20)
+    ax.grid(True, alpha=0.3)
+
+    # Remove top and right spines
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # Add legend
+    ax.legend(handles, all_labels, fontsize=25, loc="lower right")
+
+    fig.tight_layout()
 
     return fig, ax
 
