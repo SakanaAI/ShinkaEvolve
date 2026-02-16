@@ -229,4 +229,3 @@ ShinkaEvolve can now connect to **locally hosted LLMs** and **embedding models**
 This setup supports **Ollama** and other frameworks such as **gpt-oss** under **Unsloth**.
 
 If your model has different requirements, follow the same pattern with a distinct model identifier and your own custom logic.
-

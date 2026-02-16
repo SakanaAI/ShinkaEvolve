@@ -26,6 +26,7 @@ evo_config:
   num_generations: 20              # Number of evolution generations
   max_parallel_jobs: 1             # Maximum parallel evaluations
   max_patch_attempts: 10           # Max attempts to generate valid patches
+  max_api_costs: null              # Optional total API budget cap (USD)
   
   # LLM Configuration
   llm_models:                      # List of LLM models for mutations
@@ -138,6 +139,7 @@ exp_name: "shinka_my_task"
 | `num_generations` | int | 20 | Number of evolutionary generations |
 | `max_parallel_jobs` | int | 1 | Maximum concurrent evaluations |
 | `max_patch_attempts` | int | 10 | Maximum attempts to generate valid patches |
+| `max_api_costs` | float/null | `null` | Total API budget cap in USD. Stops submitting new proposals when committed cost reaches the cap. |
 | `llm_models` | list | `["azure-gpt-4.1"]` | LLM models for mutations |
 | `patch_types` | list | `["diff", "full"]` | Types of code modifications |
 | `patch_type_probs` | list | `[0.5, 0.5]` | Probabilities for patch types |
@@ -317,6 +319,29 @@ exp_name: "shinka_my_optimization"
 ```
 
 ## Advanced Configuration Patterns
+
+### Cost-Bounded Runs (`max_api_costs`)
+
+Use `evo_config.max_api_costs` to bound API spend for both sync and async runners.
+
+- Field name is `max_api_costs` (plural) in `EvolutionConfig`.
+- Budget checks use committed cost:
+  - realized costs from stored metadata (`api_costs`, `embed_cost`, `novelty_cost`, `meta_cost`)
+  - plus estimated in-flight proposal cost
+- When budget is reached:
+  - no new proposals are submitted
+  - running jobs are drained, then run exits cleanly
+- If you omit `num_generations`, set `max_api_costs` to define the stopping condition.
+
+Example:
+
+```yaml
+evo_config:
+  num_generations: null
+  max_api_costs: 25.0
+  llm_models:
+    - "gpt-5-mini"
+```
 
 ### Multi-Model Evolution
 
