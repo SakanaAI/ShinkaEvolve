@@ -1,26 +1,24 @@
 defaults:
-  - override /database@_global_: island_small
-  - override /evolution@_global_: small_budget
+  - override /database@_global_: island_medium
+  - override /evolution@_global_: medium_budget
   - override /task@_global_: "alpha_evolve_math_problems/first_autocorr_ineq"
-  - override /task@_global_: "first_autocorr_ineq"
   - override /cluster@_global_: local
   - _self_
 
-
 # Override specific parameters
 
+variant_suffix: _open_evolve
+
 job_config:
-  python_path: examples/alpha_evolve_math_problems/.venv
+  python_path: examples/alpha_evolve_math_problems/.venv/bin/python
   time: "00:2:00"  # Max time for the entire job (HH:MM:SS)
 
-variant_suffix: _example
-
 evo_config:
-  init_program_path: "examples/first_autocorr_ineq/initial_open_evolve.py"
+  init_program_path: "examples/alpha_evolve_math_problems/first_autocorr_ineq/initial_open_evolve.py"
   llm_models: ["local-gptoss-unsloth-http://127.0.0.1:8080/v1"]
   meta_llm_models: ["local-gptoss-unsloth-http://127.0.0.1:8080/v1"]
   embedding_model: "local-nomic-embed-text:v1.5-http://localhost:11434/v1"
-  num_generations: 50
+  num_generations: 500
   task_sys_msg: |
       SETTING:
       You are an expert in functional analysis, harmonic analysis, numerical optimization, and AI-driven mathematical discovery.
