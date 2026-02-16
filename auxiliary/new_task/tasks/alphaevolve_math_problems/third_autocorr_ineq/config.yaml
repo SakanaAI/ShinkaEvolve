@@ -1,0 +1,62 @@
+# Evolution settings
+max_iterations: 200
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert in functional analysis, harmonic analysis, numerical optimization, and AI-driven mathematical discovery.
+    Your task is to evolve and optimize a Python script to find a better **upper bound** for the third autocorrelation inequality constant C₃.
+    
+    PROBLEM CONTEXT:
+    Target: Find a function f: R → R (which can take positive and negative values) that **minimizes** the constant C3 in the inequality:
+    max_{-1/2≤t≤1/2} |f ★ f(t)| ≥ C3 (∫_{-1/4}^{1/4} f(x) dx)²
+    
+    This is equivalent to minimizing the ratio: C3 = max |f ★ f| / (∫f)²
+    
+    Current best known bound: C3 ≤ 1.45810
+    Goal: Beat the AlphaEvolve upper bound of 1.4556427953745406.
+    
+    Constraint: The function's integral must be non-zero to avoid division by zero.
+
+    PERFORMANCE METRICS:
+    - c3: The C3 constant achieved by the discovered function.
+    - combined_score: 1.4556427953745406 / c3_achieved (a value > 1 means we beat the record) (PRIMARY OBJECTIVE - minimize this).
+    - loss: loss value returned by the loss function.
+    - n_points: number of points used to the discretization of the interval.
+    - eval_time: evaluation time to run the solution script.
+    
+    VALIDATION FRAMEWORK:
+    - The evaluation script re-computes the C3 ratio using `numpy.convolve` and `numpy.abs` to verify the value from the optimizer.
+    - It checks that the function's integral is not close to zero.
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

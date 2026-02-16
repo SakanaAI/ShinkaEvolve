@@ -1,0 +1,80 @@
+# Evolution settings
+max_iterations: 100
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 50
+  num_islands: 3
+  migration_interval: 10
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 60
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert in computational linear algebra, numerical optimization, and AI-driven algorithm discovery.
+    Your task is to evolve and optimize a Python script to find the lowest-rank decomposition of the matrix multiplication tensor for a specific instance with variables (n=2,m=4,p=5) fixed.
+
+    PROBLEM CONTEXT:
+    Target: Find the minimal rank R for the tensor decomposition T_ijk = ∑_r=1^R U_ir V_jr W_kr.
+    The goal is to beat the best algorithm and discover a state-of-the-art algorithm with the lowest rank possible.
+    Constraint: The reconstructed tensor from the learned factors (U, V, W) must be EXACTLY EQUAL to the ground-truth matrix multiplication tensor T_ijk after its composition to a tensor form. 
+    This can be enforced in two ways:
+    * by minimizing the loss function to near-zero, and do a "rounding algorithm" to make the continuous aproximate solution converge to a exactly one where its elements are interger multiples of a constant.
+    * by making an algorithm that search in the space of the set of possible elements, or a grid of elements that can compose the final decomposition.
+    You can be creative and choose the best possible algorithm to solve this problem, for example incorporating contraints that force the solution to be in the right space, or by enforcing this from the start.
+  
+    MATHEMATICAL FORMULATION:
+    Given: The standard matrix multiplication tensor T for n, m, p fixed.
+    Objective: Find the smallest integer R such that there exist real or complex valued matrices U, V, W of shapes (n*p, R), (n*m, R), and (m*p, R) that compose T_ijk.
+
+    PERFORMANCE METRICS:
+    combined_score: The minimal inverse rank 32/R for which the optimization was successful, where 32 is the best know decomposition found by Google. A value of 1.0 means you have matched the state-of-the-art. (PRIMARY OBJECTIVE - maximize 1/R).
+    loss: The final loss function result if applicable to the method used.
+    rank: rank of the best decomposition found.
+    eval_time: time of the evaluation.
+
+    VALIDATION FRAMEWORK:
+    Numerical Validation: The final loss for a successful run must be below the success_threshold (e.g., 1e-6).
+    Equality validation: The final decomposition must be exactly equal to the tensor T_ijk:
+    matmul_tensor = np.zeros((n * m, m * p, p * n), dtype=np.int32)
+    for i in range(n):
+      for j in range(m):
+        for k in range(p):
+          matmul_tensor[i * m + j][j * p + k][k * n + i] = 1
+    Rank Validation: The discovered_rank must be an integer.
+
+    TECHNICAL REQUIREMENTS:
+    Reproducibility: Ensure the JAX PRNGKey is handled correctly (or any lib with random numbers) to get reproducible results for a given set of initial conditions and hyperparameters.
+    Numerical Stability: Be aware of potential floating-point precision issues and the possibility of exploding or vanishing gradients, suggesting remedies like gradient clipping if necessary.
+
+    PROBLEM-SPECIFIC CONSIDERATIONS:
+    Initialization is Key: Due to the non-convex landscape, the success of a run is highly dependent on the random initialization. A robust solution should work from multiple different random seeds.
+    Steps vs. Learning Rate Trade-off: A lower learning rate might require more num_steps to converge, and vice-versa. Explore this relationship to find the most efficient path to a solution.
+    From Discovery to Algorithm: The end goal is not just the factors U, V, W, but the algorithm they represent. A good solution should be interpretable as a series of R multiplications and additions/subtractions.
+    The robustness and efficiency of the proposed code and hyperparameter configuration (i.e., it should converge reliably and quickly).
+    
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

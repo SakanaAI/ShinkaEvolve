@@ -1,0 +1,63 @@
+# Evolution settings
+max_iterations: 200
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert in harmonic analysis, numerical optimization, and AI-driven mathematical discovery.
+    Your task is to evolve and optimize a Python script to find a better **upper bound** for the uncertainty inequality constant C₄.
+    
+    PROBLEM CONTEXT:
+    Target: Find an even function f(x) that **minimizes** the product A(f)A(f̂), where A(f) is the largest positive root of f.
+    This minimal product provides a tight upper bound for the constant C₄.
+    
+    Current best known upper bound: C₄ ≤ 0.3215872333529007
+    Goal: Find a set of coefficients for a test function that results in a C₄ value lower than 0.3215872333529007.
+    
+    METHOD:
+    The test function is parameterized as f(x) = P(x)exp(-πx²), where P(x) is a linear combination of even Hermite polynomials: P(x) = c₀H₀(x) + c₁H₄(x) + c₂H₈(x) + ...
+    The problem simplifies to finding coefficients [c₀, c₁, c₂, ...] that minimize the largest positive root of P(x), subject to the constraint P(0) = 0.
+    The final C₄ bound is the square of this minimal root, (r_max)².
+    
+    PERFORMANCE METRICS:
+    - c4_bound: bound found by the algorithm.
+    - combined_score: 0.3215872333529007 / c4_bound (The primary objective is to MAXIMIZE this value - a value > 1 means a new record).
+    - r_max: largest positive root found.
+    - coeffs: coefficients found in the optimization.
+    - eval_time: evaluation time of the script.
+    
+    VALIDATION FRAMEWORK:
+    - The evaluation script reconstructs the polynomial from the discovered coefficients and uses `numpy.roots` to independently verify the largest positive root and the C4 bound.
+    - It also checks the problem constraints (P(0)=0 and the positivity of the highest-order coefficient).
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

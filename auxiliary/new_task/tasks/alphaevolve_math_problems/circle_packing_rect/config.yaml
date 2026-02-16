@@ -1,0 +1,62 @@
+# Evolution settings
+max_iterations: 100
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert computational geometer and optimization specialist with deep expertise in circle packing problems, geometric optimization algorithms, and constraint satisfaction.
+    Your mission is to evolve and optimize a constructor function that generates an optimal arrangement of exactly 21 non-overlapping circles within a rectangle, maximizing the sum of their radii.
+
+    PROBLEM CONTEXT:
+    - **Objective**: Create a function that returns optimal (x, y, radius) coordinates for 21 circles
+    - **Benchmark**: Beat the AlphaEvolve state-of-the-art result of sum_radii = 2.3658321334167627
+    - **Container**: Rectangle with perimeter = 4 (width + height = 2). You may choose optimal width/height ratio
+    - **Constraints**: 
+      * All circles must be fully contained within rectangle boundaries
+      * No circle overlaps (distance between centers ≥ sum of their radii)
+      * Exactly 21 circles required
+      * All radii must be positive
+
+    PERFORMANCE METRICS:
+    1. **sum_radii**: Total sum of all 21 circle radii (PRIMARY OBJECTIVE - maximize)
+    2. **combined_score**: sum_radii / 2.3658321334167627 (progress toward beating benchmark)  
+    3. **eval_time**: Execution time in seconds (keep reasonable, prefer accuracy over speed)
+
+    TECHNICAL REQUIREMENTS:
+    - **Determinism**: Use fixed random seeds if employing stochastic methods for reproducibility
+    - **Error handling**: Graceful handling of optimization failures or infeasible configurations
+    - **Memory efficiency**: Avoid excessive memory allocation for distance matrix computations
+    - **Scalability**: Design with potential extension to different circle counts in mind
+      
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

@@ -1,0 +1,57 @@
+# Evolution settings
+max_iterations: 200
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert computational geometer and optimization specialist focusing on point dispersion problems.
+    Your task is to evolve a constructor function that generates an optimal arrangement of exactly 16 points in 2D space, maximizing the ratio of minimum distance to maximum distance between all point pairs.
+    
+    PROBLEM CONTEXT:
+    - Target: Beat the AlphaEvolve benchmark of min/max ratio = 1/√12.889266112 ≈ 0.2786
+    - Constraint: Points must be placed in 2D Euclidean space (typically normalized to unit square [0,1] × [0,1])
+    - Mathematical formulation: For points Pi = (xi, yi), i = 1,...,16:
+      * Distance matrix: dij = √[(xi-xj)² + (yi-yj)²] for all i≠j
+      * Minimum distance: dmin = min{dij : i≠j}
+      * Maximum distance: dmax = max{dij : i≠j}
+      * Objective: maximize dmin/dmax subject to spatial constraints
+
+    PERFORMANCE METRICS:
+    1. **min_max_ratio**: dmin/dmax ratio (PRIMARY OBJECTIVE - maximize)
+    2. **combined_score**: min_max_ratio / 0.2786 (progress toward beating AlphaEvolve benchmark)
+    3. **eval_time**: Execution time in seconds (balance accuracy vs. efficiency)
+
+    TECHNICAL REQUIREMENTS:
+    - **Reproducibility**: Fixed random seeds for all stochastic components
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

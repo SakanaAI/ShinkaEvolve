@@ -1,0 +1,60 @@
+# Evolution settings
+max_iterations: 200
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert in harmonic analysis, numerical optimization, and AI-driven mathematical discovery.
+    Your task is to evolve and optimize a Python script to find a better **upper bound** for the Erdős minimum overlap problem constant C₅.
+    
+    PROBLEM CONTEXT:
+    Target: Find a step function h: [0, 2] → [0, 1] that **minimizes** the objective:
+    max_k ∫ h(x)(1 - h(x+k)) dx
+    
+    This minimal value provides a tight upper bound for the constant C5.
+    
+    Current best known upper bound: C5 ≤ 0.38092303510845016
+    Goal: Find a step function `h` that results in a C5 value lower than 0.38092303510845016.
+    
+    CONSTRAINTS:
+    1. The function `h` must have values in the range [0, 1].
+    2. The integral of h(x) over [0, 2] must be exactly 1.
+    
+    PERFORMANCE METRICS:
+    - c5_bound: The bound found by the program.
+    - combined_score: 0.38092303510845016 / c5_bound (The primary objective is to MAXIMIZE this value - a value > 1 means a new record).
+    - n_points: number of points used in the discretization.
+    - eval_time: evaluation time of the program.
+    
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

@@ -1,0 +1,83 @@
+# Evolution settings
+max_iterations: 200
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert in functional analysis, harmonic analysis, numerical optimization, and AI-driven mathematical discovery.
+    Your task is to evolve and optimize a Python script to find the optimal function that minimizes the upper bound of the constant C1.
+    
+    PROBLEM CONTEXT:
+    Target: Find a non-negative function f: R → R that minimizes the upper bound of the constant C1 in the inequality:
+    max_{-1/2≤t≤1/2} f★f(t) ≥ C₁ (∫_{-1/4}^{1/4} f(x) dx)²
+    where f★f(t) = ∫ f(t-x)f(x) dx is the autoconvolution.
+    
+    Current best known bounds:
+    * literature: 1.28 ≤ C1 ≤ 1.5098
+    * alphaevolve: C1 ≤ 1.5052939684401607
+    Goal: Beat the current upper bound of 1.5052939684401607 discovered by step functions and alphaevolve.
+    
+    Constraint: The function f must be non-negative everywhere and have non-zero integral over [-1/4, 1/4].
+    
+    MATHEMATICAL FORMULATION:
+    Given: Discretized domain [-1/4, 1/4] with n_points equally-spaced grid points.
+    Objective: Minimize min_{t∈[-1/2,1/2]} (f★f)(t) / (∫f dx)² over all non-negative functions f.
+    Discretization: Use finite differences and discrete convolution to approximate integrals and autoconvolution.
+
+    PERFORMANCE METRICS:
+    combined_score: The 1.5052939684401607/C1 constant achieved by the discovered function (PRIMARY OBJECTIVE - maximize this)
+    c1: constant achieved (current best upper bound)
+    eval_time: Time to reach best solution
+    n_points: number of points used in the integral interval
+    loss: loss valued of the function used in minimization
+    
+    VALIDATION FRAMEWORK:
+    Mathematical Validation: Verify the C1 computation using independent numerical integration
+    Non-negativity Check: Ensure f(x) ≥ 0 everywhere (up to numerical tolerance)
+    Integral Verification: Confirm ∫f dx > 0 to avoid degenerate solutions
+    Consistency Check: Re-compute autoconvolution and verify inequality holds
+    
+    TECHNICAL REQUIREMENTS:
+    Reproducibility: Control random seeds for deterministic results
+    Numerical Stability: Handle potential division by zero in integral ratios
+    Memory Management: Discrete convolution can be memory-intensive for large grids
+    Constraint Handling: Maintain non-negativity throughout optimization
+    
+    SUCCESS CRITERIA:
+    Primary: Achieving c1 < 1.5052939684401607 (beating current record)
+    Secondary: Finding interpretable functions that achieve high C1 values
+    Robustness: Solutions that work across multiple runs and parameter settings
+    Efficiency: Fast convergence to high-quality solutions
+
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"

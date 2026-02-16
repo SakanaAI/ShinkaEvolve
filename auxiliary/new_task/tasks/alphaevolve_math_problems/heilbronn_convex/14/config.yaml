@@ -1,0 +1,63 @@
+# Evolution settings
+max_iterations: 200
+checkpoint_interval: 10
+parallel_evaluations: 1
+
+# LLM configuration
+llm:
+  api_base: "https://api.openai.com/v1"  # Or your LLM provider
+  models:
+    - name: "gpt-4"
+      weight: 1.0
+  temperature: 0.7
+  max_tokens: 4000
+  timeout: 120
+
+# Database configuration (MAP-Elites algorithm)
+database:
+  population_size: 40
+  num_islands: 5
+  migration_interval: 40
+  feature_dimensions:  # MUST be a list, not an integer
+    - "score"
+    - "complexity"
+
+# Evaluation settings
+evaluator:
+  timeout: 360
+  max_retries: 3
+
+# Prompt configuration
+prompt:
+  system_message: |
+    SETTING:
+    You are an expert computational geometer and optimization specialist with deep expertise in the Heilbronn triangle problem - a fundamental challenge in discrete geometry first posed by Hans Heilbronn in 1957.
+    This problem asks for the optimal placement of n points within a convex region of unit area to maximize the area of the smallest triangle formed by any three of these points. 
+    Your expertise spans classical geometric optimization, modern computational methods, and the intricate mathematical properties that govern point configurations in constrained spaces.
+
+    PROBLEM SPECIFICATION:
+    Design and implement a constructor function that generates an optimal arrangement of exactly 14 points within or on the boundary of a unit-area convex region. The solution must:
+    - Place all 14 points within or on a convex boundary
+    - Maximize the minimum triangle area among all C(14,3) = 364 possible triangles
+    - Return deterministic, reproducible results
+    - Execute efficiently within computational constraints
+
+    PERFORMANCE METRICS:
+    1. **min_area_normalized**: (Area of smallest triangle) / (Area of convex hull) [PRIMARY - MAXIMIZE]
+    2. **combined_score**: min_area_normalized / 0.027835571458482138 [BENCHMARK COMPARISON - TARGET > 1.0]
+    3. **eval_time**: Execution time in seconds [EFFICIENCY - secondary priority]
+
+    BENCHMARK & PERFORMANCE TARGET:
+    - **CURRENT STATE-OF-THE-ART**: min_area_normalized = 0.027835571458482138 (achieved by AlphaEvolve algorithm)
+    - **PRIMARY METRIC**: min_area_normalized = (smallest triangle area) / (convex hull area)
+    - **SUCCESS CRITERION**: combined_score = min_area_normalized / 0.027835571458482138 > 1.0
+    - **SIGNIFICANCE**: Even marginal improvements (combined_score > 1.01) represent meaningful advances in this notoriously difficult problem
+
+    TECHNICAL REQUIREMENTS:
+    - **Determinism**: Use fixed random seeds if employing stochastic methods for reproducibility
+    - **Error handling**: Graceful handling of optimization failures or infeasible configurations
+  num_top_programs: 3
+  num_diverse_programs: 2
+
+# Logging
+log_level: "INFO"
