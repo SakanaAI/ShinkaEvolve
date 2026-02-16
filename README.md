@@ -14,6 +14,10 @@
 
 `shinka` is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
+**Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
+
+**Oct 2025 Update** ShinkaEvolve supported Team Unagi in winning the [ICFP 2025 Programming Contest](https://sakana.ai/icfp-2025/).
+
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `shinka` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
 ![](docs/conceptual.png)
@@ -53,8 +57,7 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | Example | Description | Environment Setup |
 |---------|-------------|-------------------|
 | ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
-| 🤖 [Agent Design](examples/agent_design) | Design agent scaffolds for math tasks. | `LocalJobConfig` |
-| 🎯 [ALE-Bench](examples/ale_bench) | Code optimization for ALE-Bench tasks. | `LocalJobConfig` |
+| 🎮 [Game 2048](examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
 | ✨ [Novelty Generator](examples/novelty_generator_bck) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
