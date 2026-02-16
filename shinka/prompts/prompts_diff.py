@@ -40,7 +40,8 @@ for i in range(m):
 * Do not repeat the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the SEARCH/REPLACE blocks.  
 * Every block’s SEARCH section must be copied **verbatim** from the current file.  Including indentation.
 * You can propose multiple independent edits. SEARCH/REPLACE blocks follow one after another. DO NOT ADD ANY OTHER TEXT BETWEEN THESE BLOCKS.
-* Make sure the file still runs after your changes."""
+* Make sure the file still runs after your changes.
+""".rstrip()
 
 
 DIFF_ITER_MSG = """# Current program
@@ -68,4 +69,4 @@ Your goal is to maximize the `combined_score` of the program.
 Describe each change with a SEARCH/REPLACE block.
 
 IMPORTANT: Do not rewrite the entire program - focus on targeted improvements.
-"""
+""".rstrip()

@@ -1,8 +1,27 @@
 import json
 from pathlib import Path
 import logging
+import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def load_configs_from_yaml(config_path: str):
+    """
+    Loads configs from a YAML file.
+    """
+    from shinka.core import EvolutionConfig
+    from shinka.database import DatabaseConfig
+
+    with open(config_path, "r") as f:
+        configs = yaml.safe_load(f)
+
+    assert "db_config" in configs, "db_config not found in config file"
+    assert "evo_config" in configs, "evo_config not found in config file"
+
+    db_cfg = DatabaseConfig(**configs["db_config"])
+    evo_cfg = EvolutionConfig(**configs["evo_config"])
+    return evo_cfg, db_cfg
 
 
 def load_results(results_dir: str):
