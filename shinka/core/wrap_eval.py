@@ -4,7 +4,13 @@ import os
 import time
 import numpy as np
 import pickle
-from typing import Callable, Any, Dict, List, Tuple, Optional
+from typing import Callable, Any, Dict, List, Tuple, Optional, Union
+
+from shinka.utils.eval_stop import (
+    EarlyStopMethod,
+    EarlyStopDecision,
+    create_early_stop_method,
+)
 
 DEFAULT_METRICS_ON_ERROR = {
     "combined_score": 0.0,
@@ -59,11 +65,17 @@ def run_shinka_eval(
     get_experiment_kwargs: Optional[Callable[[int], Dict[str, Any]]] = None,
     aggregate_metrics_fn: Optional[Callable[[List[Any]], Dict[str, Any]]] = None,
     validate_fn: Optional[Callable[[Any], Tuple[bool, Optional[str]]]] = None,
+    plotting_fn: Optional[Callable[[Any], List[Any]]] = None,
     default_metrics_on_error: Optional[Dict[str, Any]] = None,
+    # Early stopping parameters
+    early_stop_method: Optional[Union[str, EarlyStopMethod]] = None,
+    early_stop_threshold: Optional[float] = None,
+    early_stop_score_fn: Optional[Callable[[Any], float]] = None,
+    early_stop_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], bool, Optional[str]]:
     """
     Runs an experiment multiple times, collects results, optionally validates,
-    computes metrics, and saves them.
+    computes metrics, and saves them. Supports early stopping.
 
     Args:
         program_path: Path to the Python script/module to evaluate.
@@ -77,8 +89,20 @@ def run_shinka_eval(
                               (count, time) are recorded.
         validate_fn: Opt. fn (result -> (is_valid, error_msg)) to validate
                        each run. Affects overall correctness.
+        plotting_fn: Opt. fn (extra_data) -> List[(Figure|Animation, title)].
+                     Returns list of (item, title) tuples. Title used as
+                     filename. Figures saved as PNG/PDF, animations as GIF.
         default_metrics_on_error: Metrics for eval failure. Uses predefined
                                   default if None.
+        early_stop_method: Early stopping method. Either a string
+                          ("none", "bayesian", "ci", "hybrid") or an
+                          EarlyStopMethod instance. None disables early stop.
+        early_stop_threshold: Target threshold to beat. Required if
+                             early_stop_method is set.
+        early_stop_score_fn: Function to extract score from run result.
+                            If None, assumes result is a numeric score.
+        early_stop_kwargs: Additional kwargs for create_early_stop_method
+                          (e.g., prob_cutoff, ci_confidence, min_trials).
 
     Returns:
         A tuple: (metrics, overall_correct_flag, first_error_message)
@@ -99,6 +123,27 @@ def run_shinka_eval(
     all_run_results: List[Any] = []
     execution_times: List[float] = []
 
+    # Early stopping setup
+    early_stopper: Optional[EarlyStopMethod] = None
+    early_stop_scores: List[float] = []
+    early_stop_decision: Optional[EarlyStopDecision] = None
+
+    if early_stop_method is not None:
+        if early_stop_threshold is None:
+            raise ValueError(
+                "early_stop_threshold is required when early_stop_method is set"
+            )
+        if isinstance(early_stop_method, str):
+            es_kwargs = early_stop_kwargs or {}
+            early_stopper = create_early_stop_method(early_stop_method, **es_kwargs)
+        else:
+            early_stopper = early_stop_method
+        early_stopper.reset()
+        print(
+            f"Early stopping enabled: method={early_stopper.name}, "
+            f"threshold={early_stop_threshold}"
+        )
+
     try:
         module = load_program(program_path)
         if not hasattr(module, experiment_fn_name):
@@ -109,6 +154,9 @@ def run_shinka_eval(
         experiment_fn = getattr(module, experiment_fn_name)
 
         for i in range(num_runs):
+            print(
+                f"{10 * '='}Running program evaluation {i + 1}/{num_runs}...{10 * '='}"
+            )
             kwargs: Dict[str, Any] = {}
             if get_experiment_kwargs:
                 kwargs = get_experiment_kwargs(i)
@@ -137,8 +185,42 @@ def run_shinka_eval(
                 else:
                     num_valid_runs += 1
             print(
-                f"Run {i + 1}/{num_runs} completed in {end_time - start_time:.2f} seconds"
+                f"{10 * '='}Run {i + 1}/{num_runs} completed in {end_time - start_time:.2f} seconds{10 * '='}"
             )
+
+            # Early stopping check
+            if early_stopper is not None and early_stop_threshold is not None:
+                # Extract score from result
+                if early_stop_score_fn is not None:
+                    try:
+                        score = early_stop_score_fn(run_result)
+                    except Exception as e:
+                        print(f"Warning: early_stop_score_fn failed: {e}")
+                        score = None
+                elif isinstance(run_result, (int, float)):
+                    score = float(run_result)
+                elif isinstance(run_result, dict) and "score" in run_result:
+                    score = float(run_result["score"])
+                else:
+                    score = None
+
+                if score is not None:
+                    early_stop_scores.append(score)
+                    early_stop_decision = early_stopper.check(
+                        early_stop_scores, early_stop_threshold
+                    )
+                    print(
+                        f"Early stop check: {early_stop_decision.prediction} "
+                        f"(confidence={early_stop_decision.confidence:.3f}, "
+                        f"reason={early_stop_decision.reason})"
+                    )
+
+                    if early_stop_decision.should_stop:
+                        print(
+                            f"Early stopping triggered after {i + 1}/{num_runs} runs: "
+                            f"{early_stop_decision.reason}"
+                        )
+                        break
 
         metrics: Dict[str, Any]
         if aggregate_metrics_fn:
@@ -162,6 +244,38 @@ def run_shinka_eval(
             metrics["num_valid_runs"] = num_valid_runs
             metrics["num_invalid_runs"] = num_invalid_runs
             metrics["all_validation_errors"] = all_validation_errors_list
+
+        # Add early stopping metadata
+        if early_stopper is not None:
+            metrics["early_stop"] = {
+                "method": early_stopper.name,
+                "threshold": early_stop_threshold,
+                "triggered": early_stop_decision.should_stop
+                if early_stop_decision
+                else False,
+                "runs_completed": len(all_run_results),
+                "runs_requested": num_runs,
+                "prediction": early_stop_decision.prediction
+                if early_stop_decision
+                else "uncertain",
+                "confidence": early_stop_decision.confidence
+                if early_stop_decision
+                else 0.0,
+                "reason": early_stop_decision.reason if early_stop_decision else None,
+                "scores": early_stop_scores,
+            }
+
+        # Check if combined_score is NaN or inf/-inf and mark as incorrect
+        if "combined_score" in metrics:
+            combined_score = metrics["combined_score"]
+            if np.isnan(combined_score):
+                overall_correct_flag = False
+                if not first_error_message:
+                    first_error_message = "combined_score is NaN"
+            elif np.isinf(combined_score):
+                overall_correct_flag = False
+                if not first_error_message:
+                    first_error_message = f"combined_score is inf ({combined_score})"
 
     except Exception as e:
         print(f"Evaluation error: {e}")
@@ -188,6 +302,36 @@ def run_shinka_eval(
         with open(extra_file, "wb") as f:
             pickle.dump(extra_data, f)
         print(f"Extra data saved to {extra_file}")
+
+        if plotting_fn is not None:
+            plots_dir = os.path.join(results_dir, "plots")
+            os.makedirs(plots_dir, exist_ok=True)
+            try:
+                import matplotlib.pyplot as plt
+                from matplotlib.animation import FuncAnimation, ArtistAnimation
+
+                items = plotting_fn(extra_data)
+                fig_count, anim_count = 0, 0
+                for item, title in items:
+                    if isinstance(item, (FuncAnimation, ArtistAnimation)):
+                        gif_path = os.path.join(plots_dir, f"{title}.gif")
+                        item.save(gif_path, writer="pillow", fps=30)
+                        plt.close(item._fig)
+                        anim_count += 1
+                    else:
+                        # Assume it's a Figure
+                        png_path = os.path.join(plots_dir, f"{title}.png")
+                        pdf_path = os.path.join(plots_dir, f"{title}.pdf")
+                        item.savefig(png_path, bbox_inches="tight", dpi=150)
+                        item.savefig(pdf_path, bbox_inches="tight")
+                        plt.close(item)
+                        fig_count += 1
+                print(
+                    f"Saved {fig_count} plot(s) and {anim_count} animation(s) "
+                    f"to {plots_dir}"
+                )
+            except Exception as e:
+                print(f"Error generating plots: {e}")
 
     save_json_results(results_dir, metrics, overall_correct_flag, first_error_message)
     return metrics, overall_correct_flag, first_error_message

@@ -2,12 +2,13 @@ import shutil
 import uuid
 import time
 import logging
+import json
 import yaml
 from rich.logging import RichHandler
 from rich.table import Table
 from rich.console import Console
 import rich.box
-from typing import List, Optional, Union, cast
+from typing import List, Optional, Union, cast, Any
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -17,10 +18,12 @@ from shinka.database import ProgramDatabase, DatabaseConfig, Program
 from shinka.llm import (
     LLMClient,
     extract_between,
-    EmbeddingClient,
     BanditBase,
+    FixedSampler,
     AsymmetricUCB,
+    ThompsonSampler,
 )
+from shinka.embed import EmbeddingClient
 from shinka.edit import (
     apply_diff_patch,
     apply_full_patch,
@@ -31,6 +34,7 @@ from shinka.core.sampler import PromptSampler
 from shinka.core.summarizer import MetaSummarizer
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.logo import print_gradient_logo
+from shinka.utils import get_language_extension
 
 FOLDER_PREFIX = "gen"
 
@@ -54,6 +58,9 @@ class EvolutionConfig:
     meta_llm_models: Optional[List[str]] = None
     meta_llm_kwargs: dict = field(default_factory=lambda: {})
     meta_max_recommendations: int = 5
+    sample_single_meta_rec: bool = (
+        True  # If True, sample one recommendation per generation
+    )
     embedding_model: Optional[str] = None
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
@@ -62,6 +69,35 @@ class EvolutionConfig:
     novelty_llm_models: Optional[List[str]] = None
     novelty_llm_kwargs: dict = field(default_factory=lambda: {})
     use_text_feedback: bool = False
+    max_api_costs: Optional[float] = None
+    inspiration_sort_order: str = "ascending"  # "ascending", "chronological", "none"
+
+    # Meta-prompt evolution settings
+    evolve_prompts: bool = False  # Enable prompt co-evolution
+    prompt_patch_types: List[str] = field(
+        default_factory=lambda: ["diff", "full"]
+    )  # Mutation types for prompts
+    prompt_patch_type_probs: List[float] = field(
+        default_factory=lambda: [0.7, 0.3]
+    )  # Probabilities for each patch type
+    prompt_evolution_interval: Optional[int] = (
+        None  # Evolve prompts every N generations
+    )
+    prompt_archive_size: int = 10  # Number of prompts to keep in archive
+    prompt_llm_models: Optional[List[str]] = None  # LLM models for prompt evolution
+    prompt_llm_kwargs: dict = field(
+        default_factory=lambda: {}
+    )  # LLM kwargs for prompt evolution
+    prompt_ucb_exploration_constant: float = (
+        1.0  # UCB exploration constant for prompt selection
+    )
+    prompt_epsilon: float = 0.1  # Epsilon-greedy probability for prompt selection
+    prompt_evo_top_k_programs: int = (
+        3  # Number of top programs to show during prompt evolution
+    )
+    prompt_percentile_recompute_interval: int = (
+        20  # Recompute prompt fitness percentiles every N programs
+    )
 
 
 @dataclass
@@ -94,6 +130,8 @@ class EvolutionRunner:
         job_config: JobConfig,
         db_config: DatabaseConfig,
         verbose: bool = True,
+        init_program_str: Optional[str] = None,
+        evaluate_str: Optional[str] = None,
     ):
         self.evo_config = evo_config
         self.job_config = job_config
@@ -134,22 +172,61 @@ class EvolutionRunner:
             logger.info(f"Results directory: {self.results_dir}")
             logger.info(f"Log file: {log_filename}")
             logger.info("=" * 80)
+        else:
+            # Ensure results directory exists even when not verbose
+            Path(self.results_dir).mkdir(parents=True, exist_ok=True)
+
+        # Handle init_program_str: write to file and update config path
+        if init_program_str is not None:
+            lang_ext = get_language_extension(evo_config.language)
+            init_program_path = Path(self.results_dir) / f"init_program.{lang_ext}"
+            init_program_path.write_text(init_program_str, encoding="utf-8")
+            self.evo_config.init_program_path = str(init_program_path)
+            if self.verbose:
+                logger.info(f"Saved init_program_str to {init_program_path}")
+
+        # Handle evaluate_str: write to file and update config path
+        if evaluate_str is not None:
+            evaluate_path = Path(self.results_dir) / "evaluate.py"
+            evaluate_path.write_text(evaluate_str, encoding="utf-8")
+            self.job_config.eval_program_path = str(evaluate_path)
+            if self.verbose:
+                logger.info(f"Saved evaluate_str to {evaluate_path}")
 
         # Check if we are resuming a run
         resuming_run = False
-        db_path = Path(f"{self.results_dir}/{db_config.db_path}")
+        db_path = Path(f"{self.results_dir}/programs.sqlite")
         if self.evo_config.results_dir is not None and db_path.exists():
             resuming_run = True
+
+        if self.evo_config.num_generations is None:
+            assert self.evo_config.max_api_costs is not None, (
+                "Max API costs must be specified if num_generations is not specified"
+            )
+            logger.info(
+                f"No target generations specified, running indefinitely until cost limit of ${self.evo_config.max_api_costs:.2f} is reached"
+            )
+            self.evo_config.num_generations = int(1e6)
 
         # Initialize LLM selection strategy
         if evo_config.llm_dynamic_selection is None:
             self.llm_selection = None
         elif isinstance(evo_config.llm_dynamic_selection, BanditBase):
             self.llm_selection = evo_config.llm_dynamic_selection
+        elif evo_config.llm_dynamic_selection.lower() == "fixed":
+            self.llm_selection = FixedSampler(
+                arm_names=evo_config.llm_models,
+                **evo_config.llm_dynamic_selection_kwargs,
+            )
         elif (evo_config.llm_dynamic_selection.lower() == "ucb") or (
             evo_config.llm_dynamic_selection.lower() == "ucb1"
         ):
             self.llm_selection = AsymmetricUCB(
+                arm_names=evo_config.llm_models,
+                **evo_config.llm_dynamic_selection_kwargs,
+            )
+        elif evo_config.llm_dynamic_selection.lower() == "thompson":
+            self.llm_selection = ThompsonSampler(
                 arm_names=evo_config.llm_models,
                 **evo_config.llm_dynamic_selection_kwargs,
             )
@@ -158,9 +235,7 @@ class EvolutionRunner:
 
         # Initialize database and scheduler
         db_config.db_path = str(db_path)
-        embedding_model_to_use = (
-            evo_config.embedding_model or "text-embedding-3-small"
-        )
+        embedding_model_to_use = evo_config.embedding_model or "text-embedding-3-small"
         self.db = ProgramDatabase(
             config=db_config, embedding_model=embedding_model_to_use
         )
@@ -172,7 +247,6 @@ class EvolutionRunner:
 
         self.llm = LLMClient(
             model_names=evo_config.llm_models,
-            model_selection=self.llm_selection,
             **evo_config.llm_kwargs,
             verbose=verbose,
         )
@@ -209,6 +283,7 @@ class EvolutionRunner:
             patch_types=evo_config.patch_types,
             patch_type_probs=evo_config.patch_type_probs,
             use_text_feedback=evo_config.use_text_feedback,
+            inspiration_sort_order=evo_config.inspiration_sort_order,
         )
 
         # Initialize MetaSummarizer for meta-recommendations
@@ -229,27 +304,19 @@ class EvolutionRunner:
 
         # Initialize rich console for formatted output
         self.console = Console()
-
-        if self.evo_config.language == "cuda":
-            self.lang_ext = "cu"
-        elif self.evo_config.language == "cpp":
-            self.lang_ext = "cpp"
-        elif self.evo_config.language == "python":
-            self.lang_ext = "py"
-        elif self.evo_config.language == "rust":
-            self.lang_ext = "rs"
-        elif self.evo_config.language == "swift":
-            self.lang_ext = "swift"
-        elif self.evo_config.language in ["json", "json5"]:
-            self.lang_ext = "json"
-        else:
-            msg = f"Language {self.evo_config.language} not supported"
-            raise ValueError(msg)
-
+        self.lang_ext = get_language_extension(self.evo_config.language)
         # Queue for managing parallel jobs
         self.running_jobs: List[RunningJob] = []
         self.best_program_id: Optional[str] = None
         self.next_generation_to_submit = 0
+        self.cost_limit_reached = False  # Track if we've hit the cost limit
+        self.start_time: Optional[float] = None  # Track evolution start time
+
+        # In-flight cost estimation for accurate budget enforcement
+        self.completed_proposal_costs: List[
+            float
+        ] = []  # Track costs of completed proposals
+        self.avg_proposal_cost = 0.0  # Running average cost per proposal
 
         if resuming_run:
             self.completed_generations = self.db.last_iteration + 1
@@ -271,6 +338,40 @@ class EvolutionRunner:
 
         # Save experiment configuration to a YAML file
         self._save_experiment_config(evo_config, job_config, db_config)
+
+        # Try to load bandit state when resuming
+        if resuming_run and self.llm_selection is not None:
+            self._load_bandit_state()
+
+    def _save_bandit_state(self) -> None:
+        """Save the LLM selection bandit state to disk."""
+        if self.llm_selection is None:
+            return
+        try:
+            bandit_path = Path(self.results_dir) / "bandit_state.pkl"
+            self.llm_selection.save_state(bandit_path)
+            logger.debug(f"Saved bandit state to {bandit_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save bandit state: {e}")
+
+    def _load_bandit_state(self) -> None:
+        """Load the LLM selection bandit state from disk."""
+        if self.llm_selection is None:
+            return
+        try:
+            bandit_path = Path(self.results_dir) / "bandit_state.pkl"
+            if bandit_path.exists():
+                self.llm_selection.load_state(bandit_path)
+                logger.info(f"Loaded bandit state from {bandit_path}")
+                if hasattr(self.llm_selection, "print_summary"):
+                    self.llm_selection.print_summary()
+            else:
+                logger.info(
+                    f"No bandit state file found at {bandit_path}, "
+                    "starting with fresh bandit state"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to load bandit state: {e}")
 
     def _save_experiment_config(
         self,
@@ -295,8 +396,59 @@ class EvolutionRunner:
 
         logger.info(f"Experiment configuration saved to {config_path}")
 
+    def _get_total_api_costs(self) -> float:
+        """Calculate total API costs from all programs in the database."""
+        total_costs = 0.0
+        all_programs = self.db.get_all_programs()
+        for program in all_programs:
+            if program.metadata:
+                # Sum up all cost-related fields
+                total_costs += program.metadata.get("api_costs", 0.0)
+                total_costs += program.metadata.get("embed_cost", 0.0)
+                total_costs += program.metadata.get("novelty_cost", 0.0)
+                total_costs += program.metadata.get("meta_cost", 0.0)
+        return total_costs
+
+    def _update_avg_proposal_cost(self, proposal_cost: float) -> None:
+        """Update the running average cost per proposal.
+
+        Called when a proposal completes to track the average cost,
+        which is used to estimate in-flight costs for budget enforcement.
+        """
+        self.completed_proposal_costs.append(proposal_cost)
+        self.avg_proposal_cost = sum(self.completed_proposal_costs) / len(
+            self.completed_proposal_costs
+        )
+
+    def _get_committed_cost(self) -> float:
+        """Calculate the committed cost including estimated in-flight jobs.
+
+        This provides a more accurate cost estimate for budget enforcement by
+        accounting for jobs that are currently running but haven't reported
+        their costs yet.
+
+        Returns:
+            Total committed cost = current DB cost + (running jobs * avg cost)
+        """
+        total_db_cost = self._get_total_api_costs()
+        num_running_jobs = len(self.running_jobs)
+
+        if num_running_jobs == 0:
+            return total_db_cost
+
+        # Use average cost if we have historical data, otherwise use conservative estimate
+        if self.avg_proposal_cost > 0:
+            estimated_in_flight = num_running_jobs * self.avg_proposal_cost
+        else:
+            # No historical data yet - don't add estimates to avoid blocking early jobs
+            estimated_in_flight = 0.0
+
+        committed_cost = total_db_cost + estimated_in_flight
+        return committed_cost
+
     def run(self):
         """Run evolution with parallel job queue."""
+        self.start_time = time.time()
         max_jobs = self.evo_config.max_parallel_jobs
         target_gens = self.evo_config.num_generations
         logger.info(
@@ -304,17 +456,61 @@ class EvolutionRunner:
             f"target: {target_gens} generations"
         )
 
+        # Log max_api_costs if set
+        if self.evo_config.max_api_costs is not None:
+            logger.info(
+                f"Evolution will stop when total API costs exceed "
+                f"${self.evo_config.max_api_costs:.2f}"
+            )
+
         # First, run generation 0 sequentially to populate the database
         if self.completed_generations == 0 and target_gens > 0:
             logger.info("Running generation 0 sequentially to initialize database...")
             self._run_generation_0()
             self.completed_generations = 1
             self.next_generation_to_submit = 1
-            logger.info(f"Completed generation 0, total: 1/{target_gens}")
+
+            # Format API cost info
+            total_costs = self._get_total_api_costs()
+            if self.evo_config.max_api_costs is not None:
+                cost_pct = (total_costs / self.evo_config.max_api_costs) * 100
+                cost_info = f" (cost: ${total_costs:.4f}, {cost_pct:.1f}%)"
+            else:
+                cost_info = f" (cost: ${total_costs:.4f})"
+
+            logger.info(f"Completed generation 0, total: 1/{target_gens}{cost_info}")
+
+            # Check if API cost limit exceeded after generation 0
+            if self.evo_config.max_api_costs is not None:
+                total_costs = self._get_total_api_costs()
+                if total_costs >= self.evo_config.max_api_costs:
+                    logger.info(
+                        f"API cost limit reached after generation 0: "
+                        f"${total_costs:.4f} >= "
+                        f"${self.evo_config.max_api_costs:.2f}. "
+                        "Stopping evolution..."
+                    )
+                    # Skip to final summary
+                    best_program = self.db.get_best_program()
+                    self.meta_summarizer.perform_final_summary(
+                        str(self.results_dir), best_program
+                    )
+                    self._save_meta_memory()
+                    self._save_bandit_state()
+                    self._print_final_summary()
+                    logger.info("=" * 80)
+                    end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    logger.info(f"Evolution run ended at {end_time}")
+                    logger.info("=" * 80)
+                    return
 
         # Now start parallel execution for remaining generations
         if self.completed_generations < target_gens:
             logger.info("Starting parallel execution for remaining generations...")
+
+            # Track time waiting for jobs when cost limit reached
+            cost_limit_wait_start = None
+            max_wait_time = 1800  # 30 min max wait for jobs
 
             # Main loop: monitor jobs and submit new ones
             while (
@@ -331,39 +527,112 @@ class EvolutionRunner:
                     # Update completed generations count
                     self._update_completed_generations()
 
+                    # Periodically save bandit state (every 5 generations)
+                    if self.completed_generations % 5 == 0:
+                        self._save_bandit_state()
+
                     if self.verbose:
+                        # Format API cost info
+                        total_costs = self._get_total_api_costs()
+                        if self.evo_config.max_api_costs is not None:
+                            cost_pct = (
+                                total_costs / self.evo_config.max_api_costs
+                            ) * 100
+                            cost_info = f" (cost: ${total_costs:.4f}, {cost_pct:.1f}%)"
+                        else:
+                            cost_info = f" (cost: ${total_costs:.4f})"
+
                         logger.info(
                             f"Processed {len(completed_jobs)} jobs. "
                             f"Total completed generations: "
                             f"{self.completed_generations}/{target_gens}"
+                            f"{cost_info}"
                         )
+
+                # Check if we've exceeded the API cost limit using committed cost
+                # Committed cost = actual cost + estimated cost of in-flight jobs
+                if self.evo_config.max_api_costs is not None:
+                    committed_cost = self._get_committed_cost()
+                    if committed_cost >= self.evo_config.max_api_costs:
+                        # Only log once when we first detect the limit
+                        if not self.cost_limit_reached:
+                            self.cost_limit_reached = True
+                            cost_limit_wait_start = time.time()
+                            total_db_cost = self._get_total_api_costs()
+                            in_flight_cost = committed_cost - total_db_cost
+                            logger.info(
+                                f"API cost budget reached: "
+                                f"actual=${total_db_cost:.4f} + "
+                                f"in-flight=${in_flight_cost:.4f} = "
+                                f"${committed_cost:.4f} >= "
+                                f"${self.evo_config.max_api_costs:.2f}. "
+                                f"(avg proposal cost: ${self.avg_proposal_cost:.4f}) "
+                                "Stopping evolution..."
+                            )
+                            if len(self.running_jobs) > 0:
+                                logger.info(
+                                    f"Waiting for {len(self.running_jobs)} "
+                                    "running jobs to complete..."
+                                )
+
+                        # Wait for remaining running jobs to complete
+                        if len(self.running_jobs) > 0:
+                            # Check if we've been waiting too long
+                            if cost_limit_wait_start is not None:
+                                wait_time = time.time() - cost_limit_wait_start
+                                if wait_time > max_wait_time:
+                                    logger.warning(
+                                        f"Waited {wait_time:.0f}s for jobs to "
+                                        f"complete (max: {max_wait_time}s). "
+                                        f"Breaking out of loop."
+                                    )
+                                    break
+                            # Don't submit new jobs, process remaining
+                            time.sleep(2)
+                            continue
+                        else:
+                            break
 
                 # Check if we've completed all generations
                 if self.completed_generations >= target_gens:
                     logger.info("All generations completed, exiting...")
                     break
 
-                # Submit new jobs to fill the queue (only if we have capacity)
+                # Submit new jobs to fill queue if capacity available
                 if (
                     len(self.running_jobs) < max_jobs
                     and self.next_generation_to_submit < target_gens
+                    and not self.cost_limit_reached  # Don't submit if cost limit reached
                 ):
-                    self._submit_new_job()
+                    # Check committed cost limit before submitting new job
+                    should_submit = True
+                    if self.evo_config.max_api_costs is not None:
+                        committed_cost = self._get_committed_cost()
+                        if committed_cost >= self.evo_config.max_api_costs:
+                            should_submit = False
+                            self.cost_limit_reached = True
+
+                    if should_submit:
+                        self._submit_new_job()
 
                 # Wait a bit before checking again
                 time.sleep(2)
 
             # All jobs are now handled by the main loop above
 
-        # Perform final meta summary for any remaining unprocessed programs
+        # Perform final meta summary for remaining unprocessed programs
         best_program = self.db.get_best_program()
         self.meta_summarizer.perform_final_summary(str(self.results_dir), best_program)
 
         # Save final meta memory state
         self._save_meta_memory()
 
-        self.db.print_summary()
-        logger.info(f"Evolution completed! {self.completed_generations} generations")
+        # Save final bandit state
+        self._save_bandit_state()
+
+        # Print final summary
+        self._print_final_summary()
+
         logger.info("=" * 80)
         end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"Evolution run ended at {end_time}")
@@ -371,7 +640,13 @@ class EvolutionRunner:
 
     def generate_initial_program(self):
         """Generate initial program with LLM, with retries."""
-        llm_kwargs = self.llm.get_kwargs()
+        # Select LLM once per program generation (before all attempts)
+        model_sample_probs = None
+        model_posterior = None
+        if self.llm_selection is not None:
+            model_sample_probs, model_posterior = self.llm_selection.select_llm()
+
+        llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
 
         sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
         msg_history = []
@@ -383,14 +658,31 @@ class EvolutionRunner:
                 system_msg=sys_msg,
                 llm_kwargs=llm_kwargs,
                 msg_history=msg_history,
+                model_sample_probs=model_sample_probs,
+                model_posterior=model_posterior,
             )
             if response is None or response.content is None:
+                error_msg = "LLM response content was None."
                 if self.verbose:
                     logger.info(
                         f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
                         f"{self.evo_config.max_patch_attempts} "
-                        "FAILURE. Error: LLM response content was None."
+                        f"FAILURE. Error: {error_msg}"
                     )
+                # Save failed attempt
+                self._save_patch_attempt(
+                    generation=0,
+                    novelty_attempt=1,
+                    resample_attempt=1,
+                    patch_attempt=attempt + 1,
+                    response=response,
+                    error_msg=error_msg,
+                    patch_text=None,
+                    num_applied=0,
+                    patch_name=None,
+                    patch_description=None,
+                    success=False,
+                )
                 if attempt < self.evo_config.max_patch_attempts - 1:
                     user_msg = (
                         "The previous response was empty. Please try again "
@@ -434,14 +726,66 @@ class EvolutionRunner:
                         f"{self.evo_config.max_patch_attempts} "
                         "SUCCESS."
                     )
-                return initial_code, patch_name, patch_description, total_costs
+
+                # Save successful attempt
+                self._save_patch_attempt(
+                    generation=0,
+                    novelty_attempt=1,
+                    resample_attempt=1,
+                    patch_attempt=attempt + 1,
+                    response=response,
+                    error_msg=None,
+                    patch_text=initial_code,
+                    num_applied=1,
+                    patch_name=patch_name,
+                    patch_description=patch_description,
+                    success=True,
+                )
+
+                # Include LLM metadata in return (structured like meta_edit_data)
+                llm_metadata = {
+                    "patch_type": "initial",
+                    "api_costs": total_costs,
+                    "num_applied": 1,  # Initial program counts as 1 application
+                    "patch_name": patch_name,
+                    "patch_description": patch_description,
+                    "error_attempt": None,  # No error on success
+                    "novelty_attempt": 1,
+                    "resample_attempt": 1,
+                    "patch_attempt": attempt + 1,
+                    **llm_kwargs,
+                    "llm_result": response.to_dict() if response else None,
+                    "diff_summary": {},  # No diff for initial program
+                }
+                return (
+                    initial_code,
+                    patch_name,
+                    patch_description,
+                    total_costs,
+                    llm_metadata,
+                )
             else:  # code extraction failed
+                error_msg = "Could not extract code from response."
                 if self.verbose:
                     logger.info(
                         f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
                         f"{self.evo_config.max_patch_attempts} "
-                        "FAILURE. Error: Could not extract code from response."
+                        f"FAILURE. Error: {error_msg}"
                     )
+                # Save failed attempt
+                self._save_patch_attempt(
+                    generation=0,
+                    novelty_attempt=1,
+                    resample_attempt=1,
+                    patch_attempt=attempt + 1,
+                    response=response,
+                    error_msg=error_msg,
+                    patch_text=None,
+                    num_applied=0,
+                    patch_name=None,
+                    patch_description=None,
+                    success=False,
+                )
                 if attempt < self.evo_config.max_patch_attempts - 1:
                     user_msg = (
                         "Could not extract code from your last response. "
@@ -469,8 +813,12 @@ class EvolutionRunner:
         patch_name = "initial_program"
         patch_description = "Initial program from file."
         patch_type = "init"
+        llm_metadata = {}  # Store LLM response data when generated by LLM
 
-        if self.evo_config.init_program_path:
+        if (
+            self.evo_config.init_program_path
+            and Path(self.evo_config.init_program_path).exists()
+        ):
             if self.verbose:
                 logger.info(
                     f"Copying initial program from {self.evo_config.init_program_path}"
@@ -482,7 +830,7 @@ class EvolutionRunner:
                     "`init_program_path` not provided, "
                     "generating initial program with LLM..."
                 )
-            initial_code, patch_name, patch_description, api_costs = (
+            initial_code, patch_name, patch_description, api_costs, llm_metadata = (
                 self.generate_initial_program()
             )
             with open(exec_fname, "w", encoding="utf-8") as f:
@@ -518,6 +866,30 @@ class EvolutionRunner:
         private_metrics = metrics_val.get("private", {})
         text_feedback = metrics_val.get("text_feedback", "")
 
+        # Build base metadata
+        base_metadata = {
+            "compute_time": rtime,
+            "embed_cost": e_cost,
+            "novelty_cost": 0.0,  # No novelty cost for generation 0
+            "stdout_log": stdout_log,
+            "stderr_log": stderr_log,
+        }
+
+        # For file-based initial programs, add default metadata
+        if not llm_metadata:
+            base_metadata.update(
+                {
+                    "api_costs": api_costs,
+                    "patch_type": patch_type,
+                    "patch_name": patch_name,
+                    "patch_description": patch_description,
+                }
+            )
+        else:
+            # LLM-generated: llm_metadata already contains structured data
+            # (api_costs, patch_type, patch_name, patch_description, etc.)
+            base_metadata.update(llm_metadata)
+
         # Add the program to the database
         db_program = Program(
             id=str(uuid.uuid4()),
@@ -534,17 +906,7 @@ class EvolutionRunner:
             public_metrics=public_metrics,
             private_metrics=private_metrics,
             text_feedback=text_feedback,
-            metadata={
-                "compute_time": rtime,
-                "api_costs": api_costs,
-                "embed_cost": e_cost,
-                "novelty_cost": 0.0,  # No novelty cost for generation 0
-                "patch_type": patch_type,
-                "patch_name": patch_name,
-                "patch_description": patch_description,
-                "stdout_log": stdout_log,
-                "stderr_log": stderr_log,
-            },
+            metadata=base_metadata,
         )
 
         self.db.add(db_program, verbose=True)
@@ -648,15 +1010,24 @@ class EvolutionRunner:
             embed_cost = 0
             novelty_cost = 0.0
             novelty_checks_performed = 0
+
+            # Select LLM once per program generation (before all loops)
+            model_sample_probs = None
+            model_posterior = None
+            if self.llm_selection is not None:
+                model_sample_probs, model_posterior = self.llm_selection.select_llm()
+
             # Loop over novelty attempts
             for nov_attempt in range(self.evo_config.max_novelty_attempts):
                 # Loop over patch resamples - including parents
                 for resample in range(self.evo_config.max_patch_resamples):
+                    # Use sample_with_fix_mode to detect if we need fix mode
                     (
                         parent_program,
                         archive_programs,
                         top_k_programs,
-                    ) = self.db.sample(
+                        needs_fix,
+                    ) = self.db.sample_with_fix_mode(
                         target_generation=current_gen,
                         novelty_attempt=nov_attempt + 1,
                         max_novelty_attempts=self.evo_config.max_novelty_attempts,
@@ -666,15 +1037,42 @@ class EvolutionRunner:
                     archive_insp_ids = [p.id for p in archive_programs]
                     top_k_insp_ids = [p.id for p in top_k_programs]
                     parent_id = parent_program.id
-                    # Run patch (until success with max attempts)
-                    code_diff, meta_patch_data, num_applied_attempt = self.run_patch(
-                        parent_program,
-                        archive_programs,
-                        top_k_programs,
-                        current_gen,
-                        novelty_attempt=nov_attempt + 1,
-                        resample_attempt=resample + 1,
-                    )
+
+                    # Choose between fix mode and normal patch mode
+                    if needs_fix:
+                        # FIX MODE: No correct programs exist, try to fix
+                        # archive_programs contains ancestors in fix mode
+                        if self.verbose:
+                            logger.info(
+                                f"FIX MODE: Attempting to fix incorrect program "
+                                f"{parent_program.id} (Gen: {parent_program.generation})"
+                            )
+                        code_diff, meta_patch_data, num_applied_attempt = (
+                            self.run_fix_patch(
+                                parent_program,
+                                archive_programs,  # ancestors in fix mode
+                                current_gen,
+                                novelty_attempt=nov_attempt + 1,
+                                resample_attempt=resample + 1,
+                                model_sample_probs=model_sample_probs,
+                                model_posterior=model_posterior,
+                            )
+                        )
+                    else:
+                        # NORMAL MODE: Run regular patch
+                        code_diff, meta_patch_data, num_applied_attempt = (
+                            self.run_patch(
+                                parent_program,
+                                archive_programs,
+                                top_k_programs,
+                                current_gen,
+                                novelty_attempt=nov_attempt + 1,
+                                resample_attempt=resample + 1,
+                                model_sample_probs=model_sample_probs,
+                                model_posterior=model_posterior,
+                            )
+                        )
+
                     api_costs += meta_patch_data["api_costs"]
                     if (
                         meta_patch_data["error_attempt"] is None
@@ -758,9 +1156,18 @@ class EvolutionRunner:
         self.running_jobs.append(running_job)
 
         if self.verbose:
+            # Format API cost info
+            total_costs = self._get_total_api_costs()
+            if self.evo_config.max_api_costs is not None:
+                cost_pct = (total_costs / self.evo_config.max_api_costs) * 100
+                cost_info = f" (cost: ${total_costs:.4f}, {cost_pct:.1f}%)"
+            else:
+                cost_info = f" (cost: ${total_costs:.4f})"
+
             logger.info(
                 f"Submitted job for generation {current_gen}, "
                 f"queue size: {len(self.running_jobs)}"
+                f"{cost_info}"
             )
 
     def _check_completed_jobs(self) -> List[RunningJob]:
@@ -848,6 +1255,11 @@ class EvolutionRunner:
             },
         )
         self.db.add(db_program, verbose=True)
+
+        # Update average proposal cost for in-flight estimation
+        api_cost = (job.meta_patch_data or {}).get("api_costs", 0.0)
+        proposal_total_cost = api_cost + e_cost + n_cost
+        self._update_avg_proposal_cost(proposal_total_cost)
 
         # Add the evaluated program to meta memory tracking
         self.meta_summarizer.add_evaluated_program(db_program)
@@ -957,6 +1369,271 @@ class EvolutionRunner:
                 f"Copied to {best_dir}"
             )
 
+    def _save_patch_attempt(
+        self,
+        generation: int,
+        novelty_attempt: int,
+        resample_attempt: int,
+        patch_attempt: int,
+        response: Any,
+        error_msg: Optional[str],
+        patch_text: Optional[str],
+        num_applied: int,
+        patch_name: Optional[str],
+        patch_description: Optional[str],
+        success: bool,
+    ):
+        """Save patch attempt data to disk for debugging and analysis."""
+        # Create attempt directory structure
+        attempt_dir = (
+            Path(self.results_dir)
+            / f"{FOLDER_PREFIX}_{generation}"
+            / "attempts"
+            / f"novelty_{novelty_attempt}"
+            / f"resample_{resample_attempt}"
+            / f"patch_{patch_attempt}"
+        )
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save LLM response
+        if response and response.content:
+            response_file = attempt_dir / "llm_response.txt"
+            response_file.write_text(response.content, encoding="utf-8")
+
+        # Save patch text if available
+        if patch_text:
+            patch_file = attempt_dir / "patch.txt"
+            patch_file.write_text(patch_text, encoding="utf-8")
+
+        # Save metadata as JSON
+        metadata = {
+            "generation": generation,
+            "novelty_attempt": novelty_attempt,
+            "resample_attempt": resample_attempt,
+            "patch_attempt": patch_attempt,
+            "success": success,
+            "num_applied": num_applied,
+            "patch_name": patch_name,
+            "patch_description": patch_description,
+            "error_msg": error_msg,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        if response:
+            metadata["llm_cost"] = response.cost
+            metadata["llm_model"] = getattr(response, "model", None)
+
+        metadata_file = attempt_dir / "metadata.json"
+        metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    def run_fix_patch(
+        self,
+        incorrect_program: Program,
+        ancestor_inspirations: List[Program],
+        generation: int,
+        novelty_attempt: int = 1,
+        resample_attempt: int = 1,
+        model_sample_probs: Optional[List[float]] = None,
+        model_posterior: Optional[List[float]] = None,
+    ) -> tuple[Optional[str], dict, int]:
+        """
+        Run fix patch generation for an incorrect program.
+
+        This is used when no correct programs exist in the database.
+
+        Args:
+            incorrect_program: The incorrect program to fix
+            ancestor_inspirations: Ancestors of the program (from sample_with_fix_mode)
+            generation: Current generation number
+            novelty_attempt: Current novelty attempt number
+            resample_attempt: Current resample attempt number
+            model_sample_probs: Model sampling probabilities
+            model_posterior: Model posterior probabilities
+        """
+        max_patch_attempts = self.evo_config.max_patch_attempts
+        if self.verbose:
+            logger.info(
+                f"FIX Cycle {generation} -> {generation + 1}, "
+                f"Max Patch Attempts: {max_patch_attempts}"
+            )
+
+        # Use fix prompts with ancestor inspirations
+        patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
+            incorrect_program=incorrect_program,
+            ancestor_inspirations=ancestor_inspirations,
+        )
+
+        # Fix patches always use full rewrite (since we're fixing, not diffing)
+        apply_patch = apply_full_patch
+
+        total_costs = 0
+        msg_history = []
+
+        # Use provided model_sample_probs (selected once before all loops)
+        llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
+        if self.llm_selection is not None:
+            model_name = llm_kwargs["model_name"]
+            self.llm_selection.update_submitted(model_name)
+
+        code_diff = None
+        num_applied_attempt = 0
+        error_attempt = "Max attempts reached without successful fix."
+        patch_name = None
+        patch_description = None
+        output_path_attempt = None
+        patch_txt_attempt = None
+        patch_path = None
+        diff_summary = {}
+
+        for patch_attempt in range(max_patch_attempts):
+            response = self.llm.query(
+                msg=patch_msg,
+                system_msg=patch_sys,
+                msg_history=msg_history,
+                llm_kwargs=llm_kwargs,
+                model_sample_probs=model_sample_probs,
+                model_posterior=model_posterior,
+            )
+
+            if response is None or response.content is None:
+                if self.verbose:
+                    logger.info(
+                        f"  FIX ATTEMPT {patch_attempt + 1}/{max_patch_attempts} "
+                        f"FAILURE. Error: LLM response content was None."
+                    )
+                error_attempt = "LLM response content was None."
+                num_applied_attempt = 0
+                patch_txt_attempt = None
+
+                self._save_patch_attempt(
+                    generation=generation,
+                    novelty_attempt=novelty_attempt,
+                    resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1,
+                    response=response,
+                    error_msg=error_attempt,
+                    patch_text=None,
+                    num_applied=0,
+                    patch_name=None,
+                    patch_description=None,
+                    success=False,
+                )
+
+                if patch_attempt < max_patch_attempts - 1:
+                    patch_msg = (
+                        "The previous fix attempt was not successful because "
+                        "the LLM response was empty. Try again."
+                    )
+                    if response:
+                        msg_history = response.new_msg_history
+                    continue
+                else:
+                    break
+
+            total_costs += response.cost
+            patch_name = extract_between(response.content, "<NAME>", "</NAME>", False)
+            patch_description = extract_between(
+                response.content, "<DESCRIPTION>", "</DESCRIPTION>", False
+            )
+
+            # Apply the fix (always full rewrite)
+            (
+                _,
+                num_applied_attempt,
+                output_path_attempt,
+                error_attempt,
+                patch_txt_attempt,
+                patch_path,
+            ) = apply_patch(
+                original_str=incorrect_program.code,
+                patch_str=response.content,
+                patch_dir=f"{self.results_dir}/{FOLDER_PREFIX}_{generation}",
+                language=self.evo_config.language,
+                verbose=False,
+            )
+
+            if error_attempt is None and num_applied_attempt > 0:
+                if patch_path:
+                    diff_summary = summarize_diff(str(patch_path))
+                if self.verbose:
+                    logger.info(
+                        f"  FIX ATTEMPT {patch_attempt + 1}/{max_patch_attempts} "
+                        f"SUCCESS. Output: {output_path_attempt}, "
+                        f"Patches Applied: {num_applied_attempt}."
+                    )
+
+                self._save_patch_attempt(
+                    generation=generation,
+                    novelty_attempt=novelty_attempt,
+                    resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1,
+                    response=response,
+                    error_msg=None,
+                    patch_text=patch_txt_attempt,
+                    num_applied=num_applied_attempt,
+                    patch_name=patch_name,
+                    patch_description=patch_description,
+                    success=True,
+                )
+                break
+            else:
+                if self.verbose:
+                    logger.info(
+                        f"  FIX ATTEMPT {patch_attempt + 1}/{max_patch_attempts} "
+                        f"FAILURE. Error: {error_attempt}."
+                    )
+
+                self._save_patch_attempt(
+                    generation=generation,
+                    novelty_attempt=novelty_attempt,
+                    resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1,
+                    response=response,
+                    error_msg=error_attempt,
+                    patch_text=patch_txt_attempt,
+                    num_applied=num_applied_attempt,
+                    patch_name=patch_name,
+                    patch_description=patch_description,
+                    success=False,
+                )
+
+                if patch_attempt < max_patch_attempts - 1:
+                    patch_msg = (
+                        f"The previous fix attempt was not successful. "
+                        f"Error: {error_attempt}. Try again with a different "
+                        f"approach to fix the program."
+                    )
+                    msg_history = response.new_msg_history
+
+        if self.llm_selection is not None:
+            self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+
+        # Construct metadata (same format as run_patch)
+        meta_edit_data = {
+            "patch_type": patch_type,
+            "api_costs": total_costs,
+            "num_applied": num_applied_attempt,
+            "patch_name": patch_name,
+            "patch_description": patch_description,
+            "error_attempt": error_attempt,
+            "novelty_attempt": novelty_attempt,
+            "resample_attempt": resample_attempt,
+            "patch_attempt": patch_attempt + 1,
+            **llm_kwargs,  # Spread llm_kwargs like run_patch
+            "llm_result": response.to_dict()
+            if response
+            else None,  # Use to_dict() like run_patch
+            "diff_summary": diff_summary,
+        }
+
+        if self.verbose and num_applied_attempt > 0:
+            self._print_metadata_table(meta_edit_data, generation)
+
+        # Use the patch text as the code diff (same as run_patch)
+        code_diff = patch_txt_attempt
+
+        return code_diff, meta_edit_data, num_applied_attempt
+
     def run_patch(
         self,
         parent_program: Program,
@@ -965,6 +1642,8 @@ class EvolutionRunner:
         generation: int,
         novelty_attempt: int = 1,
         resample_attempt: int = 1,
+        model_sample_probs: Optional[List[float]] = None,
+        model_posterior: Optional[List[float]] = None,
     ) -> tuple[Optional[str], dict, int]:
         """Run patch generation for a specific generation."""
         max_patch_attempts = self.evo_config.max_patch_attempts
@@ -974,7 +1653,10 @@ class EvolutionRunner:
                 f"Max Patch Attempts: {max_patch_attempts}"
             )
         # Get current meta recommendations
-        meta_recs, _, _ = self.meta_summarizer.get_current()
+        if self.evo_config.sample_single_meta_rec:
+            meta_recs = self.meta_summarizer.get_sampled_recommendation()
+        else:
+            meta_recs, _, _ = self.meta_summarizer.get_current()
         # Construct edit / code change message
         patch_sys, patch_msg, patch_type = self.prompt_sampler.sample(
             parent=parent_program,
@@ -995,7 +1677,9 @@ class EvolutionRunner:
 
         total_costs = 0
         msg_history = []
-        llm_kwargs = self.llm.get_kwargs()
+
+        # Use provided model_sample_probs (selected once before all loops)
+        llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
         if self.llm_selection is not None:
             model_name = llm_kwargs["model_name"]
             self.llm_selection.update_submitted(model_name)
@@ -1017,6 +1701,8 @@ class EvolutionRunner:
                 system_msg=patch_sys,
                 msg_history=msg_history,
                 llm_kwargs=llm_kwargs,
+                model_sample_probs=model_sample_probs,
+                model_posterior=model_posterior,
             )
             # print(response.content)
             if response is None or response.content is None:
@@ -1029,6 +1715,22 @@ class EvolutionRunner:
                 error_attempt = "LLM response content was None."
                 num_applied_attempt = 0
                 patch_txt_attempt = None
+
+                # Save failed attempt data
+                self._save_patch_attempt(
+                    generation=generation,
+                    novelty_attempt=novelty_attempt,
+                    resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1,
+                    response=response,
+                    error_msg=error_attempt,
+                    patch_text=None,
+                    num_applied=0,
+                    patch_name=None,
+                    patch_description=None,
+                    success=False,
+                )
+
                 if patch_attempt < max_patch_attempts - 1:
                     patch_msg = (
                         "The previous attempt to get an edit was not "
@@ -1083,12 +1785,43 @@ class EvolutionRunner:
                         f"Patches Applied: {num_applied_attempt}."
                     )
 
+                # Save successful attempt data
+                self._save_patch_attempt(
+                    generation=generation,
+                    novelty_attempt=novelty_attempt,
+                    resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1,
+                    response=response,
+                    error_msg=None,
+                    patch_text=patch_txt_attempt,
+                    num_applied=num_applied_attempt,
+                    patch_name=patch_name,
+                    patch_description=patch_description,
+                    success=True,
+                )
+
                 code_diff = patch_txt_attempt
                 break  # Break from patch attempts
             else:
                 error_str = (
                     str(error_attempt) if error_attempt else "No changes applied."
                 )
+
+                # Save failed attempt data
+                self._save_patch_attempt(
+                    generation=generation,
+                    novelty_attempt=novelty_attempt,
+                    resample_attempt=resample_attempt,
+                    patch_attempt=patch_attempt + 1,
+                    response=response,
+                    error_msg=error_str,
+                    patch_text=patch_txt_attempt,
+                    num_applied=num_applied_attempt,
+                    patch_name=patch_name,
+                    patch_description=patch_description,
+                    success=False,
+                )
+
                 patch_msg = (
                     "The previous edit was not successful."
                     + " This was the error message: \n\n"
@@ -1107,7 +1840,10 @@ class EvolutionRunner:
                     # error_attempt is already set from apply_patch or default
                     pass
 
-        # Only consider the diff summary for the original source file
+        if self.llm_selection is not None:
+            self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+
+        # Only consider the diff summary for the original.py file!!!
         original_filename = f"original.{self.lang_ext}"
         if original_filename in diff_summary:
             diff_summary = diff_summary[original_filename]
@@ -1168,6 +1904,61 @@ class EvolutionRunner:
             code_embedding = []
             e_cost = 0.0
         return code_embedding, e_cost
+
+    def _print_final_summary(self):
+        """Print final evolution summary."""
+        if not self.verbose:
+            return
+
+        end_time = time.time()
+        total_time = end_time - (self.start_time or end_time)
+
+        logger.info("=" * 80)
+        logger.info("EVOLUTION COMPLETED")
+        logger.info("=" * 80)
+        logger.info(f"Total generations: {self.completed_generations}")
+
+        # Count total programs submitted
+        all_programs = self.db.get_all_programs()
+        total_programs = len(all_programs)
+        logger.info(f"Total programs evaluated: {total_programs}")
+
+        # Log total API costs
+        total_costs = self._get_total_api_costs()
+        logger.info(f"Total API cost: ${total_costs:.4f}")
+
+        # Log cost budget usage if max_api_costs was set
+        if self.evo_config.max_api_costs is not None:
+            percentage = (total_costs / self.evo_config.max_api_costs) * 100
+            logger.info(
+                f"API cost budget usage: {percentage:.1f}% "
+                f"(${total_costs:.4f} / "
+                f"${self.evo_config.max_api_costs:.2f})"
+            )
+
+        logger.info(f"Total runtime: {total_time:.2f} seconds")
+
+        if total_programs > 0:
+            avg_time_per_program = total_time / total_programs
+            logger.info(f"Average time per program: {avg_time_per_program:.2f} seconds")
+
+        # Report final operations status
+        logger.info("-" * 40)
+        logger.info("FINAL OPERATIONS STATUS:")
+        if self.embedding:
+            logger.info("Embedding computation: COMPLETED")
+        else:
+            logger.info("Embedding computation: SKIPPED (no embedding client)")
+
+        if self.meta_llm:
+            logger.info("Meta summary generation: COMPLETED")
+        else:
+            logger.info("Meta summary generation: SKIPPED (no meta LLM)")
+
+        # Print database summary
+        if self.db:
+            logger.info("-" * 40)
+            self.db.print_summary()
 
     def _print_metadata_table(self, meta_data: dict, generation: int):
         """Display metadata in a formatted rich table."""
