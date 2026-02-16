@@ -5,8 +5,8 @@ from shinka.launch import LocalJobConfig
 import yaml
 
 
-def main():
-    with open("shinka.yaml", "r") as f:
+def main(config_path):
+    with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
     evo_config = EvolutionConfig(**config["evo_config"])
@@ -23,4 +23,9 @@ def main():
 
 
 if __name__ == "__main__":
-    results_data = main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config_path", type=str, default="shinka_small.yaml")
+    args = parser.parse_args()
+    results_data = main(args.config_path)
