@@ -16,6 +16,11 @@ from .prompts_cross import (
     CROSS_ITER_MSG,
     get_cross_component,
 )
+from .prompts_fix import (
+    FIX_SYS_FORMAT,
+    FIX_ITER_MSG,
+    format_error_output_section,
+)
 from .prompts_init import INIT_SYSTEM_MSG, INIT_USER_MSG
 from .prompts_meta import (
     META_STEP1_SYSTEM_MSG,
@@ -26,6 +31,19 @@ from .prompts_meta import (
     META_STEP3_USER_MSG,
 )
 from .prompts_novelty import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG
+from .prompts_prompt_evo import (
+    PROMPT_EVO_DIFF_SYSTEM,
+    PROMPT_EVO_DIFF_USER,
+    PROMPT_EVO_FULL_SYSTEM,
+    PROMPT_EVO_FULL_USER,
+    PROMPT_EVO_SYSTEM_BASE,
+    construct_diff_evolution_prompt,
+    construct_full_evolution_prompt,
+    construct_prompt_evolution_context,
+    format_top_programs,
+    format_prompt_for_evolution,
+    format_inspiration_prompts,
+)
 
 __all__ = [
     "construct_eval_history_msg",
@@ -41,6 +59,9 @@ __all__ = [
     "CROSS_SYS_FORMAT",
     "CROSS_ITER_MSG",
     "get_cross_component",
+    "FIX_SYS_FORMAT",
+    "FIX_ITER_MSG",
+    "format_error_output_section",
     "INIT_SYSTEM_MSG",
     "INIT_USER_MSG",
     "META_STEP1_SYSTEM_MSG",
@@ -51,4 +72,16 @@ __all__ = [
     "META_STEP3_USER_MSG",
     "NOVELTY_SYSTEM_MSG",
     "NOVELTY_USER_MSG",
+    # Prompt evolution prompts
+    "PROMPT_EVO_DIFF_SYSTEM",
+    "PROMPT_EVO_DIFF_USER",
+    "PROMPT_EVO_FULL_SYSTEM",
+    "PROMPT_EVO_FULL_USER",
+    "PROMPT_EVO_SYSTEM_BASE",
+    "construct_diff_evolution_prompt",
+    "construct_full_evolution_prompt",
+    "construct_prompt_evolution_context",
+    "format_top_programs",
+    "format_prompt_for_evolution",
+    "format_inspiration_prompts",
 ]

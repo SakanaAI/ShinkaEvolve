@@ -43,11 +43,29 @@ class DatabaseDisplay:
             if best_score_val is not None:
                 best_score_str = f"[bold yellow]{best_score_val:.3f}[/bold yellow]"
 
-        # Create a table with headers - include generation in title
+        # Calculate total API costs
+        total_api_cost = 0
+        if self.cursor:
+            query = "SELECT metadata FROM programs"
+            self.cursor.execute(query)
+            for row in self.cursor.fetchall():
+                if row["metadata"]:
+                    metadata = json.loads(row["metadata"] or "{}")
+                    if "api_costs" in metadata:
+                        total_api_cost += float(metadata["api_costs"])
+                    if "embed_cost" in metadata:
+                        total_api_cost += float(metadata["embed_cost"])
+                    if "novelty_cost" in metadata:
+                        total_api_cost += float(metadata["novelty_cost"])
+                    if "meta_cost" in metadata:
+                        total_api_cost += float(metadata["meta_cost"])
+
+        # Create a table with headers - include generation and total cost
         table = RichTable(
             title=(
                 f"[bold green]Program Evaluation Summary - "
-                f"Gen {program.generation}[/bold green]"
+                f"Gen {program.generation} | "
+                f"Total Cost: ${total_api_cost:.2f}[/bold green]"
             ),
             border_style="green",
             box=rich.box.ROUNDED,
@@ -122,18 +140,6 @@ class DatabaseDisplay:
             else:
                 time_display = f"{time_val:.1f}s"
 
-        # Safely extract metadata fields for display
-        metadata = program.metadata or {}
-        patch_name_raw = metadata.get("patch_name", "[dim]N/A[/dim]")
-        if patch_name_raw is None:
-            patch_name_raw = "[dim]N/A[/dim]"
-        patch_name = str(patch_name_raw)[:30]
-
-        patch_type_raw = metadata.get("patch_type", "[dim]N/A[/dim]")
-        if patch_type_raw is None:
-            patch_type_raw = "[dim]N/A[/dim]"
-        patch_type = str(patch_type_raw)
-
         # Add the data row
         island_display = (
             f"I-{program.island_idx}" if program.island_idx is not None else "N/A"
@@ -143,8 +149,8 @@ class DatabaseDisplay:
             island_display,
             status_display,
             score_display,
-            patch_name,
-            patch_type,
+            program.metadata.get("patch_name", "[dim]N/A[/dim]")[:30],
+            program.metadata.get("patch_type", "[dim]N/A[/dim]"),
             f"{program.complexity:.1f}",
             cost_display,
             time_display,
@@ -170,7 +176,7 @@ class DatabaseDisplay:
         num_with_scores = 0
         all_scores = []
         if self.cursor:  # Ensure cursor is not None
-            query = "SELECT metadata, combined_score FROM programs"
+            query = "SELECT metadata, combined_score, correct FROM programs"
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
                 if row["metadata"]:
@@ -189,7 +195,8 @@ class DatabaseDisplay:
                 if row["combined_score"] is not None:
                     score = float(row["combined_score"])
                     avg_score += score
-                    if score > best_score:  # Update if current score is higher
+                    # Only update best_score for correct programs
+                    if row["correct"] and score > best_score:
                         best_score = score
                     num_with_scores += 1
                     all_scores.append(score)
@@ -323,9 +330,6 @@ class DatabaseDisplay:
                 "Total Meta Cost", f"[bold]${total_meta_cost:.2f}[/bold]"
             )
             cost_table.add_row("Total Combined Cost", f"[bold]${total_cost:.2f}[/bold]")
-            if total_programs > 0:
-                avg_cost = total_cost / total_programs
-                cost_table.add_row("Avg $/Program", f"${avg_cost:.2f}")
 
         # Add compute time if available
         if total_compute_time > 0:
@@ -334,13 +338,6 @@ class DatabaseDisplay:
             seconds = int(total_compute_time % 60)
             time_str = f"{hours}h {minutes}m {seconds}s"
             cost_table.add_row("Total Compute", time_str)
-
-        # Add score stats if available
-        if num_with_scores > 0:
-            avg_score_display = f"{avg_score / num_with_scores:.2f}"
-            cost_table.add_row("Avg Score", avg_score_display)
-            cost_table.add_row("Best Score", f"[bold]{best_score:.2f}[/bold]")
-            cost_table.add_row("Median Score", f"{median_score:.2f}")
 
         # Print Summary, Best Program, and Cost tables (side-by-side)
         tables_to_display = [summary_table]
@@ -492,6 +489,8 @@ class DatabaseDisplay:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
+        ancestor_inspirations=None,
+        is_fix_mode=False,
     ):
         """Print a summary of the sampled parent and inspirations."""
         console = RichConsole()
@@ -503,9 +502,27 @@ class DatabaseDisplay:
             # Fallback to parent.generation + 1 (may not be accurate)
             gen_display = parent.generation + 1
 
+        # Calculate total API costs
+        total_api_cost = 0
+        if self.cursor:
+            query = "SELECT metadata FROM programs"
+            self.cursor.execute(query)
+            for row in self.cursor.fetchall():
+                if row["metadata"]:
+                    metadata = json.loads(row["metadata"] or "{}")
+                    if "api_costs" in metadata:
+                        total_api_cost += float(metadata["api_costs"])
+                    if "embed_cost" in metadata:
+                        total_api_cost += float(metadata["embed_cost"])
+                    if "novelty_cost" in metadata:
+                        total_api_cost += float(metadata["novelty_cost"])
+                    if "meta_cost" in metadata:
+                        total_api_cost += float(metadata["meta_cost"])
+
         # Create title with generation and attempt information
         title_parts = [
-            f"[bold red]Parent & Context Sampling Summary - Gen {gen_display}"
+            f"[bold red]Parent & Context Sampling Summary - "
+            f"Gen {gen_display} | Total Cost: ${total_api_cost:.2f}"
         ]
 
         # Add attempt information if provided
@@ -616,8 +633,16 @@ class DatabaseDisplay:
                 time_display,
             ]
 
-        # Add parent row
-        table.add_row(*format_program_row(parent, "[bold]PARENT[/bold]"))
+        # Add parent row (labeled as FIX TARGET in fix mode)
+        parent_label = (
+            "[bold red]FIX TARGET[/bold red]" if is_fix_mode else "[bold]PARENT[/bold]"
+        )
+        table.add_row(*format_program_row(parent, parent_label))
+
+        # Add ancestor inspirations (for fix mode)
+        if ancestor_inspirations:
+            for i, prog in enumerate(ancestor_inspirations):
+                table.add_row(*format_program_row(prog, f"ANCESTOR-{i + 1}"))
 
         # Add archive inspirations
         for i, prog in enumerate(archive_inspirations):

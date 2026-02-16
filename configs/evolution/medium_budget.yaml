@@ -17,7 +17,7 @@ evo_config:
     - "gemini-2.5-flash"
     - "gpt-4.1-mini"
     - "gpt-4.1-nano"
-    - "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
+    - "us.anthropic.claude-sonnet-4-20250514-v1:0"
     - "o4-mini"
   llm_dynamic_selection: ucb
   llm_kwargs:

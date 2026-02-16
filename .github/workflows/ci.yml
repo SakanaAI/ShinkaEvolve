@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    name: Ruff, Mypy, Pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project
+        run: uv sync --dev
+
+      - name: Ruff
+        run: uv run ruff check tests --exclude tests/file.py
+
+      - name: Mypy
+        run: uv run mypy --follow-imports=skip --ignore-missing-imports tests/test_*.py tests/conftest.py
+
+      - name: Pytest + Coverage
+        run: uv run --with pytest-cov pytest -q --cov=shinka --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload Coverage XML
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml

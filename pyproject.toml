@@ -45,14 +45,14 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
-    "google-generativeai",
+    "google-genai",
+    "psutil",
+    "httpx==0.27"
 ]
 
 [tool.setuptools]
+packages = ["shinka"]
 script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
-
-[tool.setuptools.packages.find]
-include = ["shinka", "shinka.*"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
@@ -60,6 +60,9 @@ include = ["shinka", "shinka.*"]
 [dependency-groups]
 dev = [
     "pytest>=6.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
     "black",
     "isort",
     "flake8",

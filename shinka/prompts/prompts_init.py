@@ -2,10 +2,7 @@ INIT_SYSTEM_MSG = """You are an expert programmer.
 Your goal is to write an initial program that solves a given task.
 """
 
-INIT_USER_MSG = """Please write an initial program for the following task. The program should be written in {language}.
-
-The task is as follows:
-{task_description}
+INIT_USER_MSG = """Please write an initial program for the task. The program should be written in {language}.
 
 You MUST repond using a short summary name, description and the full code:
 

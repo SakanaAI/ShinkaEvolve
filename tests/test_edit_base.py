@@ -192,7 +192,6 @@ another_new_line()
     assert num_applied == 1
     assert updated_content == expected
 
-
 def test_apply_full_patch_patch_with_start_marker_only():
     """Patch has only START marker; original has both markers."""
     original_content = """# Header line
@@ -346,13 +345,11 @@ new_code()
 # Footer
 ```"""
 
-    updated_content, num_applied, output_path, error, patch_txt, diff_path = (
-        apply_full_patch(
-            patch_str=patch_content,
-            original_str=original_content,
-            language="python",
-            verbose=False,
-        )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = apply_full_patch(
+        patch_str=patch_content,
+        original_str=original_content,
+        language="python",
+        verbose=False,
     )
 
     assert num_applied == 0
