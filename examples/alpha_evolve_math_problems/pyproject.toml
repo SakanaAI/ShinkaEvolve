@@ -23,5 +23,5 @@ build-backend = "hatchling.build"
 packages = ["."]
 
 
-#### Don't forget to run this line in the end, to install shinka!!!!!
+#### Don't forget to run this line in the end, to install shinka!!!!! (only if using a separate python venv to run specifically this example)
 # uv pip install --no-deps -e ../..
