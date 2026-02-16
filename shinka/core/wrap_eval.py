@@ -6,8 +6,6 @@ import numpy as np
 import pickle
 from typing import Callable, Any, Dict, List, Tuple, Optional
 
-from shinka.utils.utils_lean import generate_proof
-
 DEFAULT_METRICS_ON_ERROR = {
     "combined_score": 0.0,
     "execution_time_mean": 0.0,
@@ -103,7 +101,7 @@ def run_shinka_eval(
 
     try:
         if program_path.endswith(".lean"):
-            experiment_fn = generate_proof
+            experiment_fn = experiment_fn_name
         else:
             module = load_program(program_path)
             if not hasattr(module, experiment_fn_name):
