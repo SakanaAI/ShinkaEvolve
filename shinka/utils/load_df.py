@@ -2,22 +2,42 @@ import pandas as pd
 import json
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 
-def load_programs_to_df(db_path_str: str) -> Optional[pd.DataFrame]:
+def load_programs_to_df(
+    db_path_str: str,
+    default_db_name: str = "programs.sqlite",
+    verbose: bool = True,
+    include_prompts: bool = False,
+) -> Union[
+    Optional[pd.DataFrame], Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]
+]:
     """
     Loads the 'programs' table from an SQLite database into a pandas DataFrame.
 
     Args:
-        db_path_str: The path to the SQLite database file.
+        db_path_str: The path to the SQLite database file or results directory.
+        default_db_name: Default database filename if db_path_str is a directory.
+        verbose: Whether to print summary statistics.
+        include_prompts: If True, also loads the prompt evolution database and
+            returns a tuple of (programs_df, prompts_df).
 
     Returns:
-        A pandas DataFrame containing program data, or None if an error occurs
-        or no data is found. The 'metrics' JSON string is parsed and its
-        key-value pairs are added as columns to the DataFrame.
+        If include_prompts is False:
+            A pandas DataFrame containing program data, or None if an error occurs.
+        If include_prompts is True:
+            A tuple of (programs_df, prompts_df) where each may be None on error.
+        The 'metrics' JSON string is parsed and its key-value pairs are added
+        as columns to the DataFrame.
     """
     db_file = Path(db_path_str)
+
+    if db_path_str.endswith(".sqlite") or db_path_str.endswith(".db"):
+        db_file = Path(db_path_str)
+    else:
+        db_file = Path(f"{db_path_str}/{default_db_name}")
+
     if not db_file.exists():
         print(f"Error: Database file not found at {db_path_str}")
         return None
@@ -104,15 +124,164 @@ def load_programs_to_df(db_path_str: str) -> Optional[pd.DataFrame]:
             }
             flat_data.update(metrics_dict)
             programs_data.append(flat_data)
+        if verbose:
+            print(f"Total program rows: {len(programs_data)}")
+            print(
+                f"Correct program rows: {len([p for p in programs_data if p['correct']])}"
+            )
+        programs_df = pd.DataFrame(programs_data)
 
-        return pd.DataFrame(programs_data)
+        # Calculate total cost and add as a column to the DataFrame for each program individually
+        # Compute total_cost while handling missing columns gracefully
+        cost_cols = ["embed_cost", "novelty_cost", "api_costs", "meta_cost"]
+        present_cols = [col for col in cost_cols if col in programs_df.columns]
+        programs_df["total_cost"] = programs_df[present_cols].sum(axis=1)
+
+        if verbose:
+            print(f"Total cost: ${programs_df['total_cost'].sum():.2f}")
+            print(f"Avg cost per program: ${programs_df['total_cost'].mean():.2f}")
+
+        if include_prompts:
+            # Determine prompts database path
+            if db_path_str.endswith(".sqlite") or db_path_str.endswith(".db"):
+                results_dir = Path(db_path_str).parent
+            else:
+                results_dir = Path(db_path_str)
+            prompts_df = load_prompts_to_df(str(results_dir), verbose=verbose)
+            return programs_df, prompts_df
+
+        return programs_df
 
     except sqlite3.Error as e:
         print(f"SQLite error while loading {db_path_str}: {e}")
-        return None
+        return (None, None) if include_prompts else None
     except json.JSONDecodeError as e:
         db_path = db_path_str
         print(f"JSON decoding error for metrics/metadata in {db_path}: {e}")
+        return (None, None) if include_prompts else None
+    finally:
+        if conn:
+            conn.close()
+
+
+def load_prompts_to_df(
+    db_path_str: str,
+    default_db_name: str = "prompts.sqlite",
+    verbose: bool = True,
+) -> Optional[pd.DataFrame]:
+    """
+    Loads the 'system_prompts' table from the prompt evolution database
+    into a pandas DataFrame.
+
+    Args:
+        db_path_str: Path to the prompts database file or results directory.
+        default_db_name: Default database filename if path is a directory.
+        verbose: Whether to print summary statistics.
+
+    Returns:
+        A pandas DataFrame containing prompt data, or None if an error occurs
+        or no data is found.
+    """
+    if db_path_str.endswith(".sqlite") or db_path_str.endswith(".db"):
+        db_file = Path(db_path_str)
+    else:
+        db_file = Path(f"{db_path_str}/{default_db_name}")
+
+    if not db_file.exists():
+        if verbose:
+            print(f"Prompt database not found at {db_file}")
+        return None
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_file))
+        cursor = conn.cursor()
+
+        # Check if prompt_archive table exists for in_archive status
+        cursor.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='prompt_archive'"
+        )
+        has_archive_table = cursor.fetchone() is not None
+
+        # Fetch prompts with archive status if available
+        if has_archive_table:
+            cursor.execute(
+                """
+                SELECT p.*,
+                    CASE WHEN a.prompt_id IS NOT NULL
+                         THEN 1 ELSE 0 END as in_archive
+                FROM system_prompts p
+                LEFT JOIN prompt_archive a ON p.id = a.prompt_id
+                """
+            )
+        else:
+            cursor.execute("SELECT *, 0 as in_archive FROM system_prompts")
+
+        all_prompt_rows = cursor.fetchall()
+
+        if not all_prompt_rows:
+            if verbose:
+                print(f"No prompts found in the database: {db_file}")
+            return pd.DataFrame()
+
+        # Get column names from cursor.description
+        column_names = [description[0] for description in cursor.description]
+
+        prompts_data = []
+        for row_tuple in all_prompt_rows:
+            p_dict = dict(zip(column_names, row_tuple))
+
+            # Parse JSON fields
+            program_ids_json = p_dict.get("program_ids", "[]")
+            program_ids = json.loads(program_ids_json) if program_ids_json else []
+
+            metadata_json = p_dict.get("metadata", "{}")
+            metadata_dict = json.loads(metadata_json) if metadata_json else {}
+
+            # Extract and flatten "llm" dict from metadata with prefix
+            llm_dict = metadata_dict.pop("llm", {}) or {}
+            llm_flat = {f"llm_{k}": v for k, v in llm_dict.items()}
+
+            # Parse timestamp
+            try:
+                timestamp = pd.to_datetime(p_dict.get("timestamp"), unit="s")
+            except Exception:
+                timestamp = None
+
+            flat_data = {
+                "id": p_dict.get("id"),
+                "prompt_text": p_dict.get("prompt_text"),
+                "name": p_dict.get("name"),
+                "description": p_dict.get("description"),
+                "parent_id": p_dict.get("parent_id"),
+                "generation": p_dict.get("generation"),
+                "program_generation": p_dict.get("program_generation"),
+                "patch_type": p_dict.get("patch_type"),
+                "timestamp": timestamp,
+                "program_count": p_dict.get("program_count", 0),
+                "correct_program_count": p_dict.get("correct_program_count", 0),
+                "total_improvement": p_dict.get("total_improvement", 0.0),
+                "fitness": p_dict.get("fitness", 0.0),
+                "program_ids": program_ids,
+                "in_archive": bool(p_dict.get("in_archive", 0)),
+                **metadata_dict,
+                **llm_flat,
+            }
+            prompts_data.append(flat_data)
+
+        if verbose:
+            print(f"Total prompt rows: {len(prompts_data)}")
+            archive_count = len([p for p in prompts_data if p["in_archive"]])
+            print(f"Prompts in archive: {archive_count}")
+
+        return pd.DataFrame(prompts_data)
+
+    except sqlite3.Error as e:
+        print(f"SQLite error while loading prompts from {db_file}: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"JSON decoding error for prompts metadata in {db_file}: {e}")
         return None
     finally:
         if conn:
@@ -144,10 +313,8 @@ def get_path_to_best_node(
     # Create a dictionary mapping id to row for quick lookups
     id_to_row = {row["id"]: row for _, row in df.iterrows()}
 
-    print(f"Total rows: {len(df)}")
     # Only correct rows
     correct_df = df[df["correct"]]
-    print(f"Correct rows: {len(correct_df)}")
 
     # Find the node with the maximum score
     best_node_row = correct_df.loc[correct_df[score_column].idxmax()]

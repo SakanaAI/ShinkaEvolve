@@ -30,6 +30,29 @@ def plot_lineage_tree(
         print("DataFrame is empty or None. Cannot draw tree.")
         return
 
+    # Handle island copies: map them to their original program
+    island_copy_mapping = {}
+    if "_is_island_copy" in df.columns:
+        # Find island copies and their originals
+        is_copy_mask = df["_is_island_copy"].fillna(False).astype(bool)
+        island_copies = df[is_copy_mask]
+
+        # Create mapping from island copy id to original id
+        for idx, row in island_copies.iterrows():
+            copy_id = str(row["id"])
+            # Find the original by matching generation and looking for non-copy
+            if "generation" in df.columns:
+                same_gen = df[df["generation"] == row["generation"]]
+                same_gen_non_copy = same_gen[
+                    ~same_gen["_is_island_copy"].fillna(False).astype(bool)
+                ]
+                if not same_gen_non_copy.empty:
+                    original_id = str(same_gen_non_copy.iloc[0]["id"])
+                    island_copy_mapping[copy_id] = original_id
+
+        # Filter out island copies from the dataframe
+        df = df[~is_copy_mask].copy()
+
     # set combined score to 0 for incorrect programs
     df.loc[~df["correct"], "combined_score"] = 0
 
@@ -50,11 +73,16 @@ def plot_lineage_tree(
 
         G.add_node(node_id, **node_attrs)
 
-    # Add edges
+    # Add edges with parent remapping for island copies
     for idx, row in df.iterrows():
         child_id = str(row["id"])
         if "parent_id" in row and pd.notna(row["parent_id"]):
             parent_id = str(row["parent_id"])
+
+            # Remap parent if it was an island copy
+            if parent_id in island_copy_mapping:
+                parent_id = island_copy_mapping[parent_id]
+
             # Check if parent exists and is not self-referential
             if parent_id in G.nodes() and parent_id != child_id:
                 G.add_edge(parent_id, child_id)
@@ -82,6 +110,9 @@ def plot_lineage_tree(
         roots = generation_groups.get(min_gen, [list(G.nodes())[0]])
 
     root = roots[0]
+
+    # Initialize levels dict (will be populated if using manual layout)
+    levels = {}
 
     # Try to use a hierarchical layout that respects parent-child relationships
     # Focus on creating a clean tree structure like the reference image
@@ -137,7 +168,7 @@ def plot_lineage_tree(
                         pos[nodes_at_level[0]] = (0, 0)
                     else:
                         # Multiple roots - space them out horizontally
-                        spacing = 15.0
+                        spacing = 25.0
                         total_width = (num_nodes_at_level - 1) * spacing
                         start_x = -total_width / 2
                         for i, node in enumerate(nodes_at_level):
@@ -171,14 +202,14 @@ def plot_lineage_tree(
                     # Position nodes with adequate spacing - more aggressive
                     # for early levels
                     # Base spacing should prevent overlapping at all levels
-                    base_spacing = max(15.0, 10.0 * (total_nodes**0.5))
+                    base_spacing = max(25.0, 15.0 * (total_nodes**0.5))
                     # Extra spacing for early levels where nodes tend to
                     # cluster
                     depth_multiplier = max(1.0, 3.0 / (depth + 1))
 
                     spacing = base_spacing * depth_multiplier
 
-                    y_pos = -depth * 3.0  # Increased vertical spacing
+                    y_pos = -depth * 5.0  # Increased vertical spacing
 
                     if num_nodes_at_level == 1:
                         pos[sorted_nodes[0]] = (0, y_pos)
@@ -282,10 +313,37 @@ def plot_lineage_tree(
                         )
                         improved = True
 
-    # Calculate base node sizes based on number of nodes
+    # Center the initial node (root) at x=0 after all layout adjustments
+    if pos and root in pos:
+        # Get the current position of the root node
+        root_x, root_y = pos[root]
+
+        # Calculate offset to place root at x=0
+        x_offset = -root_x
+
+        # Apply offset to all nodes to center the root
+        for node in pos:
+            x, y = pos[node]
+            pos[node] = (x + x_offset, y)
+
+    # Calculate base node sizes based on number of nodes and axes size
     num_nodes = len(G.nodes())
-    # Scale node sizes more like the reference image
-    size_factor = max(0.3, min(1.0, 20 / (num_nodes**0.4)))
+
+    # Get axes size in inches (works with subplots)
+    bbox = ax.get_position()  # Get axes position in figure coordinates
+    fig_width, fig_height = fig.get_size_inches()
+    # Calculate actual axes size in inches
+    ax_width = bbox.width * fig_width
+    ax_height = bbox.height * fig_height
+
+    # Calculate a size scale based on axes dimensions
+    # Normalize to a reference size of 20x16 inches
+    ax_scale = ((ax_width / 20.0) + (ax_height / 16.0)) / 2.0
+
+    # Scale node sizes based on both number of nodes and axes size
+    size_factor = 0.65 * max(0.3, min(1.0, 20 / (num_nodes**0.4)))
+    # Apply axes scaling
+    size_factor = size_factor * ax_scale
 
     best_node_size = int(1500 * size_factor)
     path_node_size = int(800 * size_factor)
@@ -580,10 +638,18 @@ def plot_lineage_tree(
             crossover_patch,
             incorrect_patch,
         ]
-        ax.legend(handles=legend_handles, loc="upper right", fontsize=25, ncol=2)
+        ax.legend(
+            handles=legend_handles,
+            loc="lower center",
+            fontsize=25,
+            ncol=3,
+            bbox_to_anchor=(0.5, -0.02),
+            frameon=True,
+        )
 
     ax.set_title(title, fontsize=40, fontweight="bold")
     ax.axis("off")
-    # Use subplots_adjust for more control over margins, reduce left padding
-    fig.subplots_adjust(left=0.02, right=0.85, top=0.95, bottom=0.05)
+    # Use subplots_adjust for more control over margins
+    # Increase bottom margin to make room for legend
+    fig.subplots_adjust(left=0.02, right=0.85, top=0.95, bottom=0.08)
     return fig, ax

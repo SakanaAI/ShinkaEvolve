@@ -22,10 +22,10 @@ import threading
 import time
 import urllib.parse
 import webbrowser
-from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 from shinka.database import DatabaseConfig, ProgramDatabase
+from shinka.database import SystemPromptConfig, SystemPromptDatabase
 
 # We'll use a simple text-to-PDF approach instead of complex dependencies
 WEASYPRINT_AVAILABLE = False
@@ -57,6 +57,19 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db_path = query["db_path"][0]
             return self.handle_get_programs(db_path)
 
+        if path == "/get_programs_summary" and "db_path" in query:
+            db_path = query["db_path"][0]
+            return self.handle_get_programs_summary(db_path)
+
+        if path == "/get_program_count" and "db_path" in query:
+            db_path = query["db_path"][0]
+            return self.handle_get_program_count(db_path)
+
+        if path == "/get_program_details" and "db_path" in query and "id" in query:
+            db_path = query["db_path"][0]
+            program_id = query["id"][0]
+            return self.handle_get_program_details(db_path, program_id)
+
         if path == "/get_meta_files" and "db_path" in query:
             db_path = query["db_path"][0]
             return self.handle_get_meta_files(db_path)
@@ -75,9 +88,31 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             generation = query["generation"][0]
             return self.handle_download_meta_pdf(db_path, generation)
 
+        if (
+            path == "/get_plots"
+            and "db_path" in query
+            and "generation" in query
+            and "program_id" in query
+        ):
+            db_path = query["db_path"][0]
+            generation = query["generation"][0]
+            program_id = query["program_id"][0]
+            return self.handle_get_plots(db_path, generation, program_id)
+
+        if path.startswith("/plot_file/"):
+            return self.handle_serve_plot_file()
+
+        if path == "/get_system_prompts" and "db_path" in query:
+            db_path = query["db_path"][0]
+            return self.handle_get_system_prompts(db_path)
+
+        if path == "/get_database_stats" and "db_path" in query:
+            db_path = query["db_path"][0]
+            return self.handle_get_database_stats(db_path)
+
         if path == "/":
-            print("[SERVER] Root path requested, serving viz_tree.html")
-            self.path = "/viz_tree.html"
+            print("[SERVER] Root path requested, serving index.html")
+            self.path = "/index.html"
 
         # Serve static files from the webui directory
         return http.server.SimpleHTTPRequestHandler.do_GET(self)
@@ -98,14 +133,30 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             print(f"[SERVER] Scanning for .db files in: {self.search_root}")
             for root, _, files in os.walk(self.search_root):
                 for f in files:
+                    # Only list program databases, not prompt databases
+                    if f.lower() in ("prompts.db", "prompts.sqlite"):
+                        continue
                     if f.lower().endswith((".db", ".sqlite")):
                         full_path = os.path.join(root, f)
                         client_path = os.path.relpath(full_path, self.search_root)
-                        # Normalize Windows paths to use forward slashes for consistency
-                        # with JavaScript path parsing in the frontend
-                        if os.name == 'nt':  # Windows
-                            client_path = client_path.replace('\\', '/')
-                        display_name = f"{Path(f).stem} - {Path(client_path).parent}"
+
+                        # Parse path components
+                        path_parts = client_path.split(os.sep)
+
+                        # Extract result name (full path to db directory)
+                        # e.g., results_coral/aes_block_encrypt/triton
+                        display_name = (
+                            "/".join(path_parts[:-1])
+                            if len(path_parts) >= 2
+                            else client_path
+                        )
+
+                        # Extract task name (first path component only)
+                        # e.g., results_coral
+                        if len(path_parts) >= 2:
+                            task = path_parts[0]
+                        else:
+                            task = task_name
 
                         # Extract date for sorting
                         sort_key = "0"  # Default for paths without a date
@@ -113,24 +164,17 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         if match:
                             sort_key = match.group(1)
 
-                        # Modify the path structure to include task name for proper organization
-                        # If the path doesn't already have 3+ parts, prepend the task name
-                        path_parts = client_path.split("/")
-                        if len(path_parts) < 3:
-                            # Add task name as the first part of the path
-                            modified_client_path = f"{task_name}/{client_path}"
-                        else:
-                            modified_client_path = client_path
-
                         db_info = {
-                            "path": modified_client_path,
+                            "path": client_path,
                             "name": display_name,
-                            "sort_key": sort_key,  # Add key for sorting
-                            "actual_path": client_path,  # Keep the actual relative path for file operations
+                            "task": task,
+                            "sort_key": sort_key,
+                            "actual_path": client_path,
                         }
                         db_files.append(db_info)
                         print(
-                            f"[SERVER] Found DB: {client_path} -> {modified_client_path} (sort: {sort_key})"
+                            f"[SERVER] Found DB: {client_path} "
+                            f"(task: '{task}', result: '{display_name}')"
                         )
 
         if not db_files:
@@ -143,17 +187,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         for db in db_files:
             del db["sort_key"]
 
+        print(f"[SERVER] Sending {len(db_files)} databases:")
+        for i, db in enumerate(db_files):
+            print(f"  [{i}] task='{db['task']}', result='{db['name']}'")
+
         self.send_json_response(db_files)
         print(f"[SERVER] Served DB list with {len(db_files)} entries, sorted by date.")
 
     def _get_actual_db_path(self, db_path: str) -> str:
-        """Convert a potentially modified db_path back to the actual file path."""
-        task_name = os.path.basename(self.search_root)
-
-        # If the path starts with the task name, remove it
-        if db_path.startswith(f"{task_name}/"):
-            return db_path[len(task_name) + 1 :]
-
+        """Convert db_path to the actual file path (now a no-op since path is not modified)."""
         return db_path
 
     def handle_get_programs(self, db_path: str):
@@ -181,8 +223,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # Retry logic for the reader with improved WAL mode support
-        max_retries = 5  # Increased retries for better resilience
-        delay = 0.1  # Shorter initial delay
+        # More retries with longer delays during active evolution
+        max_retries = 8
+        delay = 0.2
         for i in range(max_retries):
             db = None
             try:
@@ -190,10 +233,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 db = ProgramDatabase(config, read_only=True)
 
                 # Set WAL mode compatible settings for read-only connections
+                # Longer busy_timeout for concurrent access during evolution
                 if db.cursor:
                     db.cursor.execute(
-                        "PRAGMA busy_timeout = 10000;"
-                    )  # 10 second timeout
+                        "PRAGMA busy_timeout = 30000;"
+                    )  # 30 second timeout
                     db.cursor.execute("PRAGMA journal_mode = WAL;")  # Ensure WAL mode
 
                 programs = db.get_all_programs()
@@ -214,30 +258,37 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
                 error_str = str(e).lower()
-                if "database is locked" in error_str or "busy" in error_str:
+                is_retryable = (
+                    "database is locked" in error_str
+                    or "busy" in error_str
+                    or "disk i/o error" in error_str  # Occurs during heavy writes
+                )
+                if is_retryable:
                     print(
-                        f"[SERVER] Attempt {i + 1}/{max_retries} - database busy, "
+                        f"[SERVER] Attempt {i + 1}/{max_retries} - database busy/locked, "
                         f"retrying in {delay:.1f}s... ({e})"
                     )
                     if i < max_retries - 1:
                         time.sleep(delay)
-                        delay = min(delay * 1.5, 2.0)  # Exponential backoff, max 2s
+                        delay = min(
+                            delay * 1.5, 5.0
+                        )  # Longer max delay during active evolution
                         continue
+                    else:
+                        # Last retry failed
+                        err_msg = (
+                            f"[SERVER] Database still busy after {max_retries} attempts"
+                        )
+                        print(err_msg)
+                        self.send_error(
+                            503,
+                            "Database temporarily unavailable - evolution may be running",
+                        )
+                        return
                 else:
                     print(f"[SERVER] Non-recoverable database error: {e}")
                     self.send_error(500, f"Database error: {str(e)}")
                     return
-
-                # Last retry failed
-                if i == max_retries - 1:
-                    err_msg = (
-                        f"[SERVER] Database still busy after {max_retries} attempts"
-                    )
-                    print(err_msg)
-                    self.send_error(
-                        503,
-                        "Database temporarily unavailable - evolution may be running",
-                    )
 
             except Exception as e:
                 # Catch any other unexpected errors
@@ -252,6 +303,192 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception as e:
                         print(f"[SERVER] Warning: Error closing database: {e}")
 
+    def handle_get_programs_summary(self, db_path: str):
+        """Fetch lightweight program summaries (no code, no embeddings)."""
+        print(f"[SERVER] Fetching program summaries from DB: {db_path}")
+
+        actual_db_path = self._get_actual_db_path(db_path)
+        abs_db_path = os.path.join(self.search_root, actual_db_path)
+
+        if not os.path.exists(abs_db_path):
+            self.send_error(404, f"Database file not found: {actual_db_path}")
+            return
+
+        max_retries = 8
+        delay = 0.2
+        for i in range(max_retries):
+            db = None
+            try:
+                config = DatabaseConfig(db_path=abs_db_path)
+                db = ProgramDatabase(config, read_only=True)
+
+                if db.cursor:
+                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
+                    db.cursor.execute("PRAGMA journal_mode = WAL;")
+
+                summaries = db.get_programs_summary()
+                self.send_json_response(summaries)
+                print(
+                    f"[SERVER] Successfully served {len(summaries)} "
+                    f"program summaries from {db_path}"
+                )
+                return
+
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                error_str = str(e).lower()
+                is_retryable = (
+                    "database is locked" in error_str
+                    or "busy" in error_str
+                    or "disk i/o error" in error_str
+                )
+                if is_retryable:
+                    if i < max_retries - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 1.5, 5.0)
+                        continue
+                    else:
+                        self.send_error(
+                            503,
+                            "Database temporarily unavailable - evolution may be running",
+                        )
+                        return
+                else:
+                    self.send_error(500, f"Database error: {str(e)}")
+                    return
+
+            except Exception as e:
+                print(f"[SERVER] Error fetching program summaries: {e}")
+                self.send_error(500, f"Error: {str(e)}")
+                return
+            finally:
+                if db and hasattr(db, "close"):
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+
+    def handle_get_program_count(self, db_path: str):
+        """Get program count and max timestamp for efficient change detection."""
+        print(f"[SERVER] Fetching program count from DB: {db_path}")
+
+        actual_db_path = self._get_actual_db_path(db_path)
+        abs_db_path = os.path.join(self.search_root, actual_db_path)
+
+        if not os.path.exists(abs_db_path):
+            self.send_error(404, f"Database file not found: {actual_db_path}")
+            return
+
+        max_retries = 8
+        delay = 0.2
+        for i in range(max_retries):
+            db = None
+            try:
+                config = DatabaseConfig(db_path=abs_db_path)
+                db = ProgramDatabase(config, read_only=True)
+
+                if db.cursor:
+                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
+
+                result = db.get_program_count_and_timestamp()
+                self.send_json_response(result)
+                return
+
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                error_str = str(e).lower()
+                is_retryable = (
+                    "database is locked" in error_str
+                    or "busy" in error_str
+                    or "disk i/o error" in error_str
+                )
+                if is_retryable:
+                    if i < max_retries - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 1.5, 5.0)
+                        continue
+                    else:
+                        self.send_error(
+                            503,
+                            "Database temporarily unavailable - evolution may be running",
+                        )
+                        return
+                else:
+                    self.send_error(500, f"Database error: {str(e)}")
+                    return
+
+            except Exception as e:
+                print(f"[SERVER] Error fetching program count: {e}")
+                self.send_error(500, f"Error: {str(e)}")
+                return
+            finally:
+                if db and hasattr(db, "close"):
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+
+    def handle_get_program_details(self, db_path: str, program_id: str):
+        """Get full details for a single program (including code and embeddings)."""
+        print(f"[SERVER] Fetching program details for ID: {program_id}")
+
+        actual_db_path = self._get_actual_db_path(db_path)
+        abs_db_path = os.path.join(self.search_root, actual_db_path)
+
+        if not os.path.exists(abs_db_path):
+            self.send_error(404, f"Database file not found: {actual_db_path}")
+            return
+
+        max_retries = 8
+        delay = 0.2
+        for i in range(max_retries):
+            db = None
+            try:
+                config = DatabaseConfig(db_path=abs_db_path)
+                db = ProgramDatabase(config, read_only=True)
+
+                if db.cursor:
+                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
+
+                program = db.get(program_id)
+                if program is None:
+                    self.send_error(404, f"Program not found: {program_id}")
+                    return
+
+                self.send_json_response(program.to_dict())
+                return
+
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                error_str = str(e).lower()
+                is_retryable = (
+                    "database is locked" in error_str
+                    or "busy" in error_str
+                    or "disk i/o error" in error_str
+                )
+                if is_retryable:
+                    if i < max_retries - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 1.5, 5.0)
+                        continue
+                    else:
+                        self.send_error(
+                            503,
+                            "Database temporarily unavailable - evolution may be running",
+                        )
+                        return
+                else:
+                    self.send_error(500, f"Database error: {str(e)}")
+                    return
+
+            except Exception as e:
+                print(f"[SERVER] Error fetching program details: {e}")
+                self.send_error(500, f"Error: {str(e)}")
+                return
+            finally:
+                if db and hasattr(db, "close"):
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+
     def handle_get_meta_files(self, db_path: str):
         """List available meta_{gen}.txt files for a given database."""
         print(f"[SERVER] Listing meta files for DB: {db_path}")
@@ -263,14 +500,22 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         abs_db_path = os.path.join(self.search_root, actual_db_path)
         db_dir = os.path.dirname(abs_db_path)
 
-        if not os.path.exists(db_dir):
-            self.send_error(404, f"Database directory not found: {db_dir}")
+        # Look in the meta subdirectory
+        meta_dir = os.path.join(db_dir, "meta")
+
+        if not os.path.exists(meta_dir):
+            # Fall back to looking in the db_dir for backward compatibility
+            print(f"[SERVER] Meta subdirectory not found, checking DB directory")
+            meta_dir = db_dir
+
+        if not os.path.exists(meta_dir):
+            self.send_error(404, f"Meta directory not found: {meta_dir}")
             return
 
         meta_files = []
         try:
-            # Look for meta_{gen}.txt files in the same directory as the DB
-            for file in os.listdir(db_dir):
+            # Look for meta_{gen}.txt files in the meta directory
+            for file in os.listdir(meta_dir):
                 if file.startswith("meta_") and file.endswith(".txt"):
                     # Extract generation number
                     gen_str = file[5:-4]  # Remove 'meta_' and '.txt'
@@ -280,7 +525,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                             {
                                 "generation": generation,
                                 "filename": file,
-                                "path": os.path.join(db_dir, file),
+                                "path": os.path.join(meta_dir, file),
                             }
                         )
                     except ValueError:
@@ -311,9 +556,13 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         abs_db_path = os.path.join(self.search_root, actual_db_path)
         db_dir = os.path.dirname(abs_db_path)
 
-        # Construct the meta file path
+        # Construct the meta file path - try meta subdirectory first
         meta_filename = f"meta_{generation}.txt"
-        meta_file_path = os.path.join(db_dir, meta_filename)
+        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
+
+        # Fall back to db_dir for backward compatibility
+        if not os.path.exists(meta_file_path):
+            meta_file_path = os.path.join(db_dir, meta_filename)
 
         if not os.path.exists(meta_file_path):
             self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -351,9 +600,13 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         abs_db_path = os.path.join(self.search_root, actual_db_path)
         db_dir = os.path.dirname(abs_db_path)
 
-        # Construct the meta file path
+        # Construct the meta file path - try meta subdirectory first
         meta_filename = f"meta_{generation}.txt"
-        meta_file_path = os.path.join(db_dir, meta_filename)
+        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
+
+        # Fall back to db_dir for backward compatibility
+        if not os.path.exists(meta_file_path):
+            meta_file_path = os.path.join(db_dir, meta_filename)
 
         if not os.path.exists(meta_file_path):
             self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -389,6 +642,362 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             print(f"[SERVER] Error converting meta file to PDF: {e}")
             self.send_error(500, f"Error converting to PDF: {str(e)}")
+
+    def handle_get_plots(self, db_path: str, generation: str, program_id: str):
+        """List available plot files for a given program."""
+        print(
+            f"[SERVER] Listing plots for DB: {db_path}, "
+            f"gen: {generation}, program: {program_id}"
+        )
+
+        # Get the actual database path
+        actual_db_path = self._get_actual_db_path(db_path)
+
+        # Get the directory containing the database file
+        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        db_dir = os.path.dirname(abs_db_path)
+
+        # Construct the plots directory path
+        # Structure: db_dir/gen_X/results/plots/
+        plots_dir = os.path.join(db_dir, f"gen_{generation}", "results", "plots")
+
+        plot_files = []
+        if os.path.exists(plots_dir):
+            for filename in os.listdir(plots_dir):
+                filepath = os.path.join(plots_dir, filename)
+                if os.path.isfile(filepath):
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in [".png", ".gif", ".jpg", ".jpeg"]:
+                        # Create URL-safe path relative to search_root
+                        rel_path = os.path.relpath(filepath, self.search_root)
+                        plot_files.append(
+                            {
+                                "filename": filename,
+                                "path": rel_path,
+                                "type": "animation" if ext == ".gif" else "image",
+                                "ext": ext,
+                            }
+                        )
+
+            # Sort by filename
+            plot_files.sort(key=lambda x: x["filename"])
+            print(f"[SERVER] Found {len(plot_files)} plot files in {plots_dir}")
+        else:
+            print(f"[SERVER] Plots directory not found: {plots_dir}")
+
+        self.send_json_response(plot_files)
+
+    def handle_serve_plot_file(self):
+        """Serve a plot file from the search root."""
+        # Extract the file path from the URL (after /plot_file/)
+        parsed_url = urllib.parse.urlparse(self.path)
+        rel_path = urllib.parse.unquote(parsed_url.path[11:])  # Remove /plot_file/
+
+        abs_path = os.path.join(self.search_root, rel_path)
+        print(f"[SERVER] Serving plot file: {abs_path}")
+
+        if not os.path.exists(abs_path):
+            self.send_error(404, f"Plot file not found: {rel_path}")
+            return
+
+        # Security check: ensure the path is within search_root
+        abs_path = os.path.abspath(abs_path)
+        abs_search_root = os.path.abspath(self.search_root)
+        if not abs_path.startswith(abs_search_root):
+            self.send_error(403, "Access denied")
+            return
+
+        # Determine content type
+        ext = os.path.splitext(abs_path)[1].lower()
+        content_types = {
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+        }
+        content_type = content_types.get(ext, "application/octet-stream")
+
+        try:
+            with open(abs_path, "rb") as f:
+                file_data = f.read()
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(file_data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(file_data)
+            print(f"[SERVER] Successfully served plot: {rel_path}")
+
+        except Exception as e:
+            print(f"[SERVER] Error serving plot file: {e}")
+            self.send_error(500, f"Error serving file: {str(e)}")
+
+    def handle_get_system_prompts(self, db_path: str):
+        """Fetch all system prompts from the prompts.db in the same directory."""
+        print(f"[SERVER] Fetching system prompts for DB: {db_path}")
+
+        # Get the actual database path
+        actual_db_path = self._get_actual_db_path(db_path)
+
+        # Construct path to prompts.sqlite (in same directory as programs.sqlite)
+        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        db_dir = os.path.dirname(abs_db_path)
+        prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
+
+        if not os.path.exists(prompts_db_path):
+            print(f"[SERVER] Prompts database not found: {prompts_db_path}")
+            # Return empty list if no prompts database exists
+            self.send_json_response([])
+            return
+
+        # Retry logic for the reader with WAL mode support
+        # Use more retries and longer delays during active evolution
+        max_retries = 8
+        delay = 0.2
+        for i in range(max_retries):
+            prompt_db = None
+            try:
+                config = SystemPromptConfig(db_path=prompts_db_path)
+                prompt_db = SystemPromptDatabase(config, read_only=True)
+
+                # Set WAL mode compatible settings for read-only connections
+                # Longer busy_timeout for concurrent access during evolution
+                if prompt_db.cursor:
+                    prompt_db.cursor.execute("PRAGMA busy_timeout = 30000;")
+                    prompt_db.cursor.execute("PRAGMA journal_mode = WAL;")
+
+                prompts = prompt_db.get_all_prompts()
+
+                # Convert SystemPrompt objects to dicts for JSON
+                prompts_dict = [p.to_dict() for p in prompts]
+
+                # Debug: print first prompt's keys and program_generation
+                if prompts_dict:
+                    print(f"[DEBUG] First prompt keys: {list(prompts_dict[0].keys())}")
+                    print(
+                        f"[DEBUG] First prompt program_generation: {prompts_dict[0].get('program_generation')}"
+                    )
+                    print(
+                        f"[DEBUG] First SystemPrompt.program_generation: {prompts[0].program_generation if prompts else 'N/A'}"
+                    )
+
+                self.send_json_response(prompts_dict)
+                success_msg = (
+                    f"[SERVER] Successfully served {len(prompts)} "
+                    f"system prompts from {prompts_db_path} (attempt {i + 1})"
+                )
+                print(success_msg)
+                return
+
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                error_str = str(e).lower()
+                is_retryable = (
+                    "database is locked" in error_str
+                    or "busy" in error_str
+                    or "disk i/o error" in error_str  # Common with Dropbox/cloud sync
+                )
+                if is_retryable:
+                    print(
+                        f"[SERVER] Attempt {i + 1}/{max_retries} - prompts db error, "
+                        f"retrying in {delay:.1f}s... ({e})"
+                    )
+                    if i < max_retries - 1:
+                        time.sleep(delay)
+                        delay = min(
+                            delay * 1.5, 5.0
+                        )  # Allow longer delays during active evolution
+                        continue
+                    else:
+                        # Last retry failed - return empty list instead of error
+                        # Prompts are optional, don't break the page
+                        print(
+                            f"[SERVER] Prompts DB unavailable after {max_retries} attempts, returning empty list"
+                        )
+                        self.send_json_response([])
+                        return
+                else:
+                    print(f"[SERVER] Non-recoverable prompts database error: {e}")
+                    # Return empty list instead of 500 - prompts are optional
+                    self.send_json_response([])
+                    return
+
+            except Exception as e:
+                print(f"[SERVER] Error fetching system prompts: {e}")
+                import traceback
+
+                traceback.print_exc()
+                # Return empty list instead of 500 - prompts are optional
+                self.send_json_response([])
+                return
+            finally:
+                if prompt_db and hasattr(prompt_db, "close"):
+                    try:
+                        prompt_db.close()
+                    except Exception as e:
+                        print(f"[SERVER] Warning: Error closing prompts database: {e}")
+
+    def handle_get_database_stats(self, db_path: str):
+        """Get quick aggregate stats for a database (count, best score, cost)."""
+        actual_db_path = self._get_actual_db_path(db_path)
+        abs_db_path = os.path.join(self.search_root, actual_db_path)
+
+        if not os.path.exists(abs_db_path):
+            self.send_json_response({"error": "not_found"})
+            return
+
+        max_retries = 3
+        delay = 0.1
+        for i in range(max_retries):
+            conn = None
+            try:
+                conn = sqlite3.connect(abs_db_path, timeout=5.0, isolation_level=None)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA busy_timeout = 5000;")
+
+                # Get aggregate stats in a single query
+                # Costs are stored in metadata as: api_costs, embed_cost,
+                # novelty_cost, meta_cost
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as program_count,
+                        SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_count,
+                        MAX(combined_score) as best_score,
+                        MAX(generation) as max_generation,
+                        MAX(timestamp) as last_update,
+                        SUM(
+                            COALESCE(
+                                CASE WHEN json_valid(metadata)
+                                THEN json_extract(metadata, '$.api_costs')
+                                ELSE 0 END, 0
+                            ) +
+                            COALESCE(
+                                CASE WHEN json_valid(metadata)
+                                THEN json_extract(metadata, '$.embed_cost')
+                                ELSE 0 END, 0
+                            ) +
+                            COALESCE(
+                                CASE WHEN json_valid(metadata)
+                                THEN json_extract(metadata, '$.novelty_cost')
+                                ELSE 0 END, 0
+                            ) +
+                            COALESCE(
+                                CASE WHEN json_valid(metadata)
+                                THEN json_extract(metadata, '$.meta_cost')
+                                ELSE 0 END, 0
+                            )
+                        ) as total_cost
+                    FROM programs
+                """)
+                row = cursor.fetchone()
+
+                # Get the generation where best score was achieved
+                best_gen = row["max_generation"] or 0
+                if row["best_score"] is not None:
+                    cursor.execute(
+                        """
+                        SELECT MIN(generation) as best_gen
+                        FROM programs
+                        WHERE combined_score = ?
+                    """,
+                        (row["best_score"],),
+                    )
+                    best_row = cursor.fetchone()
+                    if best_row and best_row["best_gen"] is not None:
+                        best_gen = best_row["best_gen"]
+
+                max_gen = row["max_generation"] or 0
+                gens_since_improvement = max_gen - best_gen
+
+                stats = {
+                    "program_count": row["program_count"] or 0,
+                    "correct_count": row["correct_count"] or 0,
+                    "best_score": row["best_score"],
+                    "max_generation": max_gen,
+                    "last_update": row["last_update"],
+                    "gens_since_improvement": gens_since_improvement,
+                    "total_cost": row["total_cost"] or 0,
+                    "prompt_count": 0,
+                    "prompt_evo_cost": 0,
+                    "has_prompt_evo": False,
+                }
+
+                # Check for prompts.db in the same directory
+                db_dir = os.path.dirname(abs_db_path)
+                prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
+                if os.path.exists(prompts_db_path):
+                    try:
+                        pconn = sqlite3.connect(
+                            prompts_db_path, timeout=2.0, isolation_level=None
+                        )
+                        pconn.row_factory = sqlite3.Row
+                        pcursor = pconn.cursor()
+                        pcursor.execute("PRAGMA busy_timeout = 2000;")
+                        pcursor.execute("""
+                            SELECT COUNT(*) as prompt_count
+                            FROM system_prompts
+                        """)
+                        prow = pcursor.fetchone()
+                        stats["prompt_count"] = prow["prompt_count"] or 0
+                        stats["has_prompt_evo"] = stats["prompt_count"] > 0
+
+                        # Sum prompt evolution costs from metadata.llm.cost
+                        pcursor.execute("""
+                            SELECT SUM(
+                                CASE WHEN json_valid(metadata)
+                                THEN COALESCE(
+                                    json_extract(metadata, '$.llm.cost'),
+                                    0
+                                )
+                                ELSE 0 END
+                            ) as prompt_cost
+                            FROM system_prompts
+                        """)
+                        pcost_row = pcursor.fetchone()
+                        stats["prompt_evo_cost"] = pcost_row["prompt_cost"] or 0
+                        pconn.close()
+                    except Exception as pe:
+                        print(f"[SERVER] Warning: Error reading prompts.db: {pe}")
+
+                self.send_json_response(stats)
+                return
+
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                error_str = str(e).lower()
+                if "locked" in error_str or "busy" in error_str:
+                    if i < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                        continue
+                # Return empty stats on error
+                self.send_json_response(
+                    {
+                        "program_count": 0,
+                        "best_score": None,
+                        "max_generation": 0,
+                        "total_cost": 0,
+                        "error": str(e),
+                    }
+                )
+                return
+            except Exception as e:
+                self.send_json_response(
+                    {
+                        "program_count": 0,
+                        "best_score": None,
+                        "max_generation": 0,
+                        "total_cost": 0,
+                        "error": str(e),
+                    }
+                )
+                return
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     def _generate_pdf(self, content: str, generation: str) -> bytes:
         """Generate PDF from markdown content using available methods."""
@@ -740,8 +1349,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def send_json_response(self, data):
         """Helper to send a JSON response."""
-        # Use custom JSON encoder to handle NaN values
-        payload = json.dumps(data, default=self._json_encoder).encode("utf-8")
+        # Clean NaN/Inf values before serializing (Python's json outputs invalid JSON for these)
+        clean_data = self._clean_nan_values(data)
+        payload = json.dumps(clean_data, default=self._json_encoder).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -750,8 +1360,23 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _clean_nan_values(self, obj):
+        """Recursively replace NaN and Inf float values with None."""
+        import math
+
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        elif isinstance(obj, dict):
+            return {k: self._clean_nan_values(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._clean_nan_values(item) for item in obj]
+        else:
+            return obj
+
     def _json_encoder(self, obj):
-        """Custom JSON encoder to handle NaN and Inf values."""
+        """Custom JSON encoder to handle non-serializable types."""
         import math
 
         if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
@@ -847,13 +1472,14 @@ def main():
     time.sleep(0.8)  # tiny delay so the banner prints before we continue
 
     # Construct URL, passing db path if provided
-    base_url = f"http://localhost:{args.port}/viz_tree.html"
     if args.db:
-        # URL encode the db path to handle special characters
+        # If a specific DB is provided, go directly to viz_tree.html
+        base_url = f"http://localhost:{args.port}/viz_tree.html"
         url_params = urllib.parse.urlencode({"db_path": args.db})
         viz_url = f"{base_url}?{url_params}"
     else:
-        viz_url = base_url
+        # Otherwise, open the landing page with all results
+        viz_url = f"http://localhost:{args.port}/"
 
     # Try to open a browser if requested
     if args.open_browser:
