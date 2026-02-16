@@ -31,6 +31,21 @@ def build_gemini_thinking_config(thinking_budget: int):
     return thinking_config_cls(**config_kwargs)
 
 
+def build_gemini_afc_config():
+    """Build Gemini automatic function-calling config without SDK warnings."""
+    model_fields = getattr(types.AutomaticFunctionCallingConfig, "model_fields", {})
+    config_kwargs: dict[str, object] = {"disable": True}
+
+    # Avoid warning about disable=True with default positive remote call budget.
+    if "maximum_remote_calls" in model_fields:
+        config_kwargs["maximum_remote_calls"] = None
+    elif "maximumRemoteCalls" in model_fields:
+        config_kwargs["maximumRemoteCalls"] = None
+
+    afc_config_cls = cast(Any, types.AutomaticFunctionCallingConfig)
+    return afc_config_cls(**config_kwargs)
+
+
 def get_gemini_costs(response, model):
     """Get the costs for the given response and model."""
     usage_metadata = getattr(response, "usage_metadata", None)
@@ -164,7 +179,7 @@ def query_gemini(
         top_p=float(top_p),
         max_output_tokens=int(max_tokens),
         system_instruction=system_msg if system_msg else None,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        automatic_function_calling=build_gemini_afc_config(),
         thinking_config=build_gemini_thinking_config(thinking_budget),
     )
 
@@ -240,7 +255,7 @@ async def query_gemini_async(
         top_p=float(top_p),
         max_output_tokens=int(max_tokens),
         system_instruction=system_msg if system_msg else None,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        automatic_function_calling=build_gemini_afc_config(),
         thinking_config=build_gemini_thinking_config(thinking_budget),
     )
 
