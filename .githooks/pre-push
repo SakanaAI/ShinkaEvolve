@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "[pre-push] ruff"
+uv run ruff check tests --exclude tests/file.py
+
+echo "[pre-push] mypy"
+uv run mypy --follow-imports=skip --ignore-missing-imports tests/test_*.py tests/conftest.py
+
+echo "[pre-push] pytest + coverage"
+uv run --with pytest-cov pytest -q --cov=shinka --cov-report=term-missing
