@@ -54,6 +54,7 @@ from shinka.core.prompt_evolver import (
 )
 from shinka.logo import print_gradient_logo
 from shinka.utils import get_language_extension
+from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -1384,10 +1385,7 @@ class AsyncEvolutionRunner:
                 )
 
                 # Add EVOLVE-BLOCK markers
-                if self.evo_config.language == "python":
-                    comment_char = "#"
-                else:
-                    comment_char = "//"
+                comment_char = get_evolve_comment_prefix(self.evo_config.language)
 
                 initial_code = (
                     f"{comment_char} EVOLVE-BLOCK-START\n"
@@ -2766,9 +2764,9 @@ class AsyncEvolutionRunner:
                     diff_summary = {}
                     if patch_path:
                         diff_summary = summarize_diff(str(patch_path))
-                        # Only consider the diff summary for the original.py file
-                        if "original.py" in diff_summary:
-                            diff_summary = diff_summary["original.py"]
+                        original_filename = f"original.{self.lang_ext}"
+                        if original_filename in diff_summary:
+                            diff_summary = diff_summary[original_filename]
 
                     # Save successful attempt data
                     await self._save_patch_attempt_async(
