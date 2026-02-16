@@ -23,7 +23,7 @@ def test_island_samplers():
                 island_selection_strategy=strategy,
             )
 
-            db = ProgramDatabase(config=config, read_only=False)
+            db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
             # Add some test programs to different islands
             for island_idx in range(3):

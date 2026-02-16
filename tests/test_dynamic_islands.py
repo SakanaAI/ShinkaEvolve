@@ -18,7 +18,7 @@ def test_stagnation_detection():
             stagnation_threshold=5,  # Very short threshold for testing
         )
 
-        db = ProgramDatabase(config=config, read_only=False)
+        db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
         # Add initial program (generation 0)
         initial_program = Program(
@@ -60,7 +60,7 @@ def test_dynamic_island_spawning():
             stagnation_threshold=3,  # Very short threshold for testing
         )
 
-        db = ProgramDatabase(config=config, read_only=False)
+        db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
         # Add initial program (generation 0)
         initial_program = Program(
@@ -121,7 +121,7 @@ def test_no_spawning_when_disabled():
             stagnation_threshold=3,
         )
 
-        db = ProgramDatabase(config=config, read_only=False)
+        db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
         # Add initial program
         initial_program = Program(
@@ -172,7 +172,7 @@ def test_stagnation_reset_on_improvement():
             stagnation_threshold=5,
         )
 
-        db = ProgramDatabase(config=config, read_only=False)
+        db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
         # Add initial program
         initial_program = Program(
@@ -247,7 +247,7 @@ def test_spawn_strategies():
                 island_spawn_strategy=strategy,
             )
 
-            db = ProgramDatabase(config=config, read_only=False)
+            db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
             # Add initial program (generation 0)
             initial_program = Program(

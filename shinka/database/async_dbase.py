@@ -300,7 +300,10 @@ class AsyncProgramDatabase:
 
                     thread_db = None
                     try:
-                        thread_db = ProgramDatabase(self.sync_db.config)
+                        thread_db = ProgramDatabase(
+                            self.sync_db.config,
+                            embedding_model=self.sync_db.embedding_model,
+                        )
                         thread_db.beam_search_parent_id = parent_id
                         thread_db._update_metadata_in_db(
                             "beam_search_parent_id", parent_id
@@ -530,7 +533,10 @@ class AsyncProgramDatabase:
 
             thread_db = None
             try:
-                thread_db = ProgramDatabase(self.sync_db.config)
+                thread_db = ProgramDatabase(
+                    self.sync_db.config,
+                    embedding_model=self.sync_db.embedding_model,
+                )
 
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters
