@@ -1,94 +1,153 @@
-max_evaluation_jobs: 2   # Higher concurrency with multiple workers
-max_proposal_jobs: 2    # Higher concurrency with proper coordination  
-max_db_workers: 2       # Multiple database workers for better throughput
+# Number of evaluation jobs to run in parallel.
+max_evaluation_jobs: 2
+# Number of proposal-generation jobs to run in parallel.
+max_proposal_jobs: 2
+# Number of database worker jobs handling archive/selection updates.
+max_db_workers: 2
 
+# Database/search-state settings for island evolution and archiving.
 db_config:
+  # Number of independent evolutionary islands.
   num_islands: 1
+  # Maximum number of individuals stored in the archive.
   archive_size: 40
+  # Fraction of top performers treated as elites.
   elite_selection_ratio: 0.3
+  # Number of archive examples sampled as inspirations per proposal.
   num_archive_inspirations: 4
+  # Number of highest-ranked inspirations forced into the sample.
   num_top_k_inspirations: 2
+  # Generations between migration events across islands.
   migration_interval: 10
+  # Fraction of candidates migrated at each migration event.
   migration_rate: 0.1
+  # Whether to preserve elite individuals within each island.
   island_elitism: true
+  # Whether to prevent cross-island mixing outside migration rules.
   enforce_island_separation: true
+  # Strategy used to sample parents for mutation/crossover.
   parent_selection_strategy: weighted
+  # Temperature/strength parameter for weighted parent selection.
   parent_selection_lambda: 10
+  # Strategy used when picking entries from the archive.
   archive_selection_strategy: "crowding"
+  # Strategy used when selecting which island to sample from.
   island_selection_strategy: equal
+  # Weights for archive ranking criteria.
   archive_criteria:
+    # Weight assigned to combined task score.
     combined_score: 1.0
+    # Weight assigned to lines-of-code (negative favors shorter code).
     loc: -0.3
 
+  # Whether to spawn new islands dynamically on stagnation.
   enable_dynamic_islands: true
+  # Number of generations without progress before stagnation triggers.
   stagnation_threshold: 10
+  # Strategy for choosing a seed when spawning a new island.
   island_spawn_strategy: "best"
+  # Subtree size used when constructing a spawned island lineage.
   island_spawn_subtree_size: 2
 
+# Evolution loop settings (mutation, model calls, novelty, outputs).
 evo_config:
+  # Allowed patch formats for code evolution.
   patch_types:
     - diff
     - full
     - cross
+  # Sampling probabilities aligned with patch_types order.
   patch_type_probs:
     - 0.6
     - 0.3
     - 0.1
+  # Total number of generations to run.
   num_generations: 100
+  # Max API spend budget for this run (USD).
   max_api_costs: 0.5
+  # Retries for resampling patch format/content before giving up.
   max_patch_resamples: 3
+  # Retries for patch application/generation attempts.
   max_patch_attempts: 3
+  # Retries for novelty-evaluation attempts.
   max_novelty_attempts: 3
+  # Job executor backend.
   job_type: local
+  # Programming language of evolved programs.
   language: python
+  # Candidate LLMs used for proposal generation.
   llm_models:
-    # - "gemini-2.5-pro"
-    - "gemini-2.5-flash"
-    # - "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    # - "o4-mini"
-    # - "gpt-5"
+    - "gemini-3-flash-preview"
     - "gpt-5-mini"
     - "gpt-5-nano"
+  # Shared generation kwargs for main proposal LLM calls.
   llm_kwargs:
+    # Candidate temperatures to sample for generation diversity.
     temperatures:
       - 0
       - 0.5
       - 1.0
+    # Candidate reasoning effort levels for supported models.
     reasoning_efforts:
       - low
       - medium
       - high
+    # Maximum output tokens per main LLM response.
     max_tokens: 32768
 
+  # Interval (in generations) for meta-recommendation updates.
   meta_rec_interval: 5
+  # LLMs used for meta-analysis/recommendation steps.
   meta_llm_models:
     - gpt-5-mini
+  # Generation kwargs for meta-analysis LLM calls.
   meta_llm_kwargs:
+    # Temperatures used for meta-analysis calls.
     temperatures:
       - 0
+    # Maximum output tokens per meta-analysis response.
     max_tokens: 16384
 
+  # Embedding model used for code similarity filtering.
   embedding_model: text-embedding-3-small
+  # Similarity threshold above which code is treated as near-duplicate.
   code_embed_sim_threshold: 0.99
 
+  # LLMs used for novelty checking/judgment.
   novelty_llm_models:
     - gpt-5-nano
+  # Generation kwargs for novelty LLM calls.
   novelty_llm_kwargs:
+    # Temperatures used for novelty calls.
     temperatures:
       - 0
+  # Path to the initial baseline program.
   init_program_path: initial.py
 
+  # Adaptive policy for choosing among available LLMs.
   llm_dynamic_selection: ucb1
+  # Hyperparameters for the dynamic LLM selection policy.
   llm_dynamic_selection_kwargs:
+    # Exploration strength in UCB-style model selection.
     exploration_coef: 1.0
+    # Cost-penalty weight in model-selection scoring.
     cost_aware_coef: 0.7
+  # Directory where run outputs, logs, and artifacts are written.
   results_dir: results/results_circle_async_small
 
+  # Whether prompt variants are evolved during the run.
   evolve_prompts: True
-  prompt_evolution_interval: 5  # Evolve every 4 programs
+  # Interval (in generations) between prompt-evolution steps.
+  prompt_evolution_interval: 5
+  # Allowed patch formats when mutating prompts.
   prompt_patch_types: ["diff", "full"]
+  # Sampling probabilities aligned with prompt_patch_types order.
   prompt_patch_type_probs: [0.5, 0.5]
+  # Maximum number of prompt variants kept in the prompt archive.
   prompt_archive_size: 10
+  # Interval (in generations) for recomputing prompt percentiles.
   prompt_percentile_recompute_interval: 1
-  prompt_ucb_exploration_constant: 2.0  # Higher = more exploration in UCB
-  prompt_epsilon: 0.25  # 15% chance of random sampling for exploration
+  # UCB exploration constant for prompt selection.
+  prompt_ucb_exploration_constant: 2.0
+  # Epsilon-greedy random selection probability for prompt exploration.
+  prompt_epsilon: 0.25
