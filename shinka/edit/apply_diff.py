@@ -17,14 +17,31 @@ EVOLVE_END = re.compile(r"(?:#|//|)?\s*EVOLVE-BLOCK-END")
 
 
 def _mutable_ranges(text: str) -> list[tuple[int, int]]:
-    """Return index ranges that are legal to edit."""
-    spans, stack = [], []
+    """Return index ranges that are legal to edit.
+
+    Handles both sequential and nested EVOLVE-BLOCK markers correctly by
+    processing all markers in position order.
+    """
+    # Collect all markers with their positions and types
+    markers = []
     for m in EVOLVE_START.finditer(text):
-        stack.append(m.end())  # mutable starts *after* the START line
+        markers.append((m.end(), "start"))  # mutable starts *after* the START line
     for m in EVOLVE_END.finditer(text):
-        if stack:
+        markers.append((m.start(), "end"))  # mutable ends *before* END line
+
+    # Sort by position to handle both sequential and nested blocks
+    markers.sort(key=lambda x: x[0])
+
+    # Process in order using a stack for nesting support
+    spans = []
+    stack = []
+    for pos, marker_type in markers:
+        if marker_type == "start":
+            stack.append(pos)
+        elif marker_type == "end" and stack:
             start = stack.pop()
-            spans.append((start, m.start()))  # mutable ends *before* END line
+            spans.append((start, pos))
+
     return spans
 
 

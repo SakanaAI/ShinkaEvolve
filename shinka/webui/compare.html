@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎏 Compare Results - ShinkaEvolve</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 25px 30px;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 25px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .logo {
+            width: 50px;
+            height: 50px;
+            border-radius: 8px;
+        }
+
+        .header-text {
+            flex: 1;
+        }
+
+        .header-text h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .header-text p {
+            color: #666;
+            font-size: 1rem;
+        }
+
+        .back-link {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #555;
+            font-size: 1rem;
+            transition: all 0.15s;
+        }
+
+        .back-link:hover {
+            border-color: #ccc;
+            background: #fafafa;
+            color: #333;
+        }
+
+        /* Charts row */
+        .charts-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        @media (max-width: 1100px) {
+            .charts-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Chart container */
+        .chart-container {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 25px;
+        }
+
+        .chart-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 15px;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 350px;
+        }
+
+        /* Legend table */
+        .legend-container {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .legend-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 15px;
+        }
+
+        .legend-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .legend-table th {
+            text-align: left;
+            padding: 10px 12px;
+            font-weight: 500;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: #666;
+            border-bottom: 1px solid #e0e0e0;
+            background: #fafafa;
+        }
+
+        .legend-table th.numeric {
+            text-align: right;
+        }
+
+        .legend-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .legend-table td.numeric {
+            text-align: right;
+            font-family: "SF Mono", Monaco, "Consolas", monospace;
+            font-size: 0.95rem;
+        }
+
+        .legend-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .legend-table tbody tr {
+            cursor: pointer;
+            transition: background-color 0.1s;
+        }
+
+        .legend-table tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        .legend-table tbody tr:hover .result-label {
+            color: #3498db;
+        }
+
+        .arrow-cell {
+            color: #ccc;
+            font-size: 1rem;
+        }
+
+        .legend-table tbody tr:hover .arrow-cell {
+            color: #3498db;
+        }
+
+        .color-swatch {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        .result-label {
+            font-weight: 500;
+            color: #2c3e50;
+        }
+
+        /* Loading state */
+        .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 75px;
+            gap: 15px;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e0e0e0;
+            border-top-color: #3498db;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: #666;
+            font-size: 1.125rem;
+        }
+
+        /* Error state */
+        .error-state {
+            padding: 50px 30px;
+            text-align: center;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+        }
+
+        .error-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+        }
+
+        .error-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #e74c3c;
+        }
+
+        .error-text {
+            color: #666;
+            font-size: 1rem;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .control-group select {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            background: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <img src="favicon.png" alt="Shinka Logo" class="logo">
+            <div class="header-text">
+                <h1>Compare Results</h1>
+                <p id="subtitle">Loading...</p>
+            </div>
+            <a href="/" class="back-link">← Back to Dashboard</a>
+        </header>
+
+        <div id="loading-state" class="loading-container">
+            <div class="spinner"></div>
+            <div class="loading-text">Loading comparison data...</div>
+        </div>
+
+        <div id="error-state" class="error-state" style="display: none;">
+            <div class="error-icon">⚠️</div>
+            <div class="error-title">No Results Selected</div>
+            <div class="error-text">Please select at least 2 results from the dashboard to compare.</div>
+        </div>
+
+        <div id="content" style="display: none;">
+            <div class="controls">
+                <div class="control-group">
+                    <label for="metric-select">Metric:</label>
+                    <select id="metric-select" onchange="updateChart()">
+                        <option value="best_score">Best Score</option>
+                        <option value="program_count">Total Programs</option>
+                        <option value="correct_count">Correct Programs</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="charts-row">
+                <div class="chart-container">
+                    <h2 class="chart-title" id="chart-title-gen">Best Score over Generations</h2>
+                    <div class="chart-wrapper">
+                        <canvas id="chart-generations"></canvas>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <h2 class="chart-title" id="chart-title-cost">Best Score over API Cost ($)</h2>
+                    <div class="chart-wrapper">
+                        <canvas id="chart-cost"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="legend-container">
+                <h3 class="legend-title">Selected Results</h3>
+                <table class="legend-table">
+                    <thead>
+                        <tr>
+                            <th>Result</th>
+                            <th class="numeric">Best Score</th>
+                            <th class="numeric">Generations</th>
+                            <th class="numeric">Programs</th>
+                            <th class="numeric">Cost ($)</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="legend-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart.js instances
+        let chartGen = null;
+        let chartCost = null;
+        
+        // Store fetched data
+        let resultsData = {};
+        let selection = [];
+
+        // Color palette (distinct colors)
+        const COLORS = [
+            '#3498db', '#e74c3c', '#2ecc71', '#9b59b6', '#f39c12',
+            '#1abc9c', '#e91e63', '#00bcd4', '#ff5722', '#607d8b',
+            '#8bc34a', '#673ab7', '#795548', '#ff9800', '#009688'
+        ];
+
+        async function init() {
+            // Get selection from sessionStorage
+            const stored = sessionStorage.getItem('compareSelection');
+            if (!stored) {
+                showError();
+                return;
+            }
+
+            try {
+                selection = JSON.parse(stored);
+            } catch (e) {
+                showError();
+                return;
+            }
+
+            if (!selection || selection.length < 2) {
+                showError();
+                return;
+            }
+
+            document.getElementById('subtitle').textContent = `Comparing ${selection.length} results`;
+
+            // Fetch data for all selected databases in parallel
+            try {
+                await Promise.all(selection.map(s => fetchResultData(s)));
+                showContent();
+                updateChart();
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('error-state').querySelector('.error-title').textContent = 'Error Loading Data';
+                document.getElementById('error-state').querySelector('.error-text').textContent = error.message;
+                showError();
+            }
+        }
+
+        async function fetchResultData(item) {
+            const response = await fetch(`/get_programs_summary?db_path=${encodeURIComponent(item.path)}`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch data for ${item.label}`);
+            }
+            const programs = await response.json();
+            resultsData[item.path] = {
+                label: item.label,
+                programs: programs
+            };
+        }
+
+        function showError() {
+            document.getElementById('loading-state').style.display = 'none';
+            document.getElementById('error-state').style.display = 'block';
+            document.getElementById('content').style.display = 'none';
+        }
+
+        function showContent() {
+            document.getElementById('loading-state').style.display = 'none';
+            document.getElementById('error-state').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+            populateLegend();
+        }
+
+        function populateLegend() {
+            const tbody = document.getElementById('legend-body');
+            tbody.innerHTML = '';
+
+            selection.forEach((item, idx) => {
+                const data = resultsData[item.path];
+                const color = COLORS[idx % COLORS.length];
+                
+                // Calculate stats
+                const programs = data.programs || [];
+                const maxGen = programs.reduce((max, p) => Math.max(max, p.generation || 0), 0);
+                const bestScore = programs.reduce((best, p) => Math.max(best, p.combined_score || 0), 0);
+                const totalCost = programs.reduce((sum, p) => sum + getProgramCost(p), 0);
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>
+                        <span class="color-swatch" style="background: ${color}"></span>
+                        <span class="result-label">${escapeHtml(item.label)}</span>
+                    </td>
+                    <td class="numeric">${bestScore.toFixed(2)}</td>
+                    <td class="numeric">${maxGen}</td>
+                    <td class="numeric">${programs.length.toLocaleString()}</td>
+                    <td class="numeric">${totalCost < 0.01 ? '<0.01' : totalCost.toFixed(2)}</td>
+                    <td class="arrow-cell">→</td>
+                `;
+                
+                // Make row clickable
+                row.addEventListener('click', () => {
+                    window.location.href = `/viz_tree.html?db_path=${encodeURIComponent(item.path)}`;
+                });
+                
+                tbody.appendChild(row);
+            });
+        }
+
+        function getProgramCost(p) {
+            // Extract costs from metadata
+            const meta = p.metadata || {};
+            return (meta.api_costs || 0) + (meta.embed_cost || 0) + (meta.novelty_cost || 0) + (meta.meta_cost || 0);
+        }
+
+        function updateChart() {
+            const metric = document.getElementById('metric-select').value;
+            
+            const metricLabels = {
+                'best_score': 'Best Score',
+                'program_count': 'Total Programs',
+                'correct_count': 'Correct Programs'
+            };
+            const metricLabel = metricLabels[metric] || 'Value';
+            
+            document.getElementById('chart-title-gen').textContent = `${metricLabel} over Generations`;
+            document.getElementById('chart-title-cost').textContent = `${metricLabel} over API Cost ($)`;
+
+            // Build datasets for both charts
+            const datasetsGen = [];
+            const datasetsCost = [];
+            
+            selection.forEach((item, idx) => {
+                const data = resultsData[item.path];
+                const color = COLORS[idx % COLORS.length];
+                const programs = data.programs || [];
+                
+                // Sort programs by generation, then by timestamp for cost ordering
+                const sortedByGen = [...programs].sort((a, b) => (a.generation || 0) - (b.generation || 0));
+                const sortedByTimestamp = [...programs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                
+                // === Chart 1: By Generation ===
+                const genData = {};
+                sortedByGen.forEach(p => {
+                    const gen = p.generation || 0;
+                    if (!genData[gen]) {
+                        genData[gen] = { programs: [], scores: [] };
+                    }
+                    genData[gen].programs.push(p);
+                    if (p.combined_score !== null && p.combined_score !== undefined) {
+                        genData[gen].scores.push(p.combined_score);
+                    }
+                });
+
+                const generations = Object.keys(genData).map(Number).sort((a, b) => a - b);
+                let cumulativeBest = 0;
+                let cumulativePrograms = 0;
+                let cumulativeCorrect = 0;
+                
+                const pointsGen = generations.map(gen => {
+                    const genInfo = genData[gen];
+                    const genBest = genInfo.scores.length > 0 ? Math.max(...genInfo.scores) : 0;
+                    cumulativeBest = Math.max(cumulativeBest, genBest);
+                    cumulativePrograms += genInfo.programs.length;
+                    cumulativeCorrect += genInfo.programs.filter(p => p.correct).length;
+                    
+                    let value;
+                    switch (metric) {
+                        case 'best_score': value = cumulativeBest; break;
+                        case 'program_count': value = cumulativePrograms; break;
+                        case 'correct_count': value = cumulativeCorrect; break;
+                        default: value = cumulativeBest;
+                    }
+                    return { x: gen, y: value };
+                });
+
+                datasetsGen.push({
+                    label: item.label,
+                    data: pointsGen,
+                    borderColor: color,
+                    backgroundColor: color + '20',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                    tension: 0.1,
+                    fill: false
+                });
+
+                // === Chart 2: By Cost ===
+                let runningCost = 0;
+                let runningBest = 0;
+                let runningPrograms = 0;
+                let runningCorrect = 0;
+                
+                const pointsCost = [];
+                sortedByTimestamp.forEach(p => {
+                    const cost = getProgramCost(p);
+                    runningCost += cost;
+                    runningPrograms += 1;
+                    if (p.correct) runningCorrect += 1;
+                    if (p.combined_score !== null && p.combined_score !== undefined) {
+                        runningBest = Math.max(runningBest, p.combined_score);
+                    }
+                    
+                    let value;
+                    switch (metric) {
+                        case 'best_score': value = runningBest; break;
+                        case 'program_count': value = runningPrograms; break;
+                        case 'correct_count': value = runningCorrect; break;
+                        default: value = runningBest;
+                    }
+                    pointsCost.push({ x: runningCost, y: value });
+                });
+
+                // Downsample if too many points (for performance)
+                const maxPoints = 200;
+                let sampledPoints = pointsCost;
+                if (pointsCost.length > maxPoints) {
+                    const step = Math.ceil(pointsCost.length / maxPoints);
+                    sampledPoints = pointsCost.filter((_, i) => i % step === 0 || i === pointsCost.length - 1);
+                }
+
+                datasetsCost.push({
+                    label: item.label,
+                    data: sampledPoints,
+                    borderColor: color,
+                    backgroundColor: color + '20',
+                    borderWidth: 2,
+                    pointRadius: 1,
+                    pointHoverRadius: 3,
+                    tension: 0.1,
+                    fill: false
+                });
+            });
+
+            // Create/update Generation chart
+            const ctxGen = document.getElementById('chart-generations').getContext('2d');
+            if (chartGen) chartGen.destroy();
+            
+            chartGen = new Chart(ctxGen, {
+                type: 'line',
+                data: { datasets: datasetsGen },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 15, boxWidth: 8 } },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => {
+                                    let v = ctx.parsed.y;
+                                    if (metric === 'best_score') v = v.toFixed(2);
+                                    return `${ctx.dataset.label}: ${v}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { type: 'linear', title: { display: true, text: 'Generation' }, grid: { color: '#f0f0f0' } },
+                        y: { title: { display: true, text: metricLabel }, grid: { color: '#f0f0f0' }, beginAtZero: metric !== 'best_score' }
+                    }
+                }
+            });
+
+            // Create/update Cost chart
+            const ctxCost = document.getElementById('chart-cost').getContext('2d');
+            if (chartCost) chartCost.destroy();
+            
+            chartCost = new Chart(ctxCost, {
+                type: 'line',
+                data: { datasets: datasetsCost },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 15, boxWidth: 8 } },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => {
+                                    let v = ctx.parsed.y;
+                                    if (metric === 'best_score') v = v.toFixed(2);
+                                    return `${ctx.dataset.label}: ${v}`;
+                                },
+                                title: ctx => `Cost: $${ctx[0].parsed.x.toFixed(2)}`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { type: 'linear', title: { display: true, text: 'API Cost ($)' }, grid: { color: '#f0f0f0' } },
+                        y: { title: { display: true, text: metricLabel }, grid: { color: '#f0f0f0' }, beginAtZero: metric !== 'best_score' }
+                    }
+                }
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Initialize on page load
+        init();
+    </script>
+</body>
+</html>
+

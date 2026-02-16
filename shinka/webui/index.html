@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎏 ShinkaEvolve Results Dashboard</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 25px 30px;
+        }
+
+        /* Header */
+        header {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 25px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .logo {
+            width: 60px;
+            height: 60px;
+            border-radius: 10px;
+        }
+
+        .header-text {
+            flex: 1;
+        }
+
+        .header-text h1 {
+            font-size: 1.875rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .header-text p {
+            color: #666;
+            font-size: 1.125rem;
+        }
+
+        .header-links {
+            display: flex;
+            gap: 15px;
+        }
+
+        .header-link {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #555;
+            font-size: 1.06rem;
+            transition: all 0.15s;
+        }
+
+        .header-link:hover {
+            border-color: #ccc;
+            background: #fafafa;
+            color: #333;
+        }
+
+        .header-link svg {
+            width: 22px;
+            height: 22px;
+        }
+
+        .header-link .link-icon {
+            width: 22px;
+            height: 22px;
+            object-fit: contain;
+        }
+
+        /* Loading state */
+        .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 75px;
+            gap: 15px;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e0e0e0;
+            border-top-color: #3498db;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: #666;
+            font-size: 1.125rem;
+        }
+
+        /* Table container */
+        .table-container {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 8px 12px;
+            gap: 8px;
+            margin-left: 20px;
+        }
+
+        .search-box:focus-within {
+            border-color: #3498db;
+            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.1);
+        }
+
+        .search-box input {
+            background: none;
+            border: none;
+            color: #333;
+            font-family: inherit;
+            font-size: 1.06rem;
+            width: 150px;
+            outline: none;
+        }
+
+        .search-box input::placeholder {
+            color: #999;
+        }
+
+        .search-icon {
+            color: #999;
+            font-size: 1.06rem;
+        }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background: #fafafa;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 15px;
+            font-weight: 500;
+            font-size: 0.94rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: #666;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        th.numeric {
+            text-align: right;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            transition: background-color 0.1s;
+        }
+
+        tbody tr:last-child {
+            border-bottom: none;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        td {
+            padding: 12px 15px;
+            font-size: 1.09rem;
+        }
+
+        td.numeric {
+            text-align: right;
+            font-family: "SF Mono", Monaco, "Consolas", monospace;
+            font-size: 1rem;
+        }
+
+        .task-name {
+            font-weight: 500;
+            color: #2c3e50;
+        }
+
+        .setting-name {
+            color: #666;
+            font-size: 0.95rem;
+            font-family: "SF Mono", Monaco, "Consolas", monospace;
+        }
+
+        .result-name {
+            color: #666;
+            font-size: 1rem;
+        }
+
+        .stat-loading {
+            color: #ccc;
+            font-size: 0.94rem;
+        }
+
+        .stat-error {
+            color: #e74c3c;
+            font-size: 0.94rem;
+        }
+
+        .time-ago {
+            font-size: 0.875rem;
+            color: #888;
+        }
+
+        .stall-ok {
+            color: #27ae60;
+        }
+
+        .stall-warn {
+            color: #f39c12;
+        }
+
+        .stall-bad {
+            color: #e74c3c;
+        }
+
+        .pe-none {
+            color: #ccc;
+        }
+
+        .pe-active {
+            color: #9b59b6;
+            font-size: 0.875rem;
+        }
+
+        .arrow-cell {
+            text-align: right;
+            color: #ccc;
+            font-size: 1.125rem;
+        }
+
+        tbody tr:hover .arrow-cell {
+            color: #3498db;
+        }
+
+        /* Checkbox column */
+        .checkbox-cell {
+            width: 40px;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .checkbox-cell input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #3498db;
+            vertical-align: middle;
+            margin: 0;
+        }
+
+        /* Compare button */
+        .compare-btn {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            background: #3498db;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 1.06rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            margin-left: 15px;
+        }
+
+        .compare-btn:hover {
+            background: #2980b9;
+        }
+
+        .compare-btn.visible {
+            display: flex;
+        }
+
+        .compare-btn .count-badge {
+            background: rgba(255,255,255,0.25);
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.875rem;
+        }
+
+        /* Task group header */
+        .task-group-header {
+            background: #f5f6f7;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .task-group-header:hover {
+            background: #eef0f2;
+        }
+
+        .task-group-header td {
+            padding: 10px 15px;
+            font-weight: 600;
+            font-size: 1rem;
+            color: #2c3e50;
+        }
+
+        .task-toggle {
+            display: inline-block;
+            width: 20px;
+            transition: transform 0.2s ease;
+        }
+
+        .task-group-header.collapsed .task-toggle {
+            transform: rotate(-90deg);
+        }
+
+        /* Use JS to handle collapse - CSS sibling selectors are too broad */
+        tr.task-child.hidden {
+            display: none;
+        }
+
+        .task-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            background: #e8f4fc;
+            color: #3498db;
+            margin-left: 10px;
+        }
+
+        /* Empty state */
+        .empty-state {
+            padding: 75px 30px;
+            text-align: center;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+        }
+
+        .empty-icon {
+            font-size: 3.125rem;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+
+        .empty-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #2c3e50;
+        }
+
+        .empty-text {
+            color: #666;
+            font-size: 1.09rem;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+
+        /* Keyboard hint */
+        .keyboard-hint {
+            font-size: 0.875rem;
+            color: #999;
+            margin-left: 10px;
+        }
+
+        kbd {
+            background: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: inherit;
+            font-size: 0.875rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 1100px) {
+            th.hide-tablet, td.hide-tablet {
+                display: none;
+            }
+        }
+
+        @media (max-width: 900px) {
+            th.hide-mobile, td.hide-mobile {
+                display: none;
+            }
+
+            .header-links {
+                gap: 10px;
+            }
+
+            .header-link span {
+                display: none;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .header-text h1 {
+                font-size: 1.5rem;
+            }
+
+            .search-box input {
+                width: 120px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <img src="favicon.png" alt="Shinka Logo" class="logo">
+            <div class="header-text">
+                <h1>ShinkaEvolve</h1>
+                <p>Program Evolution Overview</p>
+            </div>
+            <div class="header-links">
+                <a href="https://github.com/SakanaAI/ShinkaEvolve" target="_blank" class="header-link" title="GitHub Repository">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+                <a href="https://arxiv.org/abs/2509.19349" target="_blank" class="header-link" title="arXiv Paper">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M4 4v16h16V4H4zm14 14H6V6h12v12zM8 8v2h8V8H8zm0 4v2h8v-2H8zm0 4v2h5v-2H8z"/>
+                    </svg>
+                    <span>arXiv</span>
+                </a>
+                <a href="https://sakana.ai/shinka-evolve/" target="_blank" class="header-link" title="Sakana AI Blog">
+                    <img src="sakana.jpg" alt="Sakana AI" class="link-icon">
+                    <span>Sakana AI Blog</span>
+                </a>
+            </div>
+            <button id="compare-btn" class="compare-btn" onclick="openCompare()">
+                ⇄ Compare
+                <span class="count-badge" id="compare-count">0</span>
+            </button>
+            <div class="search-box">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="search-input" placeholder="Filter...">
+            </div>
+            <div class="keyboard-hint">
+                Press <kbd>/</kbd> to search, <kbd>Esc</kbd> to clear
+            </div>
+        </header>
+
+        <div id="loading-state" class="loading-container">
+            <div class="spinner"></div>
+            <div class="loading-text">Scanning for databases...</div>
+        </div>
+
+        <div id="empty-state" class="empty-state" style="display: none;">
+            <div class="empty-icon">📭</div>
+            <div class="empty-title">No databases found</div>
+            <div class="empty-text">
+                Run some evolution experiments to see results here.
+            </div>
+        </div>
+
+        <div id="table-wrapper" class="table-container" style="display: none;">
+            <table id="results-table">
+                <thead>
+                    <tr>
+                        <th class="checkbox-cell">
+                            <input type="checkbox" id="select-all" title="Select all visible" onclick="toggleSelectAll(this)">
+                        </th>
+                        <th>Task</th>
+                        <th>Setting</th>
+                        <th class="numeric"># P</th>
+                        <th class="numeric hide-tablet">✔</th>
+                        <th class="numeric"># G</th>
+                        <th class="numeric hide-tablet">Stall</th>
+                        <th class="numeric">Best</th>
+                        <th class="numeric hide-tablet">P-Evo</th>
+                        <th class="numeric hide-mobile">Cost ($)</th>
+                        <th class="hide-mobile">Updated</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="results-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let allDatabases = [];
+        let tasksAndResults = {};
+        const statsCache = {};
+        const pendingStats = new Set();
+
+        async function loadDatabases() {
+            try {
+                const response = await fetch('/list_databases');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const dbs = await response.json();
+                allDatabases = dbs;
+
+                organizeDatabases(dbs);
+                renderTable();
+
+                // Load stats for visible rows after table renders
+                setTimeout(() => loadVisibleStats(), 50);
+
+            } catch (error) {
+                console.error("Error loading databases:", error);
+                document.getElementById('loading-state').style.display = 'none';
+                document.getElementById('empty-state').style.display = 'block';
+                document.querySelector('.empty-title').textContent = 'Error loading databases';
+                document.querySelector('.empty-text').textContent = error.message;
+            }
+        }
+
+        function organizeDatabases(dbs) {
+            tasksAndResults = {};
+
+            dbs.forEach(db => {
+                const task = db.task || 'Unknown';
+                const result = db.name || db.path;
+
+                if (!tasksAndResults[task]) {
+                    tasksAndResults[task] = [];
+                }
+
+                tasksAndResults[task].push({
+                    name: result,
+                    path: db.path,
+                    actualPath: db.actual_path || db.path
+                });
+            });
+        }
+
+        function renderTable(filter = '') {
+            const loadingState = document.getElementById('loading-state');
+            const emptyState = document.getElementById('empty-state');
+            const tableWrapper = document.getElementById('table-wrapper');
+            const tbody = document.getElementById('results-body');
+
+            loadingState.style.display = 'none';
+
+            const tasks = Object.keys(tasksAndResults).sort();
+
+            if (tasks.length === 0) {
+                emptyState.style.display = 'block';
+                tableWrapper.style.display = 'none';
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            tableWrapper.style.display = 'block';
+
+            tbody.innerHTML = '';
+
+            const filterLower = filter.toLowerCase();
+            let visibleCount = 0;
+
+            tasks.forEach(task => {
+                const results = tasksAndResults[task];
+
+                // Filter results
+                const filteredResults = results.filter(r =>
+                    !filter ||
+                    task.toLowerCase().includes(filterLower) ||
+                    r.name.toLowerCase().includes(filterLower)
+                );
+
+                if (filteredResults.length === 0) return;
+
+                // Sort results alphabetically by name
+                filteredResults.sort((a, b) => a.name.localeCompare(b.name));
+
+                // Add task group header
+                const taskId = 'task-' + task.replace(/[^a-zA-Z0-9]/g, '-');
+                const headerRow = document.createElement('tr');
+                headerRow.className = 'task-group-header';
+                headerRow.dataset.taskId = taskId;
+                headerRow.innerHTML = `
+                    <td colspan="12">
+                        <span class="task-toggle">▼</span>
+                        📁 ${escapeHtml(task)}
+                        <span class="task-badge">${filteredResults.length}</span>
+                    </td>
+                `;
+                
+                // Add click handler for collapse/expand
+                headerRow.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleTaskGroup(headerRow, taskId);
+                });
+                
+                tbody.appendChild(headerRow);
+
+                // Check if this task should be collapsed (from localStorage)
+                const isCollapsed = localStorage.getItem('collapsed-' + taskId) === 'true';
+                if (isCollapsed) {
+                    headerRow.classList.add('collapsed');
+                }
+
+                // Add result rows
+                let taskVisibleCount = 0;
+                filteredResults.forEach(result => {
+                    const cached = statsCache[result.path];
+                    
+                    // Skip if we know this has <= 1 programs
+                    if (cached && cached.program_count <= 1) {
+                        return;
+                    }
+
+                    const row = document.createElement('tr');
+                    row.dataset.dbPath = result.path;
+                    row.dataset.taskId = taskId;
+                    row.classList.add('task-child');
+                    
+                    // Hide if parent is collapsed
+                    if (isCollapsed) {
+                        row.classList.add('hidden');
+                    }
+
+                    const programsCell = cached ? formatNumber(cached.program_count) : '<span class="stat-loading">...</span>';
+                    const correctCell = cached ? formatNumber(cached.correct_count) : '<span class="stat-loading">...</span>';
+                    const gensCell = cached ? cached.max_generation : '<span class="stat-loading">...</span>';
+                    const stallCell = cached ? formatStall(cached.gens_since_improvement) : '<span class="stat-loading">...</span>';
+                    const scoreCell = cached ? formatScore(cached.best_score) : '<span class="stat-loading">...</span>';
+                    const peCell = cached ? formatPromptEvo(cached) : '<span class="stat-loading">...</span>';
+                    const costCell = cached ? formatCost(cached.total_cost + (cached.prompt_evo_cost || 0)) : '<span class="stat-loading">...</span>';
+                    const lastUpdateCell = cached ? formatTimeAgo(cached.last_update) : '<span class="stat-loading">...</span>';
+
+                    // Split result name: remove task prefix, then split into taskName and setting
+                    // e.g., "results_coral/batched_2d_motion/cuda" -> taskName="batched_2d_motion", setting="cuda"
+                    const nameParts = result.name.split('/');
+                    const taskName = nameParts.length >= 2 ? nameParts[nameParts.length - 2] : result.name;
+                    const setting = nameParts.length >= 2 ? nameParts[nameParts.length - 1] : '-';
+
+                    const resultLabel = `${taskName}/${setting}`;
+                    row.innerHTML = `
+                        <td class="checkbox-cell">
+                            <input type="checkbox" class="result-checkbox" data-path="${escapeHtml(result.path)}" data-label="${escapeHtml(resultLabel)}" onclick="event.stopPropagation(); updateCompareButton();">
+                        </td>
+                        <td>
+                            <div class="task-name">${escapeHtml(taskName)}</div>
+                        </td>
+                        <td>
+                            <div class="setting-name">${escapeHtml(setting)}</div>
+                        </td>
+                        <td class="numeric" data-stat="program_count">${programsCell}</td>
+                        <td class="numeric hide-tablet" data-stat="correct_count">${correctCell}</td>
+                        <td class="numeric" data-stat="max_generation">${gensCell}</td>
+                        <td class="numeric hide-tablet" data-stat="gens_since_improvement">${stallCell}</td>
+                        <td class="numeric" data-stat="best_score">${scoreCell}</td>
+                        <td class="numeric hide-tablet" data-stat="prompt_evo">${peCell}</td>
+                        <td class="numeric hide-mobile" data-stat="total_cost">${costCell}</td>
+                        <td class="hide-mobile" data-stat="last_update">${lastUpdateCell}</td>
+                        <td class="arrow-cell">→</td>
+                    `;
+
+                    row.addEventListener('click', () => {
+                        window.location.href = `/viz_tree.html?db_path=${encodeURIComponent(result.path)}`;
+                    });
+
+                    tbody.appendChild(row);
+                    visibleCount++;
+                    taskVisibleCount++;
+                });
+
+                // Remove the task header if no visible results
+                if (taskVisibleCount === 0) {
+                    tbody.removeChild(headerRow);
+                } else {
+                    // Update the badge with actual visible count
+                    const badge = headerRow.querySelector('.task-badge');
+                    if (badge) {
+                        badge.textContent = taskVisibleCount;
+                    }
+                }
+            });
+
+            // Show empty state if no results match filter
+            if (visibleCount === 0 && filter) {
+                emptyState.style.display = 'block';
+                tableWrapper.style.display = 'none';
+                document.querySelector('.empty-title').textContent = 'No matching results';
+                document.querySelector('.empty-text').textContent = `No results match "${filter}"`;
+            }
+        }
+
+        async function loadVisibleStats() {
+            const rows = document.querySelectorAll('tr[data-db-path]');
+            const batchSize = 5; // Load stats in batches
+
+            for (let i = 0; i < rows.length; i += batchSize) {
+                const batch = Array.from(rows).slice(i, i + batchSize);
+                await Promise.all(batch.map(row => loadStatsForRow(row)));
+            }
+        }
+
+        async function loadStatsForRow(row) {
+            const dbPath = row.dataset.dbPath;
+
+            // Skip if already cached or pending
+            if (statsCache[dbPath] || pendingStats.has(dbPath)) {
+                return;
+            }
+
+            pendingStats.add(dbPath);
+
+            try {
+                const response = await fetch(`/get_database_stats?db_path=${encodeURIComponent(dbPath)}`);
+                if (response.ok) {
+                    const stats = await response.json();
+                    statsCache[dbPath] = stats;
+                    updateRowStats(row, stats);
+                }
+            } catch (error) {
+                console.error(`Failed to load stats for ${dbPath}:`, error);
+            } finally {
+                pendingStats.delete(dbPath);
+            }
+        }
+
+        function updateRowStats(row, stats) {
+            // Hide rows with 1 or fewer programs
+            if (stats.program_count <= 1) {
+                row.style.display = 'none';
+                row.dataset.hidden = 'true';
+                updateTaskGroupHeaders();
+                return;
+            }
+
+            const totalCost = (stats.total_cost || 0) + (stats.prompt_evo_cost || 0);
+            const cells = {
+                'program_count': formatNumber(stats.program_count),
+                'correct_count': formatNumber(stats.correct_count),
+                'max_generation': stats.max_generation || 0,
+                'gens_since_improvement': formatStall(stats.gens_since_improvement),
+                'best_score': formatScore(stats.best_score),
+                'prompt_evo': formatPromptEvo(stats),
+                'total_cost': formatCost(totalCost),
+                'last_update': formatTimeAgo(stats.last_update)
+            };
+
+            for (const [stat, value] of Object.entries(cells)) {
+                const cell = row.querySelector(`[data-stat="${stat}"]`);
+                if (cell) {
+                    cell.innerHTML = value;
+                }
+            }
+        }
+
+        function toggleTaskGroup(headerRow, taskId) {
+            const isCollapsed = headerRow.classList.toggle('collapsed');
+            
+            // Save state to localStorage
+            localStorage.setItem('collapsed-' + taskId, isCollapsed);
+            
+            // Toggle visibility of child rows
+            const childRows = document.querySelectorAll(`tr.task-child[data-task-id="${taskId}"]`);
+            childRows.forEach(row => {
+                if (isCollapsed) {
+                    row.classList.add('hidden');
+                } else {
+                    row.classList.remove('hidden');
+                }
+            });
+        }
+
+        function updateTaskGroupHeaders() {
+            // Update task group headers to hide if all children are hidden
+            const headers = document.querySelectorAll('.task-group-header');
+            headers.forEach(header => {
+                const taskId = header.dataset.taskId;
+                let visibleCount = 0;
+                
+                // Count visible rows for this task
+                const childRows = document.querySelectorAll(`tr.task-child[data-task-id="${taskId}"]`);
+                childRows.forEach(row => {
+                    if (row.dataset.hidden !== 'true') {
+                        visibleCount++;
+                    }
+                });
+                
+                // Hide header if no visible children
+                if (visibleCount === 0) {
+                    header.style.display = 'none';
+                } else {
+                    header.style.display = '';
+                    // Update the badge count
+                    const badge = header.querySelector('.task-badge');
+                    if (badge) {
+                        badge.textContent = visibleCount;
+                    }
+                }
+            });
+        }
+
+        function formatNumber(n) {
+            if (n === null || n === undefined) return '-';
+            return n.toLocaleString();
+        }
+
+        function formatScore(score) {
+            if (score === null || score === undefined) return '-';
+            return score.toFixed(2);
+        }
+
+        function formatCost(cost) {
+            if (cost === null || cost === undefined || cost === 0) return '-';
+            if (cost < 0.01) return '<0.01';
+            return cost.toFixed(2);
+        }
+
+        function formatPromptEvo(stats) {
+            if (!stats.has_prompt_evo) return '<span class="pe-none">-</span>';
+            const count = stats.prompt_count || 0;
+            const cost = stats.prompt_evo_cost || 0;
+            const costStr = cost > 0 ? ` ($${cost.toFixed(2)})` : '';
+            return `<span class="pe-active" title="${count} prompts, $${cost.toFixed(4)} cost">${count}${costStr}</span>`;
+        }
+
+        function formatStall(gens) {
+            if (gens === null || gens === undefined) return '-';
+            if (gens === 0) return '<span class="stall-ok">✓</span>';
+            if (gens <= 10) return `<span class="stall-ok">${gens}</span>`;
+            if (gens <= 50) return `<span class="stall-warn">${gens}</span>`;
+            return `<span class="stall-bad">${gens}</span>`;
+        }
+
+        function formatTimeAgo(timestamp) {
+            if (!timestamp) return '-';
+            
+            const now = Date.now() / 1000; // Current time in seconds
+            const diff = now - timestamp;
+            
+            let text;
+            if (diff < 60) text = 'just now';
+            else if (diff < 3600) {
+                const mins = Math.floor(diff / 60);
+                text = `${mins}m ago`;
+            }
+            else if (diff < 86400) {
+                const hours = Math.floor(diff / 3600);
+                text = `${hours}h ago`;
+            }
+            else if (diff < 604800) {
+                const days = Math.floor(diff / 86400);
+                text = `${days}d ago`;
+            }
+            else {
+                // Format as date
+                const date = new Date(timestamp * 1000);
+                text = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }
+            
+            return `<span class="time-ago">${text}</span>`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Selection and comparison functionality
+        function updateCompareButton() {
+            const checkboxes = document.querySelectorAll('.result-checkbox:checked');
+            const count = checkboxes.length;
+            const compareBtn = document.getElementById('compare-btn');
+            const countBadge = document.getElementById('compare-count');
+            
+            if (count >= 2) {
+                compareBtn.classList.add('visible');
+                countBadge.textContent = count;
+            } else {
+                compareBtn.classList.remove('visible');
+            }
+            
+            // Update select-all checkbox state
+            const allCheckboxes = document.querySelectorAll('.result-checkbox');
+            const selectAll = document.getElementById('select-all');
+            if (allCheckboxes.length > 0) {
+                selectAll.checked = checkboxes.length === allCheckboxes.length;
+                selectAll.indeterminate = checkboxes.length > 0 && checkboxes.length < allCheckboxes.length;
+            }
+        }
+
+        function toggleSelectAll(checkbox) {
+            const allCheckboxes = document.querySelectorAll('.result-checkbox');
+            allCheckboxes.forEach(cb => {
+                cb.checked = checkbox.checked;
+            });
+            updateCompareButton();
+        }
+
+        function openCompare() {
+            const checkboxes = document.querySelectorAll('.result-checkbox:checked');
+            const selected = [];
+            checkboxes.forEach(cb => {
+                selected.push({
+                    path: cb.dataset.path,
+                    label: cb.dataset.label
+                });
+            });
+            
+            if (selected.length < 2) {
+                alert('Please select at least 2 results to compare');
+                return;
+            }
+            
+            // Store selection in sessionStorage and navigate to compare page
+            sessionStorage.setItem('compareSelection', JSON.stringify(selected));
+            window.location.href = '/compare.html';
+        }
+
+        // Search functionality
+        document.getElementById('search-input').addEventListener('input', (e) => {
+            renderTable(e.target.value);
+            // Load stats for newly visible rows
+            setTimeout(() => loadVisibleStats(), 50);
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+                e.preventDefault();
+                document.getElementById('search-input').focus();
+            }
+            if (e.key === 'Escape') {
+                const searchInput = document.getElementById('search-input');
+                if (searchInput.value) {
+                    searchInput.value = '';
+                    renderTable();
+                    setTimeout(() => loadVisibleStats(), 50);
+                }
+                searchInput.blur();
+            }
+        });
+
+        // Load databases on page load
+        loadDatabases();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadDatabases, 30000);
+    </script>
+</body>
+</html>

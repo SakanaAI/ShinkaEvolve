@@ -65,20 +65,26 @@ def compute_max_radii(centers):
         # Distance to borders
         radii[i] = min(x, y, 1 - x, 1 - y)
 
-    # Then, limit by distance to other circles
-    # Each pair of circles with centers at distance d can have
-    # sum of radii at most d to avoid overlap
     for i in range(n):
         for j in range(i + 1, n):
             dist = np.sqrt(np.sum((centers[i] - centers[j]) ** 2))
 
-            # If current radii would cause overlap
-            if radii[i] + radii[j] > dist:
-                # Scale both radii proportionally
-                scale = dist / (radii[i] + radii[j])
-                radii[i] *= scale
-                radii[j] *= scale
+            # Then, limit by distance to other circles
+            # Each pair of circles with centers at distance d can have
+            # sum of radii at most d to avoid overlap
+            for i in range(n):
+                for j in range(i + 1, n):
+                    dist = np.sqrt(np.sum((centers[i] - centers[j]) ** 2))
 
+                    # If current radii would cause overlap
+                    if radii[i] + radii[j] > dist:
+                        # Scale both radii proportionally
+                        scale = dist / (radii[i] + radii[j])
+                        radii[i] *= scale
+                        radii[j] *= scale
+
+    # Ensure no negative radii due to numerical issues
+    radii = np.maximum(radii, 0.0)
     return radii
 
 

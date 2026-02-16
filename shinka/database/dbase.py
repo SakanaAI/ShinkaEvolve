@@ -5,7 +5,6 @@ import time
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
-import random
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
 import math
@@ -13,8 +12,9 @@ from .complexity import analyze_code_metrics
 from .parents import CombinedParentSelector
 from .inspirations import CombinedContextSelector
 from .islands import CombinedIslandManager
+from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
-from shinka.llm.embedding import EmbeddingClient
+from shinka.embed import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def clean_nan_values(obj: Any) -> Any:
 
 @dataclass
 class DatabaseConfig:
-    db_path: str = "evolution_db.sqlite"
+    db_path: Optional[str] = None  # Path to SQLite database file
     num_islands: int = 4
     archive_size: int = 100
 
@@ -66,6 +66,15 @@ class DatabaseConfig:
     enforce_island_separation: bool = (
         True  # Enforce full island separation for inspirations
     )
+    island_selection_strategy: str = "uniform"  # Island sampling strategy: "uniform"/"equal"/"proportional"/"weighted"
+
+    # Dynamic island spawning parameters (stagnation-based)
+    enable_dynamic_islands: bool = False  # Enable stagnation-based island spawning
+    stagnation_threshold: int = 100  # Gens without improvement to trigger spawn
+    island_spawn_strategy: str = (
+        "initial"  # How to seed new islands: "initial", "best", "archive_random"
+    )
+    island_spawn_subtree_size: int = 1  # Max programs to copy (1=single, >1=subtree)
 
     # Parent selection parameters
     parent_selection_strategy: str = (
@@ -82,8 +91,17 @@ class DatabaseConfig:
     # Beam search parent selection parameters
     num_beams: int = 5
 
-    # Embedding model name
-    embedding_model: str = "text-embedding-3-small"
+    # Archive selection parameters
+    archive_selection_strategy: str = "fitness"  # "fitness" or "crowding"
+    # Criteria weights for archive selection (sign indicates direction):
+    #   Positive weight = higher is better (e.g., combined_score)
+    #   Negative weight = lower is better (e.g., loc, complexity)
+    # Weights represent relative importance after rank normalization
+    archive_criteria: Dict[str, float] = field(
+        default_factory=lambda: {
+            "combined_score": 1.0,  # Primary: maximize fitness
+        }
+    )
 
 
 def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
@@ -173,6 +191,9 @@ class Program:
     # Archive status
     in_archive: bool = False
 
+    # Meta-prompt evolution: track which system prompt generated this program
+    system_prompt_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict representation, cleaning NaN values for JSON."""
         data = asdict(self)
@@ -258,15 +279,15 @@ class ProgramDatabase:
         read_only: bool = False,
     ):
         self.config = config
+        self.embedding_model = embedding_model
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
-        # Only create embedding client if not in read-only mode
-        # (e.g., WebUI doesn't need it for visualization)
-        if not read_only:
-            self.embedding_client = EmbeddingClient(model_name=embedding_model)
-        else:
-            self.embedding_client = None
+
+        # Lazy-init embedding client to avoid requiring API credentials for
+        # database-only operations and tests that do not compute embeddings.
+        self.embedding_client: Optional[EmbeddingClient] = None
+        self._embedding_client_init_failed = False
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
@@ -274,8 +295,14 @@ class ProgramDatabase:
         # For deferring expensive operations
         self._schedule_migration: bool = False
 
+        # Stagnation tracking for dynamic island spawning
+        self.best_score_generation: int = 0  # Generation when best score was found
+        self.best_score_ever: Optional[float] = None  # Track best score for comparison
+
         # Initialize island manager (will be set after db connection)
         self.island_manager: Optional[CombinedIslandManager] = None
+        # Initialize island sampler (will be set after db connection)
+        self.island_sampler: Optional[IslandSampler] = None
 
         db_path_str = getattr(self.config, "db_path", None)
 
@@ -330,11 +357,49 @@ class ProgramDatabase:
             config=self.config,
         )
 
+        # Initialize island sampler with configured strategy
+        island_selection_strategy = getattr(
+            self.config, "island_selection_strategy", "uniform"
+        )
+        self.island_sampler = create_island_sampler(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            strategy=island_selection_strategy,
+        )
+
         count = self._count_programs_in_db()
         logger.debug(f"DB initialized with {count} programs.")
         logger.debug(
             f"Last iter: {self.last_iteration}. Best ID: {self.best_program_id}"
         )
+
+    def _ensure_embedding_client(self) -> Optional[EmbeddingClient]:
+        """Create embedding client on demand.
+
+        Returns:
+            EmbeddingClient if available, otherwise None.
+        """
+        if self.read_only or not self.embedding_model:
+            return None
+        if self.embedding_client is not None:
+            return self.embedding_client
+        if self._embedding_client_init_failed:
+            return None
+
+        try:
+            self.embedding_client = EmbeddingClient(model_name=self.embedding_model)
+        except Exception as e:
+            self._embedding_client_init_failed = True
+            logger.warning(
+                "Embedding client init failed for model '%s'; "
+                "continuing without embedding recomputation: %s",
+                self.embedding_model,
+                e,
+            )
+            return None
+
+        return self.embedding_client
 
     def _create_tables(self):
         if not self.cursor or not self.conn:
@@ -377,7 +442,8 @@ class ProgramDatabase:
                 children_count INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,      -- JSON serialized Dict[str, Any]
                 migration_history TEXT, -- JSON of migration events
-                island_idx INTEGER  -- Add island_idx to the schema
+                island_idx INTEGER,  -- Add island_idx to the schema
+                system_prompt_id TEXT  -- ID of system prompt that generated this program
             )
             """
         )
@@ -394,6 +460,8 @@ class ProgramDatabase:
             "programs(children_count)",
             "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
             "programs(island_idx)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
+            "programs(system_prompt_id)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
@@ -428,12 +496,12 @@ class ProgramDatabase:
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
 
+        # Get current columns
+        self.cursor.execute("PRAGMA table_info(programs)")
+        columns = [row[1] for row in self.cursor.fetchall()]
+
         # Migration 1: Add text_feedback column if it doesn't exist
         try:
-            # Check if text_feedback column exists
-            self.cursor.execute("PRAGMA table_info(programs)")
-            columns = [row[1] for row in self.cursor.fetchall()]
-
             if "text_feedback" not in columns:
                 logger.info("Adding text_feedback column to programs table")
                 self.cursor.execute(
@@ -444,6 +512,18 @@ class ProgramDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during text_feedback migration: {e}")
             # Don't raise - this is not critical for existing functionality
+
+        # Migration 2: Add system_prompt_id column if it doesn't exist
+        try:
+            if "system_prompt_id" not in columns:
+                logger.info("Adding system_prompt_id column to programs table")
+                self.cursor.execute(
+                    "ALTER TABLE programs ADD COLUMN system_prompt_id TEXT"
+                )
+                self.conn.commit()
+                logger.info("Successfully added system_prompt_id column")
+        except sqlite3.Error as e:
+            logger.error(f"Error during system_prompt_id migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -488,6 +568,23 @@ class ProgramDatabase:
         if not row or row["value"] is None or row["value"] == "None":
             if not self.read_only:
                 self._update_metadata_in_db("beam_search_parent_id", None)
+
+        # Load stagnation tracking for dynamic island spawning
+        self.cursor.execute(
+            "SELECT value FROM metadata_store WHERE key = 'best_score_generation'"
+        )
+        row = self.cursor.fetchone()
+        self.best_score_generation = (
+            int(row["value"]) if row and row["value"] is not None else 0
+        )
+
+        self.cursor.execute(
+            "SELECT value FROM metadata_store WHERE key = 'best_score_ever'"
+        )
+        row = self.cursor.fetchone()
+        self.best_score_ever = (
+            float(row["value"]) if row and row["value"] is not None else None
+        )
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
@@ -590,9 +687,10 @@ class ProgramDatabase:
                     combined_score, public_metrics, private_metrics,
                     text_feedback, complexity, embedding, embedding_pca_2d,
                     embedding_pca_3d, embedding_cluster_id, correct,
-                    children_count, metadata, island_idx, migration_history)
+                    children_count, metadata, island_idx, migration_history,
+                    system_prompt_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     program.id,
@@ -618,6 +716,7 @@ class ProgramDatabase:
                     metadata_json,
                     program.island_idx,
                     migration_history_json,
+                    program.system_prompt_id,
                 ),
             )
 
@@ -682,6 +781,9 @@ class ProgramDatabase:
         # Check if migration should be scheduled
         if self.island_manager.should_schedule_migration(program):
             self._schedule_migration = True
+
+        # Check for stagnation and spawn new island if needed
+        self.check_and_spawn_island_if_stagnant(program.generation)
 
         self.check_scheduled_operations()
         return program.id
@@ -813,6 +915,52 @@ class ProgramDatabase:
         return self._program_from_row(row)
 
     @db_retry()
+    def get_ancestry(self, program_id: str, max_ancestors: int = 10) -> List[Program]:
+        """
+        Get the ancestry (lineage) of a program by walking up the parent chain.
+
+        Args:
+            program_id: ID of the program to get ancestry for
+            max_ancestors: Maximum number of ancestors to retrieve
+
+        Returns:
+            List of ancestor programs, sorted chronologically (oldest first)
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        ancestors: List[Program] = []
+        current_id = program_id
+
+        # Walk up the parent chain
+        for _ in range(max_ancestors):
+            self.cursor.execute(
+                "SELECT parent_id FROM programs WHERE id = ?", (current_id,)
+            )
+            row = self.cursor.fetchone()
+            if not row or not row["parent_id"]:
+                break
+
+            parent_id = row["parent_id"]
+            parent = self.get(parent_id)
+            if parent:
+                ancestors.append(parent)
+                current_id = parent_id
+            else:
+                break
+
+        # Reverse to get chronological order (oldest ancestor first)
+        ancestors.reverse()
+
+        if ancestors:
+            logger.info(
+                f"Retrieved {len(ancestors)} ancestors for program {program_id} "
+                f"(generations: {[p.generation for p in ancestors]})"
+            )
+
+        return ancestors
+
+    @db_retry()
     def sample(
         self,
         target_generation=None,
@@ -857,11 +1005,12 @@ class ProgramDatabase:
 
         # All islands initialized - sample island + constrain parents
         initialized_islands = self.island_manager.get_initialized_islands()
-        sampled_island = random.choice(initialized_islands)
+        sampled_island = self.island_sampler.sample_island(initialized_islands)
 
         logger.debug(f"Sampling from island {sampled_island}")
 
         # Use CombinedParentSelector with island constraint
+        # Don't pass update_metadata_func in read-only mode to avoid retry noise
         parent_selector = CombinedParentSelector(
             cursor=self.cursor,
             conn=self.conn,
@@ -870,7 +1019,9 @@ class ProgramDatabase:
             best_program_id=self.best_program_id,
             beam_search_parent_id=self.beam_search_parent_id,
             last_iteration=self.last_iteration,
-            update_metadata_func=self._update_metadata_in_db,
+            update_metadata_func=None
+            if self.read_only
+            else self._update_metadata_in_db,
             get_best_program_func=self.get_best_program,
         )
 
@@ -924,6 +1075,212 @@ class ProgramDatabase:
 
         return parent, archive_inspirations, top_k_inspirations
 
+    @db_retry()
+    def sample_with_fix_mode(
+        self,
+        target_generation=None,
+        novelty_attempt=None,
+        max_novelty_attempts=None,
+        resample_attempt=None,
+        max_resample_attempts=None,
+    ) -> Tuple[Program, List[Program], List[Program], bool]:
+        """
+        Sample a parent program, returning fix mode indicator if no correct
+        programs exist.
+
+        Returns:
+            Tuple of (parent, archive_inspirations, top_k_inspirations, needs_fix)
+            where needs_fix is True if no correct programs exist and fix mode
+            should be used.
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+
+        # Check if all islands are initialized
+        if not self.island_manager.are_all_islands_initialized():
+            # Check if there are any correct programs at all
+            self.cursor.execute(
+                "SELECT COUNT(*) as cnt FROM programs WHERE correct = 1"
+            )
+            correct_count = self.cursor.fetchone()["cnt"]
+
+            if correct_count > 0:
+                # There are correct programs, just not in all islands yet
+                # Use initial program (first program in database)
+                self.cursor.execute(
+                    "SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1"
+                )
+                row = self.cursor.fetchone()
+                if not row:
+                    raise RuntimeError("No programs found in database")
+                parent = self._program_from_row(row)
+                if not parent:
+                    raise RuntimeError("Failed to load initial program")
+                needs_fix = not parent.correct
+                logger.info(
+                    f"Not all islands initialized. "
+                    f"Using initial program {parent.id} (needs_fix={needs_fix})."
+                )
+            else:
+                # No correct programs exist - randomly sample from incorrect
+                self.cursor.execute("SELECT * FROM programs WHERE correct = 0")
+                rows = self.cursor.fetchall()
+                if rows:
+                    selected_row = rows[np.random.randint(len(rows))]
+                    parent = self._program_from_row(selected_row)
+                    if not parent:
+                        raise RuntimeError("Failed to load sampled program")
+                    needs_fix = True
+                    logger.info(
+                        f"No correct programs. Randomly sampled incorrect program "
+                        f"{parent.id} (Gen: {parent.generation}) "
+                        f"[from {len(rows)} incorrect programs]."
+                    )
+                else:
+                    # Fallback to initial program if no incorrect programs either
+                    self.cursor.execute(
+                        "SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1"
+                    )
+                    row = self.cursor.fetchone()
+                    if not row:
+                        raise RuntimeError("No programs found in database")
+                    parent = self._program_from_row(row)
+                    if not parent:
+                        raise RuntimeError("Failed to load initial program")
+                    needs_fix = not parent.correct
+                    logger.info(
+                        f"Not all islands initialized. "
+                        f"Using initial program {parent.id} (needs_fix={needs_fix})."
+                    )
+
+            # For fix mode, get ancestors as inspirations
+            if needs_fix:
+                num_ancestors = (
+                    self.config.num_archive_inspirations
+                    + self.config.num_top_k_inspirations
+                )
+                ancestor_inspirations = self.get_ancestry(
+                    parent.id, max_ancestors=num_ancestors
+                )
+                self._print_sampling_summary_helper(
+                    parent,
+                    [],
+                    [],
+                    target_generation,
+                    novelty_attempt,
+                    max_novelty_attempts,
+                    resample_attempt,
+                    max_resample_attempts,
+                    ancestor_inspirations=ancestor_inspirations,
+                    is_fix_mode=True,
+                )
+                # Return ancestors as archive_inspirations for fix mode
+                return parent, ancestor_inspirations, [], needs_fix
+            else:
+                self._print_sampling_summary_helper(
+                    parent,
+                    [],
+                    [],
+                    target_generation,
+                    novelty_attempt,
+                    max_novelty_attempts,
+                    resample_attempt,
+                    max_resample_attempts,
+                )
+                return parent, [], [], needs_fix
+
+        # All islands initialized - sample island + constrain parents
+        initialized_islands = self.island_manager.get_initialized_islands()
+        sampled_island = self.island_sampler.sample_island(initialized_islands)
+
+        logger.debug(f"Sampling from island {sampled_island}")
+
+        # Use CombinedParentSelector with island constraint
+        # Don't pass update_metadata_func in read-only mode to avoid retry noise
+        parent_selector = CombinedParentSelector(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            get_program_func=self.get,
+            best_program_id=self.best_program_id,
+            beam_search_parent_id=self.beam_search_parent_id,
+            last_iteration=self.last_iteration,
+            update_metadata_func=None
+            if self.read_only
+            else self._update_metadata_in_db,
+            get_best_program_func=self.get_best_program,
+        )
+
+        # Use the new method that returns fix mode
+        parent, needs_fix = parent_selector.sample_parent_with_fix_mode(
+            island_idx=sampled_island
+        )
+        if not parent:
+            raise RuntimeError(f"Failed to sample parent from island {sampled_island}")
+
+        # If in fix mode, don't sample inspirations (they'd all be incorrect too)
+        if needs_fix:
+            logger.info(
+                f"FIX MODE: Using incorrect program {parent.id} "
+                f"(Gen: {parent.generation}, Score: {parent.combined_score})"
+            )
+            self._print_sampling_summary_helper(
+                parent,
+                [],
+                [],
+                target_generation,
+                novelty_attempt,
+                max_novelty_attempts,
+                resample_attempt,
+                max_resample_attempts,
+            )
+            return parent, [], [], True
+
+        # Normal mode - sample inspirations
+        num_archive_insp = (
+            self.config.num_archive_inspirations
+            if hasattr(self.config, "num_archive_inspirations")
+            else 5
+        )
+        num_top_k_insp = (
+            self.config.num_top_k_inspirations
+            if hasattr(self.config, "num_top_k_inspirations")
+            else 2
+        )
+
+        context_selector = CombinedContextSelector(
+            cursor=self.cursor,
+            conn=self.conn,
+            config=self.config,
+            get_program_func=self.get,
+            best_program_id=self.best_program_id,
+            get_island_idx_func=self.island_manager.get_island_idx,
+            program_from_row_func=self._program_from_row,
+        )
+
+        archive_inspirations, top_k_inspirations = context_selector.sample_context(
+            parent, num_archive_insp, num_top_k_insp
+        )
+
+        logger.debug(
+            f"Sampled parent {parent.id} from island {sampled_island}, "
+            f"{len(archive_inspirations)} archive inspirations, "
+            f"{len(top_k_inspirations)} top-k inspirations."
+        )
+
+        self._print_sampling_summary_helper(
+            parent,
+            archive_inspirations,
+            top_k_inspirations,
+            target_generation,
+            novelty_attempt,
+            max_novelty_attempts,
+            resample_attempt,
+            max_resample_attempts,
+        )
+
+        return parent, archive_inspirations, top_k_inspirations, False
+
     def _print_sampling_summary_helper(
         self,
         parent,
@@ -934,6 +1291,8 @@ class ProgramDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
+        ancestor_inspirations=None,
+        is_fix_mode=False,
     ):
         """Helper method to print sampling summary."""
         if not hasattr(self, "_database_display"):
@@ -955,6 +1314,8 @@ class ProgramDatabase:
             max_novelty_attempts,
             resample_attempt,
             max_resample_attempts,
+            ancestor_inspirations,
+            is_fix_mode,
         )
 
     @db_retry()
@@ -1070,6 +1431,98 @@ class ProgramDatabase:
         programs = [self._program_from_row(row) for row in rows]
         # Filter out any None values that might result from row processing errors
         return [p for p in programs if p is not None]
+
+    @db_retry()
+    def get_programs_summary(self) -> List[Dict[str, Any]]:
+        """
+        Get lightweight summary of all programs for visualization.
+        Excludes heavy fields like code, embeddings, and large metadata.
+        Returns raw dicts instead of Program objects for efficiency.
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        self.cursor.execute(
+            """
+            SELECT
+                p.id,
+                p.parent_id,
+                p.generation,
+                p.timestamp,
+                p.combined_score,
+                p.correct,
+                p.complexity,
+                p.island_idx,
+                p.children_count,
+                p.public_metrics,
+                p.private_metrics,
+                p.metadata,
+                p.embedding_pca_2d,
+                p.embedding_pca_3d,
+                p.embedding_cluster_id,
+                p.language,
+                p.top_k_inspiration_ids,
+                p.archive_inspiration_ids,
+                p.migration_history,
+                CASE WHEN a.program_id IS NOT NULL THEN 1 ELSE 0 END as in_archive
+            FROM programs p
+            LEFT JOIN archive a ON p.id = a.program_id
+            """
+        )
+        rows = self.cursor.fetchall()
+        summaries = []
+        for row in rows:
+            row_dict = dict(row)
+            # Parse only the lightweight JSON fields
+            for json_field in ["public_metrics", "private_metrics", "metadata"]:
+                if row_dict.get(json_field):
+                    try:
+                        row_dict[json_field] = json.loads(row_dict[json_field])
+                    except json.JSONDecodeError:
+                        row_dict[json_field] = {}
+                else:
+                    row_dict[json_field] = {}
+            # Parse PCA embeddings (small arrays)
+            for pca_field in ["embedding_pca_2d", "embedding_pca_3d"]:
+                if row_dict.get(pca_field):
+                    try:
+                        row_dict[pca_field] = json.loads(row_dict[pca_field])
+                    except json.JSONDecodeError:
+                        row_dict[pca_field] = []
+                else:
+                    row_dict[pca_field] = []
+            # Parse inspiration IDs and migration history (small arrays)
+            for list_field in [
+                "top_k_inspiration_ids",
+                "archive_inspiration_ids",
+                "migration_history",
+            ]:
+                if row_dict.get(list_field):
+                    try:
+                        row_dict[list_field] = json.loads(row_dict[list_field])
+                    except json.JSONDecodeError:
+                        row_dict[list_field] = []
+                else:
+                    row_dict[list_field] = []
+            row_dict["in_archive"] = bool(row_dict.get("in_archive", 0))
+            summaries.append(row_dict)
+        return summaries
+
+    @db_retry()
+    def get_program_count_and_timestamp(self) -> Dict[str, Any]:
+        """
+        Get program count and max timestamp for efficient change detection.
+        Used by auto-refresh to check if data has changed without loading all programs.
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        self.cursor.execute(
+            "SELECT COUNT(*) as count, MAX(timestamp) as max_timestamp FROM programs"
+        )
+        row = self.cursor.fetchone()
+        return {
+            "count": row["count"] if row else 0,
+            "max_timestamp": row["max_timestamp"] if row else None,
+        }
 
     @db_retry()
     def get_programs_by_generation(self, generation: int) -> List[Program]:
@@ -1271,44 +1724,247 @@ class ProgramDatabase:
             f"Last iter: {self.last_iteration}."
         )
 
-    def _is_better(self, program1: Program, program2: Program) -> bool:
-        # First prioritize correctness
+    def _get_criterion_value(self, program: Program, criterion: str) -> float:
+        """
+        Get the value of a specific criterion for a program.
+
+        Supported criteria:
+            - combined_score: The program's combined fitness score
+            - loc: Lines of code
+            - lloc: Logical lines of code
+            - complexity: Cyclomatic complexity
+            - maintainability: Maintainability index
+            - nesting: Maximum nesting depth
+        """
+        if criterion == "combined_score":
+            return program.combined_score or 0.0
+
+        # Get code analysis metrics from metadata
+        metrics = {}
+        if program.metadata:
+            metrics = program.metadata.get("code_analysis_metrics", {})
+
+        if criterion == "loc":
+            return metrics.get(
+                "lines_of_code", len(program.code.split("\n")) if program.code else 1
+            )
+        elif criterion == "lloc":
+            return metrics.get(
+                "logical_lines_of_code",
+                len(program.code.split("\n")) if program.code else 1,
+            )
+        elif criterion == "complexity":
+            return metrics.get("cyclomatic_complexity", 1.0)
+        elif criterion == "maintainability":
+            return metrics.get("maintainability_index", 100.0)
+        elif criterion == "nesting":
+            return metrics.get("max_nesting_depth", 1)
+
+        # Unknown criterion - return 0
+        logger.warning(f"Unknown archive criterion: {criterion}")
+        return 0.0
+
+    def _compute_archive_score_ranked(
+        self, program: Program, archive_programs: List[Program]
+    ) -> float:
+        """
+        Compute score using rank-based normalization for scale-invariant comparison.
+
+        Each criterion is converted to a percentile rank (0-1) based on the
+        archive population, then weighted according to archive_criteria config.
+
+        Args:
+            program: The program to score
+            archive_programs: Current archive programs for rank computation
+
+        Returns:
+            Combined score where higher is always better
+        """
+        criteria = getattr(self.config, "archive_criteria", {"combined_score": 1.0})
+
+        if not archive_programs:
+            # No archive yet - just use the primary criterion
+            primary_criterion = next(iter(criteria.keys()), "combined_score")
+            primary_weight = criteria.get(primary_criterion, 1.0)
+            value = self._get_criterion_value(program, primary_criterion)
+            return value if primary_weight > 0 else -value
+
+        all_programs = archive_programs + [program]
+
+        score = 0.0
+        for criterion, weight in criteria.items():
+            # Get values for all programs
+            values = [self._get_criterion_value(p, criterion) for p in all_programs]
+            program_value = values[-1]  # The new program's value
+
+            # Compute percentile rank (0 = worst, 1 = best)
+            if weight > 0:
+                # Higher is better: count how many are strictly worse
+                rank = sum(1 for v in values if v < program_value) / len(values)
+            else:
+                # Lower is better: count how many are strictly worse (i.e., higher)
+                rank = sum(1 for v in values if v > program_value) / len(values)
+                weight = abs(weight)  # Use absolute weight after handling direction
+
+            score += weight * rank
+
+        return score
+
+    def _get_archive_programs(self) -> List[Program]:
+        """Fetch all programs currently in the archive."""
+        if not self.cursor:
+            return []
+
+        self.cursor.execute(
+            "SELECT p.* FROM programs p JOIN archive a ON p.id = a.program_id"
+        )
+        rows = self.cursor.fetchall()
+
+        programs = []
+        for row in rows:
+            prog = self._program_from_row(row)
+            if prog:
+                programs.append(prog)
+
+        return programs
+
+    def _find_most_similar_in_archive(
+        self, embedding: List[float]
+    ) -> Optional[Program]:
+        """
+        Find the most similar program in the archive by embedding cosine similarity.
+        Used for crowding-based archive selection.
+
+        Args:
+            embedding: The embedding vector to compare against
+
+        Returns:
+            The most similar program, or None if no valid comparisons possible
+        """
+        if not embedding or not self.cursor:
+            return None
+
+        self.cursor.execute(
+            "SELECT p.* FROM programs p JOIN archive a ON p.id = a.program_id"
+        )
+        rows = self.cursor.fetchall()
+
+        if not rows:
+            return None
+
+        best_similarity = -float("inf")
+        most_similar = None
+
+        embedding_arr = np.array(embedding)
+        embedding_norm = np.linalg.norm(embedding_arr)
+
+        if embedding_norm < 1e-8:
+            return None
+
+        for row in rows:
+            prog = self._program_from_row(row)
+            if not prog or not prog.embedding:
+                continue
+
+            prog_embedding = np.array(prog.embedding)
+            prog_norm = np.linalg.norm(prog_embedding)
+
+            if prog_norm < 1e-8:
+                continue
+
+            # Cosine similarity
+            similarity = np.dot(embedding_arr, prog_embedding) / (
+                embedding_norm * prog_norm
+            )
+
+            if similarity > best_similarity:
+                best_similarity = similarity
+                most_similar = prog
+
+        return most_similar
+
+    def _is_better(
+        self,
+        program1: Program,
+        program2: Program,
+        archive_programs: Optional[List[Program]] = None,
+    ) -> bool:
+        """
+        Compare two programs to determine if program1 is better than program2.
+
+        Args:
+            program1: First program to compare
+            program2: Second program to compare
+            archive_programs: Optional archive context for rank-based scoring.
+                If provided and archive_criteria has multiple criteria,
+                uses rank-based normalization for scale-invariant comparison.
+
+        Returns:
+            True if program1 is better than program2
+        """
+        # First prioritize correctness (always)
         if program1.correct and not program2.correct:
             return True
         if program2.correct and not program1.correct:
             return False
 
-        # If both have same correctness status, compare scores
-        s1 = program1.combined_score
-        s2 = program2.combined_score
+        # Check if we should use multi-criteria ranked scoring
+        criteria = getattr(self.config, "archive_criteria", {"combined_score": 1.0})
+        use_ranked = archive_programs is not None and len(criteria) > 1
 
-        if s1 is not None and s2 is not None:
+        if use_ranked:
+            # Use rank-based scoring with archive context
+            # Include both programs for fair ranking
+            context = [
+                p for p in archive_programs if p.id not in (program1.id, program2.id)
+            ]
+            s1 = self._compute_archive_score_ranked(program1, context)
+            s2 = self._compute_archive_score_ranked(program2, context)
+
             if s1 != s2:
                 return s1 > s2
-        elif s1 is not None:
-            return True  # p1 has score, p2 doesn't
-        elif s2 is not None:
-            return False  # p2 has score, p1 doesn't
+        else:
+            # Simple single-criterion comparison (original behavior)
+            s1 = program1.combined_score
+            s2 = program2.combined_score
 
-        try:
-            avg1 = (
-                sum(program1.public_metrics.values()) / len(program1.public_metrics)
-                if program1.public_metrics
-                else -float("inf")
-            )
-            avg2 = (
-                sum(program2.public_metrics.values()) / len(program2.public_metrics)
-                if program2.public_metrics
-                else -float("inf")
-            )
-            if avg1 != avg2:
-                return avg1 > avg2
-        except Exception:
-            return False
-        return program1.timestamp > program2.timestamp  # Tie-breaker
+            if s1 is not None and s2 is not None:
+                if s1 != s2:
+                    return s1 > s2
+            elif s1 is not None:
+                return True  # p1 has score, p2 doesn't
+            elif s2 is not None:
+                return False  # p2 has score, p1 doesn't
+
+            # Fallback to average public metrics
+            try:
+                avg1 = (
+                    sum(program1.public_metrics.values()) / len(program1.public_metrics)
+                    if program1.public_metrics
+                    else -float("inf")
+                )
+                avg2 = (
+                    sum(program2.public_metrics.values()) / len(program2.public_metrics)
+                    if program2.public_metrics
+                    else -float("inf")
+                )
+                if avg1 != avg2:
+                    return avg1 > avg2
+            except Exception:
+                pass
+
+        # Tie-breaker: prefer newer programs
+        return program1.timestamp > program2.timestamp
 
     @db_retry()
     def _update_archive(self, program: Program) -> None:
+        """
+        Update the archive with a new program using the configured selection strategy.
+
+        Strategies:
+            - "fitness": Replace the worst program globally (classic approach)
+            - "crowding": Replace the most similar program if better (maintains diversity)
+        """
         if (
             not self.cursor
             or not self.conn
@@ -1327,66 +1983,121 @@ class ProgramDatabase:
         count = (self.cursor.fetchone() or [0])[0]
 
         if count < self.config.archive_size:
+            # Archive not full - add directly
             self.cursor.execute(
                 "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                 (program.id,),
             )
-        else:  # Archive is full, find worst to replace
+            self.conn.commit()
+            logger.debug(f"Program {program.id} added to archive (space available).")
+            return
+
+        # Archive is full - use strategy to decide replacement
+        strategy = getattr(self.config, "archive_selection_strategy", "fitness")
+
+        if strategy == "crowding":
+            self._update_archive_crowding(program)
+        else:  # "fitness" - default behavior
+            self._update_archive_fitness(program)
+
+    def _update_archive_fitness(self, program: Program) -> None:
+        """
+        Fitness-based archive update: replace the worst program globally.
+
+        Uses rank-based scoring if multiple criteria are configured.
+        """
+        # Fetch full archive programs for multi-criteria comparison
+        archive_programs = self._get_archive_programs()
+
+        if not archive_programs:
             self.cursor.execute(
-                "SELECT a.program_id, p.combined_score, p.timestamp, p.correct "
-                "FROM archive a JOIN programs p ON a.program_id = p.id"
+                "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
+                (program.id,),
             )
-            archived_rows = self.cursor.fetchall()
-            if not archived_rows:  # Should not happen if count was > 0
-                self.cursor.execute(
-                    "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
-                    (program.id,),
-                )
-                self.conn.commit()
-                return
+            self.conn.commit()
+            return
 
-            archive_programs_for_cmp = []
-            for r_data in archived_rows:
-                # Create minimal Program-like dict for _is_better
-                combined_score_val = r_data["combined_score"]
-                # This is a simplified way, _is_better needs Program objects
-                # For full Program object: self.get(r_data["program_id"]) but could be slow
-                archive_programs_for_cmp.append(
-                    Program(
-                        id=r_data["program_id"],
-                        code="",
-                        combined_score=combined_score_val,
-                        timestamp=r_data["timestamp"],
-                        correct=bool(r_data["correct"]),
-                    )
-                )
+        # Find the worst program using ranked scoring
+        criteria = getattr(self.config, "archive_criteria", {"combined_score": 1.0})
 
-            if (
-                not archive_programs_for_cmp
-            ):  # Should be populated if archived_rows existed
-                self.cursor.execute(
-                    "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
-                    (program.id,),
-                )
-                self.conn.commit()
-                return
-
-            worst_in_archive = archive_programs_for_cmp[0]
-            for p_archived in archive_programs_for_cmp[1:]:
+        if len(criteria) > 1:
+            # Multi-criteria: use ranked scoring to find worst
+            scores = [
+                (p, self._compute_archive_score_ranked(p, archive_programs))
+                for p in archive_programs
+            ]
+            worst_in_archive = min(scores, key=lambda x: x[1])[0]
+        else:
+            # Single criterion: find worst by pairwise comparison
+            worst_in_archive = archive_programs[0]
+            for p_archived in archive_programs[1:]:
                 if self._is_better(worst_in_archive, p_archived):
                     worst_in_archive = p_archived
 
-            if self._is_better(program, worst_in_archive):
-                self.cursor.execute(
-                    "DELETE FROM archive WHERE program_id = ?",
-                    (worst_in_archive.id,),
-                )
-                self.cursor.execute(
-                    "INSERT INTO archive (program_id) VALUES (?)", (program.id,)
-                )
-                logger.info(
-                    f"Program {program.id} replaced {worst_in_archive.id} in archive."
-                )
+        # Check if new program is better than the worst
+        if self._is_better(program, worst_in_archive, archive_programs):
+            self.cursor.execute(
+                "DELETE FROM archive WHERE program_id = ?",
+                (worst_in_archive.id,),
+            )
+            self.cursor.execute(
+                "INSERT INTO archive (program_id) VALUES (?)", (program.id,)
+            )
+
+            # Log with score information
+            p_score = program.combined_score or 0.0
+            w_score = worst_in_archive.combined_score or 0.0
+            logger.info(
+                f"Program {program.id} (score={p_score:.4f}) replaced "
+                f"{worst_in_archive.id} (score={w_score:.4f}) in archive [fitness]."
+            )
+
+        self.conn.commit()
+
+    def _update_archive_crowding(self, program: Program) -> None:
+        """
+        Crowding-based archive update: replace the most similar program if better.
+
+        This maintains diversity by making new programs compete with their
+        "neighbors" in solution space rather than globally worst programs.
+        Falls back to fitness-based if no embedding is available.
+        """
+        # Check if program has embedding for similarity computation
+        if not program.embedding:
+            logger.debug(
+                f"Program {program.id} has no embedding, falling back to fitness-based."
+            )
+            return self._update_archive_fitness(program)
+
+        # Find most similar program in archive
+        most_similar = self._find_most_similar_in_archive(program.embedding)
+
+        if most_similar is None:
+            logger.debug(
+                "No similar programs found in archive, falling back to fitness-based."
+            )
+            return self._update_archive_fitness(program)
+
+        # Get archive for ranked comparison
+        archive_programs = self._get_archive_programs()
+
+        # Only replace if better than the similar program (niching)
+        if self._is_better(program, most_similar, archive_programs):
+            self.cursor.execute(
+                "DELETE FROM archive WHERE program_id = ?",
+                (most_similar.id,),
+            )
+            self.cursor.execute(
+                "INSERT INTO archive (program_id) VALUES (?)", (program.id,)
+            )
+
+            p_score = program.combined_score or 0.0
+            s_score = most_similar.combined_score or 0.0
+            logger.info(
+                f"Program {program.id} (score={p_score:.4f}) replaced similar program "
+                f"{most_similar.id} (score={s_score:.4f}) in archive [crowding]."
+            )
+
         self.conn.commit()
 
     @db_retry()
@@ -1403,6 +2114,18 @@ class ProgramDatabase:
         if current_best_p is None or self._is_better(program, current_best_p):
             self.best_program_id = program.id
             self._update_metadata_in_db("best_program_id", self.best_program_id)
+
+            # Update stagnation tracking - new best found
+            program_score = program.combined_score or 0.0
+            if self.best_score_ever is None or program_score > self.best_score_ever:
+                self.best_score_ever = program_score
+                self.best_score_generation = program.generation
+                self._update_metadata_in_db(
+                    "best_score_generation", str(self.best_score_generation)
+                )
+                self._update_metadata_in_db(
+                    "best_score_ever", str(self.best_score_ever)
+                )
 
             log_msg = f"New best program: {program.id}"
             if current_best_p:
@@ -1456,6 +2179,56 @@ class ProgramDatabase:
             logger.info("Running scheduled migration operation")
             self.island_manager.perform_migration(self.last_iteration)
             self._schedule_migration = False
+
+    def is_stagnant(self, current_generation: int) -> bool:
+        """Check if evolution is stagnant based on generations without improvement.
+
+        Args:
+            current_generation: The current generation number
+
+        Returns:
+            True if stagnant (no improvement for stagnation_threshold generations)
+        """
+        if not getattr(self.config, "enable_dynamic_islands", False):
+            return False
+
+        threshold = getattr(self.config, "stagnation_threshold", 100)
+        gens_since_improvement = current_generation - self.best_score_generation
+
+        return gens_since_improvement >= threshold
+
+    def check_and_spawn_island_if_stagnant(self, current_generation: int) -> bool:
+        """Check for stagnation and spawn a new island if needed.
+
+        Args:
+            current_generation: The current generation number
+
+        Returns:
+            True if a new island was spawned, False otherwise
+        """
+        if not self.is_stagnant(current_generation):
+            return False
+
+        if not self.island_manager:
+            logger.warning("Cannot spawn island: no island manager configured")
+            return False
+
+        # Spawn new island
+        spawned = self.island_manager.spawn_new_island()
+
+        if spawned:
+            # Reset stagnation tracking
+            self.best_score_generation = current_generation
+            self._update_metadata_in_db(
+                "best_score_generation", str(self.best_score_generation)
+            )
+            gens_stagnant = current_generation - self.best_score_generation
+            logger.info(
+                f"🏝️ Spawned new island due to stagnation "
+                f"(no improvement for {gens_stagnant} generations)"
+            )
+
+        return spawned
 
     def close(self):
         """Closes the database connection."""
@@ -1738,6 +2511,9 @@ class ProgramDatabase:
 
         program_ids = [row["id"] for row in rows]
         embeddings = [json.loads(row["embedding"]) for row in rows]
+        embedding_client = self._ensure_embedding_client()
+        if embedding_client is None:
+            return
 
         # Use EmbeddingClient for dim reduction and clustering
         try:
@@ -1745,13 +2521,13 @@ class ProgramDatabase:
                 "Recomputing PCA-reduced embedding features for %s programs.",
                 len(program_ids),
             )
-            reduced_2d = self.embedding_client.get_dim_reduction(
+            reduced_2d = embedding_client.get_dim_reduction(
                 embeddings, method="pca", dims=2
             )
-            reduced_3d = self.embedding_client.get_dim_reduction(
+            reduced_3d = embedding_client.get_dim_reduction(
                 embeddings, method="pca", dims=3
             )
-            cluster_ids = self.embedding_client.get_embedding_clusters(
+            cluster_ids = embedding_client.get_embedding_clusters(
                 embeddings, num_clusters=num_clusters
             )
         except Exception as e:
@@ -1823,6 +2599,9 @@ class ProgramDatabase:
 
             program_ids = [row["id"] for row in rows]
             embeddings = [json.loads(row["embedding"]) for row in rows]
+            embedding_client = self._ensure_embedding_client()
+            if embedding_client is None:
+                return
 
             # Use EmbeddingClient for dim reduction and clustering
             try:
@@ -1832,19 +2611,19 @@ class ProgramDatabase:
                 )
 
                 logger.info("Computing 2D PCA reduction...")
-                reduced_2d = self.embedding_client.get_dim_reduction(
+                reduced_2d = embedding_client.get_dim_reduction(
                     embeddings, method="pca", dims=2
                 )
                 logger.info("2D PCA reduction completed")
 
                 logger.info("Computing 3D PCA reduction...")
-                reduced_3d = self.embedding_client.get_dim_reduction(
+                reduced_3d = embedding_client.get_dim_reduction(
                     embeddings, method="pca", dims=3
                 )
                 logger.info("3D PCA reduction completed")
 
                 logger.info(f"Computing GMM clustering with {num_clusters} clusters...")
-                cluster_ids = self.embedding_client.get_embedding_clusters(
+                cluster_ids = embedding_client.get_embedding_clusters(
                     embeddings, num_clusters=num_clusters
                 )
                 logger.info("GMM clustering completed")

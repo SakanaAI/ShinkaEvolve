@@ -28,7 +28,8 @@ A description and argumentation process of the code you are proposing.
 * Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code. Do not change the code outside of these markers.
 * Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
 * Make sure the file still runs after your changes.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards."""
+* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+""".rstrip()
 
 # Variant 1: Completely Different Algorithm
 FULL_SYS_FORMAT_DIFFERENT = """
@@ -54,7 +55,8 @@ Explain the completely different algorithmic approach you are taking and why it 
 * Your algorithm should solve the same problem but use a fundamentally different approach.
 * Ensure the same inputs and outputs are maintained.
 * Think outside the box - consider different data structures, algorithms, or paradigms.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards."""
+* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+""".rstrip()
 
 
 # Variant 2: Motivated by Context but Different
@@ -81,7 +83,8 @@ Explain how you drew inspiration from the context programs and what novel approa
 * Learn from the context programs but don't copy their approaches directly.
 * Combine ideas in novel ways or apply insights to different algorithmic paradigms.
 * Maintain the same inputs and outputs as the original program.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards."""
+* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+""".rstrip()
 
 
 # Variant 3: Structural Modification
@@ -108,7 +111,8 @@ Describe the structural changes you are making and how they improve the program'
 * Focus on changing the program's structure: modularization, data flow, control flow, or architectural patterns.
 * The core problem-solving approach may be similar but organized differently.
 * Ensure the same inputs and outputs are maintained.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards."""
+* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+""".rstrip()
 
 
 # Variant 4: Parameter-Based Algorithm Design
@@ -136,7 +140,8 @@ Identify the key parameters in the current approach and explain how your new par
 * Design a new algorithm with different parameter values or configurations.
 * Consider adaptive parameters, different optimization strategies, or alternative heuristics.
 * Maintain the same inputs and outputs as the original program.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards."""
+* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+""".rstrip()
 
 # List of all variants for sampling
 FULL_SYS_FORMATS = [
@@ -158,9 +163,7 @@ FULL_SYS_FORMAT_NAMES = [
 
 FULL_ITER_MSG = """# Current program
 
-Here is the current program we are trying to improve (you will need to 
-propose a new program with the same inputs and outputs as the original 
-program, but with improved internal implementation):
+Here is the current program we are trying to improve (you will need to propose a new program with the same inputs and outputs as the original program, but with improved internal implementation):
 
 ```{language}
 {code_content}
@@ -176,4 +179,4 @@ Rewrite the program to improve its performance on the specified metrics.
 Provide the complete new program code.
 
 IMPORTANT: Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
-"""
+""".rstrip()
