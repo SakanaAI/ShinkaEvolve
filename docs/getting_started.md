@@ -255,11 +255,16 @@ def main(program_path: str, results_dir: str):
         results_dir=results_dir,
         experiment_fn_name="run_packing",        # Function to call in evolved code
         num_runs=1,                              # Number of test runs
+        run_workers=1,                           # >1 enables per-run process parallelism
         get_experiment_kwargs=get_kwargs_fn,     # Arguments for each run
         validate_fn=validation_function,         # Validation logic
         aggregate_metrics_fn=metrics_function,   # Metrics computation
     )
 ```
+
+`run_workers` controls only repeated runs *inside one evaluation script call*.  
+This is separate from evolution-level job concurrency (`max_parallel_jobs`).  
+Early stopping (`early_stop_method`) is currently supported only with `run_workers=1`.
 
 **Key Components:**
 
