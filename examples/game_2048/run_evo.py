@@ -61,7 +61,7 @@ evo_config = EvolutionConfig(
     llm_models=[
         # "gemini-2.5-pro",
         "gemini-2.5-flash",
-        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
         "o4-mini",
         # "gpt-5",
         "gpt-5-mini",

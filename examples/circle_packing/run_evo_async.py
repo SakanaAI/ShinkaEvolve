@@ -48,6 +48,6 @@ async def main(config_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_path", type=str, default="shinka.yaml")
+    parser.add_argument("--config_path", type=str, default="shinka_small.yaml")
     args = parser.parse_args()
     asyncio.run(main(args.config_path))
