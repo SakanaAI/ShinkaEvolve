@@ -1,5 +1,6 @@
 import backoff
 import logging
+from typing import Any, cast
 from google.genai import types
 from .pricing import calculate_cost
 from .result import QueryResult
@@ -10,6 +11,24 @@ logger = logging.getLogger(__name__)
 MAX_TRIES = 20
 MAX_VALUE = 20
 MAX_TIME = 600
+
+
+def build_gemini_thinking_config(thinking_budget: int):
+    """Build Gemini ThinkingConfig across SDK versions.
+
+    Newer google-genai versions only expose include_thoughts/includeThoughts.
+    Older versions also support thinking_budget/thinkingBudget.
+    """
+    model_fields = getattr(types.ThinkingConfig, "model_fields", {})
+    config_kwargs: dict[str, object] = {"include_thoughts": True}
+
+    if "thinking_budget" in model_fields:
+        config_kwargs["thinking_budget"] = int(thinking_budget)
+    elif "thinkingBudget" in model_fields:
+        config_kwargs["thinkingBudget"] = int(thinking_budget)
+
+    thinking_config_cls = cast(Any, types.ThinkingConfig)
+    return thinking_config_cls(**config_kwargs)
 
 
 def get_gemini_costs(response, model):
@@ -146,9 +165,7 @@ def query_gemini(
         max_output_tokens=int(max_tokens),
         system_instruction=system_msg if system_msg else None,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        thinking_config=types.ThinkingConfig(
-            thinking_budget=int(thinking_budget), include_thoughts=True
-        ),
+        thinking_config=build_gemini_thinking_config(thinking_budget),
     )
 
     response = client.models.generate_content(
@@ -224,9 +241,7 @@ async def query_gemini_async(
         max_output_tokens=int(max_tokens),
         system_instruction=system_msg if system_msg else None,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        thinking_config=types.ThinkingConfig(
-            thinking_budget=int(thinking_budget), include_thoughts=True
-        ),
+        thinking_config=build_gemini_thinking_config(thinking_budget),
     )
 
     response = await client.aio.models.generate_content(
