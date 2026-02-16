@@ -10,6 +10,8 @@ These notes summarize local changes since the last commit.
 - Refactored LLM + embedding stack into provider-based modules.
 - Major WebUI refresh with dashboard + compare views and new API endpoints.
 
+![Image #1](async_speed.png)
+
 ## Cost Budgeting (`max_api_costs`)
 
 - `max_api_costs` is now a first-class runtime budget guard in evolution runners.
