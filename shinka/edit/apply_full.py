@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional, Union
 from .apply_diff import write_git_diff, _mutable_ranges, EVOLVE_START, EVOLVE_END
 from shinka.llm import extract_between
+from shinka.utils.languages import get_code_fence_languages, get_language_extension
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,19 +26,31 @@ def apply_full_patch(
     else:
         original = original_str
 
+    # Validate language early and derive shared metadata.
+    suffix = f".{get_language_extension(language)}"
+    language_fences = get_code_fence_languages(language)
+
     error_message: Optional[str] = None
     # Init with original content and 0 applied patches in case of error
     updated_content: str = original
     num_applied: int = 0
     output_path: Optional[Path] = None
 
-    # Extract code from language fences
-    extracted_code = extract_between(
-        patch_str,
-        f"```{language}",
-        "```",
-        False,
-    )
+    # Extract code from language fences (accept canonical and common aliases).
+    extracted_code = "none"
+    for language_fence in language_fences:
+        extracted_code = extract_between(
+            patch_str,
+            f"```{language_fence}",
+            "```",
+            False,
+        )
+        if (
+            extracted_code is not None
+            and not isinstance(extracted_code, dict)
+            and extracted_code != "none"
+        ):
+            break
 
     # Handle the case where extract_between returns None, dict, or "none"
     if (
@@ -255,21 +268,6 @@ def apply_full_patch(
     except Exception as e:
         error_message = f"Error applying full patch: {str(e)}"
         return original, 0, None, error_message, None, None
-
-    if language == "python":
-        suffix = ".py"
-    elif language == "cpp":
-        suffix = ".cpp"
-    elif language == "cuda":
-        suffix = ".cu"
-    elif language == "rust":
-        suffix = ".rs"
-    elif language == "swift":
-        suffix = ".swift"
-    elif language in ["json", "json5"]:
-        suffix = ".json"
-    else:
-        raise ValueError(f"Language {language} not supported")
 
     # If successful, proceed to write files if patch_dir is specified
     if patch_dir is not None:
