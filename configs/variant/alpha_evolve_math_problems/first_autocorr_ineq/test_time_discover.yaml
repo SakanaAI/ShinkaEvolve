@@ -10,7 +10,7 @@ defaults:
 variant_suffix: _test_time_discover
 
 job_config:
-  python_path: examples/alpha_evolve_math_problems/.venv/bin/python
+  #python_path: examples/alpha_evolve_math_problems/.venv/bin/python
   time: "00:2:00"  # Max time for the entire job (HH:MM:SS)
 
 evo_config:
