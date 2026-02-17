@@ -17,6 +17,8 @@ claude-opus-4-5-20251101,anthropic,5.0,25.0,,,,True,1,0
 global.anthropic.claude-opus-4-5-20251101-v1:0,bedrock,5.0,25.0,,,,True,1,0
 claude-opus-4-6,anthropic,5.0,25.0,10.0,37.5,200000,True,1,0
 global.anthropic.claude-opus-4-6-v1,bedrock,5.0,25.0,10.0,37.5,200000,True,1,0
+claude-sonnet-4-6,anthropic,3.0,15.0,6.0,22.5,200000,True,1,0
+us.anthropic.claude-sonnet-4-6-v1:0,bedrock,3.0,15.0,6.0,22.5,200000,True,1,0
 o1,openai,15.0,60.0,,,," True"," 1"," 0"
 o3-mini-2025-01-31,openai,1.1,4.4,,,," True"," 1"," 0"
 o3-mini,openai,1.1,4.4,,,," True"," 1"," 0"
