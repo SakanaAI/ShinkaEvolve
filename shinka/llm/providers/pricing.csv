@@ -43,6 +43,7 @@ deepseek-chat,deepseek,0.28,0.42,,,," False"," 0"," 0"
 deepseek-reasoner,deepseek,0.28,0.42,,,," True"," 0"," 0"
 gemini-3-flash-preview,google,0.5,3.0,,,,True,0,0
 gemini-3-pro-preview,google,2.0,12.0,4.0,18.0,200000,True,0,0
+gemini-3.1-pro-preview,google,2.0,12.0,4.0,18.0,200000,True,0,0
 gemini-2.5-pro,google,1.25,10.0,2.5,15.0,200000," True"," 0"," 0"
 gemini-2.5-flash,google,0.3,2.5,,,," True"," 0"," 0"
 gemini-2.5-flash-lite,google,0.1,0.4,,,,True,0,0
