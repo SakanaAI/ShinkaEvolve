@@ -1,0 +1,13 @@
+evaluate_function:
+  _target_: examples.alpha_evolve_math_problems.first_autocorr_ineq.evaluate.main
+  program_path: ???
+  results_dir: ???
+
+distributed_job_config:
+  eval_program_path: "shinka/eval_hydra.py"
+
+exp_name: "alpha_evolve_math_problems/first_autocorr_ineq"
+
+evo_config:
+  language: python
+  job_type: "local"
