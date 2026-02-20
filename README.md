@@ -59,7 +59,7 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
 | 🎮 [Game 2048](examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
 | ∑ [Julia Prime Counting](examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
-| ✨ [Novelty Generator](examples/novelty_generator_bck) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
+| ✨ [Novelty Generator](examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
