@@ -64,6 +64,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "  namespaces: evo, db, job\n"
         "  list/dict values must be valid JSON\n"
         "  bool values: true,false,1,0,yes,no (case-insensitive)\n\n"
+        "Common evo settings via --set:\n"
+        "  budget: --set evo.max_api_costs=0.5\n"
+        '  models: --set evo.llm_models=\'["gpt-5-mini","gpt-5-nano"]\'\n'
+        '  patching: --set evo.patch_types=\'["diff","full"]\' '
+        "--set evo.patch_type_probs='[0.7,0.3]'\n"
+        '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.2,0.8],'
+        '"reasoning_efforts":["medium"],"max_tokens":16384}\'\n'
+        "  quality controls: --set evo.max_patch_resamples=3 "
+        "--set evo.max_patch_attempts=3 --set evo.max_novelty_attempts=3\n"
+        "  embeddings: --set evo.embedding_model=text-embedding-3-small "
+        "--set evo.code_embed_sim_threshold=0.995\n\n"
+        "Common db settings via --set:\n"
+        "  islands: --set db.num_islands=3\n"
+        "  parent selection: --set db.parent_selection_strategy=weighted\n"
+        "  archive: --set db.archive_size=60 --set db.num_archive_inspirations=5\n"
+        "  migration: --set db.migration_interval=10 --set db.migration_rate=0.1\n\n"
         "Examples:\n"
         "  Minimal:\n"
         "    shinka_run --task-dir examples/circle_packing "
@@ -71,9 +87,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "  With overrides:\n"
         "    shinka_run --task-dir examples/circle_packing "
         "--results_dir results/circle_custom --num_generations 50 "
-        "--set evo.max_parallel_jobs=6 --set db.num_islands=3 "
+        "--set db.num_islands=3 --set db.parent_selection_strategy=weighted "
         "--set job.time=00:10:00 "
-        "--set evo.llm_models='[\"gpt-5-mini\",\"gpt-5-nano\"]'\n\n"
+        '--set evo.llm_models=\'["gpt-5-mini","gpt-5-nano"]\'\n\n'
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"
@@ -178,10 +194,7 @@ def _coerce_bool(raw_value: str, key: str) -> bool:
         return True
     if lowered in {"0", "false", "no", "n", "off"}:
         return False
-    raise ValueError(
-        f"Invalid bool for {key}: {raw_value}. "
-        "Use true/false/1/0/yes/no."
-    )
+    raise ValueError(f"Invalid bool for {key}: {raw_value}. Use true/false/1/0/yes/no.")
 
 
 def _coerce_scalar(raw_value: str, target_type: type, key: str) -> Any:
@@ -202,9 +215,7 @@ def _coerce_scalar(raw_value: str, target_type: type, key: str) -> Any:
     return raw_value
 
 
-def _coerce_json_container(
-    raw_value: str, expected_container: type, key: str
-) -> Any:
+def _coerce_json_container(raw_value: str, expected_container: type, key: str) -> Any:
     try:
         parsed = json.loads(raw_value)
     except json.JSONDecodeError as exc:
@@ -304,9 +315,7 @@ def _parse_overrides(
 def _detect_initial_program(task_dir: Path) -> Path:
     candidates = sorted(task_dir.glob("initial.*"))
     if not candidates:
-        raise FileNotFoundError(
-            f"No initial.<ext> found in task dir: {task_dir}"
-        )
+        raise FileNotFoundError(f"No initial.<ext> found in task dir: {task_dir}")
     sorted_candidates = sorted(
         candidates,
         key=lambda path: (
