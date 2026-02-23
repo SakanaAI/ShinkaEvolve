@@ -60,6 +60,15 @@ uv pip install -e .
 shinka_launch variant=circle_packing_example
 ```
 
+Dynamic backend IDs are supported in `llm_models`, e.g.:
+
+```yaml
+evo_config:
+  llm_models:
+    - openrouter/qwen/qwen3-coder
+    - local/qwen2.5-coder@http://localhost:11434/v1
+```
+
 For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
 
 ## Examples 📖
