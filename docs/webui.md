@@ -23,7 +23,7 @@ The WebUI serves as a dashboard for monitoring Shinka evolution experiments, pro
 - **Island Visualization**: Multi-island evolution monitoring
 - **Database Browser**: Explore archived solutions and metadata
 
-![WebUI Screenshot](webui.png)
+![WebUI Screenshot](media/webui.png)
 
 ## Quick Start
 
