@@ -147,6 +147,34 @@ shinka_launch \
     evo_config.num_generations=5
 ```
 
+### Agent-Friendly CLI (`shinka_run`)
+
+Use `shinka_run` when you want a direct task-directory launcher for agents.
+
+```bash
+# Full CLI docs
+shinka_run --help
+
+# Minimal async run
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_run \
+    --num_generations 20
+
+# With namespaced keyword overrides
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_custom \
+    --num_generations 40 \
+    --set evo.max_parallel_jobs=6 \
+    --set db.num_islands=3 \
+    --set job.time=00:10:00
+```
+
+`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
+`--set` uses strict namespaces: `evo.<field>`, `db.<field>`, `job.<field>`.  
+`--results_dir` and `--num_generations` are always authoritative.
+
 ### Python API Usage
 
 For more control, you can use the Python API directly:
