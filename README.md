@@ -17,7 +17,7 @@
 
 ---
 
-**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for agentic task generation and evolution.
+**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for [agentic task generation and evolution](docs/agentic_usage.md).
 
 **Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 
@@ -29,7 +29,7 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `shinka` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
-![](docs/conceptual.png)
+![](docs/media/conceptual.png)
 
 ## Documentation 📝
 
@@ -41,6 +41,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
 | ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, performance tuning, migration guide | 
 | 🧠 **[Local LLM](docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
+| 🤖 **[Agentic Usage](docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 
 ## Installation & Quick Start 🚀
@@ -369,7 +370,7 @@ shinka_run \
 
 Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
-![WebUI Screenshot](docs/webui.png)
+![WebUI Screenshot](docs/media/webui.png)
 
 ### Quick Start
 
