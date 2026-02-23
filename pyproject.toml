@@ -52,7 +52,10 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["shinka"]
-script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
+script-files = [
+    "shinka/cli/shinka_launch",
+    "shinka/cli/shinka_visualize",
+]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
