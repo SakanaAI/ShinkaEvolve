@@ -336,6 +336,34 @@ shinka_launch \
 
 For comprehensive configuration options and advanced usage, see the [Configuration Guide](docs/configuration.md).
 
+## `shinka_run` Agent CLI 🤖
+
+`shinka_run` is a task-directory launcher for async evolution. It is designed for agent workflows and does not require Hydra config files.
+
+```bash
+# Inspect full interface (detailed help)
+shinka_run --help
+
+# Minimal run
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_run \
+    --num_generations 20
+
+# Run with keyword overrides
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_custom \
+    --num_generations 50 \
+    --set evo.max_parallel_jobs=6 \
+    --set db.num_islands=3 \
+    --set job.time=00:10:00 \
+    --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
+```
+
+`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
+`--results_dir` and `--num_generations` are authoritative and always override `--set evo.results_dir=...` and `--set evo.num_generations=...`.
+
 
 ## Interactive WebUI 🎨
 

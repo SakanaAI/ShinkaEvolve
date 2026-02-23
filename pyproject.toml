@@ -55,6 +55,7 @@ packages = ["shinka"]
 script-files = [
     "shinka/cli/shinka_launch",
     "shinka/cli/shinka_visualize",
+    "shinka/cli/shinka_run",
 ]
 
 [tool.setuptools.package-data]
