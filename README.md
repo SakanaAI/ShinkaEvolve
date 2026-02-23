@@ -17,7 +17,7 @@
 
 ---
 
-**Feb 2026 Update**: Added [`skills/shinka-setup/SKILL.md`](skills/shinka-setup/SKILL.md) for agentic task generation and verification.
+**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for agentic task generation and evolution.
 
 **Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 
