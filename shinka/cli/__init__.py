@@ -1,0 +1,2 @@
+"""CLI entrypoints for Shinka."""
+

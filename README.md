@@ -8,16 +8,16 @@
   <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/master/LICENSE.md"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
   <a href="https://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
-  <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/SakanaAI-0A66C2.svg" /></a>
+  <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/Blog%20%7C%20SakanaAI-0A66C2.svg" /></a>
   <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" /></a>
 </p>
 
 
-`shinka` is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
+[`shinka`]() is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
 ---
 
-**Feb 2026 Update**: Added [`skills/shinka-setup/SKILL.md`](skills/shinka-setup/SKILL.md) for agentic task generation and verification.
+**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for [agentic task generation and evolution](docs/agentic_usage.md).
 
 **Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 
@@ -29,7 +29,7 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `shinka` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
-![](docs/conceptual.png)
+![](docs/media/conceptual.png)
 
 ## Documentation 📝
 
@@ -41,6 +41,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
 | ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, performance tuning, migration guide | 
 | 🧠 **[Local LLM](docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
+| 🤖 **[Agentic Usage](docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 
 ## Installation & Quick Start 🚀
@@ -336,12 +337,40 @@ shinka_launch \
 
 For comprehensive configuration options and advanced usage, see the [Configuration Guide](docs/configuration.md).
 
+## `shinka_run` Agent CLI 🤖
+
+`shinka_run` is a task-directory launcher for async evolution. It is designed for agent workflows and does not require Hydra config files.
+
+```bash
+# Inspect full interface (detailed help)
+shinka_run --help
+
+# Minimal run
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_run \
+    --num_generations 20
+
+# Run with keyword overrides
+shinka_run \
+    --task-dir examples/circle_packing \
+    --results_dir results/circle_agent_custom \
+    --num_generations 50 \
+    --set evo.max_parallel_jobs=6 \
+    --set db.num_islands=3 \
+    --set job.time=00:10:00 \
+    --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
+```
+
+`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
+`--results_dir` and `--num_generations` are authoritative and always override `--set evo.results_dir=...` and `--set evo.num_generations=...`.
+
 
 ## Interactive WebUI 🎨
 
 Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
-![WebUI Screenshot](docs/webui.png)
+![WebUI Screenshot](docs/media/webui.png)
 
 ### Quick Start
 
