@@ -34,6 +34,17 @@ ShinkaEvolve is a framework combining LLMs with evolutionary algorithms to drive
 Repo and documentation: https://github.com/SakanaAI/ShinkaEvolve
 Paper: https://arxiv.org/abs/2212.04180
 
+## Quick Install (if Shinka is not set up yet)
+Clone and install once before creating/running tasks:
+```bash
+git clone https://github.com/SakanaAI/ShinkaEvolve.git
+cd ShinkaEvolve
+uv venv --python 3.11
+source .venv/bin/activate
+uv pip install -e .
+cd ..
+```
+
 ## User Inputs (ask for if not provided)
 - Target directory (task root)
 - Task description + success criteria
@@ -81,7 +92,9 @@ Rules:
      - `extra_data` (`dict`),
      - `text_feedback` (string, can be empty).
    - Confirm `correct.json` exists with `correct` (bool) and `error` (string) fields.
-6. If the user wants to run evolution, add `run_evo.py` plus a `shinka.yaml` config with matching language + `init_program_path`.
+6. Optional: 
+    - If the user wants to run evolution manually, add `run_evo.py` plus a `shinka.yaml` config with matching language + `init_program_path`.
+    - Ask the user if they want to use the `shinka-run` skill to perform optimization with the agent.
 
 ## Template: initial.<ext> (Python example)
 ```py
@@ -200,7 +213,7 @@ if __name__ == "__main__":
     main(program_path=args.program_path, results_dir=args.results_dir)
 ```
 
-## Template: run_evo.py (async)
+## (Optional) Template: run_evo.py (async)
 ```py
 #!/usr/bin/env python3
 import argparse
@@ -246,7 +259,7 @@ if __name__ == "__main__":
     asyncio.run(main(args.config_path))
 ```
 
-## Template: shinka.yaml
+## (Optional) Template: shinka.yaml
 ```yaml
 max_evaluation_jobs: 5
 max_proposal_jobs: 5
