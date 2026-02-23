@@ -24,19 +24,33 @@ def get_openai_costs(response, model):
     in_tokens = response.usage.input_tokens
     try:
         thinking_tokens = response.usage.output_tokens_details.reasoning_tokens
-    except:
+    except Exception:
         thinking_tokens = 0
     all_out_tokens = response.usage.output_tokens
     out_tokens = response.usage.output_tokens - thinking_tokens
 
     # Get actual costs from OpenRouter API if available -- if not use OAI
-    if hasattr(response.usage, "cost_details") and response.usage.cost_details:
-        input_cost = response.usage.cost_details["upstream_inference_input_cost"]
-        output_cost = response.usage.cost_details["upstream_inference_output_cost"]
+    cost_details = getattr(response.usage, "cost_details", None)
+    if cost_details:
+        if isinstance(cost_details, dict):
+            input_cost = float(cost_details.get("upstream_inference_input_cost", 0.0))
+            output_cost = float(cost_details.get("upstream_inference_output_cost", 0.0))
+        else:
+            input_cost = float(
+                getattr(cost_details, "upstream_inference_input_cost", 0.0) or 0.0
+            )
+            output_cost = float(
+                getattr(cost_details, "upstream_inference_output_cost", 0.0) or 0.0
+            )
     elif model_exists(model):
         input_cost, output_cost = calculate_cost(model, in_tokens, all_out_tokens)
     else:
-        raise ValueError(f"Model {model} not supported.")
+        logger.warning(
+            "Model '%s' has no pricing entry and response cost metadata is absent. "
+            "Defaulting query cost to 0.",
+            model,
+        )
+        input_cost, output_cost = 0.0, 0.0
     return {
         "input_tokens": in_tokens,
         "output_tokens": out_tokens,
@@ -152,6 +166,7 @@ async def query_openai_async(
 ) -> QueryResult:
     """Query OpenAI model asynchronously."""
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
+    thought = ""
     if output_model is None:
         response = await client.responses.create(
             model=model,
@@ -166,6 +181,10 @@ async def query_openai_async(
         except Exception:
             # Reasoning models - ResponseOutputMessage
             content = response.output[1].content[0].text
+        try:
+            thought = response.output[0].summary[0].text
+        except Exception:
+            pass
         new_msg_history.append({"role": "assistant", "content": content})
     else:
         response = await client.responses.parse(
@@ -182,16 +201,7 @@ async def query_openai_async(
         for i in content:
             new_content += i[0] + ":" + i[1] + "\n"
         new_msg_history.append({"role": "assistant", "content": new_content})
-    # Get actual costs from OpenRouter API if available -- if not use OAI
-    if hasattr(response.usage, "cost_details") and response.usage.cost_details:
-        input_cost = response.usage.cost_details["upstream_inference_input_cost"]
-        output_cost = response.usage.cost_details["upstream_inference_output_cost"]
-    elif model_exists(model):
-        input_cost, output_cost = calculate_cost(
-            model, response.usage.input_tokens, response.usage.output_tokens
-        )
-    else:
-        raise ValueError(f"Model {model} not supported.")
+    cost_results = get_openai_costs(response, model)
     result = QueryResult(
         content=content,
         msg=msg,
@@ -199,12 +209,8 @@ async def query_openai_async(
         new_msg_history=new_msg_history,
         model_name=model,
         kwargs=kwargs,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-        cost=input_cost + output_cost,
-        input_cost=input_cost,
-        output_cost=output_cost,
-        thought="",
+        **cost_results,
+        thought=thought,
         model_posteriors=model_posteriors,
     )
     return result
