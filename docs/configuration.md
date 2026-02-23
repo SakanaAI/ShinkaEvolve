@@ -140,7 +140,7 @@ exp_name: "shinka_my_task"
 | `max_parallel_jobs` | int | 1 | Maximum concurrent evaluations |
 | `max_patch_attempts` | int | 10 | Maximum attempts to generate valid patches |
 | `max_api_costs` | float/null | `null` | Total API budget cap in USD. Stops submitting new proposals when committed cost reaches the cap. |
-| `llm_models` | list | `["azure-gpt-4.1"]` | LLM models for mutations |
+| `llm_models` | list | `["azure-gpt-4.1"]` | LLM models for mutations. Supports known model IDs plus dynamic `openrouter/<model>` and `local/<model>@http(s)://...` formats. |
 | `patch_types` | list | `["diff", "full"]` | Types of code modifications |
 | `patch_type_probs` | list | `[0.5, 0.5]` | Probabilities for patch types |
 | `language` | str | `"python"` | Programming language |
