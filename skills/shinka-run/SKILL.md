@@ -25,7 +25,6 @@ Use this skill when:
 
 Do not use this skill when:
 - You need to scaffold a new task from scratch (use `shinka-setup`)
-- You need full Hydra composition workflows (`shinka_launch`)
 
 ## Task Directory Contract
 
@@ -67,6 +66,18 @@ Unknown namespace or field fails fast.
 - `--results_dir` always sets `evo.results_dir`
 - `--num_generations` always sets `evo.num_generations`
 - Even if overridden via `--set`, required flags win
+- For resume/continuation across batches, always reuse the same `--results_dir`.
+- Changing `--results_dir` creates a separate run history and will not reload previous results/state.
+
+## Batch Control Policy (Required)
+
+Treat one `shinka_run` invocation as one batch of program evaluations/generations.
+
+- Default mode: human-in-the-loop between batches.
+- After each batch and before the first, always ask the user what configuration to run next (budget, `--num_generations`, model/settings overrides, concurrency, islands, output path).
+- Do not start the next batch until the user confirms the next config.
+- Keep `--results_dir` fixed across continuation batches so Shinka can reload prior results.
+- Exception: if the user explicitly asks for fully autonomous execution, you may continue across batches without re-asking between runs.
 
 ## Standard Agent Workflow
 
@@ -81,7 +92,11 @@ Confirm `evaluate.py` and `initial.<ext>` exist.
 shinka_run --help
 ```
 
-3. Run a short smoke evolution first
+3. Confirm first-batch configuration with the user
+- Minimum: budget scope, generation count, results directory, critical overrides.
+- If unclear, ask before running.
+
+4. Run a short smoke evolution first
 ```bash
 shinka_run \
   --task-dir <task_dir> \
@@ -90,7 +105,7 @@ shinka_run \
   --verbose
 ```
 
-4. Launch main run with explicit knobs
+5. Launch main run with explicit knobs
 ```bash
 shinka_run \
   --task-dir <task_dir> \
@@ -102,11 +117,16 @@ shinka_run \
   --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
 ```
 
-5. Verify outputs before handoff
+6. Verify outputs before handoff
 ```bash
 ls -la <results_dir_main>
 ```
 Expect artifacts like run log, generation folders, and SQLite DBs.
+
+7. Between-batch handoff (unless explicitly autonomous)
+- Summarize outcomes from the finished batch.
+- Ask user for the next batch config before running again.
+- Unless the user explicitly wants a fresh run/fork, keep the same `--results_dir` for follow-up batches.
 
 ## Practical Command Patterns
 
