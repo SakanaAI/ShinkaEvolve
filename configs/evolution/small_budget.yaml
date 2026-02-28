@@ -1,3 +1,5 @@
+max_evaluation_jobs: 1
+
 evo_config:
   _target_: shinka.core.EvolutionConfig
   patch_types:
@@ -7,12 +9,11 @@ evo_config:
     - 0.5
     - 0.5
   num_generations: 20
-  max_parallel_jobs: 1
+  max_proposal_jobs: 1
+  max_db_workers: 4
   max_patch_attempts: 10
   llm_models:
     - "gpt-4.1"
   llm_dynamic_selection: null
   embedding_model: "text-embedding-3-small"
   results_dir: ${output_dir}
-
-

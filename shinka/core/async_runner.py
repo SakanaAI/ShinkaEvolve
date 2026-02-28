@@ -47,7 +47,7 @@ from shinka.core.summarizer import MetaSummarizer
 from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
-from shinka.core.runner import EvolutionConfig, FOLDER_PREFIX
+from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
     AsyncSystemPromptEvolver,
@@ -80,7 +80,7 @@ class AsyncRunningJob:
     db_retry_count: int = 0  # Track number of DB write retry attempts
 
 
-class AsyncEvolutionRunner:
+class ShinkaEvolveRunner:
     """Fully async evolution runner with concurrent proposal generation."""
 
     def __init__(
@@ -89,9 +89,9 @@ class AsyncEvolutionRunner:
         job_config: JobConfig,
         db_config: DatabaseConfig,
         verbose: bool = True,
-        max_evaluation_jobs: int = None,
-        max_proposal_jobs: int = 10,
-        max_db_workers: int = 4,
+        max_evaluation_jobs: int = 2,
+        max_proposal_jobs: Optional[int] = None,
+        max_db_workers: Optional[int] = None,
         debug: bool = False,
         init_program_str: Optional[str] = None,
         evaluate_str: Optional[str] = None,
@@ -104,8 +104,11 @@ class AsyncEvolutionRunner:
             db_config: Database configuration
             verbose: Enable verbose logging
             max_evaluation_jobs: Maximum concurrent evaluation jobs
-                (defaults to evo_config.max_parallel_jobs)
+                (defaults to 2)
             max_proposal_jobs: Maximum concurrent proposal generation tasks
+                (defaults to evo_config.max_proposal_jobs)
+            max_db_workers: Maximum concurrent async DB worker threads
+                (defaults to evo_config.max_db_workers)
             init_program_str: Optional string content for initial program
                 (will be saved to results dir and path updated in evo_config)
             evaluate_str: Optional string content for evaluate script
@@ -174,11 +177,17 @@ class AsyncEvolutionRunner:
         # Apply intelligent constraints
         max_evaluation_jobs, max_proposal_jobs, max_db_workers = (
             self._validate_concurrency_settings(
-                max_evaluation_jobs
-                if max_evaluation_jobs is not None
-                else evo_config.max_parallel_jobs,
-                max_proposal_jobs,
-                max_db_workers,
+                max_evaluation_jobs,
+                (
+                    max_proposal_jobs
+                    if max_proposal_jobs is not None
+                    else evo_config.max_proposal_jobs
+                ),
+                (
+                    max_db_workers
+                    if max_db_workers is not None
+                    else evo_config.max_db_workers
+                ),
                 cpu_count,
             )
         )
@@ -428,7 +437,7 @@ class AsyncEvolutionRunner:
         # Get system memory info
         try:
             memory_gb = psutil.virtual_memory().total / (1024**3)
-        except:
+        except Exception:
             memory_gb = 8  # Default assumption
 
         # Conservative approach: don't exceed CPU count for total active threads
@@ -480,9 +489,7 @@ class AsyncEvolutionRunner:
 
             # Warn if settings seem too high
             if max_evaluation_jobs + max_proposal_jobs > cpu_count:
-                logger.warning(
-                    f"⚠️  High concurrency settings may cause CPU oversubscription"
-                )
+                logger.warning("⚠️  High concurrency settings may cause CPU oversubscription")
             if max_evaluation_jobs + max_proposal_jobs > memory_based_limit:
                 logger.warning(
                     f"⚠️  High concurrency settings may cause memory pressure (limit: {memory_based_limit})"
@@ -586,7 +593,21 @@ class AsyncEvolutionRunner:
         committed_cost = self.total_api_cost + estimated_in_flight
         return committed_cost
 
-    async def run(self):
+    def run(self):
+        """Synchronous convenience wrapper for script/CLI usage."""
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Event loop already running. Use `await runner.run_async()` in async contexts."
+                )
+        except RuntimeError as exc:
+            # asyncio.get_running_loop raises RuntimeError when no loop exists.
+            if "no running event loop" not in str(exc):
+                raise
+        asyncio.run(self.run_async())
+
+    async def run_async(self):
         """Main async evolution loop."""
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
@@ -1834,9 +1855,6 @@ class AsyncEvolutionRunner:
                     if not recovery_success:
                         # System determined to be permanently stuck, exit
                         break
-
-                # Calculate available slots
-                available_slots = self.max_evaluation_jobs - len(self.running_jobs)
 
                 # Simple approach: use next_generation_to_submit as hard cap
                 # This tracks total submitted proposals and prevents any overshoot
@@ -3459,9 +3477,7 @@ class AsyncEvolutionRunner:
                 return False
 
             # Attempt recovery by forcing proposal generation
-            logger.info(
-                f"🔧 ATTEMPTING RECOVERY: Force-starting proposal generation..."
-            )
+            logger.info("🔧 ATTEMPTING RECOVERY: Force-starting proposal generation...")
 
             try:
                 # Force start at least one proposal if we have uncompleted work

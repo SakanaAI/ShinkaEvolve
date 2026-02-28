@@ -33,7 +33,7 @@ class _DummyRunner:
     def __init__(self, **kwargs):
         _DummyRunner.last_kwargs = kwargs
 
-    async def run(self):
+    def run(self):
         _DummyRunner.run_calls += 1
 
 
@@ -59,7 +59,7 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)
     results_dir = tmp_path / "results"
-    monkeypatch.setattr(cli_run, "AsyncEvolutionRunner", _DummyRunner)
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
 
     exit_code = cli_run.main(
         [
@@ -92,6 +92,8 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
 
     assert evo_config.results_dir == str(results_dir.resolve())
     assert evo_config.num_generations == 7
+    assert evo_config.max_proposal_jobs == 1
+    assert evo_config.max_db_workers == 4
     assert db_config.num_islands == 2
     assert job_config.time == "00:03:00"
     assert "def run" in init_program_str
@@ -102,7 +104,7 @@ def test_shinka_run_parses_json_overrides(tmp_path, monkeypatch):
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)
     results_dir = tmp_path / "results_json"
-    monkeypatch.setattr(cli_run, "AsyncEvolutionRunner", _DummyRunner)
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
 
     cli_run.main(
         [
@@ -155,7 +157,7 @@ def test_shinka_run_invalid_override_type_fails(tmp_path):
                 "--num_generations",
                 "5",
                 "--set",
-                "evo.max_parallel_jobs=not_an_int",
+                "evo.max_patch_attempts=not_an_int",
             ]
         )
     assert exc_info.value.code == 2

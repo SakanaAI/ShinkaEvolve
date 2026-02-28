@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, get_args, get_origin
 
-from shinka.core import AsyncEvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
@@ -140,7 +139,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NS.FIELD=VALUE",
         help=(
             "Repeatable namespaced override.\n"
-            "Examples: --set evo.max_parallel_jobs=4 "
+            "Examples: --set evo.max_patch_attempts=4 "
             "--set db.num_islands=2 "
             "--set job.extra_cmd_args='{\"seed\":42}'"
         ),
@@ -151,19 +150,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-evaluation-jobs",
         type=_positive_int,
         default=None,
-        help="Override AsyncEvolutionRunner max_evaluation_jobs.",
+        help="Override ShinkaEvolveRunner max_evaluation_jobs.",
     )
     concurrency_group.add_argument(
         "--max-proposal-jobs",
         type=_positive_int,
         default=None,
-        help="Override AsyncEvolutionRunner max_proposal_jobs.",
+        help="Override ShinkaEvolveRunner max_proposal_jobs.",
     )
     concurrency_group.add_argument(
         "--max-db-workers",
         type=_positive_int,
         default=None,
-        help="Override AsyncEvolutionRunner max_db_workers.",
+        help="Override ShinkaEvolveRunner max_db_workers.",
     )
 
     output_group = parser.add_argument_group("output/verbosity")
@@ -351,7 +350,8 @@ def _build_default_evo_values(
         "patch_types": ["diff", "full", "cross"],
         "patch_type_probs": [0.6, 0.3, 0.1],
         "num_generations": num_generations,
-        "max_parallel_jobs": 2,
+        "max_proposal_jobs": 1,
+        "max_db_workers": 4,
         "max_patch_resamples": 3,
         "max_patch_attempts": 3,
         "job_type": "local",
@@ -398,7 +398,7 @@ def _build_runner(
     job_config: LocalJobConfig,
     init_program_str: str,
     evaluate_str: str,
-) -> AsyncEvolutionRunner:
+) -> ShinkaEvolveRunner:
     runner_kwargs: Dict[str, Any] = {
         "evo_config": evo_config,
         "job_config": job_config,
@@ -414,7 +414,7 @@ def _build_runner(
         runner_kwargs["max_proposal_jobs"] = args.max_proposal_jobs
     if args.max_db_workers is not None:
         runner_kwargs["max_db_workers"] = args.max_db_workers
-    return AsyncEvolutionRunner(**runner_kwargs)
+    return ShinkaEvolveRunner(**runner_kwargs)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -464,7 +464,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001
         parser.error(str(exc))
 
-    asyncio.run(runner.run())
+    runner.run()
     return 0
 
 

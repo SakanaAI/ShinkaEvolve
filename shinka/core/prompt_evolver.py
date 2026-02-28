@@ -437,7 +437,7 @@ class SystemPromptEvolver:
 
 class AsyncSystemPromptEvolver:
     """
-    Async version of SystemPromptEvolver for use with AsyncEvolutionRunner.
+    Async version of SystemPromptEvolver for use with ShinkaEvolveRunner.
     """
 
     def __init__(
