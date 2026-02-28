@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-import asyncio
-
-from shinka.core import AsyncEvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
@@ -43,7 +41,6 @@ evo_config = EvolutionConfig(
     patch_types=["diff", "full"],
     patch_type_probs=[0.7, 0.3],
     num_generations=24,
-    max_parallel_jobs=1,
     max_patch_resamples=2,
     max_patch_attempts=3,
     job_type="local",
@@ -67,8 +64,8 @@ SMALL_MAX_PROPOSAL_JOBS = 2
 SMALL_MAX_DB_WORKERS = 1
 
 
-async def main():
-    runner = AsyncEvolutionRunner(
+def main():
+    runner = ShinkaEvolveRunner(
         evo_config=evo_config,
         job_config=job_config,
         db_config=db_config,
@@ -77,8 +74,8 @@ async def main():
         max_db_workers=SMALL_MAX_DB_WORKERS,
         verbose=True,
     )
-    await runner.run()
+    runner.run()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

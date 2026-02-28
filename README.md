@@ -17,7 +17,7 @@
 
 ---
 
-**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md) and [`shinka-run`](skills/shinka-run/SKILL.md) skills for [agentic task generation and evolution](docs/agentic_usage.md).
+**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md), [`shinka-run`](skills/shinka-run/SKILL.md), and [`shinka-inspect`](skills/shinka-inspect/SKILL.md) skills for [agentic task generation, evolution, and inspection](docs/agentic_usage.md).
 
 **Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 
@@ -39,7 +39,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 📓 **[Tutorial](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
 | ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
 | 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
-| ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, performance tuning, migration guide | 
+| ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
 | 🧠 **[Local LLM](docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
 | 🤖 **[Agentic Usage](docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
@@ -85,69 +85,25 @@ For detailed installation instructions and usage examples, see the [Getting Star
 
 For the simplest setup with default settings, you only need to specify the evaluation program:
 
-<table>
-<tr>
-<td width="50%">
-
-**`EvolutionRunner` - Synchronous**
-
 ```python
-from shinka.core import EvolutionRunner
-from shinka.core import EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
 # Minimal - only specify what's required
-job_conf = LocalJobConfig(
-    eval_program_path="evaluate.py",
-)
+job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 db_conf = DatabaseConfig()
-evo_conf = EvolutionConfig(
-    init_program_path="initial.py",
-)
+evo_conf = EvolutionConfig(init_program_path="initial.py")
 
-# Evolution: parallel evals & seq. gen.
-runner = EvolutionRunner(
+runner = ShinkaEvolveRunner(
     evo_config=evo_conf,
     job_config=job_conf,
     db_config=db_conf,
+    max_evaluation_jobs=2,
+    max_proposal_jobs=1,  # sync-like proposal behavior
 )
-
 runner.run()
 ```
-
-</td>
-<td width="50%">
-
-**`AsyncEvolutionRunner` - Asynchronous**
-
-```python
-import asyncio
-from shinka.core import AsyncEvolutionRunner, ...
-
-async def main():
-    # Same import & setup of hyperparams
-    job_conf = LocalJobConfig(...)
-    db_conf = DatabaseConfig()
-    evo_conf = EvolutionConfig(...)
-    
-    # Async evolution with concurrent proposals
-    runner = AsyncEvolutionRunner(
-        evo_config=evo_conf,
-        job_config=job_conf,
-        db_config=db_conf,
-        max_proposal_jobs=10,  # Proposals workers
-        max_evaluation_jobs=10,  # Proposal workers
-    )
-
-    await runner.run()
-
-# Asyncio execution
-asyncio.run(main())
-```
-</td>
-</tr>
-</table>
 
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
@@ -158,7 +114,8 @@ asyncio.run(main())
 | `patch_types` | `["diff"]` | `List[str]` | Types of patches to generate: "diff", "full", "cross" |
 | `patch_type_probs` | `[1.0]` | `List[float]` | Probabilities for each patch type |
 | `num_generations` | `10` | `int` | Number of evolution generations to run |
-| `max_parallel_jobs` | `2` | `int` | Maximum number of parallel evaluation jobs |
+| `max_proposal_jobs` | `1` | `int` | Maximum number of concurrent proposal generation jobs |
+| `max_db_workers` | `4` | `int` | Maximum number of async DB worker threads |
 | `max_patch_resamples` | `3` | `int` | Max times to resample a patch if it fails |
 | `max_patch_attempts` | `5` | `int` | Max attempts to generate a valid patch |
 | `job_type` | `"local"` | `str` | Job execution type: "local", "slurm_docker", "slurm_conda" |
@@ -247,7 +204,7 @@ asyncio.run(main())
 
 ### Evaluation Setup & Initial Solution 🏃
 
-To use EvolutionRunner, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `shinka` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
+To use `ShinkaEvolveRunner`, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `shinka` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
 
 <table>
 <tr>
@@ -365,7 +322,7 @@ shinka_run \
     --task-dir examples/circle_packing \
     --results_dir results/circle_agent_custom \
     --num_generations 50 \
-    --set evo.max_parallel_jobs=6 \
+    --max-evaluation-jobs 6 \
     --set db.num_islands=3 \
     --set job.time=00:10:00 \
     --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'

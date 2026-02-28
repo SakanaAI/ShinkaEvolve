@@ -4,7 +4,7 @@ These notes summarize local changes since the last commit.
 
 ## Highlights
 
-- Added a full async pipeline via `AsyncEvolutionRunner` for concurrent proposal generation and evaluation.
+- Added a full async pipeline via `ShinkaEvolveRunner` for concurrent proposal generation and evaluation.
 - Introduced prompt co-evolution (system prompt archive, prompt mutation, prompt fitness tracking).
 - Expanded island and parent sampling logic, including dynamic island spawning on stagnation.
 - Refactored LLM + embedding stack into provider-based modules.
@@ -50,7 +50,7 @@ These notes summarize local changes since the last commit.
 
 ## Changed
 
-- `EvolutionRunner` and async runner now include:
+- `ShinkaEvolveRunner` now includes:
   - stronger resume behavior (meta memory + bandit state persistence)
   - fix-mode sampling fallback when no correct program exists
   - richer metadata and cost accounting

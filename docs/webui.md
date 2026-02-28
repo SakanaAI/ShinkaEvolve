@@ -59,17 +59,14 @@ ssh -L 8888:localhost:8888 username@remote-host
 
 ### Async Runner Support
 
-The WebUI works seamlessly with both sync and async evolution runners:
+The WebUI works seamlessly with async evolution runners:
 
 ```bash
-# For async experiments
-python run_evo_async.py  # Start async evolution
+# Start async evolution
+python run_evo.py
 
 # Launch WebUI (auto-detects database in current directory)
 shinka_visualize --open
-
-# For sync experiments  
-python run_evo.py        # Start sync evolution
 
 # Launch WebUI with specific results directory
 shinka_visualize results_20241201_120000/ --open

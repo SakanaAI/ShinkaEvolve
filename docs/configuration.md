@@ -21,10 +21,11 @@ This guide covers the comprehensive configuration system in Shinka, including al
 Controls the core evolutionary algorithm parameters:
 
 ```yaml
+max_evaluation_jobs: 1              # Maximum parallel evaluations
+
 evo_config:
   _target_: shinka.core.EvolutionConfig
   num_generations: 20              # Number of evolution generations
-  max_parallel_jobs: 1             # Maximum parallel evaluations
   max_patch_attempts: 10           # Max attempts to generate valid patches
   max_api_costs: null              # Optional total API budget cap (USD)
   
@@ -137,7 +138,6 @@ exp_name: "shinka_my_task"
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `num_generations` | int | 20 | Number of evolutionary generations |
-| `max_parallel_jobs` | int | 1 | Maximum concurrent evaluations |
 | `max_patch_attempts` | int | 10 | Maximum attempts to generate valid patches |
 | `max_api_costs` | float/null | `null` | Total API budget cap in USD. Stops submitting new proposals when committed cost reaches the cap. |
 | `llm_models` | list | `["azure-gpt-4.1"]` | LLM models for mutations. Supports known model IDs plus dynamic `openrouter/<model>` and `local/<model>@http(s)://...` formats. |
@@ -145,6 +145,14 @@ exp_name: "shinka_my_task"
 | `patch_type_probs` | list | `[0.5, 0.5]` | Probabilities for patch types |
 | `language` | str | `"python"` | Programming language |
 | `embedding_model` | str | `"text-embedding-3-small"` | Model for code embeddings |
+
+### Runner Concurrency Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_evaluation_jobs` | int | 1 | Maximum concurrent evaluation jobs (runner argument / top-level Hydra key) |
+| `max_proposal_jobs` | int | 1 | Maximum concurrent proposal generation tasks (`EvolutionConfig`) |
+| `max_db_workers` | int | 4 | Maximum async DB worker threads (`EvolutionConfig`) |
 
 ### Database Parameters
 
@@ -254,9 +262,9 @@ defaults:
   - _self_
 
 # Override specific parameters
+max_evaluation_jobs: 2
 evo_config:
   num_generations: 25
-  max_parallel_jobs: 2
 
 db_config:
   archive_size: 30
@@ -280,8 +288,8 @@ shinka_launch \
     database=island_large \
     evolution=medium_budget \
     cluster=local \
+    max_evaluation_jobs=4 \
     evo_config.num_generations=50 \
-    evo_config.max_parallel_jobs=4 \
     db_config.num_islands=6 \
     variant_suffix="_custom_run"
 ```
@@ -322,7 +330,7 @@ exp_name: "shinka_my_optimization"
 
 ### Cost-Bounded Runs (`max_api_costs`)
 
-Use `evo_config.max_api_costs` to bound API spend for both sync and async runners.
+Use `evo_config.max_api_costs` to bound API spend for the async runner.
 
 - Field name is `max_api_costs` (plural) in `EvolutionConfig`.
 - Budget checks use committed cost:
@@ -370,9 +378,9 @@ defaults:
   - override /evolution@_global_: small_budget
   - override /cluster@_global_: local
 
+max_evaluation_jobs: 1
 evo_config:
   num_generations: 5
-  max_parallel_jobs: 1
 
 db_config:
   num_islands: 1
@@ -389,9 +397,9 @@ defaults:
   - override /evolution@_global_: large_budget
   - override /cluster@_global_: remote
 
+max_evaluation_jobs: 8
 evo_config:
   num_generations: 100
-  max_parallel_jobs: 8
 
 db_config:
   num_islands: 8
@@ -409,10 +417,10 @@ defaults:
   - override /evolution@_global_: medium_budget
   - override /cluster@_global_: local
 
+max_evaluation_jobs: 2
 # Standardized parameters for fair comparison
 evo_config:
   num_generations: 30
-  max_parallel_jobs: 2
   llm_models: ["azure-gpt-4.1"]
 
 db_config:

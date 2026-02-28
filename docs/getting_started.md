@@ -102,7 +102,7 @@ LOCAL_OPENAI_API_KEY=local                  # Optional (for local/*@http(s)://..
 shinka_launch --help
 
 # Test Python imports
-python -c "from shinka.core import EvolutionRunner; print('Installation successful!')"
+python -c "from shinka.core import ShinkaEvolveRunner; print('Installation successful!')"
 ```
 
 ### Advanced uv Features (Optional)
@@ -168,7 +168,7 @@ shinka_run \
     --task-dir examples/circle_packing \
     --results_dir results/circle_agent_custom \
     --num_generations 40 \
-    --set evo.max_parallel_jobs=6 \
+    --max-evaluation-jobs 6 \
     --set db.num_islands=3 \
     --set job.time=00:10:00
 ```
@@ -182,7 +182,7 @@ shinka_run \
 For more control, you can use the Python API directly:
 
 ```python
-from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
@@ -203,18 +203,18 @@ db_config = DatabaseConfig(
 # Configure the evolution parameters
 evo_config = EvolutionConfig(
     num_generations=10,
-    max_parallel_jobs=1,
     llm_models=["azure-gpt-4.1"],
     init_program_path="examples/circle_packing/initial.py",
     language="python",
     task_sys_msg="You are optimizing circle packing...",
 )
 
-# Run the evolution
-runner = EvolutionRunner(
+runner = ShinkaEvolveRunner(
     evo_config=evo_config,
     job_config=job_config,
     db_config=db_config,
+    max_evaluation_jobs=1,
+    max_proposal_jobs=1,  # sync-like proposal behavior
 )
 runner.run()
 ```
@@ -304,7 +304,7 @@ def main(program_path: str, results_dir: str):
 ```
 
 `run_workers` controls only repeated runs *inside one evaluation script call*.  
-This is separate from evolution-level job concurrency (`max_parallel_jobs`).  
+This is separate from evolution-level job concurrency (`max_evaluation_jobs`).  
 Early stopping (`early_stop_method`) is currently supported only with `run_workers=1`.
 
 **Key Components:**
@@ -411,7 +411,7 @@ shinka_launch \
 #### Using the Python API
 
 ```python
-from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
@@ -431,11 +431,11 @@ db_config = DatabaseConfig(
     num_islands=2,
 )
 
-# Run will automatically detect and resume
-runner = EvolutionRunner(
+runner = ShinkaEvolveRunner(
     evo_config=evo_config,
     job_config=job_config,
     db_config=db_config,
+    max_proposal_jobs=1,  # sync-like proposal behavior
 )
 runner.run()
 ```
@@ -517,7 +517,7 @@ python -c "import os; print(os.getenv('OPENROUTER_API_KEY'))"
 - Ensure the evaluation function returns expected data types
 
 **4. Memory Issues**
-- Reduce `max_parallel_jobs` for local execution
+- Reduce `max_evaluation_jobs` for local execution
 - Increase memory allocation for cluster jobs
 - Monitor database size and archive settings
 
