@@ -38,6 +38,7 @@ gpt-5.1-codex,openai,1.25,10.0,,,,True,1,1
 gpt-5.1-codex-max,openai,1.25,10.0,,,,True,1,1
 gpt-5.1-codex-mini,openai,0.25,2.0,,,,True,1,1
 gpt-5.2-codex,openai,1.75,14.0,,,,True,1,1
+gpt-5.3-codex,openai,1.75,14.0,,,,True,1,1
 gpt-5.2-pro,openai,21.0,168.0,,,,True,1,1
 deepseek-chat,deepseek,0.28,0.42,,,," False"," 0"," 0"
 deepseek-reasoner,deepseek,0.28,0.42,,,," True"," 0"," 0"
