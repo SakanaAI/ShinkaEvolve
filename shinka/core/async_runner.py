@@ -12,8 +12,6 @@ import uuid
 import os
 import psutil
 import threading
-import io
-from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union
@@ -55,7 +53,7 @@ from shinka.core.prompt_evolver import (
     SystemPromptSampler,
     AsyncSystemPromptEvolver,
 )
-from shinka.logo import print_gradient_logo
+from shinka.logo import print_gradient_logo, shinka_ascii
 from shinka.utils import get_language_extension
 from shinka.utils.languages import get_evolve_comment_prefix
 
@@ -63,23 +61,17 @@ logger = logging.getLogger(__name__)
 
 
 def _print_gradient_logo_and_mirror(log_path: Optional[Path] = None) -> None:
-    """Print startup logo to terminal and optionally mirror raw output to log."""
+    """Print gradient logo to terminal and mirror plain ASCII to log."""
+    print_gradient_logo((255, 0, 0), (255, 255, 255))
     if log_path is None:
-        print_gradient_logo((255, 0, 0), (255, 255, 255))
         return
 
     try:
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            print_gradient_logo((255, 0, 0), (255, 255, 255))
-        output = buffer.getvalue()
-        if not output:
-            return
-        print(output, end="")
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(output if output.endswith("\n") else f"{output}\n")
+            handle.write(shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n")
     except Exception:
-        print_gradient_logo((255, 0, 0), (255, 255, 255))
+        # Never break startup output if log write fails.
+        pass
 
 
 class RichTeeConsole:
