@@ -51,6 +51,7 @@ def test_shinka_run_help_is_detailed(capsys):
     assert "Task directory contract" in help_output
     assert "initial.<ext>" in help_output
     assert "--set NS.FIELD=VALUE" in help_output
+    assert "--config-fname" in help_output
     assert "unknown namespace/field: non-zero exit" in help_output
     assert "--results_dir always sets evo.results_dir" in help_output
 
@@ -125,6 +126,88 @@ def test_shinka_run_parses_json_overrides(tmp_path, monkeypatch):
     job_config = _DummyRunner.last_kwargs["job_config"]
     assert evo_config.llm_models == ["gpt-5-mini", "gpt-5-nano"]
     assert job_config.extra_cmd_args == {"seed": 42}
+
+
+def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "shinka.yaml").write_text(
+        (
+            "max_evaluation_jobs: 8\n"
+            "max_proposal_jobs: 7\n"
+            "max_db_workers: 6\n"
+            "verbose: true\n"
+            "debug: true\n"
+            "db_config:\n"
+            "  num_islands: 4\n"
+            "job_config:\n"
+            "  time: 00:04:00\n"
+            "evo_config:\n"
+            "  num_generations: 999\n"
+            "  results_dir: from_config\n"
+            "  llm_models: [\"gpt-5-nano\"]\n"
+        ),
+        encoding="utf-8",
+    )
+    results_dir = tmp_path / "results_config"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--config-fname",
+            "shinka.yaml",
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+            "--max-db-workers",
+            "9",
+            "--set",
+            "db.num_islands=2",
+            "--set",
+            'evo.llm_models=["gpt-5-mini"]',
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    evo_config = _DummyRunner.last_kwargs["evo_config"]
+    db_config = _DummyRunner.last_kwargs["db_config"]
+    job_config = _DummyRunner.last_kwargs["job_config"]
+
+    assert evo_config.results_dir == str(results_dir.resolve())
+    assert evo_config.num_generations == 3
+    assert evo_config.llm_models == ["gpt-5-mini"]
+    assert db_config.num_islands == 2
+    assert job_config.time == "00:04:00"
+    assert _DummyRunner.last_kwargs["max_evaluation_jobs"] == 8
+    assert _DummyRunner.last_kwargs["max_proposal_jobs"] == 7
+    assert _DummyRunner.last_kwargs["max_db_workers"] == 9
+    assert _DummyRunner.last_kwargs["verbose"] is True
+    assert _DummyRunner.last_kwargs["debug"] is True
+
+
+def test_shinka_run_invalid_config_field_fails(tmp_path):
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "bad.yaml").write_text(
+        "evo_config:\n  unknown_field: 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli_run.main(
+            [
+                "--task-dir",
+                str(task_dir),
+                "--config-fname",
+                "bad.yaml",
+                "--results_dir",
+                str(tmp_path / "results"),
+                "--num_generations",
+                "5",
+            ]
+        )
+    assert exc_info.value.code == 2
 
 
 def test_shinka_run_unknown_override_field_fails(tmp_path):

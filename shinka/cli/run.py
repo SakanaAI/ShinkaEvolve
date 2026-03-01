@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Union, get_args, get_origin
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
+from shinka.cli.run_config import load_optional_yaml_config
 
 DEFAULT_TASK_SYS_MSG = (
     "You are an expert optimization and algorithm design assistant. "
@@ -92,8 +93,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"
-        "  - missing evaluate.py or initial.<ext>: non-zero exit\n\n"
+        "  - missing evaluate.py or initial.<ext>/invalid --config-fname YAML: non-zero exit\n\n"
         "Precedence:\n"
+        "  - --config-fname YAML loads first; --set overrides config YAML\n"
         "  - --results_dir always sets evo.results_dir\n"
         "  - --num_generations always sets evo.num_generations"
     )
@@ -143,6 +145,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "--set db.num_islands=2 "
             "--set job.extra_cmd_args='{\"seed\":42}'"
         ),
+    )
+    override_group.add_argument(
+        "--config-fname",
+        type=str,
+        default=None,
+        help="Optional YAML config loaded before --set. Relative paths resolve from --task-dir. Supports evo/db/job or evo_config/db_config/job_config.",
     )
 
     concurrency_group = parser.add_argument_group("concurrency")
@@ -428,6 +436,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         evaluate_path, initial_path = _validate_task_dir(task_dir)
         language = _infer_language(initial_path)
         allowed_types = _field_types()
+        file_overrides, runner_config = load_optional_yaml_config(
+            task_dir=task_dir,
+            config_fname=args.config_fname,
+            allowed_field_types=allowed_types,
+        )
         parsed_overrides = _parse_overrides(args.overrides, allowed_types)
 
         evo_values = _build_default_evo_values(
@@ -436,15 +449,27 @@ def main(argv: Optional[list[str]] = None) -> int:
             results_dir=results_dir,
             num_generations=args.num_generations,
         )
+        evo_values.update(file_overrides["evo"])
         evo_values.update(parsed_overrides["evo"])
         evo_values["results_dir"] = str(results_dir)
         evo_values["num_generations"] = args.num_generations
 
         db_values = _build_default_db_values()
+        db_values.update(file_overrides["db"])
         db_values.update(parsed_overrides["db"])
 
         job_values = _build_default_job_values(evaluate_path)
+        job_values.update(file_overrides["job"])
         job_values.update(parsed_overrides["job"])
+
+        if args.max_evaluation_jobs is None:
+            args.max_evaluation_jobs = runner_config.get("max_evaluation_jobs")
+        if args.max_proposal_jobs is None:
+            args.max_proposal_jobs = runner_config.get("max_proposal_jobs")
+        if args.max_db_workers is None:
+            args.max_db_workers = runner_config.get("max_db_workers")
+        args.verbose = args.verbose or bool(runner_config.get("verbose", False))
+        args.debug = args.debug or bool(runner_config.get("debug", False))
 
         evo_config = EvolutionConfig(**evo_values)
         db_config = DatabaseConfig(**db_values)
