@@ -13,13 +13,15 @@
 </p>
 
 
-[`shinka`]() is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
+[`shinka`](https://sakana.ai/shinka-evolve/) is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. By leveraging the creative capabilities of LLMs and the optimization power of evolutionary search, `shinka` enables automated exploration and improvement of scientific code. The system is inspired by the [AI Scientist](https://sakana.ai/ai-scientist/), [AlphaEvolve](https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) and the [Darwin Goedel Machine](https://sakana.ai/dgm/): It maintains a population of programs that evolve over generations, with an ensemble of LLMs acting as intelligent mutation operators that suggest code improvements.
 
 ---
 
-**Feb 2026 Update**: Added [`shinka-setup`](skills/shinka-setup/SKILL.md), [`shinka-run`](skills/shinka-run/SKILL.md), and [`shinka-inspect`](skills/shinka-inspect/SKILL.md) skills for [agentic task generation, evolution, and inspection](docs/agentic_usage.md).
+**Mar 2026 Update**: Refactored evolution API and unified runner `ShinkaEvolveRunner` (replacing legacy `EvolutionRunner`/`AsyncEvolutionRunner` references).
 
-**Feb 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
+**Feb 2026 Update**: Added [agent skill files](docs/agentic_usage.md) for using `shinka` within coding agents for task generation ([`shinka-setup`](skills/shinka-setup/SKILL.md)), evolution ([`shinka-run`](skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](skills/shinka-inspect/SKILL.md)).
+
+**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 
 **Nov 2025 Update**: Rob gave several public talks about our ShinkaEvolve effort ([Official](https://x.com/SakanaAILabs/status/1989352976792846356?s=20), [AutoML Seminar](https://www.youtube.com/watch?v=dAOIer_1INo)).
 
@@ -47,6 +49,9 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 ## Installation & Quick Start 🚀
 
 ```bash
+# Clone repository
+git clone https://github.com/SakanaAI/ShinkaEvolve
+
 # Install uv if you haven't already
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -58,15 +63,6 @@ uv pip install -e .
 
 # Run your first evolution experiment
 shinka_launch variant=circle_packing_example
-```
-
-Dynamic backend IDs are supported in `llm_models`, e.g.:
-
-```yaml
-evo_config:
-  llm_models:
-    - openrouter/qwen/qwen3-coder
-    - local/qwen2.5-coder@http://localhost:11434/v1
 ```
 
 For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
@@ -108,6 +104,8 @@ runner.run()
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
 
+Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydra presets and CLI overrides can replace these values.
+
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
 | `task_sys_msg` | `None` | `Optional[str]` | System message describing the optimization task |
@@ -128,6 +126,7 @@ runner.run()
 | `meta_llm_models` | `None` | `Optional[List[str]]` | LLM models for meta-recommendations |
 | `meta_llm_kwargs` | `{}` | `dict` | Kwargs for meta-recommendation LLMs |
 | `meta_max_recommendations` | `5` | `int` | Max number of meta-recommendations |
+| `sample_single_meta_rec` | `True` | `bool` | Sample a single recommendation from meta output when enabled |
 | `embedding_model` | `None` | `Optional[str]` | Model for code embeddings |
 | `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
@@ -136,17 +135,32 @@ runner.run()
 | `novelty_llm_models` | `None` | `Optional[List[str]]` | LLM models for novelty judgment |
 | `novelty_llm_kwargs` | `{}` | `dict` | Kwargs for novelty LLMs |
 | `use_text_feedback` | `False` | `bool` | Whether to use text feedback in evolution |
+| `max_api_costs` | `None` | `Optional[float]` | Total API budget cap (USD); async runner stops new proposals at cap |
+| `inspiration_sort_order` | `"ascending"` | `str` | Inspiration ordering (`"ascending"`, `"chronological"`, `"none"`) |
+| `evolve_prompts` | `False` | `bool` | Enable meta-prompt evolution loop |
+| `prompt_patch_types` | `["diff", "full"]` | `List[str]` | Patch formats used for prompt evolution |
+| `prompt_patch_type_probs` | `[0.7, 0.3]` | `List[float]` | Sampling probabilities for prompt patch formats |
+| `prompt_evolution_interval` | `None` | `Optional[int]` | Prompt-evolution cadence in generations (`None` disables periodic updates) |
+| `prompt_archive_size` | `10` | `int` | Size of system-prompt archive |
+| `prompt_llm_models` | `None` | `Optional[List[str]]` | LLM models for prompt evolution (`None` falls back to `llm_models`) |
+| `prompt_llm_kwargs` | `{}` | `dict` | Extra kwargs for prompt-evolution LLM calls |
+| `prompt_ucb_exploration_constant` | `1.0` | `float` | UCB exploration constant for prompt sampling |
+| `prompt_epsilon` | `0.1` | `float` | Epsilon-greedy exploration probability for prompt sampling |
+| `prompt_evo_top_k_programs` | `3` | `int` | Number of top programs used as context in prompt evolution |
+| `prompt_percentile_recompute_interval` | `20` | `int` | Generations between prompt percentile recomputations |
 
 </details>
 
 <details>
 <summary><strong>DatabaseConfig Parameters</strong> (click to expand)</summary>
 
+Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hydra presets and CLI overrides can replace these values.
+
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
 | `db_path` | `None` | `Optional[str]` | Database file path (auto-generated if None) |
 | `num_islands` | `4` | `int` | Number of evolution islands for diversity |
-| `archive_size` | `100` | `int` | Size of program archive per island |
+| `archive_size` | `100` | `int` | Global archive size cap |
 | `elite_selection_ratio` | `0.3` | `float` | Proportion of elite programs for inspiration |
 | `num_archive_inspirations` | `5` | `int` | Number of archive programs to use as inspiration |
 | `num_top_k_inspirations` | `2` | `int` | Number of top-k programs for inspiration |
@@ -154,11 +168,18 @@ runner.run()
 | `migration_rate` | `0.1` | `float` | Proportion of island population to migrate |
 | `island_elitism` | `True` | `bool` | Keep best programs on their original islands |
 | `enforce_island_separation` | `True` | `bool` | Enforce full separation between islands |
+| `island_selection_strategy` | `"uniform"` | `str` | Island sampler (`"uniform"`, `"equal"`, `"proportional"`, `"weighted"`) |
+| `enable_dynamic_islands` | `False` | `bool` | Enable stagnation-triggered island spawning |
+| `stagnation_threshold` | `100` | `int` | Generations without improvement before spawning a new island |
+| `island_spawn_strategy` | `"initial"` | `str` | New-island seed strategy (`"initial"`, `"best"`, `"archive_random"`) |
+| `island_spawn_subtree_size` | `1` | `int` | Number of programs copied when spawning an island |
 | `parent_selection_strategy` | `"power_law"` | `str` | Parent selection: "weighted", "power_law", "beam_search" |
 | `exploitation_alpha` | `1.0` | `float` | Power-law exponent (0=uniform, 1=power-law) |
 | `exploitation_ratio` | `0.2` | `float` | Chance to pick parent from archive |
 | `parent_selection_lambda` | `10.0` | `float` | Sharpness of sigmoid for weighted selection |
 | `num_beams` | `5` | `int` | Number of beams for beam search selection |
+| `archive_selection_strategy` | `"fitness"` | `str` | Archive replacement strategy (`"fitness"` or `"crowding"`) |
+| `archive_criteria` | `{"combined_score": 1.0}` | `Dict[str, float]` | Weighted ranking criteria used by fitness archive updates |
 
 </details>
 
@@ -326,10 +347,20 @@ shinka_run \
     --set db.num_islands=3 \
     --set job.time=00:10:00 \
     --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
+
+# Load optional YAML config (relative to --task-dir), then override via --set
+shinka_run \
+    --task-dir examples/circle_packing \
+    --config-fname shinka_small.yaml \
+    --results_dir results/circle_agent_from_yaml \
+    --num_generations 50 \
+    --set db.num_islands=3
 ```
 
 `--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
-`--results_dir` and `--num_generations` are authoritative and always override `--set evo.results_dir=...` and `--set evo.num_generations=...`.
+`--config-fname` can define `evo/db/job` (or `evo_config/db_config/job_config`) plus `max_evaluation_jobs/max_proposal_jobs/max_db_workers` and `verbose/debug`.  
+Precedence: config YAML < `--set` < authoritative flags.  
+`--results_dir` and `--num_generations` are authoritative and always override config/`--set` values for `evo.results_dir` and `evo.num_generations`.
 
 
 ## Interactive WebUI 🎨
