@@ -12,6 +12,8 @@ import uuid
 import os
 import psutil
 import threading
+import io
+from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union
@@ -58,6 +60,26 @@ from shinka.utils import get_language_extension
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+
+
+def _print_gradient_logo_and_mirror(log_path: Optional[Path] = None) -> None:
+    """Print startup logo to terminal and optionally mirror raw output to log."""
+    if log_path is None:
+        print_gradient_logo((255, 0, 0), (255, 255, 255))
+        return
+
+    try:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            print_gradient_logo((255, 0, 0), (255, 255, 255))
+        output = buffer.getvalue()
+        if not output:
+            return
+        print(output, end="")
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(output if output.endswith("\n") else f"{output}\n")
+    except Exception:
+        print_gradient_logo((255, 0, 0), (255, 255, 255))
 
 
 class RichTeeConsole:
@@ -151,7 +173,6 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
-        print_gradient_logo((255, 0, 0), (255, 255, 255))
         self.verbose = verbose
         # Setup results directory first
         if evo_config.results_dir is None:
@@ -190,6 +211,8 @@ class ShinkaEvolveRunner:
         else:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
+
+        _print_gradient_logo_and_mirror(Path(log_filename))
 
         # Handle init_program_str: write to file and update config path
         if init_program_str is not None:
