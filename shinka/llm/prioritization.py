@@ -157,7 +157,7 @@ class BanditBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def print_summary(self) -> None:
+    def print_summary(self, console: Optional[Console] = None) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -644,7 +644,7 @@ class AsymmetricUCB(BanditBase):
                     np.min(means),
                 )
 
-    def print_summary(self) -> None:
+    def print_summary(self, console: Optional[Console] = None) -> None:
         names = self._arm_names or [str(i) for i in range(self._n_arms)]
         post = self.posterior()
         n = self.n.astype(int)
@@ -793,8 +793,8 @@ class AsymmetricUCB(BanditBase):
             )
 
         # Print directly to console
-        console = Console()
-        console.print(table)
+        _console = console or Console()
+        _console.print(table)
 
     def get_state(self) -> Dict[str, Any]:
         """Get the internal state for serialization."""
@@ -916,7 +916,7 @@ class FixedSampler(BanditBase):
     def decay(self, factor: float) -> None:
         return None
 
-    def print_summary(self) -> None:
+    def print_summary(self, console: Optional[Console] = None) -> None:
         names = self._arm_names or [str(i) for i in range(self._n_arms)]
         post = self.posterior()
         n = self.n_pulls.astype(int)
@@ -954,8 +954,8 @@ class FixedSampler(BanditBase):
             )
 
         # Print directly to console
-        console = Console()
-        console.print(table)
+        _console = console or Console()
+        _console.print(table)
 
     def get_state(self) -> Dict[str, Any]:
         """Get the internal state for serialization."""
@@ -1249,7 +1249,7 @@ class ThompsonSampler(BanditBase):
         self.alpha = self.a_prior + factor * (self.alpha - self.a_prior)
         self.beta = self.b_prior + factor * (self.beta - self.b_prior)
 
-    def print_summary(self) -> None:
+    def print_summary(self, console: Optional[Console] = None) -> None:
         names = self._arm_names or [str(i) for i in range(self._n_arms)]
         post = self.posterior()
         n = self.n.astype(int)
@@ -1315,8 +1315,8 @@ class ThompsonSampler(BanditBase):
                 f"{post[i]:.4f}",
             )
 
-        console = Console()
-        console.print(table)
+        _console = console or Console()
+        _console.print(table)
 
     def get_state(self) -> Dict[str, Any]:
         """Get the internal state for serialization."""

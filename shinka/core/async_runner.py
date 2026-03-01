@@ -11,6 +11,7 @@ import time
 import uuid
 import os
 import psutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union
@@ -57,6 +58,42 @@ from shinka.utils import get_language_extension
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+
+
+class RichTeeConsole:
+    """Mirror rich console output to terminal and a plain-text log file."""
+
+    def __init__(self, console: Console, log_path: Optional[Path] = None):
+        self._console = console
+        self._log_path = log_path
+        self._capture_console = Console(
+            force_terminal=False,
+            no_color=True,
+            highlight=False,
+            emoji=False,
+            width=120,
+        )
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name: str):
+        return getattr(self._console, name)
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        self._console.print(*objects, **kwargs)
+        if self._log_path is None:
+            return
+
+        try:
+            with self._lock:
+                with self._capture_console.capture() as capture:
+                    self._capture_console.print(*objects, **kwargs)
+                rendered = capture.get()
+                if not rendered:
+                    return
+                with self._log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(rendered if rendered.endswith("\n") else f"{rendered}\n")
+        except Exception as e:
+            logger.debug(f"Failed to mirror rich output to log file: {e}")
 
 
 @dataclass
@@ -127,10 +164,10 @@ class ShinkaEvolveRunner:
         self.job_config = job_config
         self.db_config = db_config
         self.enable_deadlock_debugging = debug
+        log_filename = f"{self.results_dir}/evolution_run.log"
 
         if self.verbose:
             # Set up logging like the sync version
-            log_filename = f"{self.results_dir}/evolution_run.log"
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
 
             # Configure logging with console output
@@ -218,8 +255,8 @@ class ShinkaEvolveRunner:
             logger.info(f"Max API costs: ${self.evo_config.max_api_costs:.2f}")
         logger.info("=" * 80)
 
-        # Initialize rich console for formatted output
-        self.console = Console()
+        # Initialize rich console and mirror rich renderables into the run log.
+        self.console = RichTeeConsole(Console(), Path(log_filename))
 
         # Initialize LLM selection strategy
         if evo_config.llm_dynamic_selection is None:
@@ -416,7 +453,7 @@ class ShinkaEvolveRunner:
                 self.llm_selection.load_state(bandit_path)
                 logger.info(f"Loaded bandit state from {bandit_path}")
                 if hasattr(self.llm_selection, "print_summary"):
-                    self.llm_selection.print_summary()
+                    self.llm_selection.print_summary(console=self.console)
             else:
                 logger.debug(
                     f"No bandit state file found at {bandit_path}, "
@@ -3193,7 +3230,7 @@ class ShinkaEvolveRunner:
                         arm=model_name, reward=reward, baseline=baseline
                     )
                     if self.verbose:
-                        self.llm_selection.print_summary()
+                        self.llm_selection.print_summary(console=self.console)
                 except Exception as e:
                     logger.warning(f"LLM selection update error for {job.job_id}: {e}")
                     # Don't fail the whole job for LLM selection issues
@@ -3710,7 +3747,7 @@ class ShinkaEvolveRunner:
         # Print database summary
         if self.db:
             logger.info("-" * 40)
-            self.db.print_summary()
+            self.db.print_summary(console=self.console)
 
     def _print_metadata_table(self, meta_data: dict, generation: int = None):
         """Display metadata in a formatted rich table."""
