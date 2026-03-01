@@ -823,6 +823,8 @@ class ShinkaEvolveRunner:
         self.db = ProgramDatabase(
             self.db_config, embedding_model=self.evo_config.embedding_model
         )
+        if hasattr(self.db, "set_display_console"):
+            self.db.set_display_console(self.console)
         self.async_db = AsyncProgramDatabase(
             self.db,
             max_workers=self.max_db_workers,
