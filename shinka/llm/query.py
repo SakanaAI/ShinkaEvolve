@@ -34,7 +34,7 @@ def query(
     )
     if provider in ("anthropic", "bedrock"):
         query_fn = query_anthropic
-    elif provider in ("openai", "azure_openai", "legacymodel", "openrouter"):
+    elif provider in ("openai", "azure_openai", "openrouter"):
         query_fn = query_openai
     elif provider == "deepseek":
         query_fn = query_deepseek
@@ -72,7 +72,7 @@ async def query_async(
     )
     if provider in ("anthropic", "bedrock"):
         query_fn = query_anthropic_async
-    elif provider in ("openai", "azure_openai", "legacymodel", "openrouter"):
+    elif provider in ("openai", "azure_openai", "openrouter"):
         query_fn = query_openai_async
     elif provider == "deepseek":
         query_fn = query_deepseek_async
