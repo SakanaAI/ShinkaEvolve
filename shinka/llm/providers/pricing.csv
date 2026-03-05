@@ -29,6 +29,7 @@ gpt-4.1-nano,openai,0.1,1.4,,,," False"," 0"," 0"
 o3-2025-04-16,openai,10.0,40.0,,,," True"," 1"," 0"
 o4-mini-2025-04-16,openai,1.1,4.4,,,," True"," 1"," 0"
 o4-mini,openai,1.1,4.4,,,," True"," 1"," 0"
+gpt-5.4,openai,2.5,15.0,5.0,22.5,272000,True,1,1
 gpt-5.2,openai,1.75,14.0,,,,True,1,1
 gpt-5.1,openai,1.25,10.0,,,,True,1,1
 gpt-5,openai,1.25,10.0,,,," True"," 1",1
