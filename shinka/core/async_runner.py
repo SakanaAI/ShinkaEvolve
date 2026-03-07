@@ -11,6 +11,7 @@ import time
 import uuid
 import os
 import psutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union
@@ -47,16 +48,66 @@ from shinka.core.summarizer import MetaSummarizer
 from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
-from shinka.core.runner import EvolutionConfig, FOLDER_PREFIX
+from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
     AsyncSystemPromptEvolver,
 )
-from shinka.logo import print_gradient_logo
+from shinka.logo import print_gradient_logo, shinka_ascii
 from shinka.utils import get_language_extension
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+
+
+def _print_gradient_logo_and_mirror(log_path: Optional[Path] = None) -> None:
+    """Print gradient logo to terminal and mirror plain ASCII to log."""
+    print_gradient_logo((255, 0, 0), (255, 255, 255))
+    if log_path is None:
+        return
+
+    try:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n")
+    except Exception:
+        # Never break startup output if log write fails.
+        pass
+
+
+class RichTeeConsole:
+    """Mirror rich console output to terminal and a plain-text log file."""
+
+    def __init__(self, console: Console, log_path: Optional[Path] = None):
+        self._console = console
+        self._log_path = log_path
+        self._capture_console = Console(
+            force_terminal=False,
+            no_color=True,
+            highlight=False,
+            emoji=False,
+            width=120,
+        )
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name: str):
+        return getattr(self._console, name)
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        self._console.print(*objects, **kwargs)
+        if self._log_path is None:
+            return
+
+        try:
+            with self._lock:
+                with self._capture_console.capture() as capture:
+                    self._capture_console.print(*objects, **kwargs)
+                rendered = capture.get()
+                if not rendered:
+                    return
+                with self._log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(rendered if rendered.endswith("\n") else f"{rendered}\n")
+        except Exception as e:
+            logger.debug(f"Failed to mirror rich output to log file: {e}")
 
 
 @dataclass
@@ -80,7 +131,7 @@ class AsyncRunningJob:
     db_retry_count: int = 0  # Track number of DB write retry attempts
 
 
-class AsyncEvolutionRunner:
+class ShinkaEvolveRunner:
     """Fully async evolution runner with concurrent proposal generation."""
 
     def __init__(
@@ -89,9 +140,9 @@ class AsyncEvolutionRunner:
         job_config: JobConfig,
         db_config: DatabaseConfig,
         verbose: bool = True,
-        max_evaluation_jobs: int = None,
-        max_proposal_jobs: int = 10,
-        max_db_workers: int = 4,
+        max_evaluation_jobs: int = 2,
+        max_proposal_jobs: Optional[int] = None,
+        max_db_workers: Optional[int] = None,
         debug: bool = False,
         init_program_str: Optional[str] = None,
         evaluate_str: Optional[str] = None,
@@ -104,14 +155,16 @@ class AsyncEvolutionRunner:
             db_config: Database configuration
             verbose: Enable verbose logging
             max_evaluation_jobs: Maximum concurrent evaluation jobs
-                (defaults to evo_config.max_parallel_jobs)
+                (defaults to 2)
             max_proposal_jobs: Maximum concurrent proposal generation tasks
+                (defaults to evo_config.max_proposal_jobs)
+            max_db_workers: Maximum concurrent async DB worker threads
+                (defaults to evo_config.max_db_workers)
             init_program_str: Optional string content for initial program
                 (will be saved to results dir and path updated in evo_config)
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
-        print_gradient_logo((255, 0, 0), (255, 255, 255))
         self.verbose = verbose
         # Setup results directory first
         if evo_config.results_dir is None:
@@ -124,10 +177,10 @@ class AsyncEvolutionRunner:
         self.job_config = job_config
         self.db_config = db_config
         self.enable_deadlock_debugging = debug
+        log_filename = f"{self.results_dir}/evolution_run.log"
 
         if self.verbose:
             # Set up logging like the sync version
-            log_filename = f"{self.results_dir}/evolution_run.log"
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
 
             # Configure logging with console output
@@ -150,6 +203,8 @@ class AsyncEvolutionRunner:
         else:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
+
+        _print_gradient_logo_and_mirror(Path(log_filename))
 
         # Handle init_program_str: write to file and update config path
         if init_program_str is not None:
@@ -174,11 +229,17 @@ class AsyncEvolutionRunner:
         # Apply intelligent constraints
         max_evaluation_jobs, max_proposal_jobs, max_db_workers = (
             self._validate_concurrency_settings(
-                max_evaluation_jobs
-                if max_evaluation_jobs is not None
-                else evo_config.max_parallel_jobs,
-                max_proposal_jobs,
-                max_db_workers,
+                max_evaluation_jobs,
+                (
+                    max_proposal_jobs
+                    if max_proposal_jobs is not None
+                    else evo_config.max_proposal_jobs
+                ),
+                (
+                    max_db_workers
+                    if max_db_workers is not None
+                    else evo_config.max_db_workers
+                ),
                 cpu_count,
             )
         )
@@ -209,8 +270,8 @@ class AsyncEvolutionRunner:
             logger.info(f"Max API costs: ${self.evo_config.max_api_costs:.2f}")
         logger.info("=" * 80)
 
-        # Initialize rich console for formatted output
-        self.console = Console()
+        # Initialize rich console and mirror rich renderables into the run log.
+        self.console = RichTeeConsole(Console(), Path(log_filename))
 
         # Initialize LLM selection strategy
         if evo_config.llm_dynamic_selection is None:
@@ -407,7 +468,7 @@ class AsyncEvolutionRunner:
                 self.llm_selection.load_state(bandit_path)
                 logger.info(f"Loaded bandit state from {bandit_path}")
                 if hasattr(self.llm_selection, "print_summary"):
-                    self.llm_selection.print_summary()
+                    self.llm_selection.print_summary(console=self.console)
             else:
                 logger.debug(
                     f"No bandit state file found at {bandit_path}, "
@@ -428,7 +489,7 @@ class AsyncEvolutionRunner:
         # Get system memory info
         try:
             memory_gb = psutil.virtual_memory().total / (1024**3)
-        except:
+        except Exception:
             memory_gb = 8  # Default assumption
 
         # Conservative approach: don't exceed CPU count for total active threads
@@ -480,9 +541,7 @@ class AsyncEvolutionRunner:
 
             # Warn if settings seem too high
             if max_evaluation_jobs + max_proposal_jobs > cpu_count:
-                logger.warning(
-                    f"⚠️  High concurrency settings may cause CPU oversubscription"
-                )
+                logger.warning("⚠️  High concurrency settings may cause CPU oversubscription")
             if max_evaluation_jobs + max_proposal_jobs > memory_based_limit:
                 logger.warning(
                     f"⚠️  High concurrency settings may cause memory pressure (limit: {memory_based_limit})"
@@ -586,7 +645,21 @@ class AsyncEvolutionRunner:
         committed_cost = self.total_api_cost + estimated_in_flight
         return committed_cost
 
-    async def run(self):
+    def run(self):
+        """Synchronous convenience wrapper for script/CLI usage."""
+        try:
+            running_loop = asyncio.get_running_loop()
+            if running_loop.is_running():
+                raise RuntimeError(
+                    "Event loop already running. Use `await runner.run_async()` in async contexts."
+                )
+        except RuntimeError as exc:
+            # asyncio.get_running_loop raises RuntimeError when no loop exists.
+            if "no running event loop" not in str(exc):
+                raise
+        asyncio.run(self.run_async())
+
+    async def run_async(self):
         """Main async evolution loop."""
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
@@ -742,6 +815,8 @@ class AsyncEvolutionRunner:
         self.db = ProgramDatabase(
             self.db_config, embedding_model=self.evo_config.embedding_model
         )
+        if hasattr(self.db, "set_display_console"):
+            self.db.set_display_console(self.console)
         self.async_db = AsyncProgramDatabase(
             self.db,
             max_workers=self.max_db_workers,
@@ -1834,9 +1909,6 @@ class AsyncEvolutionRunner:
                     if not recovery_success:
                         # System determined to be permanently stuck, exit
                         break
-
-                # Calculate available slots
-                available_slots = self.max_evaluation_jobs - len(self.running_jobs)
 
                 # Simple approach: use next_generation_to_submit as hard cap
                 # This tracks total submitted proposals and prevents any overshoot
@@ -3175,7 +3247,7 @@ class AsyncEvolutionRunner:
                         arm=model_name, reward=reward, baseline=baseline
                     )
                     if self.verbose:
-                        self.llm_selection.print_summary()
+                        self.llm_selection.print_summary(console=self.console)
                 except Exception as e:
                     logger.warning(f"LLM selection update error for {job.job_id}: {e}")
                     # Don't fail the whole job for LLM selection issues
@@ -3459,9 +3531,7 @@ class AsyncEvolutionRunner:
                 return False
 
             # Attempt recovery by forcing proposal generation
-            logger.info(
-                f"🔧 ATTEMPTING RECOVERY: Force-starting proposal generation..."
-            )
+            logger.info("🔧 ATTEMPTING RECOVERY: Force-starting proposal generation...")
 
             try:
                 # Force start at least one proposal if we have uncompleted work
@@ -3694,7 +3764,7 @@ class AsyncEvolutionRunner:
         # Print database summary
         if self.db:
             logger.info("-" * 40)
-            self.db.print_summary()
+            self.db.print_summary(console=self.console)
 
     def _print_metadata_table(self, meta_data: dict, generation: int = None):
         """Display metadata in a formatted rich table."""

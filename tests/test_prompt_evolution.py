@@ -510,7 +510,7 @@ class TestEvolutionConfigPromptSettings:
 
     def test_default_prompt_evolution_config(self):
         """Test default prompt evolution settings."""
-        from shinka.core.runner import EvolutionConfig
+        from shinka.core.config import EvolutionConfig
 
         config = EvolutionConfig()
 
@@ -522,7 +522,7 @@ class TestEvolutionConfigPromptSettings:
 
     def test_custom_prompt_evolution_config(self):
         """Test custom prompt evolution settings."""
-        from shinka.core.runner import EvolutionConfig
+        from shinka.core.config import EvolutionConfig
 
         config = EvolutionConfig(
             evolve_prompts=True,

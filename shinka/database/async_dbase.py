@@ -187,6 +187,10 @@ class AsyncProgramDatabase:
                         from .dbase import ProgramDatabase
 
                         thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                        if hasattr(thread_db, "set_display_console"):
+                            thread_db.set_display_console(
+                                getattr(self.sync_db, "display_console", None)
+                            )
                         result = thread_db.sample(
                             target_generation=target_generation,
                             novelty_attempt=novelty_attempt,
@@ -249,6 +253,10 @@ class AsyncProgramDatabase:
                         from .dbase import ProgramDatabase
 
                         thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                        if hasattr(thread_db, "set_display_console"):
+                            thread_db.set_display_console(
+                                getattr(self.sync_db, "display_console", None)
+                            )
                         result = thread_db.sample_with_fix_mode(
                             target_generation=target_generation,
                             novelty_attempt=novelty_attempt,
@@ -537,6 +545,10 @@ class AsyncProgramDatabase:
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
+                if hasattr(thread_db, "set_display_console"):
+                    thread_db.set_display_console(
+                        getattr(self.sync_db, "display_console", None)
+                    )
 
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters

@@ -283,6 +283,7 @@ class ProgramDatabase:
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
+        self.display_console: Optional[Any] = None
 
         # Lazy-init embedding client to avoid requiring API credentials for
         # database-only operations and tests that do not compute embeddings.
@@ -1303,6 +1304,7 @@ class ProgramDatabase:
                 island_manager=self.island_manager,
                 count_programs_func=self._count_programs_in_db,
                 get_best_program_func=self.get_best_program,
+                default_console=self.display_console,
             )
 
         self._database_display.print_sampling_summary(
@@ -1316,6 +1318,7 @@ class ProgramDatabase:
             max_resample_attempts,
             ancestor_inspirations,
             is_fix_mode,
+            console=self.display_console,
         )
 
     @db_retry()
@@ -2154,9 +2157,12 @@ class ProgramDatabase:
                 island_manager=self.island_manager,
                 count_programs_func=self._count_programs_in_db,
                 get_best_program_func=self.get_best_program,
+                default_console=self.display_console,
             )
             self._database_display.set_last_iteration(self.last_iteration)
 
+        if hasattr(self._database_display, "set_default_console"):
+            self._database_display.set_default_console(self.display_console)
         self._database_display.print_summary(console)
 
     def _print_program_summary(self, program) -> None:
@@ -2169,9 +2175,22 @@ class ProgramDatabase:
                 island_manager=self.island_manager,
                 count_programs_func=self._count_programs_in_db,
                 get_best_program_func=self.get_best_program,
+                default_console=self.display_console,
             )
 
-        self._database_display.print_program_summary(program)
+        if hasattr(self._database_display, "set_default_console"):
+            self._database_display.set_default_console(self.display_console)
+        self._database_display.print_program_summary(
+            program, console=self.display_console
+        )
+
+    def set_display_console(self, console: Optional[Any]) -> None:
+        """Set shared console used for rich DB summaries."""
+        self.display_console = console
+        if hasattr(self, "_database_display") and hasattr(
+            self._database_display, "set_default_console"
+        ):
+            self._database_display.set_default_console(console)
 
     def check_scheduled_operations(self):
         """Run any operations that were scheduled during add but deferred for performance."""

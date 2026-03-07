@@ -1,97 +1,71 @@
 # Async Evolution Pipeline
 
-Asynchronous evolution pipeline providing **5-10x speedup** through concurrent proposal generation.
+Shinka runs evolution through `ShinkaEvolveRunner`.
+Use proposal concurrency to control throughput and emulate prior sync behavior.
 
 ## Quick Start
 
 ```python
-import asyncio
-from shinka import AsyncEvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.launch import LocalJobConfig
 from shinka.database import DatabaseConfig
 
-async def main():
-    evo_config = EvolutionConfig(
-        num_generations=50,
-        max_parallel_jobs=20,
-        llm_models=["gpt-4o-mini"],
-    )
-    
-    runner = AsyncEvolutionRunner(
-        evo_config=evo_config,
-        job_config=LocalJobConfig(),
-        db_config=DatabaseConfig(db_path="evolution.sqlite"),
-        max_proposal_jobs=10,  # Generate 10 proposals concurrently
-        max_evaluation_jobs=10,  # Proposals to evaluate in parallel
-    )
-    
-    await runner.run()
 
-asyncio.run(main())
+evo_config = EvolutionConfig(
+    num_generations=50,
+    max_proposal_jobs=1,  # sync-like proposal behavior
+    llm_models=["gpt-5-mini"],
+)
+
+runner = ShinkaEvolveRunner(
+    evo_config=evo_config,
+    job_config=LocalJobConfig(eval_program_path="evaluate.py"),
+    db_config=DatabaseConfig(),
+)
+
+runner.run()
 ```
 
-## Key Benefits
-
-- **5-10x faster**: Concurrent proposal generation vs sequential
-- **Better resource utilization**: Keep evaluation queues full
-- **Scalable**: Handle hundreds of parallel evaluation jobs
-- **Drop-in replacement**: Same configs as sync version
-
-## Architecture
-
-```
-Main Loop ──┬── Job Monitor (check completions)
-            └── Proposal Generator (concurrent tasks)
-                    ├── Sample DB
-                    ├── Query LLM  
-                    ├── Apply Patch
-                    ├── Check Novelty
-                    └── Submit to Queue
-```
-
-## Configuration
-
-### AsyncEvolutionRunner Parameters
+In async contexts (for example notebooks/async apps), use:
 
 ```python
-AsyncEvolutionRunner(
-    evo_config=EvolutionConfig(...),      # Same as sync version
-    job_config=JobConfig(...),            # Same as sync version  
-    db_config=DatabaseConfig(...),        # Same as sync version
-    verbose=True,                         # Enable logging
-    max_evaluation_jobs=None,             # Defaults to evo_config.max_parallel_jobs
-    max_proposal_jobs=10,                 # Max concurrent proposal generation
+await runner.run_async()
+```
+
+## Concurrency Knobs
+
+- `max_evaluation_jobs`: max concurrent evaluation jobs.
+- `max_proposal_jobs`: max concurrent proposal generation jobs.
+- `max_db_workers`: max async database worker threads.
+
+`max_proposal_jobs=1` gives sequential proposal generation behavior.
+
+## ShinkaEvolveRunner Parameters
+
+```python
+ShinkaEvolveRunner(
+    evo_config=EvolutionConfig(...),
+    job_config=JobConfig(...),
+    db_config=DatabaseConfig(...),
+    verbose=True,
+    max_evaluation_jobs=2,
+    max_proposal_jobs=None,    # defaults to evo_config.max_proposal_jobs
+    max_db_workers=None,       # defaults to evo_config.max_db_workers
 )
 ```
 
-### Recommended Settings
+## Recommended Settings
 
-| Scale | max_parallel_jobs | max_proposal_jobs |
-|-------|------------------|-------------------|
-| Small | ≤ 10             | 5                 |
-| Medium| 10-50            | 10                |
-| Large | 50+              | 20                |
-
-## Migration from Sync
-
-1. Replace `EvolutionRunner` with `AsyncEvolutionRunner`
-2. Add `await` to `runner.run()`
-3. Wrap in `asyncio.run(main())`
-4. All other configs unchanged
-
-## Key Components
-
-- **AsyncEvolutionRunner**: Main orchestrator with concurrent task management
-- **AsyncProgramDatabase**: Thread-safe database wrapper
-- **AsyncNoveltyJudge**: Embedding similarity + single LLM call when needed
-- **AsyncLLMClient**: Concurrent API calls (existing component)
-
+| Scale | max_evaluation_jobs | max_proposal_jobs |
+|-------|-------------------|-------------------|
+| Sequential-like | 1-4 | 1 |
+| Small | <= 10 | 2-5 |
+| Medium | 10-50 | 5-10 |
+| Large | 50+ | 10-20 |
 
 ## Troubleshooting
 
-- **"Too many requests"**: Reduce `max_proposal_jobs`
-- **Memory issues**: Lower `max_proposal_jobs` 
-- **Rate limits**: Configure LLM client delays
-- **File errors**: Install `aiofiles`
-
-The async pipeline maintains full compatibility with existing `EvolutionConfig`, `JobConfig`, and `DatabaseConfig` while providing significant performance improvements through concurrent processing.
+- Too many requests: reduce `max_proposal_jobs`.
+- Memory pressure: lower `max_proposal_jobs` and `max_evaluation_jobs`.
+- DB contention: lower `max_db_workers`.
+- File I/O errors: ensure `aiofiles` installed.

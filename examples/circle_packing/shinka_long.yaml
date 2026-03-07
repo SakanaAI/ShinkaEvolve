@@ -25,7 +25,6 @@ evo_config:
     - 0.1
   num_generations: 400
   max_api_costs: 2.0
-  max_parallel_jobs: 10
   max_patch_resamples: 5
   max_patch_attempts: 3
   max_novelty_attempts: 3

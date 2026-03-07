@@ -4,12 +4,13 @@ This guide shows how to run Shinka with coding agents using the project skills:
 
 - `shinka-setup`: scaffold task files (`evaluate.py`, `initial.<ext>`, optional run config)
 - `shinka-run`: launch and iterate evolution batches via `shinka_run`
+- `shinka-inspect`: load top-performing programs into a compact context bundle
 
 It covers:
 - installing Shinka
 - installing Claude Code and/or Codex CLI
 - copying skill files to the right skill directories
-- running a practical setup -> run loop
+- running a practical setup -> run -> inspect loop
 
 ## 1) Install Shinka
 
@@ -55,26 +56,33 @@ Skill source files in this repo:
 
 - `skills/shinka-setup/SKILL.md`
 - `skills/shinka-run/SKILL.md`
+- `skills/shinka-inspect/SKILL.md`
 - optional helper scripts for setup skill:
   - `skills/shinka-setup/scripts/run_evo.py`
   - `skills/shinka-setup/scripts/shinka.yaml`
+- helper script for inspect skill:
+  - `skills/shinka-inspect/scripts/inspect_best_programs.py`
 
 ### Claude Code skill path
 
 ```bash
-mkdir -p ~/.claude/skills/shinka-setup ~/.claude/skills/shinka-run
+mkdir -p ~/.claude/skills/shinka-setup ~/.claude/skills/shinka-run ~/.claude/skills/shinka-inspect
 cp skills/shinka-setup/SKILL.md ~/.claude/skills/shinka-setup/SKILL.md
 cp -R skills/shinka-setup/scripts ~/.claude/skills/shinka-setup/
 cp skills/shinka-run/SKILL.md ~/.claude/skills/shinka-run/SKILL.md
+cp skills/shinka-inspect/SKILL.md ~/.claude/skills/shinka-inspect/SKILL.md
+cp -R skills/shinka-inspect/scripts ~/.claude/skills/shinka-inspect/
 ```
 
 ### Codex skill path
 
 ```bash
-mkdir -p ~/.codex/skills/shinka-setup ~/.codex/skills/shinka-run
+mkdir -p ~/.codex/skills/shinka-setup ~/.codex/skills/shinka-run ~/.codex/skills/shinka-inspect
 cp skills/shinka-setup/SKILL.md ~/.codex/skills/shinka-setup/SKILL.md
 cp -R skills/shinka-setup/scripts ~/.codex/skills/shinka-setup/
 cp skills/shinka-run/SKILL.md ~/.codex/skills/shinka-run/SKILL.md
+cp skills/shinka-inspect/SKILL.md ~/.codex/skills/shinka-inspect/SKILL.md
+cp -R skills/shinka-inspect/scripts ~/.codex/skills/shinka-inspect/
 ```
 
 ## 4) Setup Skill Walkthrough (`shinka-setup`)
@@ -132,7 +140,35 @@ Illustration (run flow):
 
 ![Claude run step 2](media/claude_run_2.png)
 
-## 6) Batch Iteration Rules (Important)
+## 6) Inspect Skill Walkthrough (`shinka-inspect`)
+
+Use `shinka-inspect` after one or more batches to generate an agent-ready context file.
+
+Minimal:
+
+```bash
+python skills/shinka-inspect/scripts/inspect_best_programs.py \
+  --results-dir results/my_task_agent \
+  --k 5
+```
+
+With filters and explicit output:
+
+```bash
+python skills/shinka-inspect/scripts/inspect_best_programs.py \
+  --results-dir results/my_task_agent \
+  --k 8 \
+  --min-generation 10 \
+  --max-code-chars 5000 \
+  --out results/my_task_agent/inspect/top_programs.md
+```
+
+Output:
+- default file: `results/my_task_agent/shinka_inspect_context.md`
+- contains ranking + code snippets for top programs
+- designed to be loaded directly into coding-agent context
+
+## 7) Batch Iteration Rules (Important)
 
 When using `shinka-run` skill:
 
@@ -140,7 +176,7 @@ When using `shinka-run` skill:
 - keep `--results_dir` the same across continuation batches so prior state can reload
 - change `--results_dir` only when intentionally forking a new run
 
-## 7) Quick Validation Checklist
+## 8) Quick Validation Checklist
 
 Before first run:
 
@@ -153,5 +189,5 @@ After each batch:
 
 - check run artifacts/logs under the chosen `results_dir`
 - review score and correctness trend
+- run `shinka-inspect` and review the generated context markdown
 - choose next batch config (budget, models, islands, attempts, generations)
-

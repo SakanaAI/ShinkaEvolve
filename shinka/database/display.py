@@ -23,6 +23,7 @@ class DatabaseDisplay:
         island_manager,
         count_programs_func: Callable[[], int],
         get_best_program_func: Callable[[], Optional[Any]],
+        default_console: Optional[RichConsole] = None,
     ):
         self.cursor = cursor
         self.conn = conn
@@ -30,10 +31,15 @@ class DatabaseDisplay:
         self.island_manager = island_manager
         self.count_programs_func = count_programs_func
         self.get_best_program_func = get_best_program_func
+        self.default_console = default_console
+
+    def set_default_console(self, console: Optional[RichConsole]) -> None:
+        """Set default console used by all rich display methods."""
+        self.default_console = console
 
     def print_program_summary(self, program, console: Optional[RichConsole] = None):
         """Print a rich summary of a newly added program in two rows."""
-        _console = console or RichConsole()
+        _console = console or self.default_console or RichConsole()
 
         # Get the best program's score
         best_program_overall = self.get_best_program_func()
@@ -163,7 +169,7 @@ class DatabaseDisplay:
             logger.error("Database not connected. Cannot print summary.")
             return
 
-        _console = console or RichConsole()
+        _console = console or self.default_console or RichConsole()
 
         # Calculate total cost, scores, etc. from metadata of all programs
         total_api_cost = 0
@@ -491,9 +497,10 @@ class DatabaseDisplay:
         max_resample_attempts=None,
         ancestor_inspirations=None,
         is_fix_mode=False,
+        console: Optional[RichConsole] = None,
     ):
         """Print a summary of the sampled parent and inspirations."""
-        console = RichConsole()
+        _console = console or self.default_console or RichConsole()
 
         # Determine generation to display - use provided target_generation or fallback
         if target_generation is not None:
@@ -652,4 +659,4 @@ class DatabaseDisplay:
         for i, prog in enumerate(top_k_inspirations):
             table.add_row(*format_program_row(prog, f"TopK-{i + 1}"))
 
-        console.print(table)
+        _console.print(table)

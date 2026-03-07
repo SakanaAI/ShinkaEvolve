@@ -3,7 +3,7 @@ import argparse
 import asyncio
 import yaml
 
-from shinka.core import AsyncEvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
@@ -22,7 +22,7 @@ async def main(config_path: str):
     )
     db_config = DatabaseConfig(**config["db_config"])
 
-    runner = AsyncEvolutionRunner(
+    runner = ShinkaEvolveRunner(
         evo_config=evo_config,
         job_config=job_config,
         db_config=db_config,

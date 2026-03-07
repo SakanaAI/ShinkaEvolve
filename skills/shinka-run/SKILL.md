@@ -64,8 +64,20 @@ Expect artifacts like run log, generation folders, and SQLite DBs.
 7. Between-batch handoff (unless explicitly autonomous)
 - Summarize outcomes from the finished batch.
 - Ask user for the next batch config before running again.
-- Ask the user for feedback and next directions. Turn those into a new system prompt for the next batch of evolution generations.
+- Explicitly ask: "What new directions should we push next batch? Please include algorithm ideas, constraints, and failure modes to avoid."
+- Turn user feedback into a revised system prompt and pass it via `--set evo.task_sys_msg=...` in the next `shinka_run` call.
+- If the prompt is long/multiline, put it in a config file and use `--config-fname` instead of shell-escaping.
 - Unless the user explicitly wants a fresh run/fork, keep the same `--results_dir` for follow-up batches.
+
+Example next-batch command with feedback-driven prompt:
+```bash
+shinka_run \
+  --task-dir <task_dir> \
+  --results_dir <results_dir> \
+  --num_generations 20 \
+  --set evo.task_sys_msg='<new system prompt derived from user feedback>' \
+  --set db.num_islands=3
+```
 
 ## Batch Control Policy (Required)
 

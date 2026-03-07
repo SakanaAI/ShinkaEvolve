@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from shinka.core import EvolutionRunner, EvolutionConfig
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
@@ -48,12 +48,16 @@ Try diverse approaches to solve the problem. Think outside the box.
 """
 
 
+MAX_EVALUATION_JOBS = 5
+
+
 evo_config = EvolutionConfig(
     task_sys_msg=search_task_sys_msg,
     patch_types=["diff", "full", "cross"],
     patch_type_probs=[0.6, 0.3, 0.1],
     num_generations=100,
-    max_parallel_jobs=5,
+    max_proposal_jobs=1,
+    max_db_workers=4,
     max_patch_resamples=3,
     max_patch_attempts=3,
     job_type="local",
@@ -88,14 +92,17 @@ evo_config = EvolutionConfig(
 
 
 def main():
-    evo_runner = EvolutionRunner(
+    evo_runner = ShinkaEvolveRunner(
         evo_config=evo_config,
         job_config=job_config,
         db_config=db_config,
+        max_evaluation_jobs=MAX_EVALUATION_JOBS,
+        max_proposal_jobs=evo_config.max_proposal_jobs,
+        max_db_workers=evo_config.max_db_workers,
         verbose=True,
     )
     evo_runner.run()
 
 
 if __name__ == "__main__":
-    results_data = main()
+    main()
