@@ -13,6 +13,40 @@ logger = logging.getLogger(__name__)
 _tiktoken_cache = {}
 
 
+def _get_google_embeddings_and_cost(
+    client,
+    model_name: str,
+    texts: List[str],
+) -> Tuple[List[List[float]], float]:
+    """Embed texts with Gemini and bill using Gemini token counts when available."""
+    embeddings = []
+    total_tokens = 0
+    model = f"models/{model_name}"
+    price_per_token = get_model_price(model_name)
+
+    for text in texts:
+        token_count = None
+        try:
+            token_response = client.models.count_tokens(model=model, contents=text)
+            token_count = getattr(token_response, "total_tokens", None)
+        except Exception as exc:
+            logger.warning(
+                "Gemini token counting failed for %s; falling back to whitespace "
+                "estimate. Error: %s",
+                model_name,
+                exc,
+            )
+
+        result = client.models.embed_content(model=model, contents=text)
+        embeddings.append(result.embeddings[0].values)
+
+        if token_count is None:
+            token_count = len(text.split())
+        total_tokens += token_count
+
+    return embeddings, total_tokens * price_per_token
+
+
 def count_tokens(
     text: Union[str, List[str]],
     model: str = "text-embedding-3-small",
@@ -113,18 +147,11 @@ class EmbeddingClient:
         # Handle Gemini models
         if self.provider == "google":
             try:
-                embeddings = []
-                total_tokens = 0
-
-                for text in code:
-                    result = self.client.models.embed_content(
-                        model=f"models/{self.model}",
-                        contents=text,
-                    )
-                    embeddings.append(result.embeddings[0].values)
-                    total_tokens += len(text.split())
-
-                cost = total_tokens * get_model_price(self.model_name)
+                embeddings, cost = _get_google_embeddings_and_cost(
+                    client=self.client,
+                    model_name=self.model,
+                    texts=code,
+                )
 
                 if single_code:
                     return embeddings[0] if embeddings else [], cost
@@ -376,22 +403,16 @@ class AsyncEmbeddingClient:
         if self.provider == "google":
             import asyncio
 
-            def _sync_gemini_embed():
-                embeddings = []
-                total_tokens = 0
-                for text in code:
-                    result = self.async_client.models.embed_content(
-                        model=f"models/{self.model}",
-                        contents=text,
-                    )
-                    embeddings.append(result.embeddings[0].values)
-                    total_tokens += len(text.split())
-                cost = total_tokens * get_model_price(self.model_name)
-                return embeddings, cost
-
             try:
                 loop = asyncio.get_event_loop()
-                embeddings, cost = await loop.run_in_executor(None, _sync_gemini_embed)
+                embeddings, cost = await loop.run_in_executor(
+                    None,
+                    lambda: _get_google_embeddings_and_cost(
+                        client=self.async_client,
+                        model_name=self.model,
+                        texts=code,
+                    ),
+                )
                 if single_code:
                     return embeddings[0] if embeddings else [], cost
                 else:
