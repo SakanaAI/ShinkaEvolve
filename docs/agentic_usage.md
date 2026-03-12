@@ -3,13 +3,14 @@
 This guide shows how to run Shinka with coding agents using the project skills:
 
 - `shinka-setup`: scaffold task files (`evaluate.py`, `initial.<ext>`, optional run config)
+- `shinka-convert`: snapshot an existing repo into a Shinka task directory
 - `shinka-run`: launch and iterate evolution batches via `shinka_run`
 - `shinka-inspect`: load top-performing programs into a compact context bundle
 
 It covers:
 - installing Shinka
 - installing Claude Code and/or Codex CLI
-- copying skill files to the right skill directories
+- installing the skills from this GitHub repo with `npx skills add`
 - running a practical setup -> run -> inspect loop
 
 ## 1) Install Shinka
@@ -48,41 +49,51 @@ npm install -g @openai/codex
 codex --version
 ```
 
-## 3) Copy Skills to Agent Skill Folders
+## 3) Install Skills from the Repo with `npx skills add`
 
-Skill source files in this repo:
+The Shinka skills live directly in this repo under `skills/`. You do not need to copy files by hand or publish a separate npm package.
 
-- `skills/shinka-setup/SKILL.md`
-- `skills/shinka-run/SKILL.md`
-- `skills/shinka-inspect/SKILL.md`
-- optional helper scripts for setup skill:
-  - `skills/shinka-setup/scripts/run_evo.py`
-  - `skills/shinka-setup/scripts/shinka.yaml`
-- helper script for inspect skill:
-  - `skills/shinka-inspect/scripts/inspect_best_programs.py`
-
-Installing `shinka-evolve` from PyPI gives you the package and CLI. The skill files themselves are still copied from this repo into your agent skill directory.
-
-### Claude Code skill path
+Install all current Shinka skills globally for Claude Code and Codex:
 
 ```bash
-mkdir -p ~/.claude/skills/shinka-setup ~/.claude/skills/shinka-run ~/.claude/skills/shinka-inspect
-cp skills/shinka-setup/SKILL.md ~/.claude/skills/shinka-setup/SKILL.md
-cp -R skills/shinka-setup/scripts ~/.claude/skills/shinka-setup/
-cp skills/shinka-run/SKILL.md ~/.claude/skills/shinka-run/SKILL.md
-cp skills/shinka-inspect/SKILL.md ~/.claude/skills/shinka-inspect/SKILL.md
-cp -R skills/shinka-inspect/scripts ~/.claude/skills/shinka-inspect/
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -g -a claude-code -a codex -y
 ```
 
-### Codex skill path
+This installs from the GitHub repo source. The explicit `--skill '*'` makes "install all skills" unambiguous and avoids interactive prompts.
+
+Installed skills currently include:
+
+- `shinka-setup`
+- `shinka-convert`
+- `shinka-run`
+- `shinka-inspect`
+
+### Project-local install
+
+Use this if you want the skills installed only for the current repo:
 
 ```bash
-mkdir -p ~/.codex/skills/shinka-setup ~/.codex/skills/shinka-run ~/.codex/skills/shinka-inspect
-cp skills/shinka-setup/SKILL.md ~/.codex/skills/shinka-setup/SKILL.md
-cp -R skills/shinka-setup/scripts ~/.codex/skills/shinka-setup/
-cp skills/shinka-run/SKILL.md ~/.codex/skills/shinka-run/SKILL.md
-cp skills/shinka-inspect/SKILL.md ~/.codex/skills/shinka-inspect/SKILL.md
-cp -R skills/shinka-inspect/scripts ~/.codex/skills/shinka-inspect/
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -a claude-code -a codex -y
+```
+
+Typical project paths:
+
+- Claude Code: `.claude/skills/`
+- Codex: `.agents/skills/`
+
+### Global install paths
+
+For the global install command above, the relevant skill roots are:
+
+- Claude Code: `~/.claude/skills/`
+- Codex: `~/.codex/skills/`
+
+### Install one skill only
+
+For a narrower install:
+
+```bash
+npx skills add SakanaAI/ShinkaEvolve --skill shinka-setup -g -a claude-code -a codex -y
 ```
 
 ## 4) Setup Skill Walkthrough (`shinka-setup`)
@@ -183,7 +194,9 @@ Before first run:
 - `shinka_run --help` works
 - task dir has `evaluate.py` + `initial.<ext>`
 - API keys are available in environment
-- skill files are installed under `~/.claude/skills` and/or `~/.codex/skills`
+- `npx skills list` shows the installed Shinka skills
+- for global installs, skills appear under `~/.claude/skills/` and/or `~/.codex/skills/`
+- for project installs, skills appear under `.claude/skills/` and/or `.agents/skills/`
 
 After each batch:
 

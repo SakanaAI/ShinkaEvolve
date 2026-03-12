@@ -105,6 +105,18 @@ shinka_launch --help
 python -c "from shinka.core import ShinkaEvolveRunner; print('Installation successful!')"
 ```
 
+### Step 5: Optional Agent Skills Install
+
+If you want Claude Code or Codex to use the bundled Shinka skills directly from this repo, install them with the upstream `skills` CLI:
+
+```bash
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -g -a claude-code -a codex -y
+```
+
+This installs the repo skills without any manual file copying.
+
+For the full agent workflow and per-skill walkthroughs, see [Agentic Usage Guide](agentic_usage.md).
+
 ### Advanced uv Features (Optional)
 
 If you're using uv, you can take advantage of additional features:
