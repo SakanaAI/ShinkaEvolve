@@ -66,19 +66,17 @@ Paper: https://arxiv.org/abs/2212.04180
 | `shinka.yaml` | (Optional) Config: generations, islands, LLM models, patch types, etc. |
 
 ## Quick Install (if Shinka is not set up yet)
-Clone and install once before creating/running tasks:
+Install once before creating/running tasks:
 
 ```bash
 # Check if shinka is available in workspace environment
 python -c "import shinka"
 
-# If not; install via github cloning
-git clone https://github.com/SakanaAI/ShinkaEvolve.git
-cd ShinkaEvolve
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e .
-cd ..
+# If not; install from PyPI
+pip install shinka-evolve
+
+# Or with uv
+uv pip install shinka-evolve
 ```
 
 ## Language Support (`initial.<ext>`)

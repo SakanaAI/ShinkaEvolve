@@ -1,0 +1,1 @@
+"""Variant config group."""

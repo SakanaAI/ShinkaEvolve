@@ -149,6 +149,16 @@ shinka_launch \
     evo_config.num_generations=5
 ```
 
+The original shorthand group syntax still works (`task=...`, `database=...`, `evolution=...`, `cluster=...`, `variant=...`). Built-in presets ship inside the package under `shinka/configs/`.
+
+To add your own Hydra presets from a PyPI install without cloning the repo, create your own config directory and pass `--config-dir`:
+
+```bash
+mkdir -p ~/my-shinka-configs/variant
+$EDITOR ~/my-shinka-configs/variant/my_variant.yaml
+shinka_launch --config-dir ~/my-shinka-configs variant=my_variant
+```
+
 ### Agent-Friendly CLI (`shinka_run`)
 
 Use `shinka_run` when you want a direct task-directory launcher for agents.
@@ -484,10 +494,10 @@ This is particularly useful when:
 
 ### Creating Custom Tasks
 
-1. **Define the Problem**: Create task config in `configs/task/my_task.yaml`
+1. **Define the Problem**: Create task config in `shinka/configs/task/my_task.yaml`
 2. **Initial Solution**: Write `initial.py` with `EVOLVE-BLOCK` markers
 3. **Evaluation Script**: Create `evaluate.py` with validation logic
-4. **Variant Config**: Combine settings in `configs/variant/my_variant.yaml`
+4. **Variant Config**: Combine settings in `shinka/configs/variant/my_variant.yaml`
 
 For detailed configuration options, parameter explanations, and advanced patterns, see the [Configuration Guide](configuration.md).
 

@@ -1,11 +1,11 @@
 <h1 align="center">
-  <a href="shinka/favicon.png?raw=true"><img src="shinka/favicon.png?raw=true" width="180" /></a><br>
+  <a href="https://github.com/SakanaAI/ShinkaEvolve"><img src="https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/shinka/favicon.png" width="180" /></a><br>
   <b><code>ShinkaEvolve</code>: Towards Open-Ended and Sample-Efficient Program Evolution 🧬</b><br>
 </h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" />
-  <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/master/LICENSE.md"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
+  <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
   <a href="https://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
   <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/Blog%20%7C%20SakanaAI-0A66C2.svg" /></a>
@@ -19,9 +19,9 @@
 
 **Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner`).
 
-**Feb 2026 Update**: Added [agent skill files](docs/agentic_usage.md) for using `shinka` within coding agents for new task generation ([`shinka-setup`](skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](skills/shinka-inspect/SKILL.md)).
+**Feb 2026 Update**: Added [agent skill files](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md) for using `shinka` within coding agents for new task generation ([`shinka-setup`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-inspect/SKILL.md)).
 
-**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
+**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/release_notes.md) with many new features.
 
 **Nov 2025 Update**: Rob gave several public talks about our ShinkaEvolve effort ([Official](https://x.com/SakanaAILabs/status/1989352976792846356?s=20), [AutoML Seminar](https://www.youtube.com/watch?v=dAOIer_1INo)).
 
@@ -31,50 +31,71 @@
 
 The framework supports **parallel evaluation of candidates** locally or on a Slurm cluster. It maintains an archive of successful solutions, enabling knowledge transfer between different evolutionary islands. `shinka` is particularly well-suited for scientific tasks where there is a verifier available and the goal is to optimize performance metrics while maintaining code correctness and readability.
 
-![](docs/media/conceptual.png)
+![](https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/docs/media/conceptual.png)
 
 ## Documentation 📝
 
 | Guide | Description | What You'll Learn |
 |-------|-------------|-------------------|
-| 🚀 **[Getting Started](docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
-| 📓 **[Tutorial](examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
-| ⚙️ **[Configuration](docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
-| 🎨 **[WebUI](docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
-| ⚡ **[Async Evolution](docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
-| 🧠 **[Local LLM](docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
-| 🤖 **[Agentic Usage](docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
+| 🚀 **[Getting Started](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
+| 📓 **[Tutorial](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
+| ⚙️ **[Configuration](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
+| 🎨 **[WebUI](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
+| ⚡ **[Async Evolution](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
+| 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
+| 🤖 **[Agentic Usage](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 
 ## Installation & Quick Start 🚀
 
 ```bash
-# Clone repository
-git clone https://github.com/SakanaAI/ShinkaEvolve
+# Install from PyPI
+pip install shinka-evolve
 
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create environment and install Shinka
-cd ShinkaEvolve
-uv venv --python 3.11
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e .
+# Or with uv
+uv pip install shinka-evolve
 
 # Run your first evolution experiment
 shinka_launch variant=circle_packing_example
 ```
 
-For detailed installation instructions and usage examples, see the [Getting Started Guide](docs/getting_started.md).
+The distribution name is `shinka-evolve`; Python imports stay `import shinka`.
+
+`shinka_launch` still supports the original shorthand group overrides:
+
+```bash
+shinka_launch variant=circle_packing_example
+shinka_launch task=novelty_generator database=island_small
+```
+
+Built-in Hydra presets ship inside the package under `shinka/configs/`. To add your own presets from a PyPI install without cloning the repo, place them in your own config directory and pass `--config-dir`:
+
+```bash
+mkdir -p ~/my-shinka-configs/variant
+$EDITOR ~/my-shinka-configs/variant/my_variant.yaml
+shinka_launch --config-dir ~/my-shinka-configs variant=my_variant
+```
+
+For development installs from source:
+
+```bash
+git clone https://github.com/SakanaAI/ShinkaEvolve
+cd ShinkaEvolve
+uv venv --python 3.11
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e .
+```
+
+For detailed installation instructions and usage examples, see the [Getting Started Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md).
 
 ## Examples 📖
 
 | Example | Description | Environment Setup |
 |---------|-------------|-------------------|
-| ⭕ [Circle Packing](examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
-| 🎮 [Game 2048](examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
-| ∑ [Julia Prime Counting](examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
-| ✨ [Novelty Generator](examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
+| ⭕ [Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
+| 🎮 [Game 2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
+| ∑ [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
+| ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
@@ -331,7 +352,7 @@ shinka_launch \
     evo_config.num_generations=20
 ```
 
-For comprehensive configuration options and advanced usage, see the [Configuration Guide](docs/configuration.md).
+For comprehensive configuration options and advanced usage, see the [Configuration Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md).
 
 ## `shinka_run` Agent CLI 🤖
 
@@ -377,7 +398,7 @@ Precedence: config YAML < `--set` < authoritative flags.
 
 Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
-![WebUI Screenshot](docs/media/webui.png)
+![WebUI Screenshot](https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/docs/media/webui.png)
 
 ### Quick Start
 
@@ -391,7 +412,7 @@ shinka_launch
 shinka_visualize --port 8888 --open
 ```
 
-For detailed WebUI documentation, see the [WebUI Guide](docs/webui.md).
+For detailed WebUI documentation, see the [WebUI Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md).
 
 ## Related Open-Source Projects 🧑‍🔧
 

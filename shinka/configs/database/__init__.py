@@ -1,0 +1,1 @@
+"""Database config group."""

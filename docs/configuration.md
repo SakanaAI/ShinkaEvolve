@@ -10,7 +10,7 @@ Configuration values are resolved in this order (later wins):
    - `shinka/core/config.py` (`EvolutionConfig`)
    - `shinka/database/dbase.py` (`DatabaseConfig`)
    - `shinka/launch/scheduler.py` (`LocalJobConfig`, `SlurmDockerJobConfig`, `SlurmCondaJobConfig`)
-2. Hydra preset YAMLs in `configs/`
+2. Hydra preset YAMLs in `shinka/configs/`
 3. Task/cluster/variant overrides from Hydra composition
 4. CLI overrides (`shinka_launch ... key=value`, or `shinka_run --set ...`)
 5. Authoritative `shinka_run` flags (`--results_dir`, `--num_generations`)
@@ -134,13 +134,13 @@ Configuration values are resolved in this order (later wins):
 
 `conda_env` and `activate_script` are mutually exclusive.
 
-## Hydra Presets In `configs/`
+## Hydra Presets In `shinka/configs/`
 
 ### Evolution Presets
 
-All `configs/evolution/*.yaml` override `EvolutionConfig` defaults only for listed keys. Unlisted keys inherit dataclass defaults.
+All `shinka/configs/evolution/*.yaml` override `EvolutionConfig` defaults only for listed keys. Unlisted keys inherit dataclass defaults.
 
-#### `configs/evolution/small_budget.yaml`
+#### `shinka/configs/evolution/small_budget.yaml`
 
 ```yaml
 max_evaluation_jobs: 1
@@ -158,7 +158,7 @@ evo_config:
   results_dir: ${output_dir}
 ```
 
-#### `configs/evolution/medium_budget.yaml`
+#### `shinka/configs/evolution/medium_budget.yaml`
 
 ```yaml
 max_evaluation_jobs: 2
@@ -188,7 +188,7 @@ evo_config:
   results_dir: ${output_dir}
 ```
 
-#### `configs/evolution/large_budget.yaml`
+#### `shinka/configs/evolution/large_budget.yaml`
 
 ```yaml
 max_evaluation_jobs: 6
@@ -221,9 +221,9 @@ evo_config:
 
 ### Database Presets
 
-All `configs/database/*.yaml` override `DatabaseConfig` defaults only for listed keys.
+All `shinka/configs/database/*.yaml` override `DatabaseConfig` defaults only for listed keys.
 
-#### `configs/database/island_small.yaml`
+#### `shinka/configs/database/island_small.yaml`
 
 ```yaml
 db_config:
@@ -239,7 +239,7 @@ db_config:
   island_elitism: true
 ```
 
-#### `configs/database/island_medium.yaml`
+#### `shinka/configs/database/island_medium.yaml`
 
 ```yaml
 db_config:
@@ -257,7 +257,7 @@ db_config:
   parent_selection_lambda: 10.0
 ```
 
-#### `configs/database/island_large.yaml`
+#### `shinka/configs/database/island_large.yaml`
 
 ```yaml
 db_config:
@@ -278,13 +278,13 @@ db_config:
 
 ### Cluster Presets
 
-- `configs/cluster/local.yaml`
+- `shinka/configs/cluster/local.yaml`
   - `job_config: LocalJobConfig`
   - `job_config.eval_program_path: ${distributed_job_config.eval_program_path}`
   - `evo_config.job_type: "local"`
-- `configs/cluster/remote.yaml`
+- `shinka/configs/cluster/remote.yaml`
   - `job_config: ${distributed_job_config}`
-- `configs/cluster/gcp.yaml`
+- `shinka/configs/cluster/gcp.yaml`
   - inherits `remote`
   - overrides `distributed_job_config.partition: "a3,aisci"`
 
@@ -292,14 +292,14 @@ db_config:
 
 Only these task files currently exist:
 
-- `configs/task/circle_packing.yaml`
-- `configs/task/novelty_generator.yaml`
+- `shinka/configs/task/circle_packing.yaml`
+- `shinka/configs/task/novelty_generator.yaml`
 
 Both define task-specific `evaluate_function`, `distributed_job_config`, and `evo_config` task prompt/init path.
 
 ## Current Hydra Composition Defaults
 
-`configs/config.yaml` defaults chain:
+`shinka/configs/config.yaml` defaults chain:
 
 ```yaml
 defaults:
@@ -334,7 +334,7 @@ Precedence for `shinka_run`:
 ## Current Config Directory Structure
 
 ```text
-configs/
+shinka/configs/
 ├── config.yaml
 ├── cluster/
 │   ├── gcp.yaml
