@@ -15,6 +15,7 @@ from .islands import CombinedIslandManager
 from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
 from shinka.embed import EmbeddingClient
+from shinka.defaults import default_archive_criteria
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +52,17 @@ def clean_nan_values(obj: Any) -> Any:
 @dataclass
 class DatabaseConfig:
     db_path: Optional[str] = None  # Path to SQLite database file
-    num_islands: int = 4
-    archive_size: int = 100
+    num_islands: int = 2
+    archive_size: int = 40
 
     # Inspiration parameters
     elite_selection_ratio: float = 0.3  # Prop of elites inspirations
-    num_archive_inspirations: int = 5  # No. inspiration programs
-    num_top_k_inspirations: int = 2  # No. top-k inspiration programs
+    num_archive_inspirations: int = 1  # No. inspiration programs
+    num_top_k_inspirations: int = 1  # No. top-k inspiration programs
 
     # Island model/migration parameters
     migration_interval: int = 10  # Migrate every N generations
-    migration_rate: float = 0.1  # Prop. of island pop. to migrate
+    migration_rate: float = 0.0  # Prop. of island pop. to migrate
     island_elitism: bool = True  # Keep best prog on their islands
     enforce_island_separation: bool = (
         True  # Enforce full island separation for inspirations
@@ -78,7 +79,7 @@ class DatabaseConfig:
 
     # Parent selection parameters
     parent_selection_strategy: str = (
-        "power_law"  # "weighted"/"power_law" / "beam_search"
+        "weighted"  # "weighted"/"power_law" / "beam_search"
     )
 
     # Power-law parent selection parameters
@@ -97,11 +98,7 @@ class DatabaseConfig:
     #   Positive weight = higher is better (e.g., combined_score)
     #   Negative weight = lower is better (e.g., loc, complexity)
     # Weights represent relative importance after rank normalization
-    archive_criteria: Dict[str, float] = field(
-        default_factory=lambda: {
-            "combined_score": 1.0,  # Primary: maximize fitness
-        }
-    )
+    archive_criteria: Dict[str, float] = field(default_factory=default_archive_criteria)
 
 
 def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
