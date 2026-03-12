@@ -137,8 +137,8 @@ uv pip sync pyproject.toml
 The easiest way to get started is using the Hydra-based CLI launcher:
 
 ```bash
-# Run circle packing example with default settings
-shinka_launch variant=circle_packing_example
+# Run circle packing with the shared default baseline
+shinka_launch
 
 # Run with custom parameters
 shinka_launch \
@@ -189,21 +189,21 @@ from shinka.launch import LocalJobConfig
 # Configure the job execution environment
 job_config = LocalJobConfig(
     eval_program_path="examples/circle_packing/evaluate.py",
-    conda_env="my_special_env",  # Optional: run in specific conda environment
+    activate_script=".venv/bin/activate",  # Optional: source uv/venv env for each job
 )
 
 # Configure the evolution database
 db_config = DatabaseConfig(
-    archive_size=20,
-    num_archive_inspirations=4,
+    archive_size=40,
+    num_archive_inspirations=1,
     num_islands=2,
     migration_interval=10,
 )
 
 # Configure the evolution parameters
 evo_config = EvolutionConfig(
-    num_generations=10,
-    llm_models=["azure-gpt-4.1"],
+    num_generations=50,
+    llm_models=["gpt-5-mini", "gemini-3-flash-preview"],
     init_program_path="examples/circle_packing/initial.py",
     language="python",
     task_sys_msg="You are optimizing circle packing...",
@@ -250,7 +250,7 @@ examples/circle_packing/
 
 ```bash
 # Using CLI launcher (recommended)
-shinka_launch variant=circle_packing_example
+shinka_launch
 
 # Or with custom settings
 shinka_launch \
@@ -394,7 +394,7 @@ When you specify an existing `results_dir` that contains a database, Shinka will
 ```bash
 # Resume an existing run and extend to 50 generations
 shinka_launch \
-    variant=circle_packing_example \
+    variant=default \
     evo_config.results_dir=results_20250101_120000 \
     evo_config.num_generations=50
 
@@ -458,7 +458,17 @@ job_config = LocalJobConfig(
 # Uses the currently active Python environment
 ```
 
-#### Option 2: Use Specific Conda Environment
+#### Option 2: Source a Specific Python Environment Script
+```python
+job_config = LocalJobConfig(
+    eval_program_path="evaluate.py",
+    activate_script=".venv/bin/activate"  # Runs after `source .venv/bin/activate`
+)
+```
+
+Use this for uv/venv-style workflows where the job should bootstrap from a sourceable activation script.
+
+#### Option 3: Use Specific Conda Environment
 ```python
 job_config = LocalJobConfig(
     eval_program_path="evaluate.py",
@@ -470,6 +480,7 @@ This is particularly useful when:
 - Different experiments require different dependency versions
 - You want to isolate evaluation environments from your main development environment
 - Testing compatibility across multiple Python/package versions
+- `conda_env` and `activate_script` should not be set together
 
 ### Creating Custom Tasks
 
