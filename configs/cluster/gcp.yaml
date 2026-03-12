@@ -1,6 +1,0 @@
-defaults:
-  - remote
-  - _self_
-
-distributed_job_config:
-  partition: "a3,aisci"
