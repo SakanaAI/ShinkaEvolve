@@ -17,12 +17,10 @@ It covers:
 From a clean machine:
 
 ```bash
-git clone https://github.com/SakanaAI/ShinkaEvolve.git
-cd ShinkaEvolve
+pip install shinka-evolve
 
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e .
+# or
+uv pip install shinka-evolve
 ```
 
 Set API keys (example):
@@ -62,6 +60,8 @@ Skill source files in this repo:
   - `skills/shinka-setup/scripts/shinka.yaml`
 - helper script for inspect skill:
   - `skills/shinka-inspect/scripts/inspect_best_programs.py`
+
+Installing `shinka-evolve` from PyPI gives you the package and CLI. The skill files themselves are still copied from this repo into your agent skill directory.
 
 ### Claude Code skill path
 
