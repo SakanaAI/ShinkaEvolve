@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 results/
+examples/mnist_train/
 
 # C extensions
 *.so
