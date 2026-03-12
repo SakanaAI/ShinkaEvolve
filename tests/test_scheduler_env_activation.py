@@ -59,12 +59,14 @@ def test_submit_local_conda_sources_activate_script(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    captured: dict[str, object] = {}
+    captured_cmd: list[str] = []
+    captured_gpus = -1
 
     def fake_launch(job_id: str, cmd: list[str], gpus: int) -> None:
-        captured["job_id"] = job_id
-        captured["cmd"] = cmd
-        captured["gpus"] = gpus
+        assert job_id.startswith("local-conda-")
+        captured_cmd.extend(cmd)
+        nonlocal captured_gpus
+        captured_gpus = gpus
 
     monkeypatch.setattr("shinka.launch.slurm.launch_local_subprocess", fake_launch)
 
@@ -80,9 +82,10 @@ def test_submit_local_conda_sources_activate_script(
     )
 
     assert job_id.startswith("local-conda-")
-    assert captured["cmd"][0:2] == ["bash", "-lc"]
-    assert 'source ".venv/bin/activate"' in captured["cmd"][2]
-    assert "conda activate" not in captured["cmd"][2]
+    assert captured_cmd[0:2] == ["bash", "-lc"]
+    assert 'source ".venv/bin/activate"' in captured_cmd[2]
+    assert "conda activate" not in captured_cmd[2]
+    assert captured_gpus == 0
 
 
 def test_job_scheduler_accepts_slurm_env_alias() -> None:
