@@ -17,9 +17,9 @@
 
 ---
 
-**Mar 2026 Update**: Refactored evolution API and unified runner `ShinkaEvolveRunner` (replacing legacy `EvolutionRunner`/`AsyncEvolutionRunner` references).
+**Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner`).
 
-**Feb 2026 Update**: Added [agent skill files](docs/agentic_usage.md) for using `shinka` within coding agents for task generation ([`shinka-setup`](skills/shinka-setup/SKILL.md)), evolution ([`shinka-run`](skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](skills/shinka-inspect/SKILL.md)).
+**Feb 2026 Update**: Added [agent skill files](docs/agentic_usage.md) for using `shinka` within coding agents for new task generation ([`shinka-setup`](skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](skills/shinka-inspect/SKILL.md)).
 
 **Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 

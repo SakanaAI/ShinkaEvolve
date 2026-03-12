@@ -1,7 +1,0 @@
-interface:
-  display_name: "Shinka Convert"
-  short_description: "Convert existing code into a Shinka task"
-  default_prompt: "Use $shinka-convert to turn the current working directory into a Shinka-ready task directory that I can later run with `shinka-run`."
-
-policy:
-  allow_implicit_invocation: true
