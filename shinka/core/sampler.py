@@ -19,6 +19,7 @@ from shinka.prompts import (
     format_error_output_section,
 )
 from shinka.prompts.prompts_init import INIT_SYSTEM_MSG, INIT_USER_MSG
+from shinka.defaults import default_patch_type_probs, default_patch_types
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,9 +38,9 @@ class PromptSampler:
         ] = "ascending",
     ):
         if patch_types is None:
-            patch_types = ["diff"]
+            patch_types = default_patch_types()
         if patch_type_probs is None:
-            patch_type_probs = [1.0]
+            patch_type_probs = default_patch_type_probs()
 
         self.task_sys_msg = task_sys_msg
         self.language = language

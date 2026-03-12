@@ -4,12 +4,12 @@ db_config:
   db_path: "evolution_db.sqlite"
   num_islands: 2
   archive_size: 40
-  exploitation_ratio: 0.2
   elite_selection_ratio: 0.3
-  num_archive_inspirations: 4
-  num_top_k_inspirations: 2
+  num_archive_inspirations: 1
+  num_top_k_inspirations: 1
   migration_interval: 10
   migration_rate: 0.0
   island_elitism: true
+  enforce_island_separation: true
   parent_selection_strategy: "weighted"
   parent_selection_lambda: 10.0

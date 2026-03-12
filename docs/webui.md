@@ -31,7 +31,7 @@ The WebUI serves as a dashboard for monitoring Shinka evolution experiments, pro
 
 ```bash
 # Start your evolution experiment
-shinka_launch variant=circle_packing_example
+shinka_launch
 
 # In another terminal, launch the WebUI
 shinka_visualize --port 8888 --open

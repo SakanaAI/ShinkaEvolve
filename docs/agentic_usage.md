@@ -129,8 +129,8 @@ shinka_run \
   --results_dir results/my_task_agent \
   --num_generations 20 \
   --set evo.max_api_costs=0.5 \
-  --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]' \
-  --set db.num_islands=3 \
+  --set evo.llm_models='["gpt-5-mini","gemini-3-flash-preview"]' \
+  --set db.num_islands=2 \
   --set db.parent_selection_strategy=weighted
 ```
 

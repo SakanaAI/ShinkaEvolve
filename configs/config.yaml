@@ -1,10 +1,10 @@
 defaults:
   - _self_
-  - database@_global_: island_small
-  - evolution@_global_: small_budget
+  - database@_global_: island_medium
+  - evolution@_global_: medium_budget
   - task@_global_: circle_packing
   - cluster@_global_: local
-  - variant@_global_: circle_packing_example
+  - variant@_global_: default
 
 verbose: false
 results_dir: results

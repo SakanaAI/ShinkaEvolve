@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hydra import compose, initialize
 from omegaconf import OmegaConf
 
 import shinka.launch_hydra as launch_hydra
@@ -40,3 +41,30 @@ def test_launch_hydra_uses_async_runner(monkeypatch):
     assert _DummyRunner.last_kwargs["max_evaluation_jobs"] == 7
     assert _DummyRunner.last_kwargs["max_proposal_jobs"] == 3
     assert _DummyRunner.last_kwargs["max_db_workers"] == 5
+
+
+def test_default_launch_config_uses_neutral_shared_defaults():
+    with initialize(version_base=None, config_path="../configs"):
+        cfg = compose(config_name="config")
+
+    assert cfg.variant_suffix == "_default"
+    assert cfg.exp_name == "shinka_circle_packing"
+    assert cfg.max_evaluation_jobs == 2
+    assert cfg.evo_config.num_generations == 50
+    assert cfg.evo_config.max_patch_attempts == 1
+    assert cfg.evo_config.llm_models == [
+        "gpt-5-mini",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gpt-5.4",
+    ]
+    assert cfg.evo_config.llm_dynamic_selection == "ucb"
+    assert cfg.evo_config.llm_dynamic_selection_kwargs.cost_aware_coef == 0.5
+    assert cfg.evo_config.meta_rec_interval == 10
+    assert cfg.evo_config.code_embed_sim_threshold == 0.99
+    assert cfg.db_config.num_islands == 2
+    assert cfg.db_config.archive_size == 40
+    assert cfg.db_config.num_archive_inspirations == 1
+    assert cfg.db_config.num_top_k_inspirations == 1
+    assert cfg.db_config.migration_rate == 0.0
+    assert cfg.db_config.parent_selection_strategy == "weighted"

@@ -17,9 +17,9 @@
 
 ---
 
-**Mar 2026 Update**: Refactored evolution API and unified runner `ShinkaEvolveRunner` (replacing legacy `EvolutionRunner`/`AsyncEvolutionRunner` references).
+**Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner`).
 
-**Feb 2026 Update**: Added [agent skill files](docs/agentic_usage.md) for using `shinka` within coding agents for task generation ([`shinka-setup`](skills/shinka-setup/SKILL.md)), evolution ([`shinka-run`](skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](skills/shinka-inspect/SKILL.md)).
+**Feb 2026 Update**: Added [agent skill files](docs/agentic_usage.md) for using `shinka` within coding agents for new task generation ([`shinka-setup`](skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](skills/shinka-inspect/SKILL.md)).
 
 **Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](docs/release_notes.md) with many new features.
 
@@ -88,6 +88,11 @@ from shinka.launch import LocalJobConfig
 
 # Minimal - only specify what's required
 job_conf = LocalJobConfig(eval_program_path="evaluate.py")
+# Or source a uv/venv environment per job:
+# job_conf = LocalJobConfig(
+#     eval_program_path="evaluate.py",
+#     activate_script=".venv/bin/activate",
+# )
 db_conf = DatabaseConfig()
 evo_conf = EvolutionConfig(init_program_path="initial.py")
 
@@ -108,30 +113,30 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
-| `task_sys_msg` | `None` | `Optional[str]` | System message describing the optimization task |
-| `patch_types` | `["diff"]` | `List[str]` | Types of patches to generate: "diff", "full", "cross" |
-| `patch_type_probs` | `[1.0]` | `List[float]` | Probabilities for each patch type |
-| `num_generations` | `10` | `int` | Number of evolution generations to run |
+| `task_sys_msg` | `"You are an expert optimization and algorithm design assistant. Improve the program while preserving correctness and immutable regions."` | `Optional[str]` | System message describing the optimization task |
+| `patch_types` | `["diff", "full", "cross"]` | `List[str]` | Types of patches to generate: "diff", "full", "cross" |
+| `patch_type_probs` | `[0.6, 0.3, 0.1]` | `List[float]` | Probabilities for each patch type |
+| `num_generations` | `50` | `int` | Number of evolution generations to run |
 | `max_proposal_jobs` | `1` | `int` | Maximum number of concurrent proposal generation jobs |
 | `max_db_workers` | `4` | `int` | Maximum number of async DB worker threads |
 | `max_patch_resamples` | `3` | `int` | Max times to resample a patch if it fails |
-| `max_patch_attempts` | `5` | `int` | Max attempts to generate a valid patch |
+| `max_patch_attempts` | `1` | `int` | Max attempts to generate a valid patch |
 | `job_type` | `"local"` | `str` | Job execution type: "local", "slurm_docker", "slurm_conda" |
 | `language` | `"python"` | `str` | Programming language for evolution |
-| `llm_models` | `["azure-gpt-4.1-mini"]` | `List[str]` | List of LLM models for code generation |
-| `llm_dynamic_selection` | `None` | `Optional[Union[str, BanditBase]]` | Dynamic model selection strategy |
-| `llm_dynamic_selection_kwargs` | `{}` | `dict` | Kwargs for dynamic selection |
-| `llm_kwargs` | `{}` | `dict` | Additional kwargs for LLM calls |
-| `meta_rec_interval` | `None` | `Optional[int]` | Interval for meta-recommendations |
+| `llm_models` | `["gpt-5-mini", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gpt-5.4"]` | `List[str]` | List of LLM models for code generation |
+| `llm_dynamic_selection` | `"ucb"` | `Optional[Union[str, BanditBase]]` | Dynamic model selection strategy |
+| `llm_dynamic_selection_kwargs` | `{"cost_aware_coef": 0.5}` | `dict` | Kwargs for dynamic selection |
+| `llm_kwargs` | `{"temperatures": [0.0, 0.5, 1.0], "max_tokens": 16384}` | `dict` | Additional kwargs for LLM calls |
+| `meta_rec_interval` | `10` | `Optional[int]` | Interval for meta-recommendations |
 | `meta_llm_models` | `None` | `Optional[List[str]]` | LLM models for meta-recommendations |
 | `meta_llm_kwargs` | `{}` | `dict` | Kwargs for meta-recommendation LLMs |
 | `meta_max_recommendations` | `5` | `int` | Max number of meta-recommendations |
 | `sample_single_meta_rec` | `True` | `bool` | Sample a single recommendation from meta output when enabled |
-| `embedding_model` | `None` | `Optional[str]` | Model for code embeddings |
+| `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings |
 | `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
 | `max_novelty_attempts` | `3` | `int` | Max attempts for novelty generation |
-| `code_embed_sim_threshold` | `1.0` | `float` | Similarity threshold for code embeddings |
+| `code_embed_sim_threshold` | `0.99` | `float` | Similarity threshold for code embeddings |
 | `novelty_llm_models` | `None` | `Optional[List[str]]` | LLM models for novelty judgment |
 | `novelty_llm_kwargs` | `{}` | `dict` | Kwargs for novelty LLMs |
 | `use_text_feedback` | `False` | `bool` | Whether to use text feedback in evolution |
@@ -159,13 +164,13 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
 | `db_path` | `None` | `Optional[str]` | Database file path (auto-generated if None) |
-| `num_islands` | `4` | `int` | Number of evolution islands for diversity |
-| `archive_size` | `100` | `int` | Global archive size cap |
+| `num_islands` | `2` | `int` | Number of evolution islands for diversity |
+| `archive_size` | `40` | `int` | Global archive size cap |
 | `elite_selection_ratio` | `0.3` | `float` | Proportion of elite programs for inspiration |
-| `num_archive_inspirations` | `5` | `int` | Number of archive programs to use as inspiration |
-| `num_top_k_inspirations` | `2` | `int` | Number of top-k programs for inspiration |
+| `num_archive_inspirations` | `1` | `int` | Number of archive programs to use as inspiration |
+| `num_top_k_inspirations` | `1` | `int` | Number of top-k programs for inspiration |
 | `migration_interval` | `10` | `int` | Generations between island migrations |
-| `migration_rate` | `0.1` | `float` | Proportion of island population to migrate |
+| `migration_rate` | `0.0` | `float` | Proportion of island population to migrate |
 | `island_elitism` | `True` | `bool` | Keep best programs on their original islands |
 | `enforce_island_separation` | `True` | `bool` | Enforce full separation between islands |
 | `island_selection_strategy` | `"uniform"` | `str` | Island sampler (`"uniform"`, `"equal"`, `"proportional"`, `"weighted"`) |
@@ -173,7 +178,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | `stagnation_threshold` | `100` | `int` | Generations without improvement before spawning a new island |
 | `island_spawn_strategy` | `"initial"` | `str` | New-island seed strategy (`"initial"`, `"best"`, `"archive_random"`) |
 | `island_spawn_subtree_size` | `1` | `int` | Number of programs copied when spawning an island |
-| `parent_selection_strategy` | `"power_law"` | `str` | Parent selection: "weighted", "power_law", "beam_search" |
+| `parent_selection_strategy` | `"weighted"` | `str` | Parent selection: "weighted", "power_law", "beam_search" |
 | `exploitation_alpha` | `1.0` | `float` | Power-law exponent (0=uniform, 1=power-law) |
 | `exploitation_ratio` | `0.2` | `float` | Chance to pick parent from archive |
 | `parent_selection_lambda` | `10.0` | `float` | Sharpness of sigmoid for weighted selection |
@@ -193,6 +198,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
 | `time` | `None` | `Optional[str]` | Time limit for job execution |
 | `conda_env` | `None` | `Optional[str]` | Conda environment to run jobs in |
+| `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 
 **SlurmDockerJobConfig** (for SLURM with Docker):
 | Key | Default Value | Type | Explanation |
@@ -208,18 +214,21 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
 
-**SlurmCondaJobConfig** (for SLURM with Conda):
+**SlurmCondaJobConfig / SlurmEnvJobConfig** (for SLURM with sourced or Conda environments):
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
 | `eval_program_path` | `"evaluate.py"` | `Optional[str]` | Path to evaluation script |
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
 | `conda_env` | `""` | `str` | Conda environment name |
+| `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 | `modules` | `[]` | `Optional[List[str]]` | Environment modules to load |
 | `partition` | `"gpu"` | `str` | SLURM partition to use |
 | `time` | `"01:00:00"` | `str` | Job time limit |
 | `cpus` | `1` | `int` | Number of CPUs to request |
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
+
+`conda_env` and `activate_script` are mutually exclusive.
 
 </details>
 
@@ -310,8 +319,8 @@ def solve_problem(params):
 `shinka` Launcher utilizes [Hydra](https://hydra.cc/) to configure and launch evolutionary experiments effortlessly. It supports concise configuration via Hydra's powerful override syntax, making it easy to manage and iterate scientific explorations.
 
 ```bash
-# Run with pre-configured variant
-shinka_launch variant=circle_packing_example
+# Run with the shared default baseline
+shinka_launch
 
 # Run with custom parameters
 shinka_launch \
@@ -344,9 +353,10 @@ shinka_run \
     --results_dir results/circle_agent_custom \
     --num_generations 50 \
     --max-evaluation-jobs 6 \
-    --set db.num_islands=3 \
+    --set db.num_islands=2 \
     --set job.time=00:10:00 \
-    --set evo.llm_models='["gpt-5-mini","gpt-5-nano"]'
+    --set job.activate_script=.venv/bin/activate \
+    --set evo.llm_models='["gpt-5-mini","gemini-3-flash-preview"]'
 
 # Load optional YAML config (relative to --task-dir), then override via --set
 shinka_run \
@@ -354,7 +364,7 @@ shinka_run \
     --config-fname shinka_small.yaml \
     --results_dir results/circle_agent_from_yaml \
     --num_generations 50 \
-    --set db.num_islands=3
+    --set db.num_islands=2
 ```
 
 `--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
@@ -375,7 +385,7 @@ Launch the WebUI alongside your evolution experiment:
 
 ```bash
 # Start your evolution experiment
-shinka_launch variant=circle_packing_example
+shinka_launch
 
 # In another terminal, launch the WebUI
 shinka_visualize --port 8888 --open
