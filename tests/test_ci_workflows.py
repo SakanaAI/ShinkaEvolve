@@ -14,6 +14,16 @@ def test_public_ci_excludes_secret_backed_tests() -> None:
     assert 'pytest -q -m "not requires_secrets"' in workflow
 
 
+def test_integration_workflow_exists_for_secret_backed_tests() -> None:
+    workflow = _read(".github/workflows/integration.yml")
+
+    assert "workflow_dispatch:" in workflow
+    assert "schedule:" in workflow
+    assert "push:" in workflow
+    assert 'pytest -q -m "requires_secrets"' in workflow
+    assert "OPENAI_API_KEY" in workflow
+
+
 def test_pytest_markers_are_registered() -> None:
     pyproject = _read("pyproject.toml")
 

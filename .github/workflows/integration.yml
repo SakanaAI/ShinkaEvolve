@@ -1,0 +1,52 @@
+name: Integration Tests
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: Secret-Backed Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+      AZURE_API_ENDPOINT: ${{ secrets.AZURE_API_ENDPOINT }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION_NAME: ${{ secrets.AWS_REGION_NAME }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project
+        run: uv sync --dev
+
+      - name: Run secret-backed integration tests
+        run: |
+          set +e
+          uv run pytest -q -m "requires_secrets"
+          status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "No secret-backed tests selected."
+            exit 0
+          fi
+          exit "$status"
