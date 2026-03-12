@@ -32,7 +32,7 @@ jobs:
         run: uv run mypy --follow-imports=skip --ignore-missing-imports tests/test_*.py tests/conftest.py
 
       - name: Pytest + Coverage
-        run: uv run --with pytest-cov pytest -q --cov=shinka --cov-report=term-missing --cov-report=xml:coverage.xml
+        run: uv run --with pytest-cov pytest -q -m "not requires_secrets" --cov=shinka --cov-report=term-missing --cov-report=xml:coverage.xml
 
       - name: Upload Coverage XML
         uses: actions/upload-artifact@v4
