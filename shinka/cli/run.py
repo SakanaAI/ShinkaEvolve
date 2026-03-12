@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, get_args, get_origin
 
@@ -13,11 +13,6 @@ from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 from shinka.cli.run_config import load_optional_yaml_config
-
-DEFAULT_TASK_SYS_MSG = (
-    "You are an expert optimization and algorithm design assistant. "
-    "Improve the program while preserving correctness and immutable regions."
-)
 
 SUPPORTED_INITIAL_EXTENSIONS: dict[str, str] = {
     ".py": "python",
@@ -66,20 +61,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "  bool values: true,false,1,0,yes,no (case-insensitive)\n\n"
         "Common evo settings via --set:\n"
         "  budget: --set evo.max_api_costs=0.5\n"
-        '  models: --set evo.llm_models=\'["gpt-5-mini","gpt-5-nano"]\'\n'
+        "  models: --set "
+        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n"
         '  patching: --set evo.patch_types=\'["diff","full"]\' '
         "--set evo.patch_type_probs='[0.7,0.3]'\n"
-        '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.2,0.8],'
-        '"reasoning_efforts":["medium"],"max_tokens":16384}\'\n'
+        '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.0,0.5,1.0],'
+        '"max_tokens":16384}\'\n'
         "  quality controls: --set evo.max_patch_resamples=3 "
-        "--set evo.max_patch_attempts=3 --set evo.max_novelty_attempts=3\n"
+        "--set evo.max_patch_attempts=1 --set evo.max_novelty_attempts=3\n"
         "  embeddings: --set evo.embedding_model=text-embedding-3-small "
-        "--set evo.code_embed_sim_threshold=0.995\n\n"
+        "--set evo.code_embed_sim_threshold=0.99\n\n"
         "Common db settings via --set:\n"
-        "  islands: --set db.num_islands=3\n"
+        "  islands: --set db.num_islands=2\n"
         "  parent selection: --set db.parent_selection_strategy=weighted\n"
-        "  archive: --set db.archive_size=60 --set db.num_archive_inspirations=5\n"
-        "  migration: --set db.migration_interval=10 --set db.migration_rate=0.1\n\n"
+        "  archive: --set db.archive_size=40 --set db.num_archive_inspirations=1\n"
+        "  migration: --set db.migration_interval=10 --set db.migration_rate=0.0\n\n"
         "Examples:\n"
         "  Minimal:\n"
         "    shinka_run --task-dir examples/circle_packing "
@@ -87,9 +83,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "  With overrides:\n"
         "    shinka_run --task-dir examples/circle_packing "
         "--results_dir results/circle_custom --num_generations 50 "
-        "--set db.num_islands=3 --set db.parent_selection_strategy=weighted "
+        "--set db.num_islands=2 --set db.parent_selection_strategy=weighted "
         "--set job.time=00:10:00 "
-        '--set evo.llm_models=\'["gpt-5-mini","gpt-5-nano"]\'\n\n'
+        "--set job.activate_script=.venv/bin/activate "
+        "--set "
+        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n\n"
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"
@@ -353,37 +351,23 @@ def _build_default_evo_values(
     results_dir: Path,
     num_generations: int,
 ) -> Dict[str, Any]:
-    return {
-        "task_sys_msg": DEFAULT_TASK_SYS_MSG,
-        "patch_types": ["diff", "full", "cross"],
-        "patch_type_probs": [0.6, 0.3, 0.1],
-        "num_generations": num_generations,
-        "max_proposal_jobs": 1,
-        "max_db_workers": 4,
-        "max_patch_resamples": 3,
-        "max_patch_attempts": 3,
-        "job_type": "local",
-        "language": language,
-        "llm_models": ["gpt-5-mini"],
-        "llm_kwargs": {
-            "temperatures": [0.2, 0.6, 1.0],
-            "reasoning_efforts": ["medium"],
-            "max_tokens": 16384,
-        },
-        "embedding_model": "text-embedding-3-small",
-        "code_embed_sim_threshold": 0.995,
-        "init_program_path": str(init_program_path),
-        "results_dir": str(results_dir),
-        "max_novelty_attempts": 3,
-    }
+    return asdict(
+        EvolutionConfig(
+            num_generations=num_generations,
+            job_type="local",
+            language=language,
+            init_program_path=str(init_program_path),
+            results_dir=str(results_dir),
+        )
+    )
 
 
 def _build_default_db_values() -> Dict[str, Any]:
-    return {}
+    return asdict(DatabaseConfig())
 
 
 def _build_default_job_values(evaluate_path: Path) -> Dict[str, Any]:
-    return {"eval_program_path": str(evaluate_path)}
+    return asdict(LocalJobConfig(eval_program_path=str(evaluate_path)))
 
 
 def _validate_task_dir(task_dir: Path) -> tuple[Path, Path]:

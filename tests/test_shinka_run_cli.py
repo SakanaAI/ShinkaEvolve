@@ -93,9 +93,33 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
 
     assert evo_config.results_dir == str(results_dir.resolve())
     assert evo_config.num_generations == 7
+    assert evo_config.task_sys_msg is not None
+    assert evo_config.patch_types == ["diff", "full", "cross"]
+    assert evo_config.patch_type_probs == [0.6, 0.3, 0.1]
     assert evo_config.max_proposal_jobs == 1
     assert evo_config.max_db_workers == 4
+    assert evo_config.max_patch_attempts == 1
+    assert evo_config.llm_models == [
+        "gpt-5-mini",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gpt-5.4",
+    ]
+    assert evo_config.llm_dynamic_selection == "ucb"
+    assert evo_config.llm_dynamic_selection_kwargs == {"cost_aware_coef": 0.5}
+    assert evo_config.llm_kwargs == {
+        "temperatures": [0.0, 0.5, 1.0],
+        "max_tokens": 16384,
+    }
+    assert evo_config.meta_rec_interval == 10
+    assert evo_config.embedding_model == "text-embedding-3-small"
+    assert evo_config.code_embed_sim_threshold == pytest.approx(0.99)
     assert db_config.num_islands == 2
+    assert db_config.archive_size == 40
+    assert db_config.num_archive_inspirations == 1
+    assert db_config.num_top_k_inspirations == 1
+    assert db_config.migration_rate == pytest.approx(0.0)
+    assert db_config.parent_selection_strategy == "weighted"
     assert job_config.time == "00:03:00"
     assert "def run" in init_program_str
     assert "def main" in evaluate_str
@@ -126,6 +150,29 @@ def test_shinka_run_parses_json_overrides(tmp_path, monkeypatch):
     job_config = _DummyRunner.last_kwargs["job_config"]
     assert evo_config.llm_models == ["gpt-5-mini", "gpt-5-nano"]
     assert job_config.extra_cmd_args == {"seed": 42}
+
+
+def test_shinka_run_parses_activate_script_override(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    results_dir = tmp_path / "results_activate_script"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+            "--set",
+            "job.activate_script=.venv/bin/activate",
+        ]
+    )
+
+    job_config = _DummyRunner.last_kwargs["job_config"]
+    assert job_config.activate_script == ".venv/bin/activate"
 
 
 def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeypatch):
@@ -260,3 +307,44 @@ def test_shinka_run_requires_evaluate_file(tmp_path):
             ]
         )
     assert exc_info.value.code == 2
+
+
+def test_dataclass_defaults_match_shared_baseline():
+    evo_config = cli_run.EvolutionConfig()
+    db_config = cli_run.DatabaseConfig()
+    job_config = cli_run.LocalJobConfig()
+
+    assert evo_config.task_sys_msg is not None
+    assert evo_config.patch_types == ["diff", "full", "cross"]
+    assert evo_config.patch_type_probs == [0.6, 0.3, 0.1]
+    assert evo_config.num_generations == 50
+    assert evo_config.max_patch_attempts == 1
+    assert evo_config.llm_models == [
+        "gpt-5-mini",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gpt-5.4",
+    ]
+    assert evo_config.llm_dynamic_selection == "ucb"
+    assert evo_config.llm_dynamic_selection_kwargs == {"cost_aware_coef": 0.5}
+    assert evo_config.llm_kwargs == {
+        "temperatures": [0.0, 0.5, 1.0],
+        "max_tokens": 16384,
+    }
+    assert evo_config.meta_rec_interval == 10
+    assert evo_config.embedding_model == "text-embedding-3-small"
+    assert evo_config.code_embed_sim_threshold == pytest.approx(0.99)
+
+    assert db_config.num_islands == 2
+    assert db_config.archive_size == 40
+    assert db_config.num_archive_inspirations == 1
+    assert db_config.num_top_k_inspirations == 1
+    assert db_config.migration_interval == 10
+    assert db_config.migration_rate == pytest.approx(0.0)
+    assert db_config.parent_selection_strategy == "weighted"
+    assert db_config.parent_selection_lambda == pytest.approx(10.0)
+    assert db_config.enable_dynamic_islands is False
+
+    assert job_config.time is None
+    assert job_config.conda_env is None
+    assert job_config.activate_script is None
