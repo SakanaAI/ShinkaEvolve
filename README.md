@@ -17,9 +17,13 @@
 
 ---
 
-**Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner`).
+**Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner` and `AsyncEvolutionRunner`). You can now install `shinka` via PyPI and `uv`: `pip install shinka-evolve`.
 
-**Feb 2026 Update**: Added [agent skill files](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md) for using `shinka` within coding agents for new task generation ([`shinka-setup`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-inspect/SKILL.md)).
+**Feb 2026 Update**: Added [agent skills](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md) for using `shinka` within coding agents (Claude Code, Codex, etc.) for new task generation ([`shinka-setup`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-inspect/SKILL.md)). Install them via `npx`:
+
+```
+npx skills add SakanaAI/ShinkaEvolve --skill '*' -a claude-code -a codex -y
+```
 
 **Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/release_notes.md) with many new features.
 
