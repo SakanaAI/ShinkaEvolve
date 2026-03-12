@@ -1,0 +1,8 @@
+defaults:
+  - override /database@_global_: island_large
+  - override /evolution@_global_: large_budget
+  - override /task@_global_: circle_packing
+  - override /cluster@_global_: local
+  - _self_
+
+variant_suffix: "_example"

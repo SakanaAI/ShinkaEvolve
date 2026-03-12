@@ -32,7 +32,7 @@ def run_with_cfg(cfg: DictConfig) -> None:
     evo_runner.run()
 
 
-@hydra.main(config_path="../configs", config_name="config", version_base=None)
+@hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     run_with_cfg(cfg)
 

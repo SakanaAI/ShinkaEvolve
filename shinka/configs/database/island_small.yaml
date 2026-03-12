@@ -1,0 +1,13 @@
+# from mad example TODO: update
+db_config:
+  _target_: shinka.database.DatabaseConfig
+  db_path: "evolution_db.sqlite"
+  num_islands: 2
+  archive_size: 20
+  exploitation_ratio: 0.2
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.1
+  island_elitism: true

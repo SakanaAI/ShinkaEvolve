@@ -1,0 +1,37 @@
+evaluate_function:
+  _target_: examples.circle_packing.evaluate.main
+  program_path: ???
+  results_dir: ???
+
+distributed_job_config:
+  _target_: shinka.launch.SlurmCondaJobConfig
+  modules:
+  - "cuda/12.4"
+  - "cudnn/8.9.7"
+  - "hpcx/2.20"
+  eval_program_path: "shinka/eval_hydra.py"
+  conda_env: "shinka"
+  time: "00:10:00" 
+  cpus: 1
+  gpus: 0
+  mem: "8G"
+
+evo_config:
+  task_sys_msg: |
+    You are an expert mathematician specializing in circle packing problems and computational geometry. The best known result for the sum of radii when packing 26 circles in a unit square is 2.635.
+
+    Key insights to explore:
+    1. The optimal arrangement likely involves variable-sized circles
+    2. A pure hexagonal arrangement may not be optimal due to edge effects
+    3. The densest known circle packings often use a hybrid approach
+    4. The optimization routine is critically important - simple physics-based models with carefully tuned parameters
+    5. Consider strategic placement of circles at square corners and edges
+    6. Adjusting the pattern to place larger circles at the center and smaller at the edges
+    7. The math literature suggests special arrangements for specific values of n
+
+    Be creative and try to find a new solution.
+  language: "python"
+  init_program_path: "examples/circle_packing/initial.py"
+  job_type: "slurm_conda"
+
+exp_name: "shinka_circle_packing"

@@ -1,0 +1,52 @@
+novelty_generator_number_of_samples: 20
+
+evaluate_function:
+  _target_: examples.novelty_generator.evaluate.evaluate_with_lm_judge
+  program_path: ???
+  results_dir: ???
+  lm_input_and_output_processors:
+    _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
+    number_of_samples: ${novelty_generator_number_of_samples}
+  llm_judge_names:
+    - "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
+  llm_judge_kwargs:
+    temperatures: 0.0
+    max_tokens: 8196
+    reasoning_efforts: "low"
+    model_sample_probs: null
+    output_model: null
+    verbose: true
+  limit_max_characters: 1000000
+  num_samples: ${novelty_generator_number_of_samples}
+  seed: 42
+
+distributed_job_config:
+  _target_: shinka.launch.SlurmCondaJobConfig
+  modules:
+  - "cuda/12.4"
+  - "cudnn/8.9.7"
+  - "hpcx/2.20"
+  eval_program_path: "shinka/eval_hydra.py"
+  conda_env: "shinka"
+  time: "00:10:00" 
+  cpus: 1
+  gpus: 0
+  mem: "8G"
+
+evo_config:
+  task_sys_msg: |
+    Make a python function that takes as input a random integer and produces a piece of art that is cool and novel. Depending on its input, each output should be diverse from all other outputs produced with different inputs. Please, call this function "def generate_novelty(rng: int) -> str"
+
+    Different judges will evaluate how 1) diverse, 2) meaningful, and 3) inspirational the generated outputs are for different random seeds. These three criteria will be used to assign your function a "final_novelty_score" for each judge. Only functions excelling across all three dimensions will achieve a high "final_novelty_score".
+
+    Now bring out your creativity, it's time to surprise us!
+  language: "python"
+  init_program_path:
+    _target_: shinka.utils.add_evolve_markers
+    save_dir: ${output_dir}
+    initial_file_path: examples/novelty_generator/initial.py
+    insert_start: generate_novelty
+    insert_end: generate_novelty
+  job_type: "slurm_conda"
+
+exp_name: "shinka_novelty_generator_llm_judge"

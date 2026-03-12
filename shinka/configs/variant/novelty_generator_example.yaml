@@ -1,0 +1,8 @@
+defaults:
+  - override /database@_global_: island_medium
+  - override /evolution@_global_: medium_budget
+  - override /task@_global_: novelty_generator
+  - override /cluster@_global_: local
+  - _self_
+
+variant_suffix: "_example"
