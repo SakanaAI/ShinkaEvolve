@@ -3,7 +3,7 @@ import re
 import os
 import logging
 from pathlib import Path
-from typing import Tuple, Optional, List
+from typing import Optional, Tuple
 
 from openai import OpenAI
 
@@ -77,12 +77,12 @@ def generate_proof(
         proof_text = response.choices[0].message.content
 
         results_dir, _ = os.path.split(file_path)
-        fname = os.path.join(results_dir, fr"unprocessed_proof.lean")
+        fname = os.path.join(results_dir, "unprocessed_proof.lean")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(proof_text)
 
         proof_text = postprocess(proof_text)
-        fname = os.path.join(results_dir, fr"processed_proof.lean")
+        fname = os.path.join(results_dir, "processed_proof.lean")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(proof_text)
 
