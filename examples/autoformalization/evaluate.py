@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import os
 import logging
 import argparse
+import re
+from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
 import numpy as np
@@ -24,9 +28,67 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DEFAULT_LEAN_TIMEOUT = int(os.environ.get("AUTOFORMALIZATION_LEAN_TIMEOUT", "300"))
-DEFAULT_PROVER_TIMEOUT = int(
-    os.environ.get("AUTOFORMALIZATION_PROVER_TIMEOUT", "180")
-)
+DEFAULT_PROVER_TIMEOUT = int(os.environ.get("AUTOFORMALIZATION_PROVER_TIMEOUT", "180"))
+
+
+def _extract_theorem_block(lean_code: str) -> Optional[str]:
+    match = re.search(
+        r"theorem\s+abelian_group\b.*?:=",
+        lean_code,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return None
+    return match.group(0)
+
+
+def validate_task_semantics(
+    lean_code: Optional[str],
+    artifact_name: str = "generated proof",
+) -> Tuple[bool, Optional[str]]:
+    """Check that the generated theorem still matches the intended task."""
+    if not lean_code:
+        return False, f"The {artifact_name} is empty."
+
+    theorem_block = _extract_theorem_block(lean_code)
+    if theorem_block is None:
+        return False, f"The {artifact_name} does not preserve theorem `abelian_group`."
+
+    if re.search(r":\s*True\s*:=", theorem_block):
+        return False, f"The {artifact_name} became vacuous (`True`)."
+
+    required_patterns = [
+        (r"\[.*Group.*\]", "group context"),
+        (r"\ba\b", "generator `a`"),
+        (r"\bb\b", "generator `b`"),
+    ]
+    for pattern, label in required_patterns:
+        if re.search(pattern, theorem_block) is None:
+            return False, f"The {artifact_name} is missing the intended {label}."
+
+    subgroup_patterns = [
+        r"Subgroup",
+        r"closure",
+        r"\bH\b",
+        r"∈\s*H",
+    ]
+    if not any(re.search(pattern, theorem_block) for pattern in subgroup_patterns):
+        return False, f"The {artifact_name} is missing the intended generated-subgroup structure."
+
+    commutativity_patterns = [
+        r"a\s*\*\s*b\s*=\s*b\s*\*\s*a",
+        r"Commute",
+        r"Abelian",
+        r"abelian_group",
+        r"abelian",
+    ]
+    if not any(re.search(pattern, theorem_block) for pattern in commutativity_patterns):
+        return (
+            False,
+            f"The {artifact_name} no longer states the intended commutativity/abelian goal.",
+        )
+
+    return True, None
 
 
 def check_lean(
@@ -71,6 +133,22 @@ def validate_proof(
         (is_valid: bool, error_message: Optional[str])
     """
     file_path, proof_text = run_output
+    candidate_text = Path(file_path).read_text(encoding="utf-8")
+
+    semantic_ok, semantic_error = validate_task_semantics(
+        candidate_text,
+        artifact_name="evolved Lean file",
+    )
+    if not semantic_ok:
+        return False, semantic_error
+
+    semantic_ok, semantic_error = validate_task_semantics(
+        proof_text,
+        artifact_name="generated proof",
+    )
+    if not semantic_ok:
+        return False, semantic_error
+
     return validate_lean(
         proof_text,
         allow_sorry=False,
@@ -101,31 +179,53 @@ def aggregate_hypothesis_generation_metrics(
         return {"combined_score": 0.0, "error": "No results to aggregate"}
 
     path, lean_cmd = results
+    formalization_text = Path(path).read_text(encoding="utf-8")
+    candidate_ok, candidate_error = validate_task_semantics(
+        formalization_text,
+        artifact_name="evolved Lean file",
+    )
+    proof_ok, proof_error = validate_task_semantics(
+        lean_cmd,
+        artifact_name="generated proof",
+    )
+
+    if not candidate_ok or not proof_ok:
+        semantic_error = candidate_error or proof_error
+        return {
+            "combined_score": 0.0,
+            "public": {
+                "proof_length": len(lean_cmd) if lean_cmd else 0,
+                "formalization_length": len(formalization_text),
+            },
+            "private": {
+                "candidate_semantic_error": candidate_error,
+                "proof_semantic_error": proof_error,
+            },
+            "text_feedback": semantic_error
+            or "Generated theorem did not match the intended task.",
+        }
 
     server_output = check_lean(lean_cmd, timeout=lean_timeout)
     if not server_output.lean_code_is_valid(allow_sorry=False):
-        penalty = 0
-        for message in server_output.messages:
-            if "error" in message.severity:
-                penalty += -1
-
         messages = server_output
         text_feedback = (
             f"The generated proof:\n{lean_cmd} was invalid. Each error or sorry leads to a -1 penalty."
             f"Please consider the following compiler feedback and update the formalization accordingly:\n"
             f"{messages}"
         )
+        combined_score = 0.0
     else:
         text_feedback = ""
-        penalty = 0
+        combined_score = float(max(1, 1000 - len(formalization_text)))
 
     public_metrics = {
         "proof_length": len(lean_cmd),
+        "formalization_length": len(formalization_text),
     }
 
     private_metrics = {}
     metrics = {
-        "combined_score": len(lean_cmd),
+        "combined_score": combined_score,
         "public": public_metrics,
         "private": private_metrics,
         "text_feedback": text_feedback,
@@ -133,7 +233,11 @@ def aggregate_hypothesis_generation_metrics(
 
     extra_file = os.path.join(results_dir, "extra.npz")
     try:
-        np.savez(extra_file, proof_length=len(results))
+        np.savez(
+            extra_file,
+            proof_length=len(lean_cmd),
+            formalization_length=len(formalization_text),
+        )
         print(f"Detailed packing data saved to {extra_file}")
     except Exception as e:
         print(f"Error saving extra.npz: {e}")
@@ -154,7 +258,10 @@ def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
     """
     del run_index  # Unused
     return {
-        "sampling_params": {},
+        "sampling_params": {
+            "temperature": 0.0,
+            "max_tokens": 16384,
+        },
         "timeout": DEFAULT_PROVER_TIMEOUT,
     }
 
@@ -162,7 +269,7 @@ def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
 def main(
     program_path: str,
     results_dir: str,
-    prover_model: str = "gpt-5-nano",
+    prover_model: str = "gpt-5.4",
     lean_timeout: int = DEFAULT_LEAN_TIMEOUT,
     prover_timeout: int = DEFAULT_PROVER_TIMEOUT,
 ) -> None:

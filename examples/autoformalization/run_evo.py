@@ -62,7 +62,7 @@ def main(prover_model: str, results_dir: str, lean_timeout: int) -> None:
         max_patch_attempts=3,
         job_type="local",
         language="lean",
-        llm_models=["gpt-5-mini"],
+        llm_models=["gpt-5.4"],
         llm_kwargs={
             "temperatures": [0.2, 0.6, 0.9],
             "reasoning_efforts": ["medium"],
