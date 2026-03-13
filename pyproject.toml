@@ -46,7 +46,6 @@ dependencies = [
     "markdown",
     "aiofiles",
     "google-genai",
-    "lean-interact",
     "psutil",
     "httpx==0.27"
 ]
