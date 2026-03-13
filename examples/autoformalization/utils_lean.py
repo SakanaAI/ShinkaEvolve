@@ -1,7 +1,8 @@
 import json
-import re
-import os
 import logging
+import os
+import re
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -12,6 +13,22 @@ from lean_interact.interface import Command, FileCommand, LeanError
 from lean_interact.utils import remove_lean_comments
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_lean_toolchain_on_path() -> None:
+    """Add elan-managed Lean binaries to PATH when available."""
+    if shutil.which("lake") is not None:
+        return
+
+    elan_bin = Path.home() / ".elan" / "bin"
+    if not elan_bin.exists():
+        return
+
+    current_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{elan_bin}:{current_path}" if current_path else str(elan_bin)
+
+
+_ensure_lean_toolchain_on_path()
 
 
 def generate_prompt(file_path: str) -> str:

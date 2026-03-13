@@ -1,0 +1,14 @@
+import data.real.basic
+import data.real.nnreal
+import Mathlib.Tactic
+
+-- EVOLVE-BLOCK-START
+theorem abelian_group (G : Type _) [Group G] (a b : G) (H : Subgroup G := Subgroup.closure ({a, b} : Set G))
+-- Assumptions
+(hab : a * b = b * a)
+:
+-- Conjecture
+(∀ x y : G, x ∈ H → y ∈ H → x * y = y * x) := by
+  admit
+-- EVOLVE-BLOCK-END
+:=

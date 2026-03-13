@@ -1,0 +1,14 @@
+{
+  "generation": 5,
+  "novelty_attempt": 1,
+  "resample_attempt": 1,
+  "patch_attempt": 2,
+  "success": false,
+  "num_applied": 0,
+  "patch_name": "none",
+  "patch_description": "none",
+  "error_msg": "SEARCH text not found in editable regions\n\nLooking for 6-line block starting with: 'theorem abelian_group ()'\n\nFull search pattern:\n```\ntheorem abelian_group ()\n-- Assumptions\n()\n:\n-- Conjecture\n()\n```\n\nFound similar code block at line 6 (\u2713 editable):\n\nDifferences between search pattern and actual code:\n```diff\n+  \n-  ()\n```\n\nEditable regions where you can make changes:\n  Region 1 (lines 5-13):\n    theorem abelian_group ()\n    -- Assumptions\n    ()\n    ... (1 more lines)\n    :\n    -- Conjecture\n    ()\n\nQuick fixes:\n\u2022 Check indentation - search text must match exactly including spaces/tabs\n\u2022 Look for typos in the search text\n\u2022 Try searching for just the first line instead of the full block",
+  "timestamp": "2026-03-13T13:34:59.159420",
+  "llm_cost": 0.00553525,
+  "llm_model": null
+}

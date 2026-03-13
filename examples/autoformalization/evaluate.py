@@ -13,15 +13,26 @@ from lean_interact import (
 )
 from lean_interact.interface import BaseREPLResponse, LeanError
 
-from .utils_lean import validate_lean, generate_proof
+try:
+    from .utils_lean import validate_lean, generate_proof
+except ImportError:
+    from utils_lean import validate_lean, generate_proof
 from shinka.llm.client import get_client_llm
 from shinka.core import run_shinka_eval
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+DEFAULT_LEAN_TIMEOUT = int(os.environ.get("AUTOFORMALIZATION_LEAN_TIMEOUT", "300"))
+DEFAULT_PROVER_TIMEOUT = int(
+    os.environ.get("AUTOFORMALIZATION_PROVER_TIMEOUT", "180")
+)
 
-def check_lean(path_or_str: str) -> BaseREPLResponse | LeanError:
+
+def check_lean(
+    path_or_str: str,
+    timeout: int = DEFAULT_LEAN_TIMEOUT,
+) -> BaseREPLResponse | LeanError:
     """
     Plug the generated proof through the Lean 4 compiler.
 
@@ -39,12 +50,15 @@ def check_lean(path_or_str: str) -> BaseREPLResponse | LeanError:
         if path_or_str.endswith(".lean")
         else Command(cmd=path_or_str)
     )
-    server_output = server.run(command)
+    server_output = server.run(command, timeout=timeout)
     logger.info(server_output.messages)
     return server_output
 
 
-def validate_proof(run_output: Tuple[str, Optional[str]]) -> Tuple[bool, Optional[str]]:
+def validate_proof(
+    run_output: Tuple[str, Optional[str]],
+    timeout: int = DEFAULT_LEAN_TIMEOUT,
+) -> Tuple[bool, Optional[str]]:
     """
     Validates the proof generation results based on the output of ``generate_proof``.
 
@@ -57,11 +71,18 @@ def validate_proof(run_output: Tuple[str, Optional[str]]) -> Tuple[bool, Optiona
         (is_valid: bool, error_message: Optional[str])
     """
     file_path, proof_text = run_output
-    return validate_lean(proof_text, allow_sorry=False, timeout=60, verbose=False)
+    return validate_lean(
+        proof_text,
+        allow_sorry=False,
+        timeout=timeout,
+        verbose=False,
+    )
 
 
 def aggregate_hypothesis_generation_metrics(
-    results: Tuple[str, str], results_dir: str
+    results: Tuple[str, str],
+    results_dir: str,
+    lean_timeout: int = DEFAULT_LEAN_TIMEOUT,
 ) -> Dict[str, Any]:
     """
     Aggregates metrics for the generation of hypotheses. Assumes num_runs=1. Saves extra.npz with detailed generation
@@ -81,7 +102,7 @@ def aggregate_hypothesis_generation_metrics(
 
     path, lean_cmd = results
 
-    server_output = check_lean(lean_cmd)
+    server_output = check_lean(lean_cmd, timeout=lean_timeout)
     if not server_output.lean_code_is_valid(allow_sorry=False):
         penalty = 0
         for message in server_output.messages:
@@ -134,11 +155,17 @@ def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
     del run_index  # Unused
     return {
         "sampling_params": {},
-        "timeout": 180,
+        "timeout": DEFAULT_PROVER_TIMEOUT,
     }
 
 
-def main(program_path: str, results_dir: str, prover_model: str = "gpt-5-nano") -> None:
+def main(
+    program_path: str,
+    results_dir: str,
+    prover_model: str = "gpt-5-nano",
+    lean_timeout: int = DEFAULT_LEAN_TIMEOUT,
+    prover_timeout: int = DEFAULT_PROVER_TIMEOUT,
+) -> None:
     """
     Run the hypothesis evaluation using shinka.eval
 
@@ -162,14 +189,21 @@ def main(program_path: str, results_dir: str, prover_model: str = "gpt-5-nano") 
         r: List[Tuple[str, str]],
     ) -> Dict[str, Any]:
         """A curried function to pass results_dir to the aggregator, extracts the tuple from the list containing 1 element"""
-        return aggregate_hypothesis_generation_metrics(r[0], results_dir)
+        return aggregate_hypothesis_generation_metrics(
+            r[0],
+            results_dir,
+            lean_timeout=lean_timeout,
+        )
 
     def _kwargs_with_context(run_index: int) -> dict:
         """A curried function to pass the proof client to the proof solver"""
         return {
             "model": prover_model,
             "proof_client": client,
-        } | get_proof_generation_kwargs(run_index=run_index)
+        } | (
+            get_proof_generation_kwargs(run_index=run_index)
+            | {"timeout": prover_timeout}
+        )
 
     num_experiment_runs = 1
 
@@ -179,7 +213,10 @@ def main(program_path: str, results_dir: str, prover_model: str = "gpt-5-nano") 
         experiment_fn_name=generate_proof,
         num_runs=num_experiment_runs,
         get_experiment_kwargs=_kwargs_with_context,
-        validate_fn=validate_proof,
+        validate_fn=lambda run_output: validate_proof(
+            run_output,
+            timeout=lean_timeout,
+        ),
         aggregate_metrics_fn=_aggregator_with_context,
     )
 
@@ -219,6 +256,24 @@ if __name__ == "__main__":
         default="gpt-5-nano",  # or an actual prover like "deepseek-ai/DeepSeek-Prover-V2-7B" (requires local LLM support)
         help="LLM agent used to construct LEAN proofs based on the initial header and formalization.",
     )
+    parser.add_argument(
+        "--lean_timeout",
+        type=int,
+        default=DEFAULT_LEAN_TIMEOUT,
+        help="Timeout in seconds for Lean validation and compiler checks.",
+    )
+    parser.add_argument(
+        "--prover_timeout",
+        type=int,
+        default=DEFAULT_PROVER_TIMEOUT,
+        help="Timeout in seconds for the prover model API call.",
+    )
 
     parsed_args = parser.parse_args()
-    main(parsed_args.program_path, parsed_args.results_dir, parsed_args.prover_model)
+    main(
+        parsed_args.program_path,
+        parsed_args.results_dir,
+        parsed_args.prover_model,
+        parsed_args.lean_timeout,
+        parsed_args.prover_timeout,
+    )

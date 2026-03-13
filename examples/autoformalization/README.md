@@ -18,11 +18,9 @@ Lean 4 example task for ShinkaEvolve. The evolving program is a partial Lean the
 - `OPENAI_API_KEY` set for the prover model
 - Lean toolchain available locally
 - `lean-interact` installed into the same environment
+- `lake` available on `PATH`
 
-Recommended extra setup:
-
-- install Lean via `elan`
-- confirm `lake` / Lean can fetch `mathlib`
+Lean setup is mandatory for this example. If `lake` is missing, evaluation will fail.
 
 ## Setup
 
@@ -33,6 +31,20 @@ uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -e .
 uv pip install lean-interact
+```
+
+Install Lean via `elan` if you do not already have it:
+
+```bash
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+export PATH="$HOME/.elan/bin:$PATH"
+```
+
+Verify the Lean toolchain before running the example:
+
+```bash
+which lean
+which lake
 ```
 
 If you use plain `pip` instead of `uv`:
@@ -63,13 +75,14 @@ Single evaluation:
 ```bash
 python examples/autoformalization/evaluate.py \
   --program_path examples/autoformalization/initial.lean \
-  --results_dir results/autoformalization_manual
+  --results_dir results/autoformalization_manual \
+  --lean_timeout 300
 ```
 
 Hydra/Shinka launch:
 
 ```bash
-shinka_launch variant=autoformalization_example
+python examples/autoformalization/run_evo.py --lean_timeout 300
 ```
 
 The task preset lives at [`shinka/configs/task/autoformalization.yaml`](../../shinka/configs/task/autoformalization.yaml).
@@ -87,3 +100,5 @@ The task preset lives at [`shinka/configs/task/autoformalization.yaml`](../../sh
 - `lean-interact` is example-local on purpose; it is not required for the base Shinka package install.
 - This example currently assumes an OpenAI-compatible prover client.
 - Lean verification can be slow on first run because toolchain / dependency setup may be downloaded.
+- `lake` must resolve successfully in the shell that runs `evaluate.py` or `run_evo.py`.
+- If Lean setup or `mathlib` fetch is slow, raise `--lean_timeout` (default now `300` seconds).
