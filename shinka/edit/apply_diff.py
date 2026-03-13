@@ -14,8 +14,8 @@ PATCH_PATTERN = re.compile(
 )
 
 
-EVOLVE_START = re.compile(r"(?:#|//|)?\s*EVOLVE-BLOCK-START")
-EVOLVE_END = re.compile(r"(?:#|//|)?\s*EVOLVE-BLOCK-END")
+EVOLVE_START = re.compile(r"(?:#|//|--|)?\s*EVOLVE-BLOCK-START")
+EVOLVE_END = re.compile(r"(?:#|//|--|)?\s*EVOLVE-BLOCK-END")
 
 
 def _mutable_ranges(text: str) -> list[tuple[int, int]]:
@@ -140,9 +140,11 @@ def _clean_evolve_markers(text: str) -> str:
     patterns_to_remove = [
         r"^\s*#\s*EVOLVE-BLOCK-START\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-START\s*$",  # C/C++/CUDA style
+        r"^\s*--\s*EVOLVE-BLOCK-START\s*$",  # Lean style
         r"^\s*EVOLVE-BLOCK-START\s*$",  # Plain text
         r"^\s*#\s*EVOLVE-BLOCK-END\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-END\s*$",  # C/C++/CUDA
+        r"^\s*--\s*EVOLVE-BLOCK-END\s*$",  # Lean style
         r"^\s*EVOLVE-BLOCK-END\s*$",  # Plain text
     ]
 
@@ -572,7 +574,7 @@ def _create_no_evolve_block_error(original_text: str, operation: str) -> str:
             "",
             "Suggestions:",
             "1. Add EVOLVE-BLOCK-START and EVOLVE-BLOCK-END markers around editable code",
-            "2. Ensure the markers are properly formatted (with # for Python, // for C/C++)",
+            "2. Ensure the markers are properly formatted (with # for Python, // for C/C++, -- for Lean)",
             "3. Check that there's at least one EVOLVE-BLOCK region in the file",
         ]
     )

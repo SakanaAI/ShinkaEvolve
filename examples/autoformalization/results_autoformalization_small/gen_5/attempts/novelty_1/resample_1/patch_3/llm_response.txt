@@ -1,0 +1,25 @@
+edit_abelian_subgroup_signature
+I propose to replace the empty theorem skeleton with a minimal but precise Lean 4 statement: introduce a type G with a group instance, elements a and b, the subgroup H defined as the closure of {a, b}, and the commuting hypothesis a * b = b * a. The conclusion states that any two elements of H commute (which is the appropriate formalization of "H is abelian"). I leave the proof body unchanged (the file still contains the ":=" after the block).
+
+<DIFF>
+<<<<<<< SEARCH
+theorem abelian_group ()
+
+-- Assumptions
+()
+:
+-- Conjecture
+()
+=======
+theorem abelian_group
+  (G : Type*) [group G]
+  (a b : G)
+  (H : subgroup G)
+  (hH : H = subgroup.closure ({a, b} : Set G))
+  (hab : a * b = b * a)
+-- Assumptions
+:
+-- Conjecture
+  ∀ x y : G, x ∈ H → y ∈ H → x * y = y * x
+>>>>>>> REPLACE
+</DIFF>

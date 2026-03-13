@@ -116,6 +116,23 @@ def test_job_scheduler_builds_local_sourced_command() -> None:
     assert "evaluate.py" in cmd[2]
 
 
+def test_job_scheduler_builds_boolean_flags_without_false_values() -> None:
+    scheduler = JobScheduler(
+        job_type="local",
+        config=LocalJobConfig(
+            eval_program_path="evaluate.py",
+            extra_cmd_args={"debug": True, "dry_run": False, "count": 2},
+        ),
+    )
+
+    cmd = scheduler._build_command("program.py", "results")
+
+    assert "--debug" in cmd
+    assert "--dry_run" not in cmd
+    assert "--count" in cmd
+    assert "2" in cmd
+
+
 def test_slurm_conda_job_config_allows_activate_script_for_back_compat() -> None:
     config = SlurmCondaJobConfig(activate_script=".venv/bin/activate")
 

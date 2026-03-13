@@ -393,6 +393,7 @@ The `run_shinka_eval` function returns three values:
 | **Circle Packing** | Optimize circle arrangements | Geometric optimization |
 | **Agent Design** | Design AI agent scaffolds | Algorithm architecture |
 | **ALE-Bench** | Optimize competitive programming solutions | Code optimization |
+| **Lean Autoformalization** | Formalize mathematical statements in Lean 4 | Theorem formalization and proof generation |
 | **Novelty Generator** | Generate diverse creative outputs | Open-ended exploration |
 
 

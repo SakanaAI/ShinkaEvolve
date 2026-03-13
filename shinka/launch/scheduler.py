@@ -141,6 +141,10 @@ class JobScheduler:
             ]
         if self.config.extra_cmd_args:
             for k, v in self.config.extra_cmd_args.items():
+                if isinstance(v, bool):
+                    if v:
+                        python_cmd.append(f"--{k}")
+                    continue
                 python_cmd.extend([f"--{k}", str(v)])
 
         if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
@@ -153,7 +157,9 @@ class JobScheduler:
                     *python_cmd,
                 ]
             if _has_value(self.config.activate_script):
-                activate_script = self.config.activate_script.strip().replace('"', '\\"')
+                activate_script = self.config.activate_script.strip().replace(
+                    '"', '\\"'
+                )
                 return [
                     "bash",
                     "-lc",

@@ -37,6 +37,22 @@ def load_program(program_path: str) -> Any:
     return module
 
 
+def _resolve_experiment_fn(
+    program_path: str,
+    experiment_fn_name: Union[str, Callable[..., Any]],
+) -> Callable[..., Any]:
+    """Resolve evaluation callables for Python modules and non-Python tasks."""
+    if callable(experiment_fn_name):
+        return experiment_fn_name
+
+    module = load_program(program_path)
+    if not hasattr(module, experiment_fn_name):
+        raise AttributeError(
+            f"Experiment function '{experiment_fn_name}' not found in {program_path}"
+        )
+    return getattr(module, experiment_fn_name)
+
+
 def _run_single_evaluation(
     program_path: str,
     experiment_fn_name: str,
@@ -47,12 +63,7 @@ def _run_single_evaluation(
     Execute one evaluation run in an isolated process.
     Returns run index so parent can restore deterministic ordering.
     """
-    module = load_program(program_path)
-    if not hasattr(module, experiment_fn_name):
-        raise AttributeError(
-            f"Experiment function '{experiment_fn_name}' not found in {program_path}"
-        )
-    experiment_fn = getattr(module, experiment_fn_name)
+    experiment_fn = _resolve_experiment_fn(program_path, experiment_fn_name)
 
     start_time = time.perf_counter()
     run_result = experiment_fn(**kwargs)
@@ -103,7 +114,7 @@ def save_json_results(
 def run_shinka_eval(
     program_path: str,
     results_dir: str,
-    experiment_fn_name: str,
+    experiment_fn_name: Union[str, Callable[..., Any]],
     num_runs: int,
     get_experiment_kwargs: Optional[Callable[[int], Dict[str, Any]]] = None,
     aggregate_metrics_fn: Optional[Callable[[List[Any]], Dict[str, Any]]] = None,
@@ -196,8 +207,7 @@ def run_shinka_eval(
 
     if parallel_enabled and early_stop_method is not None:
         raise ValueError(
-            "Early stopping is only supported in sequential mode "
-            "(set run_workers=1)."
+            "Early stopping is only supported in sequential mode (set run_workers=1)."
         )
 
     if early_stop_method is not None:
@@ -217,15 +227,13 @@ def run_shinka_eval(
         )
 
     try:
-        module = load_program(program_path)
-        if not hasattr(module, experiment_fn_name):
-            raise AttributeError(
-                f"Experiment function '{experiment_fn_name}' not found in "
-                f"{program_path}"
-            )
-        experiment_fn = getattr(module, experiment_fn_name)
+        experiment_fn = _resolve_experiment_fn(program_path, experiment_fn_name)
 
         if parallel_enabled:
+            if not isinstance(experiment_fn_name, str):
+                raise ValueError(
+                    "Parallel evaluation requires experiment_fn_name to be a string."
+                )
             print(
                 f"Parallel evaluation enabled with {effective_run_workers} worker(s) "
                 f"for {num_runs} run(s)"
@@ -245,6 +253,8 @@ def run_shinka_eval(
                         if get_experiment_kwargs
                         else {"seed": i + 1}
                     )
+                    if program_path.endswith(".lean") and "file_path" not in kwargs:
+                        kwargs = {**kwargs, "file_path": program_path}
                     try:
                         future = executor.submit(
                             _run_single_evaluation,
@@ -322,6 +332,8 @@ def run_shinka_eval(
                     run_kwargs = get_experiment_kwargs(i)
                 else:
                     run_kwargs = {"seed": i + 1}
+                if program_path.endswith(".lean") and "file_path" not in run_kwargs:
+                    run_kwargs = {**run_kwargs, "file_path": program_path}
 
                 start_time = time.perf_counter()
                 run_result = experiment_fn(**run_kwargs)

@@ -1,0 +1,14 @@
+{
+  "generation": 2,
+  "novelty_attempt": 1,
+  "resample_attempt": 1,
+  "patch_attempt": 2,
+  "success": true,
+  "num_applied": 1,
+  "patch_name": "commuting_generators_evolver",
+  "patch_description": "Key parameters in the original approach were shallow search depth, unbalanced lemma weighting, small beam width, and no syntactic pruning. The new algorithm increases search depth, uses an adaptive lemma-weight schedule that prioritizes commutativity early, increases candidate generation with aggressive syntactic pruning (only terms built from a,b,*,\u207b\u00b9), and switches from breadth-first to best-first after a shallow depth. Timeouts and per-candidate limits prevent explosion. These changes produce shorter, more targeted proof searches for the subgroup-abelianness goal while controlling computational cost.",
+  "error_msg": null,
+  "timestamp": "2026-03-13T13:26:06.370144",
+  "llm_cost": 0.00649575,
+  "llm_model": null
+}

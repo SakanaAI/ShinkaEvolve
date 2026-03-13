@@ -1,0 +1,68 @@
+--- a/original.lean
++++ b/original.lean
+@@ -1,14 +1,58 @@
+ import data.real.basic
+ import data.real.nnreal
+ import Mathlib.Tactic
+ 
+ -- EVOLVE-BLOCK-START
+-theorem abelian_group ()
+--- Assumptions
+-()
+-
+-:
+--- Conjecture
+-()
++-- params = {
++--   max_search_depth: 8,
++--   initial_beam_width: 6,
++--   candidate_timeout_ms: 200,
++--   overall_timeout_s: 30,
++--   lemma_weights: {
++--     commutativity: 10.0,
++--     closure_mul: 8.0,
++--     closure_inv: 6.0,
++--     assoc: 1.0,
++--     ident: 1.0
++--   },
++--   weight_decay_rate: 0.8,
++--   prune_syntactic_filter: True,
++--   switch_to_best_first_depth: 3
++-- }
++--
++-- function generate_candidates(state, depth, params):
++--   # only combine a,b and previously generated terms; apply syntactic pruning
++--   new_terms = []
++--   for t1 in state.known_terms:
++--     for t2 in [a, b] + state.known_terms:
++--       new = mul(t1, t2)
++--       if syntactic_ok(new):
++--         new_terms.append(new)
++--     inv_t1 = inv(t1)
++--     if syntactic_ok(inv_t1):
++--       new_terms.append(inv_t1)
++--   return deduplicate(new_terms)
++--
++-- function proof_search(goal, params):
++--   start_time = now()
++--   beam = [initial_state_with_terms([a, b, 1])]
++--   depth = 0
++--   while depth <= params.max_search_depth and time_remaining:
++--     next_beam = []
++--     for state in beam:
++--       if can_apply_commutativity(a, b, state):
++--         proof = build_commutativity_proof(a, b, state)
++--         if proof_proves_goal(proof, goal):
++--           return proof
++--       candidates = generate_candidates(state, depth, params)
++--       scored = score_candidates(candidates, params.lemma_weights)
++--       next_beam.extend(select_top(scored, params.initial_beam_width))
++--     depth += 1
++--     decay lemma weights
++--     if depth >= params.switch_to_best_first_depth:
++--       beam = best_first_prune(next_beam, params.initial_beam_width)
++--     else:
++--       beam = breadth_first_prune(next_beam, params.initial_beam_width)
++--   return failure("no proof found within limits")
+ -- EVOLVE-BLOCK-END
+ :=

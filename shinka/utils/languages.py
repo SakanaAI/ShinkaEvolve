@@ -1,5 +1,6 @@
 _LANGUAGE_ALIASES: dict[str, str] = {
     "jl": "julia",
+    "lean4": "lean",
     "py": "python",
     "python3": "python",
     "c++": "cpp",
@@ -17,6 +18,7 @@ _LANGUAGE_EXTENSIONS: dict[str, str] = {
     "json": "json",
     "json5": "json",
     "julia": "jl",
+    "lean": "lean",
 }
 
 _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
@@ -28,6 +30,7 @@ _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
     "json": "//",
     "json5": "//",
     "julia": "#",
+    "lean": "--",
 }
 
 _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
@@ -39,6 +42,7 @@ _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
     "json": ("json",),
     "json5": ("json5", "json"),
     "julia": ("julia", "jl"),
+    "lean": ("lean", "lean4"),
 }
 
 

@@ -48,6 +48,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | ⚡ **[Async Evolution](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
 | 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
 | 🤖 **[Agentic Usage](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
+| ∀ **[Lean Autoformalization](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/autoformalization)** | Lean 4 example task for theorem formalization | Lean task setup, proof generation, autoformalization workflow |
 
 
 ## Installation & Quick Start 🚀
@@ -99,6 +100,7 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | ⭕ [Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing) | Optimize circle packing to maximize radii. | `LocalJobConfig` |
 | 🎮 [Game 2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
 | ∑ [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
+| ∀ [Lean Autoformalization](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/autoformalization) | Formalize a natural-language group-theory statement in Lean 4. | `LocalJobConfig` or `SlurmCondaJobConfig` |
 | ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 
 

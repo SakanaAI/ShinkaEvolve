@@ -1,0 +1,14 @@
+{
+  "generation": 4,
+  "novelty_attempt": 1,
+  "resample_attempt": 2,
+  "patch_attempt": 1,
+  "success": true,
+  "num_applied": 1,
+  "patch_name": "abelian_subgroup_variables",
+  "patch_description": "Introduce the minimal Lean variables and assumptions needed to state the lemma formally:\n- a universe/type G with a Group instance,\n- elements a b : G,\n- define the subgroup H as the closure of {a, b},\n- an assumption that a and b commute,\n- the conjecture that every pair of elements of H commute (i.e., H is abelian).\n\nThis keeps the statement explicit and avoids relying on extra typeclass names for \"abelian subgroup\"; instead it asserts the usual elementwise commutativity property. The proof is intentionally left as a placeholder (admit) so the file stays valid Lean 4 while not providing the actual proof.",
+  "error_msg": null,
+  "timestamp": "2026-03-13T13:31:09.373919",
+  "llm_cost": 0.005126749999999999,
+  "llm_model": null
+}
