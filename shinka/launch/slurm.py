@@ -28,6 +28,44 @@ CACHE_MANIFEST = DOCKER_CACHE_DIR / "cache_manifest.json"
 LOCAL_JOBS: dict[str, dict] = {}
 
 
+def _has_value(value: Optional[str]) -> bool:
+    return value is not None and value.strip() != ""
+
+
+def _escape_double_quotes(value: str) -> str:
+    return value.replace('"', '\\"')
+
+
+def _build_activation_commands(
+    conda_env: Optional[str] = None,
+    activate_script: Optional[str] = None,
+    *,
+    separator: str = "\n",
+) -> str:
+    if _has_value(conda_env) and _has_value(activate_script):
+        raise ValueError("conda_env and activate_script are mutually exclusive")
+
+    commands: list[str] = []
+    if _has_value(activate_script):
+        quoted_path = _escape_double_quotes(activate_script.strip())
+        commands.extend(
+            [
+                f'echo "Activating sourced environment: {quoted_path}"',
+                f'source "{quoted_path}"',
+            ]
+        )
+    elif _has_value(conda_env):
+        env_name = conda_env.strip()
+        commands.extend(
+            [
+                f'echo "Activating conda environment: {env_name}"',
+                "source $(conda info --base)/etc/profile.d/conda.sh",
+                f"conda activate {env_name}",
+            ]
+        )
+    return separator.join(commands)
+
+
 def load_cache_manifest():
     """Load the cache manifest file."""
     if CACHE_MANIFEST.exists():
@@ -123,12 +161,8 @@ module --quiet purge
 
 echo "Job running on $(hostname) under Slurm job $SLURM_JOB_ID"
 
-# Activate conda environment
-if [ -n "{conda_env}" ]; then
-    echo "Activating conda environment: {conda_env}"
-    source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate {conda_env}
-fi
+# Activate Python environment when configured
+{activation_commands}
 
 {cmd}
 
@@ -243,6 +277,7 @@ def submit_conda(
     gpus: int,
     mem: Optional[str],
     conda_env: str = "",
+    activate_script: Optional[str] = None,
     modules: Optional[list[str]] = None,
     verbose: bool = False,
     local: bool = False,
@@ -258,6 +293,7 @@ def submit_conda(
             gpus=gpus,
             mem=mem,
             conda_env=conda_env,
+            activate_script=activate_script,
             modules=modules,
             verbose=verbose,
             **sbatch_kwargs,
@@ -270,6 +306,10 @@ def submit_conda(
         modules = []
 
     module_load_commands = "\n".join([f"module load {module}" for module in modules])
+    activation_commands = _build_activation_commands(
+        conda_env=conda_env,
+        activate_script=activate_script,
+    )
 
     if mem is not None:
         sbatch_kwargs["mem"] = mem
@@ -286,7 +326,7 @@ def submit_conda(
         cpus=cpus,
         gpus=gpus,
         additional_sbatch_params=additional_sbatch_params,
-        conda_env=conda_env,
+        activation_commands=activation_commands,
         module_load_commands=module_load_commands,
         cmd=" ".join(cmd),
     )
@@ -396,6 +436,7 @@ def submit_local_conda(
     gpus: int,
     mem: Optional[str],
     conda_env: str = "",
+    activate_script: Optional[str] = None,
     modules: Optional[list[str]] = None,
     verbose: bool = False,
     **kwargs,
@@ -406,12 +447,20 @@ def submit_local_conda(
     os.makedirs(log_dir, exist_ok=True)
     modules = modules or []
     loads = "; ".join([f"module load {m}" for m in modules])
-    full_cmd = (
-        f"module --quiet purge; {loads}; "
-        f"source $(conda info --base)/etc/profile.d/conda.sh; "
-        f"conda activate {conda_env}; "
-        f"{' '.join(cmd)} >> {log_dir}/job_log.out "
-        f"2>> {log_dir}/job_log.err"
+    activation_commands = _build_activation_commands(
+        conda_env=conda_env,
+        activate_script=activate_script,
+        separator="; ",
+    )
+    full_cmd = "; ".join(
+        segment
+        for segment in [
+            "module --quiet purge",
+            loads,
+            activation_commands,
+            f"{' '.join(cmd)} >> {log_dir}/job_log.out 2>> {log_dir}/job_log.err",
+        ]
+        if segment
     )
     launch_local_subprocess(job_id, ["bash", "-lc", full_cmd], gpus)
     if verbose:

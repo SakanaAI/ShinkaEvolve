@@ -22,7 +22,7 @@ def format_centers_string(centers: np.ndarray) -> str:
 
 def adapted_validate_packing(
     run_output: Tuple[np.ndarray, np.ndarray, float],
-    atol=1e-6,
+    atol=0.0,
 ) -> Tuple[bool, Optional[str]]:
     """
     Validates circle packing results based on the output of 'run_packing'.

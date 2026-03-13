@@ -1,6 +1,8 @@
 from typing import List, Optional, Tuple
 import logging
 import json
+import random
+import re
 from pathlib import Path
 from shinka.database import Program
 from shinka.llm import LLMClient
@@ -26,11 +28,13 @@ class MetaSummarizer:
         language: str = "python",
         use_text_feedback: bool = False,
         max_recommendations: int = 5,
+        async_mode: bool = False,
     ):
         self.meta_llm_client = meta_llm_client
         self.language = language
         self.use_text_feedback = use_text_feedback
         self.max_recommendations = max_recommendations
+        self.async_mode = async_mode  # Flag for async mode
 
         # Meta state
         self.meta_summary = None
@@ -75,7 +79,12 @@ class MetaSummarizer:
         Now triggers based on the number of unprocessed programs rather than
         generation intervals for better timing with parallel jobs.
         """
-        if meta_rec_interval is None or not self.meta_llm_client:
+        if meta_rec_interval is None:
+            return False
+
+        # In async mode, the async wrapper handles LLM client, so don't check it
+        # In sync mode, we need a meta_llm_client
+        if not self.async_mode and not self.meta_llm_client:
             return False
 
         # Use number of unprocessed programs instead of generation count
@@ -95,8 +104,11 @@ class MetaSummarizer:
             return None, 0.0
 
         # Use recently evaluated programs for memory scratchpad
+        # Make a copy to avoid issues if the list is modified during processing
         programs_to_analyze = (
-            self.evaluated_since_last_meta if self.evaluated_since_last_meta else []
+            self.evaluated_since_last_meta.copy()
+            if self.evaluated_since_last_meta
+            else []
         )
 
         if len(programs_to_analyze) == 0:
@@ -402,6 +414,53 @@ class MetaSummarizer:
 
         return (recommendations, summary, scratch_pad)
 
+    def get_sampled_recommendation(self) -> Optional[str]:
+        """Sample a single recommendation from the current recommendations.
+
+        Parses the numbered list of recommendations and returns one randomly.
+        This can be used to provide diversity across parallel generations.
+
+        Returns:
+            A single recommendation string, or None if no recommendations exist.
+        """
+        logger.info(
+            f"get_sampled_recommendation called, "
+            f"meta_recommendations exists: {bool(self.meta_recommendations)}"
+        )
+        if not self.meta_recommendations or self.meta_recommendations == "none":
+            logger.info("No meta recommendations available to sample from")
+            return None
+
+        # Parse numbered recommendations (format: "1. ...\n2. ...\n3. ...")
+        pattern = r"^\d+\.\s+"
+        lines = self.meta_recommendations.strip().split("\n")
+
+        # Group lines into recommendations (handle multi-line recommendations)
+        recommendations = []
+        current_rec = []
+        for line in lines:
+            if re.match(pattern, line):
+                if current_rec:
+                    recommendations.append("\n".join(current_rec))
+                current_rec = [line]
+            elif current_rec:
+                current_rec.append(line)
+        if current_rec:
+            recommendations.append("\n".join(current_rec))
+
+        if not recommendations:
+            logger.debug("No parseable recommendations found")
+            return None
+
+        # Sample one randomly and remove the leading number (e.g., "1. ")
+        sampled = random.choice(recommendations)
+        sampled = re.sub(r"^\d+\.\s*", "", sampled)
+        logger.info(
+            f"Sampled 1 recommendation from {len(recommendations)} total: "
+            f"{sampled[:80]}..."
+        )
+        return sampled
+
     def _build_previous_context(self) -> str:
         """Build context string from previous meta state."""
         context_parts = []
@@ -692,7 +751,11 @@ class MetaSummarizer:
             output_str += str(self.meta_recommendations)
 
         if output_str:
-            meta_path = Path(results_dir) / f"meta_{self.total_programs_processed}.txt"
+            # Create meta subdirectory if it doesn't exist
+            meta_dir = Path(results_dir) / "meta"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+
+            meta_path = meta_dir / f"meta_{self.total_programs_processed}.txt"
             with meta_path.open("w", encoding="utf-8") as f:
                 f.write(output_str)
             logger.info(f"Wrote meta output to {meta_path}")

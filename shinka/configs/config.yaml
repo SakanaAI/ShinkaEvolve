@@ -1,0 +1,17 @@
+defaults:
+  - _self_
+  - database@_global_: island_medium
+  - evolution@_global_: medium_budget
+  - task@_global_: circle_packing
+  - cluster@_global_: local
+  - variant@_global_: default
+
+verbose: false
+results_dir: results
+run_name: ${now:%Y.%m.%d}${now:%H%M%S}
+
+output_dir: ${results_dir}/${exp_name}/${run_name}${variant_suffix}
+
+hydra:
+  run:
+    dir: ${output_dir}

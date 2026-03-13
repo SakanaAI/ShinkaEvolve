@@ -4,6 +4,8 @@ import difflib
 import logging
 from typing import Union, Optional, List, Tuple
 
+from shinka.utils.languages import get_language_extension
+
 logger = logging.getLogger(__name__)
 
 PATCH_PATTERN = re.compile(
@@ -17,14 +19,31 @@ EVOLVE_END = re.compile(r"(?:#|//|--|)?\s*EVOLVE-BLOCK-END")
 
 
 def _mutable_ranges(text: str) -> list[tuple[int, int]]:
-    """Return index ranges that are legal to edit."""
-    spans, stack = [], []
+    """Return index ranges that are legal to edit.
+
+    Handles both sequential and nested EVOLVE-BLOCK markers correctly by
+    processing all markers in position order.
+    """
+    # Collect all markers with their positions and types
+    markers = []
     for m in EVOLVE_START.finditer(text):
-        stack.append(m.end())  # mutable starts *after* the START line
+        markers.append((m.end(), "start"))  # mutable starts *after* the START line
     for m in EVOLVE_END.finditer(text):
-        if stack:
+        markers.append((m.start(), "end"))  # mutable ends *before* END line
+
+    # Sort by position to handle both sequential and nested blocks
+    markers.sort(key=lambda x: x[0])
+
+    # Process in order using a stack for nesting support
+    spans = []
+    stack = []
+    for pos, marker_type in markers:
+        if marker_type == "start":
+            stack.append(pos)
+        elif marker_type == "end" and stack:
             start = stack.pop()
-            spans.append((start, m.start()))  # mutable ends *before* END line
+            spans.append((start, pos))
+
     return spans
 
 
@@ -121,12 +140,12 @@ def _clean_evolve_markers(text: str) -> str:
     patterns_to_remove = [
         r"^\s*#\s*EVOLVE-BLOCK-START\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-START\s*$",  # C/C++/CUDA style
+        r"^\s*--\s*EVOLVE-BLOCK-START\s*$",  # Lean style
         r"^\s*EVOLVE-BLOCK-START\s*$",  # Plain text
-        r"^\s*--\s*EVOLVE-BLOCK-START\s*$",  # LEAN 4
         r"^\s*#\s*EVOLVE-BLOCK-END\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-END\s*$",  # C/C++/CUDA
+        r"^\s*--\s*EVOLVE-BLOCK-END\s*$",  # Lean style
         r"^\s*EVOLVE-BLOCK-END\s*$",  # Plain text
-        r"^\s*--\s*EVOLVE-BLOCK-END\s*$",  # LEAN 4
     ]
 
     cleaned_text = text
@@ -555,7 +574,7 @@ def _create_no_evolve_block_error(original_text: str, operation: str) -> str:
             "",
             "Suggestions:",
             "1. Add EVOLVE-BLOCK-START and EVOLVE-BLOCK-END markers around editable code",
-            "2. Ensure the markers are properly formatted (with # for Python, // for C/C++ and -- for LEAN)",
+            "2. Ensure the markers are properly formatted (with # for Python, // for C/C++, -- for Lean)",
             "3. Check that there's at least one EVOLVE-BLOCK region in the file",
         ]
     )
@@ -699,18 +718,8 @@ def apply_diff_patch(
     # Strip trailing whitespace from patch text
     patch_str = _strip_trailing_whitespace(patch_str)
 
-    # Remove the EVOLVE-BLOCK START and EVOLVE-BLOCK END markers
-    if language in ["cuda", "cpp", "rust", "swift", "json", "json5"]:
-        patch_str = re.sub(r"// EVOLVE-BLOCK-START\\n", "", patch_str)
-        patch_str = re.sub(r"// EVOLVE-BLOCK-END\\n", "", patch_str)
-    elif language == "python":
-        patch_str = re.sub(r"# EVOLVE-BLOCK-START\\n", "", patch_str)
-        patch_str = re.sub(r"# EVOLVE-BLOCK-END\\n", "", patch_str)
-    elif language.lower() == "lean":
-        patch_str = re.sub(r"-- EVOLVE-BLOCK START\\n", "", patch_str)
-        patch_str = re.sub(r"-- EVOLVE-BLOCK END\\n", "", patch_str)
-    else:
-        raise ValueError(f"Language {language} not supported")
+    # Remove EVOLVE-BLOCK markers before parsing SEARCH/REPLACE sections.
+    patch_str = _clean_evolve_markers(patch_str)
 
     if patch_dir is not None:
         patch_dir = Path(patch_dir)
@@ -729,22 +738,7 @@ def apply_diff_patch(
         # Return original content, 0 applied, no output path, error msg
         return updated_content, 0, None, error_message, None, None
 
-    if language == "python":
-        suffix = ".py"
-    elif language == "cpp":
-        suffix = ".cpp"
-    elif language == "cuda":
-        suffix = ".cu"
-    elif language == "rust":
-        suffix = ".rs"
-    elif language == "swift":
-        suffix = ".swift"
-    elif language in ["json", "json5"]:
-        suffix = ".json"
-    elif language.lower() == "lean":  # Run full lean files with the `LeanInteract` `FileCommand`.
-        suffix = ".lean"
-    else:
-        raise ValueError(f"Language {language} not supported")
+    suffix = f".{get_language_extension(language)}"
 
     # If successful, proceed to write files if patch_dir is specified
     if patch_dir is not None:

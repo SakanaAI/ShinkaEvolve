@@ -4,7 +4,13 @@ import argparse
 from typing import Optional, List, Tuple, Dict, Any
 
 import numpy as np
-from lean_interact import LeanREPLConfig, AutoLeanServer, Command, TempRequireProject, FileCommand
+from lean_interact import (
+    LeanREPLConfig,
+    AutoLeanServer,
+    Command,
+    TempRequireProject,
+    FileCommand,
+)
 from lean_interact.interface import BaseREPLResponse, LeanError
 
 from .utils_lean import validate_lean, generate_proof
@@ -28,10 +34,15 @@ def check_lean(path_or_str: str) -> BaseREPLResponse | LeanError:
     project = TempRequireProject(lean_version="v4.24.0", require="mathlib")
     config = LeanREPLConfig(project=project)
     server = AutoLeanServer(config)  # start Lean REPL
-    command = FileCommand(path=path_or_str) if path_or_str.endswith(".lean") else Command(cmd=path_or_str)
+    command = (
+        FileCommand(path=path_or_str)
+        if path_or_str.endswith(".lean")
+        else Command(cmd=path_or_str)
+    )
     server_output = server.run(command)
     logger.info(server_output.messages)
     return server_output
+
 
 def validate_proof(run_output: Tuple[str, Optional[str]]) -> Tuple[bool, Optional[str]]:
     """
@@ -49,7 +60,9 @@ def validate_proof(run_output: Tuple[str, Optional[str]]) -> Tuple[bool, Optiona
     return validate_lean(proof_text, allow_sorry=False, timeout=60, verbose=False)
 
 
-def aggregate_hypothesis_generation_metrics(results: Tuple[str, str], results_dir: str) -> Dict[str, Any]:
+def aggregate_hypothesis_generation_metrics(
+    results: Tuple[str, str], results_dir: str
+) -> Dict[str, Any]:
     """
     Aggregates metrics for the generation of hypotheses. Assumes num_runs=1. Saves extra.npz with detailed generation
      information.
@@ -120,13 +133,12 @@ def get_proof_generation_kwargs(run_index: int) -> Dict[str, Any]:
     """
     del run_index  # Unused
     return {
-        "sampling_params": {
-        },
+        "sampling_params": {},
         "timeout": 180,
     }
 
 
-def main(program_path: str, results_dir: str, prover_model: str='gpt-5-nano') -> None:
+def main(program_path: str, results_dir: str, prover_model: str = "gpt-5-nano") -> None:
     """
     Run the hypothesis evaluation using shinka.eval
 
@@ -143,7 +155,7 @@ def main(program_path: str, results_dir: str, prover_model: str='gpt-5-nano') ->
     print(f"Saving results to: {results_dir}")
     os.makedirs(results_dir, exist_ok=True)
 
-    client, prover_model = get_client_llm(prover_model, False,)
+    client, prover_model, _ = get_client_llm(prover_model)
 
     # Helper functions
     def _aggregator_with_context(
@@ -154,7 +166,10 @@ def main(program_path: str, results_dir: str, prover_model: str='gpt-5-nano') ->
 
     def _kwargs_with_context(run_index: int) -> dict:
         """A curried function to pass the proof client to the proof solver"""
-        return {"model": prover_model, "proof_client": client} | get_proof_generation_kwargs(run_index=run_index)
+        return {
+            "model": prover_model,
+            "proof_client": client,
+        } | get_proof_generation_kwargs(run_index=run_index)
 
     num_experiment_runs = 1
 
@@ -182,7 +197,9 @@ def main(program_path: str, results_dir: str, prover_model: str='gpt-5-nano') ->
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hypothesis evaluator using shinka.eval")
+    parser = argparse.ArgumentParser(
+        description="Hypothesis evaluator using shinka.eval"
+    )
     parser.add_argument(
         "--program_path",
         type=str,

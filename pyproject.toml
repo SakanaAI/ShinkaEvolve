@@ -3,24 +3,24 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shinka"
-version = "0.0.1"
+name = "shinka-evolve"
+dynamic = ["version"]
 description = "Automated Scientific Evolution"
 authors = [
     {name = "Sakana AI", email = "robert@sakana.ai"}
 ]
 readme = "README.md"
-license = {text = "MIT"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
+urls = {Homepage = "https://sakana.ai/shinka-evolve/", Documentation = "https://github.com/SakanaAI/ShinkaEvolve#readme", Repository = "https://github.com/SakanaAI/ShinkaEvolve", Issues = "https://github.com/SakanaAI/ShinkaEvolve/issues"}
 dependencies = [
     "openai",
     "numpy",
@@ -45,23 +45,53 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
-    "google-generativeai",
+    "google-genai",
     "lean-interact",
+    "psutil",
+    "httpx==0.27"
 ]
 
+[project.scripts]
+shinka_launch = "shinka.cli.launch:main"
+shinka_run = "shinka.cli.run:main"
+shinka_visualize = "shinka.webui.visualization:main"
+
 [tool.setuptools]
-script-files = ["shinka/shinka_launch", "shinka/shinka_visualize"]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+version = {attr = "shinka.__version__"}
 
 [tool.setuptools.packages.find]
-include = ["shinka", "shinka.*"]
+where = ["."]
+include = ["shinka*"]
 
 [tool.setuptools.package-data]
-"*" = ["*"]
+shinka = [
+    "configs/*.yaml",
+    "configs/*/*.yaml",
+    "favicon.png",
+    "embed/providers/*.csv",
+    "llm/providers/*.csv",
+    "webui/*.html",
+    "webui/*.png",
+    "webui/*.jpg",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=6.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
     "black",
     "isort",
     "flake8",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "integration: live external/provider integration coverage",
+    "requires_secrets: tests that need CI secrets or private credentials",
 ]

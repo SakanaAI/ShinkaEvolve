@@ -1,422 +1,385 @@
 # Shinka Configuration Guide ⚙️
 
-This guide covers the comprehensive configuration system in Shinka, including all parameters, file structures, and advanced configuration patterns.
+This document is synced to the current code + config files in this repo.
 
-## Table of Contents
+## Default Layers (Source of Truth)
 
-1. [Core Configuration Components](#core-configuration-components)
-2. [Configuration Parameters](#configuration-parameters)
-3. [Pre-configured Variants](#pre-configured-variants)
-4. [Configuration Structure](#configuration-structure)
-5. [Creating Custom Configurations](#creating-custom-configurations)
-6. [Advanced Configuration Patterns](#advanced-configuration-patterns)
-7. [Configuration Examples](#configuration-examples)
-8. [Configuration Best Practices](#configuration-best-practices)
+Configuration values are resolved in this order (later wins):
 
+1. Dataclass defaults in code:
+   - `shinka/core/config.py` (`EvolutionConfig`)
+   - `shinka/database/dbase.py` (`DatabaseConfig`)
+   - `shinka/launch/scheduler.py` (`LocalJobConfig`, `SlurmDockerJobConfig`, `SlurmCondaJobConfig`)
+2. Hydra preset YAMLs in `shinka/configs/`
+3. Task/cluster/variant overrides from Hydra composition
+4. CLI overrides (`shinka_launch ... key=value`, or `shinka_run --set ...`)
+5. Authoritative `shinka_run` flags (`--results_dir`, `--num_generations`)
 
-## Core Configuration Components
+## Runtime Config Objects
 
-### 1. Evolution Config (`evo_config`)
+### EvolutionConfig (`shinka.core.EvolutionConfig`)
 
-Controls the core evolutionary algorithm parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `task_sys_msg` | `Optional[str]` | `"You are an expert optimization and algorithm design assistant. Improve the program while preserving correctness and immutable regions."` | Task-specific system prompt. |
+| `patch_types` | `List[str]` | `['diff', 'full', 'cross']` | Patch formats; supports `diff`, `full`, `cross`. |
+| `patch_type_probs` | `List[float]` | `[0.6, 0.3, 0.1]` | Sampling probabilities for `patch_types` (must sum to 1). |
+| `num_generations` | `int` | `50` | Target number of generations. |
+| `max_proposal_jobs` | `int` | `1` | Max concurrent proposal-generation tasks. |
+| `max_db_workers` | `int` | `4` | Max async DB worker threads. |
+| `max_patch_resamples` | `int` | `3` | Max patch resample loops per novelty attempt. |
+| `max_patch_attempts` | `int` | `1` | Max attempts to produce a syntactically valid patch. |
+| `job_type` | `str` | `'local'` | Job backend: `local`, `slurm_docker`, `slurm_conda`. |
+| `language` | `str` | `'python'` | Language tag for prompts + file handling. |
+| `llm_models` | `List[str]` | `['gpt-5-mini', 'gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gpt-5.4']` | Mutation model pool. |
+| `llm_dynamic_selection` | `Optional[Union[str, BanditBase]]` | `'ucb'` | Dynamic model selection (`fixed`, `ucb`, `ucb1`, `thompson`, or bandit object). |
+| `llm_dynamic_selection_kwargs` | `dict` | `{'cost_aware_coef': 0.5}` | kwargs forwarded to selected bandit. |
+| `llm_kwargs` | `dict` | `{'temperatures': [0.0, 0.5, 1.0], 'max_tokens': 16384}` | kwargs forwarded to LLM calls. |
+| `meta_rec_interval` | `Optional[int]` | `10` | Generation interval for meta recommendations. |
+| `meta_llm_models` | `Optional[List[str]]` | `None` | Model pool for meta-recommendations. |
+| `meta_llm_kwargs` | `dict` | `{}` | kwargs for meta-recommendation LLM calls. |
+| `meta_max_recommendations` | `int` | `5` | Max recommendations produced per meta step. |
+| `sample_single_meta_rec` | `bool` | `True` | Whether to sample one recommendation when multiple exist. |
+| `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. |
+| `init_program_path` | `Optional[str]` | `'initial.py'` | Initial program path. |
+| `results_dir` | `Optional[str]` | `None` | Results directory; auto-assigned when `None`. |
+| `max_novelty_attempts` | `int` | `3` | Max novelty loops per generation. |
+| `code_embed_sim_threshold` | `float` | `0.99` | Similarity threshold used by novelty checks. |
+| `novelty_llm_models` | `Optional[List[str]]` | `None` | Optional novelty-judge model pool. |
+| `novelty_llm_kwargs` | `dict` | `{}` | kwargs for novelty-judge LLM calls. |
+| `use_text_feedback` | `bool` | `False` | Include text feedback in mutation prompts. |
+| `max_api_costs` | `Optional[float]` | `None` | API budget cap in USD; stops new submissions at cap. |
+| `inspiration_sort_order` | `str` | `'ascending'` | Inspiration ordering (`ascending`, `chronological`, `none`). |
+| `evolve_prompts` | `bool` | `False` | Enable system-prompt evolution. |
+| `prompt_patch_types` | `List[str]` | `['diff', 'full']` | Patch formats for prompt evolution. |
+| `prompt_patch_type_probs` | `List[float]` | `[0.7, 0.3]` | Sampling probabilities for prompt patch formats. |
+| `prompt_evolution_interval` | `Optional[int]` | `None` | Prompt-evolution interval in generations. |
+| `prompt_archive_size` | `int` | `10` | Prompt archive size. |
+| `prompt_llm_models` | `Optional[List[str]]` | `None` | Prompt-evolution model pool (falls back to `llm_models`). |
+| `prompt_llm_kwargs` | `dict` | `{}` | kwargs for prompt-evolution LLM calls. |
+| `prompt_ucb_exploration_constant` | `float` | `1.0` | UCB exploration constant for prompt sampler. |
+| `prompt_epsilon` | `float` | `0.1` | Epsilon-greedy exploration for prompt sampler. |
+| `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
+| `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
+
+### DatabaseConfig (`shinka.database.DatabaseConfig`)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `db_path` | `Optional[str]` | `None` | SQLite DB path. |
+| `num_islands` | `int` | `2` | Number of islands. |
+| `archive_size` | `int` | `40` | Global archive size cap. |
+| `elite_selection_ratio` | `float` | `0.3` | Fraction of elite inspirations. |
+| `num_archive_inspirations` | `int` | `1` | Number of archive inspirations sampled. |
+| `num_top_k_inspirations` | `int` | `1` | Number of top-k inspirations sampled. |
+| `migration_interval` | `int` | `10` | Generations between migration events. |
+| `migration_rate` | `float` | `0.0` | Fraction of programs migrated at migration events. |
+| `island_elitism` | `bool` | `True` | Preserve best programs on islands. |
+| `enforce_island_separation` | `bool` | `True` | Restrict inspiration sampling to source island. |
+| `island_selection_strategy` | `str` | `'uniform'` | Island sampler: `uniform`, `equal`, `proportional`, `weighted`. |
+| `enable_dynamic_islands` | `bool` | `False` | Enable stagnation-triggered island spawning. |
+| `stagnation_threshold` | `int` | `100` | No-improvement generations before spawn. |
+| `island_spawn_strategy` | `str` | `'initial'` | Spawn seed: `initial`, `best`, `archive_random`. |
+| `island_spawn_subtree_size` | `int` | `1` | Number of copied programs when spawning. |
+| `parent_selection_strategy` | `str` | `'weighted'` | Parent selector: `weighted`, `power_law`, `beam_search`. |
+| `exploitation_alpha` | `float` | `1.0` | Power-law strength for parent selection. |
+| `exploitation_ratio` | `float` | `0.2` | Probability of selecting from archive. |
+| `parent_selection_lambda` | `float` | `10.0` | Sigmoid sharpness for weighted parent selection. |
+| `num_beams` | `int` | `5` | Beam count for beam-search parent selection. |
+| `archive_selection_strategy` | `str` | `'fitness'` | Archive replacement strategy: `fitness` or `crowding`. |
+| `archive_criteria` | `Dict[str, float]` | `{'combined_score': 1.0}` | Weighted criteria for fitness archive scoring. |
+
+### Job Configs (`shinka.launch.*JobConfig`)
+
+`JobConfig` base fields:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `eval_program_path` | `Optional[str]` | `'evaluate.py'` | Evaluation script path. |
+| `extra_cmd_args` | `Dict[str, Any]` | `{}` | Extra CLI args forwarded to eval script. |
+
+`LocalJobConfig` adds:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `time` | `Optional[str]` | `None` | Optional timeout (`HH:MM:SS`). |
+| `conda_env` | `Optional[str]` | `None` | Optional conda env for local execution. |
+| `activate_script` | `Optional[str]` | `None` | Optional sourceable env script, e.g. `.venv/bin/activate`. |
+
+`SlurmDockerJobConfig` adds:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `image` | `str` | `'ubuntu:latest'` | Docker image. |
+| `image_tar_path` | `Optional[str]` | `None` | Optional image tar for upload/load. |
+| `docker_flags` | `str` | `''` | Extra docker flags. |
+| `partition` | `str` | `'gpu'` | SLURM partition. |
+| `time` | `str` | `'01:00:00'` | SLURM time limit. |
+| `cpus` | `int` | `1` | CPU request. |
+| `gpus` | `int` | `1` | GPU request. |
+| `mem` | `Optional[str]` | `'8G'` | Memory request. |
+
+`SlurmCondaJobConfig` / `SlurmEnvJobConfig` add:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `conda_env` | `str` | `''` | Conda environment name. |
+| `activate_script` | `Optional[str]` | `None` | Sourceable env script path, e.g. `.venv/bin/activate`. |
+| `modules` | `Optional[List[str]]` | `None` | Modules to load (normalized to `[]` at runtime). |
+| `partition` | `str` | `'gpu'` | SLURM partition. |
+| `time` | `str` | `'01:00:00'` | SLURM time limit. |
+| `cpus` | `int` | `1` | CPU request. |
+| `gpus` | `int` | `1` | GPU request. |
+| `mem` | `Optional[str]` | `'8G'` | Memory request. |
+
+`conda_env` and `activate_script` are mutually exclusive.
+
+## Hydra Presets In `shinka/configs/`
+
+### Evolution Presets
+
+All `shinka/configs/evolution/*.yaml` override `EvolutionConfig` defaults only for listed keys. Unlisted keys inherit dataclass defaults.
+
+#### `shinka/configs/evolution/small_budget.yaml`
 
 ```yaml
+max_evaluation_jobs: 1
+
 evo_config:
-  _target_: shinka.core.EvolutionConfig
-  num_generations: 20              # Number of evolution generations
-  max_parallel_jobs: 1             # Maximum parallel evaluations
-  max_patch_attempts: 10           # Max attempts to generate valid patches
-  
-  # LLM Configuration
-  llm_models:                      # List of LLM models for mutations
-    - "azure-gpt-4.1"
-  llm_dynamic_selection: null      # Dynamic model selection strategy
+  patch_types: ["diff", "full"]
+  patch_type_probs: [0.5, 0.5]
+  num_generations: 20
+  max_proposal_jobs: 1
+  max_db_workers: 4
+  max_patch_attempts: 10
+  llm_models: ["gpt-4.1"]
+  llm_dynamic_selection: null
   embedding_model: "text-embedding-3-small"
-  
-  # Patch Configuration
-  patch_types:                     # Types of code modifications
-    - "diff"                       # Diff-based patches
-    - "full"                       # Full code replacement
-  patch_type_probs:                # Probabilities for each patch type
-    - 0.5
-    - 0.5
-  
-  # Task Configuration
-  language: "python"               # Programming language
-  init_program_path: "???"         # Path to initial program
-  task_sys_msg: "???"             # System message for LLM
-  job_type: "local"                # Job execution type
-  results_dir: ${output_dir}       # Results directory
+  results_dir: ${output_dir}
 ```
 
-### 2. Database Config (`db_config`)
+#### `shinka/configs/evolution/medium_budget.yaml`
 
-Manages the evolutionary database and island topology:
+```yaml
+max_evaluation_jobs: 2
+
+evo_config:
+  patch_types: ["diff", "full", "cross"]
+  patch_type_probs: [0.6, 0.3, 0.1]
+  num_generations: 50
+  max_proposal_jobs: 1
+  max_db_workers: 4
+  max_patch_resamples: 3
+  max_patch_attempts: 1
+  llm_models:
+    - "gpt-5-mini"
+    - "gemini-3-flash-preview"
+    - "gemini-3.1-pro-preview"
+    - "gpt-5.4"
+  llm_dynamic_selection: ucb
+  llm_dynamic_selection_kwargs:
+    cost_aware_coef: 0.5
+  llm_kwargs:
+    temperatures: [0.0, 0.5, 1.0]
+    max_tokens: 16384
+  meta_rec_interval: 10
+  embedding_model: "text-embedding-3-small"
+  code_embed_sim_threshold: 0.99
+  results_dir: ${output_dir}
+```
+
+#### `shinka/configs/evolution/large_budget.yaml`
+
+```yaml
+max_evaluation_jobs: 6
+
+evo_config:
+  patch_types: ["diff", "full", "cross"]
+  patch_type_probs: [0.4, 0.4, 0.2]
+  num_generations: 300
+  max_proposal_jobs: 1
+  max_db_workers: 4
+  max_patch_resamples: 3
+  max_patch_attempts: 3
+  llm_models:
+    - "gpt-4.1"
+    - "gpt-4.1-mini"
+    - "gpt-4.1-nano"
+    - "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    - "o4-mini"
+  llm_dynamic_selection: ucb
+  llm_kwargs:
+    temperatures: [0.0, 0.5, 1.0]
+    max_tokens: 16384
+  meta_rec_interval: 10
+  meta_llm_models: ["gpt-4.1"]
+  meta_llm_kwargs:
+    temperatures: [0.0]
+  embedding_model: "text-embedding-3-small"
+  results_dir: ${output_dir}
+```
+
+### Database Presets
+
+All `shinka/configs/database/*.yaml` override `DatabaseConfig` defaults only for listed keys.
+
+#### `shinka/configs/database/island_small.yaml`
 
 ```yaml
 db_config:
-  _target_: shinka.database.DatabaseConfig
-  db_path: "evolution_db.sqlite"   # SQLite database path
-  
-  # Island Configuration
-  num_islands: 2                   # Number of evolutionary islands
-  island_elitism: true             # Enable elite preservation per island
-  
-  # Archive Configuration
-  archive_size: 20                 # Size of elite solution archive
-  num_archive_inspirations: 4      # Solutions drawn from archive
-  num_top_k_inspirations: 2        # Solutions from current generation
-  
-  # Selection and Migration
-  exploitation_ratio: 0.2          # Exploitation vs exploration balance
-  elite_selection_ratio: 0.3       # Fraction of elites for selection
-  migration_interval: 10           # Generations between migrations
-  migration_rate: 0.1              # Fraction of population migrated
+  db_path: "evolution_db.sqlite"
+  num_islands: 2
+  archive_size: 20
+  exploitation_ratio: 0.2
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.1
+  island_elitism: true
 ```
 
-### 3. Job Config (`job_config`)
+#### `shinka/configs/database/island_medium.yaml`
 
-Defines the execution environment and resource requirements:
-
-#### Local Execution
 ```yaml
-job_config:
-  _target_: shinka.launch.LocalJobConfig
-  eval_program_path: "shinka/evaluate.py"
+db_config:
+  db_path: "evolution_db.sqlite"
+  num_islands: 2
+  archive_size: 40
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 1
+  num_top_k_inspirations: 1
+  migration_interval: 10
+  migration_rate: 0.0
+  island_elitism: true
+  enforce_island_separation: true
+  parent_selection_strategy: "weighted"
+  parent_selection_lambda: 10.0
 ```
 
-#### Slurm Cluster Execution
+#### `shinka/configs/database/island_large.yaml`
+
 ```yaml
-job_config:
-  _target_: shinka.launch.SlurmCondaJobConfig
-  modules:                         # Environment modules
-    - "cuda/12.4"
-    - "cudnn/8.9.7"
-    - "hpcx/2.20"
-  eval_program_path: "shinka/utils/eval_hydra.py"
-  conda_env: "shinka"              # Conda environment name
-  time: "01:00:00"                 # Maximum job runtime
-  cpus: 4                          # CPU cores per job
-  gpus: 1                          # GPUs per job
-  mem: "16G"                       # Memory per job
+db_config:
+  db_path: "evolution_db.sqlite"
+  num_islands: 5
+  archive_size: 40
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.1
+  island_elitism: true
+  parent_selection_strategy: "weighted"
+  exploitation_alpha: 1.0
+  exploitation_ratio: 0.2
+  parent_selection_lambda: 10.0
 ```
 
-### 4. Task Config
+### Cluster Presets
 
-Defines problem-specific settings and evaluation functions:
+- `shinka/configs/cluster/local.yaml`
+  - `job_config: LocalJobConfig`
+  - `job_config.eval_program_path: ${distributed_job_config.eval_program_path}`
+  - `evo_config.job_type: "local"`
+- `shinka/configs/cluster/remote.yaml`
+  - `job_config: ${distributed_job_config}`
+- `shinka/configs/cluster/gcp.yaml`
+  - inherits `remote`
+  - overrides `distributed_job_config.partition: "a3,aisci"`
+
+### Task Presets (Current)
+
+Only these task files currently exist:
+
+- `shinka/configs/task/circle_packing.yaml`
+- `shinka/configs/task/novelty_generator.yaml`
+
+Both define task-specific `evaluate_function`, `distributed_job_config`, and `evo_config` task prompt/init path.
+
+## Current Hydra Composition Defaults
+
+`shinka/configs/config.yaml` defaults chain:
 
 ```yaml
-# Task-specific evaluation function
-evaluate_function:
-  _target_: examples.my_task.evaluate.main
-  program_path: ???               # Filled by runner
-  results_dir: ???                # Filled by runner
-
-# Job configuration for this task
-distributed_job_config:
-  _target_: shinka.launch.SlurmCondaJobConfig
-  # ... resource requirements ...
-
-# Evolution settings specific to this task
-evo_config:
-  task_sys_msg: |
-    You are an expert in [domain].
-    Key insights: [domain knowledge]
-  language: "python"
-  init_program_path: "examples/my_task/initial.py"
-  job_type: "slurm_conda"
-
-exp_name: "shinka_my_task"
-```
-
-## Configuration Parameters
-
-### Evolution Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `num_generations` | int | 20 | Number of evolutionary generations |
-| `max_parallel_jobs` | int | 1 | Maximum concurrent evaluations |
-| `max_patch_attempts` | int | 10 | Maximum attempts to generate valid patches |
-| `llm_models` | list | `["azure-gpt-4.1"]` | LLM models for mutations |
-| `patch_types` | list | `["diff", "full"]` | Types of code modifications |
-| `patch_type_probs` | list | `[0.5, 0.5]` | Probabilities for patch types |
-| `language` | str | `"python"` | Programming language |
-| `embedding_model` | str | `"text-embedding-3-small"` | Model for code embeddings |
-
-### Database Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `num_islands` | int | 2 | Number of evolutionary islands |
-| `archive_size` | int | 20 | Size of elite solution archive |
-| `num_archive_inspirations` | int | 4 | Solutions drawn from archive |
-| `num_top_k_inspirations` | int | 2 | Solutions from current generation |
-| `exploitation_ratio` | float | 0.2 | Balance between exploitation/exploration |
-| `elite_selection_ratio` | float | 0.3 | Fraction of elites for selection |
-| `migration_interval` | int | 10 | Generations between island migrations |
-| `migration_rate` | float | 0.1 | Fraction of population migrated |
-| `island_elitism` | bool | true | Preserve elites per island |
-
-### Resource Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `time` | str | `"01:00:00"` | Maximum job runtime (HH:MM:SS) |
-| `cpus` | int | 4 | CPU cores per job |
-| `gpus` | int | 0 | GPUs per job |
-| `mem` | str | `"8G"` | Memory per job |
-| `conda_env` | str | `"shinka"` | Conda environment name |
-| `modules` | list | `[]` | Environment modules to load |
-
-## Pre-configured Variants
-
-Shinka uses [Hydra](https://hydra.cc/) for flexible, hierarchical configuration management. The system is designed around composable configuration files that can be mixed and matched to create different experimental setups.
-
-Variants provide pre-configured combinations of settings for common use cases:
-
-### Circle Packing Example
-```yaml
-# configs/variant/circle_packing_example.yaml
 defaults:
-  - override /database@_global_: island_large
-  - override /evolution@_global_: large_budget
-  - override /task@_global_: circle_packing
-  - override /cluster@_global_: local
   - _self_
-
-variant_suffix: "_example"
+  - database@_global_: island_medium
+  - evolution@_global_: medium_budget
+  - task@_global_: circle_packing
+  - cluster@_global_: local
+  - variant@_global_: default
 ```
 
-### Agent Design Example
-```yaml
-# configs/variant/agent_design_example.yaml
-defaults:
-  - override /database@_global_: island_medium
-  - override /evolution@_global_: medium_budget
-  - override /task@_global_: agent_design
-  - override /cluster@_global_: local
-  - _self_
+So default `shinka_launch` behavior is a neutral medium shared baseline on the
+`circle_packing` task with `variant=default`. Example-heavy stacks remain
+available via explicit variants such as `variant=circle_packing_example`.
 
-evo_config:
-  num_generations: 15
+## `shinka_run` Config File Schema
 
-variant_suffix: "_agent_example"
-```
+`shinka_run --config-fname <yaml>` accepts:
 
-## Configuration Structure
+- Namespaces: `evo`, `db`, `job` (aliases: `evo_config`, `db_config`, `job_config`)
+- Runner keys: `max_evaluation_jobs`, `max_proposal_jobs`, `max_db_workers`, `verbose`, `debug`
 
-```
-configs/
-├── config.yaml           # Main config file with defaults
-├── cluster/              # Execution environments
-│   ├── local.yaml        # Local execution
-│   ├── gcp.yaml          # Google Cloud Platform
-│   └── remote.yaml       # Remote Slurm clusters
-├── database/             # Evolution database settings
-│   ├── island_small.yaml # Small-scale evolution (2 islands)
-│   ├── island_medium.yaml# Medium-scale evolution (4 islands)
-│   └── island_large.yaml # Large-scale evolution (8+ islands)
-├── evolution/            # Evolution parameters
-│   ├── small_budget.yaml # Few generations, quick runs
-│   ├── medium_budget.yaml# Moderate computational budget
-│   └── large_budget.yaml # Extensive evolution runs
-├── task/                 # Problem definitions
+Precedence for `shinka_run`:
+
+1. defaults from CLI builder
+2. config YAML (`--config-fname`)
+3. `--set` overrides
+4. authoritative flags:
+   - `--results_dir` always sets `evo.results_dir`
+   - `--num_generations` always sets `evo.num_generations`
+
+## Current Config Directory Structure
+
+```text
+shinka/configs/
+├── config.yaml
+├── cluster/
+│   ├── gcp.yaml
+│   ├── local.yaml
+│   └── remote.yaml
+├── database/
+│   ├── island_large.yaml
+│   ├── island_medium.yaml
+│   └── island_small.yaml
+├── evolution/
+│   ├── large_budget.yaml
+│   ├── medium_budget.yaml
+│   └── small_budget.yaml
+├── task/
 │   ├── circle_packing.yaml
-│   ├── agent_design.yaml
-│   ├── bbo_search.yaml
-│   ├── cifar10.yaml
-│   ├── cuda_optim.yaml
-│   ├── mad_moe.yaml
 │   └── novelty_generator.yaml
-└── variant/              # Pre-configured combinations
+└── variant/
     ├── circle_packing_example.yaml
-    ├── agent_design_example.yaml
-    ├── mad_moe_example.yaml
-    └── default.yaml
+    ├── default.yaml
+    └── novelty_generator_example.yaml
 ```
 
-## Creating Custom Configurations
+## Quick Valid Overrides
 
-### Method 1: Custom Variant File
-
-Create a new variant file combining existing components:
-
-```yaml
-# configs/variant/my_custom_variant.yaml
-defaults:
-  - override /database@_global_: island_small
-  - override /evolution@_global_: small_budget
-  - override /task@_global_: my_task
-  - override /cluster@_global_: local
-  - _self_
-
-# Override specific parameters
-evo_config:
-  num_generations: 25
-  max_parallel_jobs: 2
-
-db_config:
-  archive_size: 30
-  migration_interval: 5
-
-variant_suffix: "_custom"
-```
-
-Launch with:
-```bash
-shinka_launch variant=my_custom_variant
-```
-
-### Method 2: Command Line Overrides
-
-Override parameters directly on the command line:
+Hydra launch:
 
 ```bash
 shinka_launch \
-    task=circle_packing \
-    database=island_large \
-    evolution=medium_budget \
-    cluster=local \
-    evo_config.num_generations=50 \
-    evo_config.max_parallel_jobs=4 \
-    db_config.num_islands=6 \
-    variant_suffix="_custom_run"
+  task=novelty_generator \
+  database=island_medium \
+  evolution=medium_budget \
+  cluster=local \
+  evo_config.num_generations=50 \
+  evo_config.max_api_costs=25.0
 ```
 
-### Method 3: Custom Task Configuration
+`shinka_run`:
 
-Create a new task configuration:
-
-```yaml
-# configs/task/my_optimization_task.yaml
-evaluate_function:
-  _target_: examples.my_optimization.evaluate.main
-  program_path: ???
-  results_dir: ???
-
-distributed_job_config:
-  _target_: shinka.launch.LocalJobConfig
-  eval_program_path: "shinka/utils/eval_hydra.py"
-
-evo_config:
-  task_sys_msg: |
-    You are an expert optimization researcher working on [specific problem].
-    
-    Key insights to consider:
-    1. [Domain-specific insight 1]
-    2. [Domain-specific insight 2]
-    3. [Domain-specific insight 3]
-    
-    Focus on [specific optimization goals].
-  language: "python"
-  init_program_path: "examples/my_optimization/initial.py"
-  job_type: "local"
-
-exp_name: "shinka_my_optimization"
+```bash
+shinka_run \
+  --task-dir examples/circle_packing \
+  --results_dir results/circle_agent \
+  --num_generations 40 \
+  --max-evaluation-jobs 6 \
+  --set evo.llm_models='["gpt-5-mini","gemini-3-flash-preview"]' \
+  --set evo.llm_dynamic_selection=ucb \
+  --set db.num_islands=2
 ```
-
-## Advanced Configuration Patterns
-
-### Multi-Model Evolution
-
-Use multiple LLM models with different strengths:
-
-```yaml
-evo_config:
-  llm_models:
-    - "azure-gpt-4.1"      # Strong reasoning
-    - "claude-3-sonnet"    # Good at code
-    - "azure-gpt-4o-mini"  # Fast iterations
-  
-  # Optional: Dynamic model selection
-  llm_dynamic_selection:
-    strategy: "performance_based"
-    window_size: 10
-```
-
-## Configuration Examples
-
-### Quick Prototyping Setup
-```yaml
-# Fast iteration for development
-defaults:
-  - override /database@_global_: island_small
-  - override /evolution@_global_: small_budget
-  - override /cluster@_global_: local
-
-evo_config:
-  num_generations: 5
-  max_parallel_jobs: 1
-
-db_config:
-  num_islands: 1
-  archive_size: 10
-
-variant_suffix: "_prototype"
-```
-
-### Production Research Setup
-```yaml
-# Large-scale research experiment
-defaults:
-  - override /database@_global_: island_large
-  - override /evolution@_global_: large_budget
-  - override /cluster@_global_: remote
-
-evo_config:
-  num_generations: 100
-  max_parallel_jobs: 8
-
-db_config:
-  num_islands: 8
-  archive_size: 50
-  migration_interval: 5
-
-variant_suffix: "_production"
-```
-
-### Multi-Task Comparison
-```yaml
-# Configuration for comparing across tasks
-defaults:
-  - override /database@_global_: island_medium
-  - override /evolution@_global_: medium_budget
-  - override /cluster@_global_: local
-
-# Standardized parameters for fair comparison
-evo_config:
-  num_generations: 30
-  max_parallel_jobs: 2
-  llm_models: ["azure-gpt-4.1"]
-
-db_config:
-  num_islands: 4
-  archive_size: 25
-
-variant_suffix: "_comparison"
-```
-
-## Configuration Best Practices
-
-### 1. Start Small, Scale Up
-- Begin with `island_small` and `small_budget` configurations
-- Increase complexity as you understand the problem better
-
-### 2. Use Meaningful Variant Suffixes
-- Include key parameters in the suffix: `_gen50_islands4_gpt4`
-- This helps identify experiments in results directories
-
-### 3. Document Custom Configurations
-- Add comments explaining parameter choices
-- Include expected runtime and resource usage
-
-### 4. Version Control Configurations
-- Keep variant files in version control
-- Tag configurations used for important results
-
-### 5. Monitor Resource Usage
-- Start with conservative resource allocations
-- Monitor actual usage and adjust accordingly
-
-For more examples and detailed parameter explanations, see the configuration files in the `configs/` directory and the [Getting Started Guide](getting_started.md).

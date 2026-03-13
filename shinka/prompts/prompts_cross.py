@@ -29,7 +29,8 @@ A description and argumentation process of the code you are proposing.
 * Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code. Do not change the code outside of these markers.
 * Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
 * Make sure the file still runs after your changes.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards."""
+* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+""".rstrip()
 
 
 CROSS_ITER_MSG = """# Current program
@@ -50,7 +51,7 @@ Perform a cross-over between the code script above and the one below. Aim to com
 Provide the complete new program code.
 
 IMPORTANT: Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
-"""
+""".rstrip()
 
 
 def get_cross_component(

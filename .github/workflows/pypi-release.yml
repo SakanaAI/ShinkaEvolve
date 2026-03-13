@@ -1,0 +1,43 @@
+name: PyPI Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Verify tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(python -c 'import shinka; print(shinka.__version__)')"
+          test "$TAG_VERSION" = "$PACKAGE_VERSION"
+
+      - name: Build distributions
+        run: uv run --with build python -m build
+
+      - name: Check package metadata
+        run: uv run --with twine twine check dist/*
+
+      - name: Reject gitignored files in release artifacts
+        run: python -m shinka.release_check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

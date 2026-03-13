@@ -1,7 +1,7 @@
 import logging
 import sqlite3
 from abc import ABC, abstractmethod
-from typing import Optional, Callable, Any, List, Set
+from typing import Optional, Callable, Any, List, Set, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -283,3 +283,100 @@ class CombinedContextSelector:
             parent, archive_inspirations, num_topk
         )
         return archive_inspirations, top_k_inspirations
+
+
+class InspirationContextBuilder:
+    """
+    Builds and orders inspiration programs for prompt construction.
+
+    Combines archive and top-k inspirations and sorts them for optimal
+    prompt presentation (e.g., least-to-most by score so the best programs
+    appear last and have more influence due to recency bias in LLMs).
+    """
+
+    def __init__(
+        self,
+        sort_order: Literal["ascending", "chronological", "none"] = "ascending",
+    ):
+        """
+        Initialize the context builder.
+
+        Args:
+            sort_order: How to sort inspirations:
+                - "ascending": by score, worst to best (least-to-most)
+                - "chronological": by generation, oldest to newest
+                - "none": preserve original order
+        """
+        self.sort_order = sort_order
+
+    def _get_score(self, prog: Any) -> float:
+        """Get the score for sorting. Handles None values."""
+        if prog.combined_score is not None:
+            return prog.combined_score
+        elif prog.public_metrics:
+            return sum(prog.public_metrics.values()) / len(prog.public_metrics)
+        return -float("inf")
+
+    def _get_generation(self, prog: Any) -> int:
+        """Get the generation for sorting. Handles None values."""
+        if prog.generation is not None:
+            return prog.generation
+        return 0
+
+    def build_context(
+        self,
+        archive_inspirations: List[Any],
+        top_k_inspirations: List[Any],
+    ) -> List[Any]:
+        """
+        Combine and sort inspirations for prompt construction.
+
+        Args:
+            archive_inspirations: Programs sampled from the archive
+            top_k_inspirations: Top-k best programs from the archive
+
+        Returns:
+            Combined and sorted list of inspiration programs
+        """
+        # Combine all inspirations
+        all_inspirations = archive_inspirations + top_k_inspirations
+
+        if not all_inspirations:
+            return []
+
+        # Remove duplicates while preserving order (in case of overlap)
+        seen_ids: Set[str] = set()
+        unique_inspirations: List[Any] = []
+        for prog in all_inspirations:
+            if prog.id not in seen_ids:
+                seen_ids.add(prog.id)
+                unique_inspirations.append(prog)
+
+        # Sort based on configured order
+        if self.sort_order == "ascending":
+            # Least-to-most: worst programs first, best last (by score)
+            sorted_inspirations = sorted(
+                unique_inspirations, key=self._get_score, reverse=False
+            )
+            sort_values = [f"{self._get_score(p):.4f}" for p in sorted_inspirations]
+            sort_label = "scores"
+        elif self.sort_order == "chronological":
+            # Oldest to newest: by generation
+            sorted_inspirations = sorted(
+                unique_inspirations, key=self._get_generation, reverse=False
+            )
+            sort_values = [str(self._get_generation(p)) for p in sorted_inspirations]
+            sort_label = "gens"
+        else:
+            # No sorting - preserve original order
+            sorted_inspirations = unique_inspirations
+            sort_values = [f"{self._get_score(p):.4f}" for p in sorted_inspirations]
+            sort_label = "scores"
+
+        if sorted_inspirations:
+            logger.info(
+                f"Built context: {len(sorted_inspirations)} programs "
+                f"({self.sort_order}, {sort_label}: {sort_values})"
+            )
+
+        return sorted_inspirations

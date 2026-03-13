@@ -1,5 +1,5 @@
 import hydra
-from hydra import initialize, compose
+from hydra import compose, initialize_config_dir
 import ast
 import pathlib
 from pathlib import Path
@@ -9,6 +9,8 @@ from typing import Optional, Union
 import os
 import sys
 from omegaconf import DictConfig, OmegaConf
+
+from shinka.configs import config_root
 
 
 def load_hydra_config(
@@ -31,29 +33,31 @@ def load_hydra_config(
 
 
 def build_cfgs_from_python(*launcher_args, **launcher_kwargs):
-    cfgs_root = pathlib.Path("configs")
-    global_list = [p.name for p in cfgs_root.iterdir() if p.is_dir()]
+    with config_root() as cfgs_root:
+        global_list = [p.name for p in cfgs_root.iterdir() if p.is_dir()]
 
-    def tag_global(overrides, keys):
-        out = []
-        for s in overrides:
-            if "@_global_=" in s:
+        def tag_global(overrides, keys):
+            out = []
+            for s in overrides:
+                if "@_global_=" in s:
+                    out.append(s)
+                    continue
+                for k in keys:
+                    p = f"{k}="
+                    if s.startswith(p):
+                        s = s.replace(p, f"{k}@_global_=", 1)
+                        break
                 out.append(s)
-                continue
-            for k in keys:
-                p = f"{k}="
-                if s.startswith(p):
-                    s = s.replace(p, f"{k}@_global_=", 1)
-                    break
-            out.append(s)
-        return out
+            return out
 
-    hydra_overrides = list(launcher_args)
-    hydra_overrides += [f"{k}={v}" for k, v in launcher_kwargs.items()]
-    hydra_overrides = tag_global(hydra_overrides, global_list)
+        hydra_overrides = list(launcher_args)
+        hydra_overrides += [f"{k}={v}" for k, v in launcher_kwargs.items()]
+        hydra_overrides = tag_global(hydra_overrides, global_list)
 
-    with initialize(version_base=None, config_path="../../configs", job_name="shinka"):
-        cfg = compose(config_name="config", overrides=hydra_overrides)
+        with initialize_config_dir(
+            version_base=None, config_dir=str(cfgs_root), job_name="shinka"
+        ):
+            cfg = compose(config_name="config", overrides=hydra_overrides)
 
     run_dir = pathlib.Path(cfg.output_dir)
     hydra_dir = run_dir / ".hydra"
