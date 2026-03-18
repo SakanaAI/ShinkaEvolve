@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+from types import ModuleType
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,19 @@ def _clear_shinka_modules() -> None:
             sys.modules.pop(module_name, None)
 
 
+def _snapshot_shinka_modules() -> dict[str, ModuleType]:
+    return {
+        module_name: module
+        for module_name, module in sys.modules.items()
+        if module_name == "shinka" or module_name.startswith("shinka.")
+    }
+
+
+def _restore_shinka_modules(snapshot: dict[str, ModuleType]) -> None:
+    _clear_shinka_modules()
+    sys.modules.update(snapshot)
+
+
 def test_import_shinka_loads_dotenv_from_launch_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -20,10 +34,14 @@ def test_import_shinka_loads_dotenv_from_launch_directory(
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(f"{env_key}=from-launch-dir\n", encoding="utf-8")
 
-    _clear_shinka_modules()
-    importlib.import_module("shinka")
+    module_snapshot = _snapshot_shinka_modules()
+    try:
+        _clear_shinka_modules()
+        importlib.import_module("shinka")
 
-    assert os.getenv(env_key) == "from-launch-dir"
+        assert os.getenv(env_key) == "from-launch-dir"
+    finally:
+        _restore_shinka_modules(module_snapshot)
 
 
 def test_load_shinka_dotenv_prefers_launch_directory_over_package_env(
