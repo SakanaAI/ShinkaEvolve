@@ -6,6 +6,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "cxx": "cpp",
     "cc": "cpp",
     "cu": "cuda",
+    "md": "markdown",
 }
 
 _LANGUAGE_EXTENSIONS: dict[str, str] = {
@@ -17,6 +18,7 @@ _LANGUAGE_EXTENSIONS: dict[str, str] = {
     "json": "json",
     "json5": "json",
     "julia": "jl",
+    "markdown": "md",
 }
 
 _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
@@ -28,6 +30,7 @@ _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
     "json": "//",
     "json5": "//",
     "julia": "#",
+    "markdown": "<!--",
 }
 
 _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
@@ -39,6 +42,7 @@ _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
     "json": ("json",),
     "json5": ("json5", "json"),
     "julia": ("julia", "jl"),
+    "markdown": ("markdown", "md"),
 }
 
 

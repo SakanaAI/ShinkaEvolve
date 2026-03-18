@@ -140,9 +140,11 @@ def _clean_evolve_markers(text: str) -> str:
     patterns_to_remove = [
         r"^\s*#\s*EVOLVE-BLOCK-START\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-START\s*$",  # C/C++/CUDA style
+        r"^\s*<!--\s*EVOLVE-BLOCK-START\s*-->\s*$",  # HTML/Markdown style
         r"^\s*EVOLVE-BLOCK-START\s*$",  # Plain text
         r"^\s*#\s*EVOLVE-BLOCK-END\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-END\s*$",  # C/C++/CUDA
+        r"^\s*<!--\s*EVOLVE-BLOCK-END\s*-->\s*$",  # HTML/Markdown style
         r"^\s*EVOLVE-BLOCK-END\s*$",  # Plain text
     ]
 
