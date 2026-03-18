@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-from pathlib import Path
-
-from dotenv import load_dotenv
 import hydra
 from omegaconf import DictConfig, OmegaConf
+from shinka.env import load_shinka_dotenv
 from shinka.core import ShinkaEvolveRunner
 
 
 def run_with_cfg(cfg: DictConfig) -> None:
-    env_path = Path.cwd() / ".env"
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path)
+    load_shinka_dotenv()
 
     print("Experiment configurations:")
     print(OmegaConf.to_yaml(cfg, resolve=True))

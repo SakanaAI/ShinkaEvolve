@@ -1,13 +1,11 @@
 from typing import Any, Tuple
 import os
 import openai
-from pathlib import Path
-from dotenv import load_dotenv
 from google import genai
+from shinka.env import load_shinka_dotenv
 from .providers.pricing import get_provider
 
-env_path = Path(__file__).parent.parent.parent / ".env"
-load_dotenv(dotenv_path=env_path, override=True)
+load_shinka_dotenv()
 
 TIMEOUT = 600
 
