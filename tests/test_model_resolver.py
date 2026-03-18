@@ -10,6 +10,17 @@ def test_resolve_known_pricing_model():
     assert resolved.base_url is None
 
 
+@pytest.mark.parametrize(
+    "model_name",
+    ["gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano"],
+)
+def test_resolve_new_openai_pricing_models(model_name: str):
+    resolved = resolve_model_backend(model_name)
+    assert resolved.provider == "openai"
+    assert resolved.api_model_name == model_name
+    assert resolved.base_url is None
+
+
 def test_resolve_openrouter_dynamic_model():
     resolved = resolve_model_backend("openrouter/qwen/qwen3-coder")
     assert resolved.provider == "openrouter"
