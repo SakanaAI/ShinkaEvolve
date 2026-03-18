@@ -390,10 +390,11 @@ The `run_shinka_eval` function returns three values:
 
 | Example | Description | Use Case |
 |---------|-------------|----------|
-| **Circle Packing** | Optimize circle arrangements | Geometric optimization |
-| **Agent Design** | Design AI agent scaffolds | Algorithm architecture |
-| **ALE-Bench** | Optimize competitive programming solutions | Code optimization |
-| **Novelty Generator** | Generate diverse creative outputs | Open-ended exploration |
+| **Circle Packing** | Pack 26 circles in a unit square; maximize sum of radii | Geometric optimization / continuous search |
+| **2048** | Evolve a policy to play 2048 under action/time constraints | Game-playing / heuristic optimization |
+| **Julia Prime Counting** | Optimize a Julia solution for repeated prime-count queries (\(\pi(n)\)) | Algorithmic optimization (correctness + runtime) |
+| **Novelty Generator** | Generate diverse outputs scored by LLM-as-a-judge novelty metrics | Open-ended exploration / creative generation |
+| **Shinka Tutorial (Notebook)** | Guided walkthrough of setup + running/inspecting Circle Packing and Novelty Generator | Interactive onboarding / WebUI + configs |
 
 
 

@@ -32,8 +32,8 @@ evo_config:
   language: python
   llm_models:
     - "gemini-2.5-flash"
-    - "gpt-5-mini"
-    - "gpt-5-nano"
+    - "gpt-5.4-mini"
+    - "gpt-5.4-nano"
   llm_kwargs:
     temperatures:
       - 0
@@ -45,7 +45,7 @@ evo_config:
     max_tokens: 32768
   meta_rec_interval: 40
   meta_llm_models:
-    - gpt-5-mini
+    - gpt-5.4-mini
   meta_llm_kwargs:
     temperatures:
       - 0
@@ -53,7 +53,7 @@ evo_config:
   embedding_model: text-embedding-3-small
   code_embed_sim_threshold: 0.99
   novelty_llm_models:
-    - gpt-5-nano
+    - gpt-5.4-nano
   novelty_llm_kwargs:
     temperatures:
       - 0

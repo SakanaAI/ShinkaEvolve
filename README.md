@@ -41,13 +41,13 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 
 | Guide | Description | What You'll Learn |
 |-------|-------------|-------------------|
-| 🚀 **[Getting Started](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
+| 🚀 **[First steps](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
 | 📓 **[Tutorial](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
 | ⚙️ **[Configuration](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
 | 🎨 **[WebUI](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
-| ⚡ **[Async Evolution](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
+| ⚡ **[Async Evo](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
 | 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
-| 🤖 **[Agentic Usage](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
+| 🤖 **[Agentic Use](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 
 ## Installation & Quick Start 🚀
@@ -277,7 +277,7 @@ def main(program_path: str,
         results_dir=results_dir,
         experiment_fn_name="run_experiment",
         num_runs=3, # Multi-evals to aggreg.
-        run_workers=1,  # >1 enables per-run process parallelism
+        run_workers=1,  # >1 => per-run parallel
         get_experiment_kwargs=get_kwargs,
         aggregate_metrics_fn=aggregate_fn,
         validate_fn=validate_fn,  # Optional
@@ -403,8 +403,6 @@ Precedence: config YAML < `--set` < authoritative flags.
 Monitor your evolution experiments in real-time with Shinka's interactive web interface! The WebUI provides live visualization of the evolutionary process, genealogy trees, and performance metrics.
 
 ![WebUI Screenshot](https://raw.githubusercontent.com/SakanaAI/ShinkaEvolve/main/docs/media/webui.png)
-
-### Quick Start
 
 Launch the WebUI alongside your evolution experiment:
 

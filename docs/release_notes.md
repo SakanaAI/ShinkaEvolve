@@ -1,4 +1,4 @@
-# Release Notes Version 1.1
+# Release Notes Version 0.0.1
 
 These notes summarize local changes since the last commit.
 
