@@ -5,11 +5,22 @@ These methods allow stopping evaluation early when we're confident that
 the program's mean score won't beat (or will beat) a target threshold.
 """
 
+from __future__ import annotations
+
+import functools
+
 import numpy as np
-from scipy import stats as sp_stats
 from dataclasses import dataclass
 from typing import List, Optional, Literal
 from abc import ABC, abstractmethod
+
+
+@functools.cache
+def _sp_stats():
+    # Lazy import: scipy's compiled extensions are slow to load and can stall
+    # CLI startup on macOS. Keep this deferred — do not move to module level.
+    from scipy import stats
+    return stats
 
 
 @dataclass
@@ -128,7 +139,7 @@ class BayesianEarlyStop(EarlyStopMethod):
                 )
 
         # P(μ > threshold | data) using normal approximation
-        prob_beats = 1 - sp_stats.norm.cdf(threshold, loc=mean, scale=posterior_se)
+        prob_beats = 1 - _sp_stats().norm.cdf(threshold, loc=mean, scale=posterior_se)
 
         if prob_beats < self.prob_cutoff:
             return EarlyStopDecision(
@@ -189,7 +200,7 @@ class ConfidenceIntervalEarlyStop(EarlyStopMethod):
             )
 
         mean = np.mean(scores)
-        se = sp_stats.sem(scores)
+        se = _sp_stats().sem(scores)
 
         # Handle zero standard error
         if se < 1e-10:
@@ -212,7 +223,7 @@ class ConfidenceIntervalEarlyStop(EarlyStopMethod):
 
         # Two-sided confidence interval
         alpha = 1 - self.confidence
-        t_crit = sp_stats.t.ppf(1 - alpha / 2, df=n - 1)
+        t_crit = _sp_stats().t.ppf(1 - alpha / 2, df=n - 1)
         lower = mean - t_crit * se
         upper = mean + t_crit * se
 
@@ -308,11 +319,11 @@ class HybridEarlyStop(EarlyStopMethod):
                 )
 
         # Bayesian probability
-        prob_beats = 1 - sp_stats.norm.cdf(threshold, loc=mean, scale=se)
+        prob_beats = 1 - _sp_stats().norm.cdf(threshold, loc=mean, scale=se)
 
         # CI upper bound
         alpha = 1 - self.ci_confidence
-        t_crit = sp_stats.t.ppf(1 - alpha / 2, df=n - 1)
+        t_crit = _sp_stats().t.ppf(1 - alpha / 2, df=n - 1)
         upper_bound = mean + t_crit * se
 
         # Check CI first (stronger signal)
