@@ -127,6 +127,7 @@ runner = ShinkaEvolveRunner(
     db_config=db_conf,
     max_evaluation_jobs=2,
     max_proposal_jobs=1,  # sync-like proposal behavior
+    max_db_workers=4,
 )
 runner.run()
 ```
@@ -134,7 +135,7 @@ runner.run()
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
 
-Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydra presets and CLI overrides can replace these values.
+Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydra presets and CLI overrides can replace these values. Concurrency lives on `ShinkaEvolveRunner` via `max_evaluation_jobs`, `max_proposal_jobs`, and `max_db_workers`.
 
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
@@ -142,8 +143,6 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `patch_types` | `["diff", "full", "cross"]` | `List[str]` | Types of patches to generate: "diff", "full", "cross" |
 | `patch_type_probs` | `[0.6, 0.3, 0.1]` | `List[float]` | Probabilities for each patch type |
 | `num_generations` | `50` | `int` | Number of evolution generations to run |
-| `max_proposal_jobs` | `1` | `int` | Maximum number of concurrent proposal generation jobs |
-| `max_db_workers` | `4` | `int` | Maximum number of async DB worker threads |
 | `max_patch_resamples` | `3` | `int` | Max times to resample a patch if it fails |
 | `max_patch_attempts` | `1` | `int` | Max attempts to generate a valid patch |
 | `job_type` | `"local"` | `str` | Job execution type: "local", "slurm_docker", "slurm_conda" |
