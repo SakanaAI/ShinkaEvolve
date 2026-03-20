@@ -49,6 +49,13 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `novelty_llm_kwargs` | `dict` | `{}` | kwargs for novelty-judge LLM calls. |
 | `use_text_feedback` | `bool` | `False` | Include text feedback in mutation prompts. |
 | `max_api_costs` | `Optional[float]` | `None` | API budget cap in USD; stops new submissions at cap. |
+| `enable_controlled_oversubscription` | `bool` | `True` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
+| `proposal_target_mode` | `str` | `'adaptive'` | Proposal target controller mode: `adaptive` or `fixed`. |
+| `proposal_target_min_samples` | `int` | `5` | Minimum completed timing samples required before adaptive targeting activates. |
+| `proposal_target_ratio_cap` | `float` | `2.0` | Maximum sampling/evaluation ratio used by the adaptive controller. |
+| `proposal_buffer_max` | `int` | `2` | Maximum extra proposal jobs above `max_evaluation_jobs`. |
+| `proposal_target_hard_cap` | `Optional[int]` | `None` | Absolute cap for the adaptive proposal target. |
+| `proposal_target_ewma_alpha` | `float` | `0.3` | EWMA smoothing factor for proposal/evaluation timing estimates. |
 | `inspiration_sort_order` | `str` | `'ascending'` | Inspiration ordering (`ascending`, `chronological`, `none`). |
 | `evolve_prompts` | `bool` | `False` | Enable system-prompt evolution. |
 | `prompt_patch_types` | `List[str]` | `['diff', 'full']` | Patch formats for prompt evolution. |
@@ -162,7 +169,7 @@ evo_config:
 
 ```yaml
 max_evaluation_jobs: 2
-max_proposal_jobs: 1
+max_proposal_jobs: 3
 max_db_workers: 4
 
 evo_config:
@@ -185,6 +192,12 @@ evo_config:
   meta_rec_interval: 10
   embedding_model: "text-embedding-3-small"
   code_embed_sim_threshold: 0.99
+  enable_controlled_oversubscription: true
+  proposal_target_mode: adaptive
+  proposal_target_min_samples: 5
+  proposal_target_ratio_cap: 2.0
+  proposal_buffer_max: 2
+  proposal_target_ewma_alpha: 0.3
   results_dir: ${output_dir}
 ```
 
@@ -192,7 +205,7 @@ evo_config:
 
 ```yaml
 max_evaluation_jobs: 6
-max_proposal_jobs: 1
+max_proposal_jobs: 8
 max_db_workers: 4
 
 evo_config:
@@ -216,8 +229,48 @@ evo_config:
   meta_llm_kwargs:
     temperatures: [0.0]
   embedding_model: "text-embedding-3-small"
+  enable_controlled_oversubscription: true
+  proposal_target_mode: adaptive
+  proposal_target_min_samples: 5
+  proposal_target_ratio_cap: 2.0
+  proposal_buffer_max: 2
+  proposal_target_hard_cap: 8
+  proposal_target_ewma_alpha: 0.3
   results_dir: ${output_dir}
 ```
+
+### Controlled Oversubscription
+
+When proposal generation is slower than evaluation, Shinka can keep extra
+proposal tasks in flight so evaluation workers spend less time idle.
+
+- `max_evaluation_jobs` still caps evaluation concurrency.
+- `max_proposal_jobs` becomes the hard ceiling for proposal generation tasks.
+- the controller raises the proposal target above evaluation concurrency only
+  when observed `sampling_seconds > evaluation_seconds`
+- the oversubscription is bounded by `proposal_buffer_max`,
+  `proposal_target_ratio_cap`, `proposal_target_hard_cap`, and
+  `max_proposal_jobs`
+
+Recommended starting point:
+
+```yaml
+max_evaluation_jobs: 5
+max_proposal_jobs: 7
+max_db_workers: 4
+
+evo_config:
+  enable_controlled_oversubscription: true
+  proposal_target_mode: adaptive
+  proposal_target_min_samples: 5
+  proposal_target_ratio_cap: 2.0
+  proposal_buffer_max: 2
+  proposal_target_hard_cap: 7
+  proposal_target_ewma_alpha: 0.3
+```
+
+Use `max_proposal_jobs: 1` if you want sync-like proposal behavior with no
+proposal backlog.
 
 ### Database Presets
 

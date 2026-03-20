@@ -146,7 +146,7 @@ runner = ShinkaEvolveRunner(
     job_config=job_conf,
     db_config=db_conf,
     max_evaluation_jobs=2,
-    max_proposal_jobs=1,  # sync-like proposal behavior
+    max_proposal_jobs=3,  # modest oversubscription when proposal generation is slower than eval
     max_db_workers=4,
 )
 runner.run()
@@ -185,6 +185,13 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `novelty_llm_kwargs` | `{}` | `dict` | Kwargs for novelty LLMs |
 | `use_text_feedback` | `False` | `bool` | Whether to use text feedback in evolution |
 | `max_api_costs` | `None` | `Optional[float]` | Total API budget cap (USD); async runner stops new proposals at cap |
+| `enable_controlled_oversubscription` | `True` | `bool` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
+| `proposal_target_mode` | `'adaptive'` | `str` | Proposal target controller mode (`adaptive` or `fixed`). |
+| `proposal_target_min_samples` | `5` | `int` | Minimum completed timing samples before adaptive targeting activates. |
+| `proposal_target_ratio_cap` | `2.0` | `float` | Maximum sampling/evaluation ratio used by the adaptive controller. |
+| `proposal_buffer_max` | `2` | `int` | Maximum extra proposal jobs beyond evaluation concurrency. |
+| `proposal_target_hard_cap` | `None` | `Optional[int]` | Absolute cap for the adaptive proposal target. |
+| `proposal_target_ewma_alpha` | `0.3` | `float` | EWMA smoothing factor for proposal/evaluation timing estimates. |
 | `inspiration_sort_order` | `"ascending"` | `str` | Inspiration ordering (`"ascending"`, `"chronological"`, `"none"`) |
 | `evolve_prompts` | `False` | `bool` | Enable meta-prompt evolution loop |
 | `prompt_patch_types` | `["diff", "full"]` | `List[str]` | Patch formats used for prompt evolution |
