@@ -13,7 +13,6 @@ from shinka.database import DatabaseConfig
 
 evo_config = EvolutionConfig(
     num_generations=50,
-    max_proposal_jobs=1,  # sync-like proposal behavior
     llm_models=["gpt-5-mini"],
 )
 
@@ -21,6 +20,9 @@ runner = ShinkaEvolveRunner(
     evo_config=evo_config,
     job_config=LocalJobConfig(eval_program_path="evaluate.py"),
     db_config=DatabaseConfig(),
+    max_evaluation_jobs=2,
+    max_proposal_jobs=1,  # sync-like proposal behavior
+    max_db_workers=4,
 )
 
 runner.run()
@@ -39,6 +41,9 @@ await runner.run_async()
 - `max_db_workers`: max async database worker threads.
 
 `max_proposal_jobs=1` gives sequential proposal generation behavior.
+All concurrency knobs live on `ShinkaEvolveRunner`.
+
+Suitable concurrency depends on your machine. In practice, leave enough CPU capacity for the database workers, evaluation jobs, and proposal sampling jobs to run without starving each other.
 
 ## ShinkaEvolveRunner Parameters
 
@@ -49,8 +54,8 @@ ShinkaEvolveRunner(
     db_config=DatabaseConfig(...),
     verbose=True,
     max_evaluation_jobs=2,
-    max_proposal_jobs=None,    # defaults to evo_config.max_proposal_jobs
-    max_db_workers=None,       # defaults to evo_config.max_db_workers
+    max_proposal_jobs=1,
+    max_db_workers=4,
 )
 ```
 

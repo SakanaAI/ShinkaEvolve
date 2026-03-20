@@ -19,14 +19,14 @@ Configuration values are resolved in this order (later wins):
 
 ### EvolutionConfig (`shinka.core.EvolutionConfig`)
 
+Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `task_sys_msg` | `Optional[str]` | `"You are an expert optimization and algorithm design assistant. Improve the program while preserving correctness and immutable regions."` | Task-specific system prompt. |
 | `patch_types` | `List[str]` | `['diff', 'full', 'cross']` | Patch formats; supports `diff`, `full`, `cross`. |
 | `patch_type_probs` | `List[float]` | `[0.6, 0.3, 0.1]` | Sampling probabilities for `patch_types` (must sum to 1). |
 | `num_generations` | `int` | `50` | Target number of generations. |
-| `max_proposal_jobs` | `int` | `1` | Max concurrent proposal-generation tasks. |
-| `max_db_workers` | `int` | `4` | Max async DB worker threads. |
 | `max_patch_resamples` | `int` | `3` | Max patch resample loops per novelty attempt. |
 | `max_patch_attempts` | `int` | `1` | Max attempts to produce a syntactically valid patch. |
 | `job_type` | `str` | `'local'` | Job backend: `local`, `slurm_docker`, `slurm_conda`. |
@@ -138,19 +138,19 @@ Configuration values are resolved in this order (later wins):
 
 ### Evolution Presets
 
-All `shinka/configs/evolution/*.yaml` override `EvolutionConfig` defaults only for listed keys. Unlisted keys inherit dataclass defaults.
+All `shinka/configs/evolution/*.yaml` set runner-level concurrency at the top level and override `EvolutionConfig` defaults only for listed `evo_config` keys.
 
 #### `shinka/configs/evolution/small_budget.yaml`
 
 ```yaml
 max_evaluation_jobs: 1
+max_proposal_jobs: 1
+max_db_workers: 4
 
 evo_config:
   patch_types: ["diff", "full"]
   patch_type_probs: [0.5, 0.5]
   num_generations: 20
-  max_proposal_jobs: 1
-  max_db_workers: 4
   max_patch_attempts: 10
   llm_models: ["gpt-4.1"]
   llm_dynamic_selection: null
@@ -162,13 +162,13 @@ evo_config:
 
 ```yaml
 max_evaluation_jobs: 2
+max_proposal_jobs: 1
+max_db_workers: 4
 
 evo_config:
   patch_types: ["diff", "full", "cross"]
   patch_type_probs: [0.6, 0.3, 0.1]
   num_generations: 50
-  max_proposal_jobs: 1
-  max_db_workers: 4
   max_patch_resamples: 3
   max_patch_attempts: 1
   llm_models:
@@ -192,13 +192,13 @@ evo_config:
 
 ```yaml
 max_evaluation_jobs: 6
+max_proposal_jobs: 1
+max_db_workers: 4
 
 evo_config:
   patch_types: ["diff", "full", "cross"]
   patch_type_probs: [0.4, 0.4, 0.2]
   num_generations: 300
-  max_proposal_jobs: 1
-  max_db_workers: 4
   max_patch_resamples: 3
   max_patch_attempts: 3
   llm_models:

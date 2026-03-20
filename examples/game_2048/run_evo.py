@@ -49,6 +49,8 @@ Try diverse approaches to solve the problem. Think outside the box.
 
 
 MAX_EVALUATION_JOBS = 5
+MAX_PROPOSAL_JOBS = 1
+MAX_DB_WORKERS = 4
 
 
 evo_config = EvolutionConfig(
@@ -56,8 +58,6 @@ evo_config = EvolutionConfig(
     patch_types=["diff", "full", "cross"],
     patch_type_probs=[0.6, 0.3, 0.1],
     num_generations=100,
-    max_proposal_jobs=1,
-    max_db_workers=4,
     max_patch_resamples=3,
     max_patch_attempts=3,
     job_type="local",
@@ -97,8 +97,8 @@ def main():
         job_config=job_config,
         db_config=db_config,
         max_evaluation_jobs=MAX_EVALUATION_JOBS,
-        max_proposal_jobs=evo_config.max_proposal_jobs,
-        max_db_workers=evo_config.max_db_workers,
+        max_proposal_jobs=MAX_PROPOSAL_JOBS,
+        max_db_workers=MAX_DB_WORKERS,
         verbose=True,
     )
     evo_runner.run()
