@@ -50,6 +50,14 @@ def adapted_validate_packing(
         msg = f"Radii shape incorrect. Expected ({n_expected},), got {radii.shape}"
         return False, msg
 
+    if (
+        not np.all(np.isfinite(centers))
+        or not np.all(np.isfinite(radii))
+        or not np.isfinite(reported_sum)
+    ):
+        msg = "Non-finite values found in centers, radii, or reported_sum."
+        return False, msg
+
     if np.any(radii < 0):
         negative_indices = np.where(radii < 0)[0]
         msg = f"Negative radii found for circles at indices: {negative_indices}"
