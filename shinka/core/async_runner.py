@@ -141,8 +141,8 @@ class ShinkaEvolveRunner:
         db_config: DatabaseConfig,
         verbose: bool = True,
         max_evaluation_jobs: int = 2,
-        max_proposal_jobs: Optional[int] = None,
-        max_db_workers: Optional[int] = None,
+        max_proposal_jobs: int = 1,
+        max_db_workers: int = 4,
         debug: bool = False,
         init_program_str: Optional[str] = None,
         evaluate_str: Optional[str] = None,
@@ -157,9 +157,9 @@ class ShinkaEvolveRunner:
             max_evaluation_jobs: Maximum concurrent evaluation jobs
                 (defaults to 2)
             max_proposal_jobs: Maximum concurrent proposal generation tasks
-                (defaults to evo_config.max_proposal_jobs)
+                (defaults to 1)
             max_db_workers: Maximum concurrent async DB worker threads
-                (defaults to evo_config.max_db_workers)
+                (defaults to 4)
             init_program_str: Optional string content for initial program
                 (will be saved to results dir and path updated in evo_config)
             evaluate_str: Optional string content for evaluate script
@@ -230,16 +230,8 @@ class ShinkaEvolveRunner:
         max_evaluation_jobs, max_proposal_jobs, max_db_workers = (
             self._validate_concurrency_settings(
                 max_evaluation_jobs,
-                (
-                    max_proposal_jobs
-                    if max_proposal_jobs is not None
-                    else evo_config.max_proposal_jobs
-                ),
-                (
-                    max_db_workers
-                    if max_db_workers is not None
-                    else evo_config.max_db_workers
-                ),
+                max_proposal_jobs,
+                max_db_workers,
                 cpu_count,
             )
         )

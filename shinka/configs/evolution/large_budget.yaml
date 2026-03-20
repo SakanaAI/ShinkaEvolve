@@ -1,4 +1,6 @@
 max_evaluation_jobs: 6
+max_proposal_jobs: 1
+max_db_workers: 4
 
 evo_config:
   _target_: shinka.core.EvolutionConfig
@@ -11,8 +13,6 @@ evo_config:
     - 0.4
     - 0.2
   num_generations: 300
-  max_proposal_jobs: 1
-  max_db_workers: 4
   max_patch_resamples: 3
   max_patch_attempts: 3
   llm_models:

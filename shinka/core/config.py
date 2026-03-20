@@ -22,8 +22,6 @@ class EvolutionConfig:
     patch_types: List[str] = field(default_factory=default_patch_types)
     patch_type_probs: List[float] = field(default_factory=default_patch_type_probs)
     num_generations: int = 50
-    max_proposal_jobs: int = 1
-    max_db_workers: int = 4
     max_patch_resamples: int = 3
     max_patch_attempts: int = 1
     job_type: str = "local"
