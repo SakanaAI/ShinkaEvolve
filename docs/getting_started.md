@@ -390,11 +390,11 @@ The `run_shinka_eval` function returns three values:
 
 | Example | Description | Use Case |
 |---------|-------------|----------|
-| **Circle Packing** | Pack 26 circles in a unit square; maximize sum of radii | Geometric optimization / continuous search |
-| **2048** | Evolve a policy to play 2048 under action/time constraints | Game-playing / heuristic optimization |
-| **Julia Prime Counting** | Optimize a Julia solution for repeated prime-count queries (\(\pi(n)\)) | Algorithmic optimization (correctness + runtime) |
-| **Novelty Generator** | Generate diverse outputs scored by LLM-as-a-judge novelty metrics | Open-ended exploration / creative generation |
-| **Shinka Tutorial (Notebook)** | Guided walkthrough of setup + running/inspecting Circle Packing and Novelty Generator | Interactive onboarding / WebUI + configs |
+| **[Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing)** | Pack 26 circles in a unit square; maximize sum of radii | Geometric optimization / continuous search |
+| **[2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048)** | Evolve a policy to play 2048 under action/time constraints | Game-playing / heuristic optimization |
+| **[Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting)** | Optimize a Julia solution for repeated prime-count queries (\(\pi(n)\)) | Algorithmic optimization (correctness + runtime) |
+| **[Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator)** | Generate diverse outputs scored by LLM-as-a-judge novelty metrics | Open-ended exploration / creative generation |
+| **[Shinka Tutorial (Notebook)](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Guided walkthrough of setup + running/inspecting Circle Packing and Novelty Generator | Interactive onboarding / WebUI + configs |
 
 
 

@@ -42,11 +42,11 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | Guide | Description | What You'll Learn |
 |-------|-------------|-------------------|
 | 🚀 **[First steps](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md)** | Installation, basic usage, and examples | Setup, first evolution run, core concepts |
-| 📓 **[Tutorial](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka features | Hands-on examples, configuration, best practices |
-| ⚙️ **[Configuration](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md)** | Comprehensive configuration reference | All config options, optimization settings, advanced features |
-| 🎨 **[WebUI](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging tools | 
-| ⚡ **[Async Evo](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-performance async pipeline (5-10x speedup) | Concurrent processing, proposal/eval concurrency tuning | 
-| 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to connect and use local LLMs with Shinka | Running open-source models, integration tips, performance notes |
+| 📓 **[Tutorial](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka | Hands-on examples, config, best practices |
+| ⚙️  **[Config](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md)** | Comprehensive config reference | All config options & advanced features |
+| 🎨 **[WebUI](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging | 
+| ⚡ **[Async Evo](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-perf. throughput (5-10x speedup) | Concurrent processing, proposal/eval tuning | 
+| 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to use local LLMs with Shinka | Running open-source models & integration tips |
 | 🤖 **[Agentic Use](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 
@@ -109,7 +109,7 @@ For the simplest setup with default settings, you only need to specify the evalu
 ```python
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
-from shinka.launch import LocalJobConfig
+from shinka.launch import LocalJobConfig, SlurmCondaJobConfig, SlurmDockerJobConfig
 
 # Minimal - only specify what's required
 job_conf = LocalJobConfig(eval_program_path="evaluate.py")
@@ -117,6 +117,26 @@ job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 # job_conf = LocalJobConfig(
 #     eval_program_path="evaluate.py",
 #     activate_script=".venv/bin/activate",
+# )
+# Or run evaluations on SLURM:
+# job_conf = SlurmCondaJobConfig(
+#     eval_program_path="evaluate.py",
+#     partition="gpu",
+#     time="01:00:00",
+#     cpus=1,
+#     gpus=1,
+#     mem="8G",
+#     conda_env="shinka",
+# )
+# Or run evaluations in a Docker container on SLURM:
+# job_conf = SlurmDockerJobConfig(
+#     eval_program_path="evaluate.py",
+#     image="ubuntu:latest",
+#     partition="gpu",
+#     time="01:00:00",
+#     cpus=1,
+#     gpus=1,
+#     mem="8G",
 # )
 db_conf = DatabaseConfig()
 evo_conf = EvolutionConfig(init_program_path="initial.py")
