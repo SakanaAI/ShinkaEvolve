@@ -113,6 +113,10 @@ def test_process_single_job_safely_persists_timing_metadata():
         runner.max_proposal_jobs = 2
         runner.max_evaluation_jobs = 2
         runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         await runner.evaluation_slot_pool.acquire()
@@ -186,6 +190,10 @@ def test_process_single_job_safely_skips_duplicate_source_job():
         runner.max_proposal_jobs = 2
         runner.max_evaluation_jobs = 2
         runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")

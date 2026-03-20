@@ -10,6 +10,7 @@ import shutil
 import time
 import uuid
 import os
+import math
 import psutil
 import threading
 from datetime import datetime
@@ -424,6 +425,10 @@ class ShinkaEvolveRunner:
             float
         ] = []  # Track costs of completed proposals
         self.avg_proposal_cost = 0.0  # Running average cost per proposal
+        self._sampling_seconds_ewma: Optional[float] = None
+        self._evaluation_seconds_ewma: Optional[float] = None
+        self._proposal_timing_samples = 0
+        self._last_proposal_target_log: Optional[Tuple[int, float, float]] = None
 
         # Robust job tracking - ensure no jobs are lost
         self.submitted_jobs: Dict[str, AsyncRunningJob] = {}  # All jobs ever submitted
@@ -654,6 +659,98 @@ class ShinkaEvolveRunner:
 
         committed_cost = self.total_api_cost + estimated_in_flight
         return committed_cost
+
+    def _record_oversubscription_timing_sample(self, metadata: Dict[str, Any]) -> None:
+        """Update proposal/evaluation timing EWMAs for adaptive oversubscription."""
+        sampling_seconds = metadata.get("sampling_seconds")
+        evaluation_seconds = metadata.get("evaluation_seconds")
+        if not isinstance(sampling_seconds, (int, float)) or not isinstance(
+            evaluation_seconds, (int, float)
+        ):
+            return
+        if sampling_seconds <= 0 or evaluation_seconds <= 0:
+            return
+
+        alpha = getattr(self.evo_config, "proposal_target_ewma_alpha", 0.3)
+        if self._sampling_seconds_ewma is None:
+            self._sampling_seconds_ewma = float(sampling_seconds)
+        else:
+            self._sampling_seconds_ewma = (
+                alpha * float(sampling_seconds)
+                + (1 - alpha) * self._sampling_seconds_ewma
+            )
+
+        if self._evaluation_seconds_ewma is None:
+            self._evaluation_seconds_ewma = float(evaluation_seconds)
+        else:
+            self._evaluation_seconds_ewma = (
+                alpha * float(evaluation_seconds)
+                + (1 - alpha) * self._evaluation_seconds_ewma
+            )
+
+        self._proposal_timing_samples += 1
+
+    def _compute_proposal_pipeline_target(self) -> int:
+        """Compute the bounded proposal target for controlled oversubscription."""
+        base_target = self.max_evaluation_jobs
+        if not getattr(self.evo_config, "enable_controlled_oversubscription", True):
+            return base_target
+
+        buffer_max = max(0, getattr(self.evo_config, "proposal_buffer_max", 0))
+        hard_cap = getattr(self.evo_config, "proposal_target_hard_cap", None)
+        effective_hard_cap = (
+            self.max_proposal_jobs if hard_cap is None else min(hard_cap, self.max_proposal_jobs)
+        )
+
+        mode = getattr(self.evo_config, "proposal_target_mode", "adaptive")
+        if mode == "fixed":
+            raw_target = base_target + buffer_max
+        else:
+            min_samples = max(1, getattr(self.evo_config, "proposal_target_min_samples", 5))
+            ratio_cap = max(1.0, getattr(self.evo_config, "proposal_target_ratio_cap", 2.0))
+            if (
+                self._proposal_timing_samples < min_samples
+                or self._sampling_seconds_ewma is None
+                or self._evaluation_seconds_ewma is None
+                or self._evaluation_seconds_ewma <= 0
+            ):
+                raw_target = base_target + min(1, buffer_max)
+            else:
+                observed_ratio = min(
+                    self._sampling_seconds_ewma / self._evaluation_seconds_ewma,
+                    ratio_cap,
+                )
+                raw_target = math.ceil(base_target * observed_ratio)
+
+        final_target = max(
+            base_target,
+            min(
+                raw_target,
+                base_target + buffer_max,
+                self.max_proposal_jobs,
+                effective_hard_cap,
+            ),
+        )
+        return final_target
+
+    def _log_proposal_target_decision(self, pipeline_target: int) -> None:
+        """Log proposal target changes with current timing stats."""
+        sampling_ewma = self._sampling_seconds_ewma or 0.0
+        evaluation_ewma = self._evaluation_seconds_ewma or 0.0
+        log_state = (pipeline_target, round(sampling_ewma, 3), round(evaluation_ewma, 3))
+        if self._last_proposal_target_log == log_state:
+            return
+        self._last_proposal_target_log = log_state
+        logger.info(
+            "Proposal target=%s (sampling_ewma=%.2fs, evaluation_ewma=%.2fs, "
+            "timing_samples=%s, active_proposals=%s, running_jobs=%s)",
+            pipeline_target,
+            sampling_ewma,
+            evaluation_ewma,
+            self._proposal_timing_samples,
+            len(self.active_proposal_tasks),
+            len(self.running_jobs),
+        )
 
     def run(self):
         """Synchronous convenience wrapper for script/CLI usage."""
@@ -1987,7 +2084,8 @@ class ShinkaEvolveRunner:
                 pipeline_capacity = len(self.running_jobs) + len(
                     self.active_proposal_tasks
                 )
-                pipeline_target = self.max_evaluation_jobs
+                pipeline_target = self._compute_proposal_pipeline_target()
+                self._log_proposal_target_decision(pipeline_target)
                 proposals_needed = min(
                     max(0, pipeline_target - pipeline_capacity),  # Fill the pipeline
                     proposals_remaining,
@@ -3375,6 +3473,7 @@ class ShinkaEvolveRunner:
                 logger.warning(
                     f"Metadata persistence error for {job.job_id}: {e}"
                 )
+            self._record_oversubscription_timing_sample(program.metadata or {})
 
             logger.info(
                 f"✅ JOB COMPLETE: Finished processing {job.job_id} - program {program.id} added (gen {job.generation})"

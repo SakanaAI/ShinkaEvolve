@@ -47,6 +47,13 @@ class EvolutionConfig:
     use_text_feedback: bool = False
     max_api_costs: Optional[float] = None
     inspiration_sort_order: str = "ascending"
+    enable_controlled_oversubscription: bool = True
+    proposal_target_mode: str = "adaptive"
+    proposal_target_min_samples: int = 5
+    proposal_target_ratio_cap: float = 2.0
+    proposal_buffer_max: int = 2
+    proposal_target_hard_cap: Optional[int] = None
+    proposal_target_ewma_alpha: float = 0.3
 
     # Meta-prompt evolution settings.
     evolve_prompts: bool = False
