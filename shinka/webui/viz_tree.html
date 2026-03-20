@@ -1988,6 +1988,11 @@
                             <div id="cost-generation-avg-plot" style="width: 100%; height: 340px; overflow: hidden;"></div>
                         </div>
                         <div class="analysis-section full-width">
+                            <h3>Generation Runtime Timeline</h3>
+                            <div id="runtime-timeline-summary" style="display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: #666; margin: 6px 0 10px 0;"></div>
+                            <div id="runtime-timeline-plot" style="width: 100%; height: 420px; overflow: hidden;"></div>
+                        </div>
+                        <div class="analysis-section full-width">
                             <h3>Parent Lineage: Offspring Count & Improvements</h3>
                             <div id="lineage-fertility-plot" style="width: 100%; height: 360px;"></div>
                         </div>
@@ -15295,6 +15300,444 @@ console.error("[DEBUG] Error in processData:", error);
             
             Plotly.newPlot('cost-generation-avg-plot', traces, layout, {responsive: true, displayModeBar: false});
         }
+
+        function formatRuntimeSeconds(seconds) {
+            if (!Number.isFinite(seconds)) return 'N/A';
+            if (seconds < 60) return `${seconds.toFixed(1)}s`;
+            if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
+            return `${(seconds / 3600).toFixed(1)}h`;
+        }
+
+        function formatRuntimeTimestamp(epochSeconds) {
+            if (!Number.isFinite(epochSeconds)) return 'N/A';
+            return new Date(epochSeconds * 1000).toLocaleString();
+        }
+
+        function getMinVisibleRuntimeBarMs(rangeMs) {
+            if (!Number.isFinite(rangeMs) || rangeMs <= 0) return 250;
+            return Math.max(250, rangeMs * 0.003);
+        }
+
+        function getDisplayRuntimeBarMs(durationSeconds, minVisibleBarMs) {
+            const durationMs = Math.max(0, (durationSeconds || 0) * 1000);
+            if (durationMs <= 0) return minVisibleBarMs;
+            return Math.max(durationMs, minVisibleBarMs);
+        }
+
+        function parseRuntimeNumber(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const parsed = typeof value === 'number' ? value : parseFloat(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        function getBaseRuntimeTimelineRows(data) {
+            if (!Array.isArray(data) || data.length === 0) return [];
+
+            return data.map(program => {
+                const meta = program.metadata || {};
+                const pipelineStartedAt = parseRuntimeNumber(meta.pipeline_started_at);
+                const samplingStartedAt = parseRuntimeNumber(meta.sampling_started_at);
+                const samplingFinishedAt = parseRuntimeNumber(meta.sampling_finished_at);
+                const evaluationStartedAt = parseRuntimeNumber(meta.evaluation_started_at);
+                const evaluationFinishedAt = parseRuntimeNumber(meta.evaluation_finished_at);
+                const postprocessStartedAt = parseRuntimeNumber(meta.postprocess_started_at);
+                const postprocessFinishedAt = parseRuntimeNumber(meta.postprocess_finished_at);
+
+                if (
+                    pipelineStartedAt === null ||
+                    samplingStartedAt === null ||
+                    samplingFinishedAt === null ||
+                    evaluationStartedAt === null ||
+                    evaluationFinishedAt === null ||
+                    postprocessStartedAt === null ||
+                    postprocessFinishedAt === null
+                ) {
+                    return null;
+                }
+
+                return {
+                    id: program.id,
+                    generation: program.generation ?? 0,
+                    patchName: meta.patch_name || 'unnamed',
+                    modelName: meta.model_name || meta.llm_result?.model || meta.model || 'N/A',
+                    noveltyAttempt: parseRuntimeNumber(meta.novelty_attempt),
+                    resampleAttempt: parseRuntimeNumber(meta.resample_attempt),
+                    patchAttempt: parseRuntimeNumber(meta.patch_attempt),
+                    timelineLaneMode: meta.timeline_lane_mode || null,
+                    samplingWorkerId: parseRuntimeNumber(meta.sampling_worker_id),
+                    evaluationWorkerId: parseRuntimeNumber(meta.evaluation_worker_id),
+                    postprocessWorkerId: parseRuntimeNumber(meta.postprocess_worker_id),
+                    samplingWorkerCapacity: parseRuntimeNumber(meta.sampling_worker_capacity),
+                    evaluationWorkerCapacity: parseRuntimeNumber(meta.evaluation_worker_capacity),
+                    postprocessWorkerCapacity: parseRuntimeNumber(meta.postprocess_worker_capacity),
+                    pipelineStartedAt,
+                    samplingStartedAt,
+                    samplingFinishedAt,
+                    evaluationStartedAt,
+                    evaluationFinishedAt,
+                    postprocessStartedAt,
+                    postprocessFinishedAt,
+                    samplingSeconds: Math.max(0, samplingFinishedAt - samplingStartedAt),
+                    evaluationSeconds: Math.max(0, evaluationFinishedAt - evaluationStartedAt),
+                    postprocessSeconds: Math.max(0, postprocessFinishedAt - postprocessStartedAt)
+                };
+            }).filter(row => row !== null);
+        }
+
+        function computePeakConcurrency(rows, startKey, endKey) {
+            const events = [];
+            rows.forEach(row => {
+                const start = row[startKey];
+                const end = row[endKey];
+                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+                events.push([start, 1]);
+                events.push([end, -1]);
+            });
+
+            events.sort((a, b) => {
+                if (a[0] !== b[0]) return a[0] - b[0];
+                return a[1] - b[1];
+            });
+
+            let current = 0;
+            let peak = 0;
+            events.forEach(([, delta]) => {
+                current += delta;
+                peak = Math.max(peak, current);
+            });
+            return peak;
+        }
+
+        function getLegacyRuntimeTimelineRows(data) {
+            const rows = getBaseRuntimeTimelineRows(data);
+            if (rows.length === 0) return { rows: [], laneCount: 0 };
+
+            rows.sort((a, b) => {
+                if (a.evaluationStartedAt !== b.evaluationStartedAt) {
+                    return a.evaluationStartedAt - b.evaluationStartedAt;
+                }
+                if (a.generation !== b.generation) return a.generation - b.generation;
+                return a.pipelineStartedAt - b.pipelineStartedAt;
+            });
+
+            const laneEndTimes = [];
+            const laneEpsilon = 1e-6;
+            rows.forEach(row => {
+                let laneIndex = laneEndTimes.findIndex(
+                    laneEndTime => row.evaluationStartedAt >= laneEndTime - laneEpsilon
+                );
+                if (laneIndex === -1) {
+                    laneIndex = laneEndTimes.length;
+                    laneEndTimes.push(row.evaluationFinishedAt);
+                } else {
+                    laneEndTimes[laneIndex] = row.evaluationFinishedAt;
+                }
+                row.workerLabel = `Worker ${laneIndex + 1}`;
+            });
+
+            return { rows, laneCount: laneEndTimes.length };
+        }
+
+        function getPoolRuntimeTimelineData(data) {
+            const rows = getBaseRuntimeTimelineRows(data).filter(
+                row => row.timelineLaneMode === 'pool_slots'
+            );
+            if (rows.length === 0) return null;
+
+            const capacities = {
+                sampling: Math.max(0, ...rows.map(row => row.samplingWorkerCapacity || row.samplingWorkerId || 0)),
+                evaluation: Math.max(0, ...rows.map(row => row.evaluationWorkerCapacity || row.evaluationWorkerId || 0)),
+                postprocess: Math.max(0, ...rows.map(row => row.postprocessWorkerCapacity || row.postprocessWorkerId || 0))
+            };
+
+            if (capacities.sampling === 0 && capacities.evaluation === 0 && capacities.postprocess === 0) {
+                return null;
+            }
+
+            const laneLabels = [];
+            const maxLaneCount = Math.max(
+                capacities.sampling,
+                capacities.evaluation,
+                capacities.postprocess
+            );
+
+            for (let idx = 1; idx <= maxLaneCount; idx += 1) {
+                if (idx <= capacities.sampling) laneLabels.push(`Sampling W${idx}`);
+                if (idx <= capacities.evaluation) laneLabels.push(`Evaluation W${idx}`);
+                if (idx <= capacities.postprocess) laneLabels.push(`Postprocess W${idx}`);
+            }
+
+            return {
+                rows,
+                capacities,
+                laneLabels,
+                peaks: {
+                    sampling: computePeakConcurrency(rows, 'samplingStartedAt', 'samplingFinishedAt'),
+                    evaluation: computePeakConcurrency(rows, 'evaluationStartedAt', 'evaluationFinishedAt'),
+                    postprocess: computePeakConcurrency(rows, 'postprocessStartedAt', 'postprocessFinishedAt')
+                }
+            };
+        }
+
+        function renderRuntimeTimelinePlot(data, selectedNodeId) {
+            const container = document.getElementById('runtime-timeline-plot');
+            if (!container) return;
+            const summary = document.getElementById('runtime-timeline-summary');
+
+            const poolData = getPoolRuntimeTimelineData(data);
+            if (poolData && poolData.rows.length) {
+                const { rows, capacities, laneLabels, peaks } = poolData;
+                const runtimePlotHeight = 420;
+                const poolBarWidth = Math.max(0.12, Math.min(0.75, 3.6 / Math.max(laneLabels.length, 1)));
+                if (summary) {
+                    summary.innerHTML = `
+                        <span><strong>Sampling:</strong> peak ${peaks.sampling}/${capacities.sampling || 0}</span>
+                        <span><strong>Evaluation:</strong> peak ${peaks.evaluation}/${capacities.evaluation || 0}</span>
+                        <span><strong>Postprocess:</strong> peak ${peaks.postprocess}/${capacities.postprocess || 0}</span>
+                    `;
+                }
+
+                const stageConfigs = [
+                    {
+                        key: 'sampling',
+                        label: 'Sampling',
+                        color: '#3b82f6',
+                        startKey: 'samplingStartedAt',
+                        endKey: 'samplingFinishedAt',
+                        durationKey: 'samplingSeconds',
+                        laneLabel: row => row.samplingWorkerId ? `Sampling W${row.samplingWorkerId}` : null
+                    },
+                    {
+                        key: 'evaluation',
+                        label: 'Evaluation',
+                        color: '#f59e0b',
+                        startKey: 'evaluationStartedAt',
+                        endKey: 'evaluationFinishedAt',
+                        durationKey: 'evaluationSeconds',
+                        laneLabel: row => row.evaluationWorkerId ? `Evaluation W${row.evaluationWorkerId}` : null
+                    },
+                    {
+                        key: 'postprocess',
+                        label: 'Postprocess',
+                        color: '#10b981',
+                        startKey: 'postprocessStartedAt',
+                        endKey: 'postprocessFinishedAt',
+                        durationKey: 'postprocessSeconds',
+                        laneLabel: row => row.postprocessWorkerId ? `Postprocess W${row.postprocessWorkerId}` : null
+                    }
+                ];
+
+                const traces = stageConfigs.map(stage => {
+                    const stageRows = rows.filter(row => stage.laneLabel(row));
+                    const minStartMs = Math.min(...rows.map(row => row.pipelineStartedAt * 1000));
+                    const maxEndMs = Math.max(...rows.map(row => row.postprocessFinishedAt * 1000));
+                    const minVisibleBarMs = getMinVisibleRuntimeBarMs(maxEndMs - minStartMs);
+                    return {
+                        type: 'bar',
+                        orientation: 'h',
+                        name: stage.label,
+                        y: stageRows.map(row => stage.laneLabel(row)),
+                        x: stageRows.map(row => getDisplayRuntimeBarMs(row[stage.durationKey], minVisibleBarMs)),
+                        base: stageRows.map(row => row[stage.startKey] * 1000),
+                        width: stageRows.map(() => poolBarWidth),
+                        marker: {
+                            color: stageRows.map(row => row.id === selectedNodeId ? stage.color : stage.color),
+                            line: {
+                                color: stageRows.map(row => row.id === selectedNodeId ? '#111827' : '#ffffff'),
+                                width: stageRows.map(row => row.id === selectedNodeId ? 1.5 : 0.5)
+                            }
+                        },
+                        opacity: 0.92,
+                        customdata: stageRows.map(row => ([
+                            stage.laneLabel(row),
+                            row.generation,
+                            row.patchName,
+                            row.modelName,
+                            formatRuntimeSeconds(row[stage.durationKey]),
+                            formatRuntimeTimestamp(row[stage.startKey]),
+                            formatRuntimeTimestamp(row[stage.endKey]),
+                            row.noveltyAttempt ?? 'N/A',
+                            row.resampleAttempt ?? 'N/A',
+                            row.patchAttempt ?? 'N/A',
+                        ])),
+                        hovertemplate:
+                            '<b>%{customdata[0]}</b><br>' +
+                            'Gen %{customdata[1]}<br>' +
+                            '%{fullData.name}: %{customdata[4]}<br>' +
+                            'Patch: %{customdata[2]}<br>' +
+                            'Model: %{customdata[3]}<br>' +
+                            'Start: %{customdata[5]}<br>' +
+                            'End: %{customdata[6]}<br>' +
+                            'Novelty Attempt: %{customdata[7]}<br>' +
+                            'Resample Attempt: %{customdata[8]}<br>' +
+                            'Patch Attempt: %{customdata[9]}<extra></extra>',
+                    };
+                });
+
+                const minStartMs = Math.min(...rows.map(row => row.pipelineStartedAt * 1000));
+                const maxEndMs = Math.max(...rows.map(row => row.postprocessFinishedAt * 1000));
+                const layout = {
+                    barmode: 'overlay',
+                    height: runtimePlotHeight,
+                    margin: { l: 150, r: 10, t: 20, b: 140 },
+                    xaxis: {
+                        title: {
+                            text: 'Wall Clock Time',
+                            standoff: 20
+                        },
+                        type: 'date',
+                        range: [minStartMs, maxEndMs],
+                        tickformat: '%Y-%m-%d<br>%H:%M:%S',
+                        tickangle: 0,
+                        automargin: true,
+                        tickfont: {
+                            size: 11
+                        }
+                    },
+                    yaxis: {
+                        automargin: true,
+                        autorange: 'reversed',
+                        title: 'Resource Pool',
+                        categoryorder: 'array',
+                        categoryarray: laneLabels,
+                        ticklabelposition: 'outside'
+                    },
+                    hovermode: 'closest',
+                    legend: {
+                        orientation: 'h',
+                        x: 0.01,
+                        y: 1.08
+                    }
+                };
+
+                Plotly.newPlot('runtime-timeline-plot', traces, layout, {
+                    responsive: true,
+                    displayModeBar: false
+                });
+                return;
+            }
+
+            const { rows, laneCount } = getLegacyRuntimeTimelineRows(data);
+            if (!rows.length) {
+                if (summary) summary.textContent = '';
+                container.innerHTML = '<p style="text-align: center; color: #999;">No runtime timeline data available.</p>';
+                return;
+            }
+            if (summary) {
+                summary.textContent = 'Legacy mode: inferred worker lanes from timestamps only.';
+            }
+
+            const runtimePlotHeight = 420;
+            const legacyBarWidth = Math.max(0.12, Math.min(0.75, 3.6 / Math.max(laneCount, 1)));
+            const stageConfigs = [
+                {
+                    key: 'sampling',
+                    label: 'Sampling',
+                    color: '#3b82f6',
+                    startKey: 'samplingStartedAt',
+                    endKey: 'samplingFinishedAt',
+                    durationKey: 'samplingSeconds'
+                },
+                {
+                    key: 'evaluation',
+                    label: 'Evaluation',
+                    color: '#f59e0b',
+                    startKey: 'evaluationStartedAt',
+                    endKey: 'evaluationFinishedAt',
+                    durationKey: 'evaluationSeconds'
+                },
+                {
+                    key: 'postprocess',
+                    label: 'Postprocess',
+                    color: '#10b981',
+                    startKey: 'postprocessStartedAt',
+                    endKey: 'postprocessFinishedAt',
+                    durationKey: 'postprocessSeconds'
+                }
+            ];
+
+            const minStartMs = Math.min(...rows.map(row => row.pipelineStartedAt * 1000));
+            const maxEndMs = Math.max(...rows.map(row => row.postprocessFinishedAt * 1000));
+            const minVisibleBarMs = getMinVisibleRuntimeBarMs(maxEndMs - minStartMs);
+            const yLabels = rows.map(row => row.workerLabel);
+            const traces = stageConfigs.map(stage => ({
+                type: 'bar',
+                orientation: 'h',
+                name: stage.label,
+                y: yLabels,
+                x: rows.map(row => getDisplayRuntimeBarMs(row[stage.durationKey], minVisibleBarMs)),
+                base: rows.map(row => row[stage.startKey] * 1000),
+                width: rows.map(() => legacyBarWidth),
+                marker: {
+                    color: rows.map(row => row.id === selectedNodeId ? stage.color : stage.color),
+                    line: {
+                        color: rows.map(row => row.id === selectedNodeId ? '#111827' : '#ffffff'),
+                        width: rows.map(row => row.id === selectedNodeId ? 1.5 : 0.5)
+                    }
+                },
+                opacity: 0.92,
+                customdata: rows.map(row => ([
+                    row.workerLabel,
+                    row.generation,
+                    row.patchName,
+                    row.modelName,
+                    formatRuntimeSeconds(row[stage.durationKey]),
+                    formatRuntimeTimestamp(row[stage.startKey]),
+                    formatRuntimeTimestamp(row[stage.endKey]),
+                    row.noveltyAttempt ?? 'N/A',
+                    row.resampleAttempt ?? 'N/A',
+                    row.patchAttempt ?? 'N/A',
+                ])),
+                hovertemplate:
+                    '<b>%{customdata[0]}</b><br>' +
+                    'Gen %{customdata[1]}<br>' +
+                    '%{fullData.name}: %{customdata[4]}<br>' +
+                    'Patch: %{customdata[2]}<br>' +
+                    'Model: %{customdata[3]}<br>' +
+                    'Start: %{customdata[5]}<br>' +
+                    'End: %{customdata[6]}<br>' +
+                    'Novelty Attempt: %{customdata[7]}<br>' +
+                    'Resample Attempt: %{customdata[8]}<br>' +
+                    'Patch Attempt: %{customdata[9]}<extra></extra>',
+            }));
+
+            const layout = {
+                barmode: 'overlay',
+                height: runtimePlotHeight,
+                margin: { l: 150, r: 10, t: 20, b: 140 },
+                xaxis: {
+                    title: {
+                        text: 'Wall Clock Time',
+                        standoff: 20
+                    },
+                    type: 'date',
+                    range: [minStartMs, maxEndMs],
+                    tickformat: '%Y-%m-%d<br>%H:%M:%S',
+                    tickangle: 0,
+                    automargin: true,
+                    tickfont: {
+                        size: 11
+                    }
+                },
+                yaxis: {
+                    automargin: true,
+                    autorange: 'reversed',
+                    title: 'Worker Lane',
+                    ticklabelposition: 'outside'
+                },
+                hovermode: 'closest',
+                legend: {
+                    orientation: 'h',
+                    x: 0.01,
+                    y: 1.08
+                }
+            };
+
+            Plotly.newPlot('runtime-timeline-plot', traces, layout, {
+                responsive: true,
+                displayModeBar: false
+            });
+        }
         
         function renderSearchDynamicsPlot(stats, selectedNodeId) {
             if (!stats || !stats.clusterStats || stats.clusterStats.length === 0) {
@@ -15405,6 +15848,7 @@ console.error("[DEBUG] Error in processData:", error);
                 try { renderMutationImprovementPlot(mutationStats, selectedNodeId); } catch (e) { console.error('Error rendering mutation improvement plot:', e); }
                 try { renderModelPatchCostHeatmap(costStats, selectedNodeId); } catch (e) { console.error('Error rendering model/patch cost heatmap:', e); }
                 try { renderGenerationAvgCostPlot(costStats, selectedNodeId); } catch (e) { console.error('Error rendering generation avg cost plot:', e); }
+                try { renderRuntimeTimelinePlot(window.treeData, selectedNodeId); } catch (e) { console.error('Error rendering runtime timeline plot:', e); }
                 try { renderLineageFertilityPlot(lineageStats, selectedNodeId); } catch (e) { console.error('Error rendering lineage fertility plot:', e); }
             } catch (error) {
                 console.error('Error updating analysis tab:', error);
