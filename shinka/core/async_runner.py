@@ -49,10 +49,12 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
+from shinka.core.pipeline_timing import with_pipeline_timing
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
     AsyncSystemPromptEvolver,
 )
+from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import print_gradient_logo, shinka_ascii
 from shinka.utils import get_language_extension
 from shinka.utils.languages import get_evolve_comment_prefix
@@ -118,7 +120,13 @@ class AsyncRunningJob:
     exec_fname: str
     results_dir: str
     start_time: float
+    proposal_started_at: float
+    evaluation_submitted_at: float
     generation: int
+    sampling_worker_id: Optional[int] = None
+    evaluation_worker_id: Optional[int] = None
+    active_proposals_at_start: int = 0
+    running_eval_jobs_at_submit: int = 0
     parent_id: Optional[str] = None
     archive_insp_ids: List[str] = field(default_factory=list)
     top_k_insp_ids: List[str] = field(default_factory=list)
@@ -129,6 +137,7 @@ class AsyncRunningJob:
     novelty_cost: float = 0.0  # Track novelty checking cost
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
     db_retry_count: int = 0  # Track number of DB write retry attempts
+    results_retrieved_at: Optional[float] = None
 
 
 class ShinkaEvolveRunner:
@@ -419,6 +428,15 @@ class ShinkaEvolveRunner:
         # Robust job tracking - ensure no jobs are lost
         self.submitted_jobs: Dict[str, AsyncRunningJob] = {}  # All jobs ever submitted
         self.processing_lock = asyncio.Lock()  # Prevent concurrent processing issues
+        self.sampling_slot_pool = LogicalSlotPool(
+            self.max_proposal_jobs, "sampling"
+        )
+        self.evaluation_slot_pool = LogicalSlotPool(
+            self.max_evaluation_jobs, "evaluation"
+        )
+        self.postprocess_slot_pool = LogicalSlotPool(
+            self.max_db_workers, "postprocess"
+        )
 
         # Database retry mechanism
         self.failed_jobs_for_retry: Dict[
@@ -1135,6 +1153,7 @@ class ShinkaEvolveRunner:
         llm_metadata: Optional[Dict[str, Any]] = None,
     ):
         """Setup initial program in database with metadata."""
+        pipeline_started_at = time.time()
         # Create generation 0 directory structure first
         gen_dir = f"{self.results_dir}/{FOLDER_PREFIX}_0"
         results_dir = f"{gen_dir}/results"
@@ -1154,9 +1173,12 @@ class ShinkaEvolveRunner:
 
             # Run the evaluation synchronously for generation 0
             loop = asyncio.get_event_loop()
+            evaluation_started_at = time.time()
             results, rtime = await loop.run_in_executor(
                 None, self.scheduler.run, exec_fname, results_dir
             )
+            evaluation_finished_at = time.time()
+            postprocess_started_at = evaluation_finished_at
 
             if self.verbose:
                 logger.info(f"Initial program evaluation completed in {rtime:.2f}s")
@@ -1178,11 +1200,14 @@ class ShinkaEvolveRunner:
 
             # Build base metadata
             base_metadata = {
-                "compute_time": rtime,
                 "embed_cost": e_cost,
                 "novelty_cost": 0.0,  # No novelty cost for generation 0
                 "stdout_log": stdout_log,
                 "stderr_log": stderr_log,
+                "timeline_lane_mode": "pool_slots",
+                "sampling_worker_capacity": self.max_proposal_jobs,
+                "evaluation_worker_capacity": self.max_evaluation_jobs,
+                "postprocess_worker_capacity": self.max_db_workers,
             }
 
             # For file-based initial programs, add default metadata
@@ -1199,6 +1224,17 @@ class ShinkaEvolveRunner:
             else:
                 # LLM-generated: llm_metadata already contains structured data
                 base_metadata.update(llm_metadata)
+
+            base_metadata = with_pipeline_timing(
+                base_metadata,
+                pipeline_started_at=pipeline_started_at,
+                sampling_started_at=pipeline_started_at,
+                sampling_finished_at=pipeline_started_at,
+                evaluation_started_at=evaluation_started_at,
+                evaluation_finished_at=evaluation_finished_at,
+                postprocess_started_at=postprocess_started_at,
+                postprocess_finished_at=postprocess_started_at,
+            )
 
             # Create program with actual evaluation results
             initial_program = Program(
@@ -1223,8 +1259,15 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.warning(f"Initial program evaluation failed: {e}")
+            evaluation_finished_at = time.time()
+            postprocess_started_at = evaluation_finished_at
 
             # Still try to compute embedding even if evaluation failed
+            try:
+                evaluation_started_at
+            except UnboundLocalError:
+                evaluation_started_at = pipeline_started_at
+
             try:
                 code_embedding, e_cost = await self._get_code_embedding_async(
                     exec_fname
@@ -1234,12 +1277,15 @@ class ShinkaEvolveRunner:
 
             # Build base metadata for fallback
             base_metadata = {
-                "compute_time": 0.0,
                 "embed_cost": e_cost,
                 "novelty_cost": 0.0,  # No novelty cost for generation 0 fallback
                 "evaluation_failed": True,
                 "stdout_log": "",
                 "stderr_log": "",
+                "timeline_lane_mode": "pool_slots",
+                "sampling_worker_capacity": self.max_proposal_jobs,
+                "evaluation_worker_capacity": self.max_evaluation_jobs,
+                "postprocess_worker_capacity": self.max_db_workers,
             }
 
             # For file-based initial programs, add default metadata
@@ -1256,6 +1302,17 @@ class ShinkaEvolveRunner:
             else:
                 # LLM-generated: llm_metadata already contains structured data
                 base_metadata.update(llm_metadata)
+
+            base_metadata = with_pipeline_timing(
+                base_metadata,
+                pipeline_started_at=pipeline_started_at,
+                sampling_started_at=pipeline_started_at,
+                sampling_finished_at=pipeline_started_at,
+                evaluation_started_at=evaluation_started_at,
+                evaluation_finished_at=evaluation_finished_at,
+                postprocess_started_at=postprocess_started_at,
+                postprocess_finished_at=postprocess_started_at,
+            )
 
             # Fall back to assuming it's correct
             initial_program = Program(
@@ -1315,25 +1372,6 @@ class ShinkaEvolveRunner:
                         if initial_program.metadata is None:
                             initial_program.metadata = {}
                         initial_program.metadata["meta_cost"] = meta_cost
-                        # Update the program in the database with the new metadata (thread-safe)
-
-                        def update_metadata():
-                            # Create a new database connection in this thread to avoid conflicts
-                            from shinka.database import ProgramDatabase
-
-                            thread_db = ProgramDatabase(self.db.config)
-                            try:
-                                metadata_json = json.dumps(initial_program.metadata)
-                                thread_db.cursor.execute(
-                                    "UPDATE programs SET metadata = ? WHERE id = ?",
-                                    (metadata_json, initial_program.id),
-                                )
-                                thread_db.conn.commit()
-                            finally:
-                                thread_db.close()
-
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, update_metadata)
 
         # Set baseline score for LLM selection
         if self.llm_selection is not None:
@@ -1346,6 +1384,19 @@ class ShinkaEvolveRunner:
 
         # Record progress after initial setup
         self._record_progress()
+
+        postprocess_finished_at = time.time()
+        initial_program.metadata = with_pipeline_timing(
+            initial_program.metadata,
+            pipeline_started_at=pipeline_started_at,
+            sampling_started_at=pipeline_started_at,
+            sampling_finished_at=pipeline_started_at,
+            evaluation_started_at=evaluation_started_at,
+            evaluation_finished_at=evaluation_finished_at,
+            postprocess_started_at=postprocess_started_at,
+            postprocess_finished_at=postprocess_finished_at,
+        )
+        await self._persist_program_metadata_async(initial_program)
 
         if self.verbose:
             logger.info(f"Setup initial program: {initial_program.id}")
@@ -2040,6 +2091,9 @@ class ShinkaEvolveRunner:
         """Generate a single proposal asynchronously."""
         # Count all proposal attempts (including failures)
         self.total_proposals_generated += 1
+        proposal_started_at = time.time()
+        sampling_worker_id = await self.sampling_slot_pool.acquire()
+        active_proposals_at_start = self.sampling_slot_pool.in_use
         try:
             if self.verbose:
                 logger.info(f"Generating proposal for generation {generation}")
@@ -2110,6 +2164,9 @@ class ShinkaEvolveRunner:
                 meta_recs,
                 meta_summary,
                 meta_scratch,
+                proposal_started_at,
+                sampling_worker_id,
+                active_proposals_at_start,
             )
 
         except Exception as e:
@@ -2136,6 +2193,7 @@ class ShinkaEvolveRunner:
             # Remove from active tasks
             if task_id in self.active_proposal_tasks:
                 del self.active_proposal_tasks[task_id]
+            await self.sampling_slot_pool.release(sampling_worker_id)
 
     async def _generate_evolved_proposal(
         self,
@@ -2146,6 +2204,9 @@ class ShinkaEvolveRunner:
         meta_recs: Optional[str],
         meta_summary: Optional[str],
         meta_scratch: Optional[str],
+        proposal_started_at: float,
+        sampling_worker_id: int,
+        active_proposals_at_start: int,
     ) -> Optional[AsyncRunningJob]:
         """Generate an evolved proposal through the full pipeline."""
         api_costs = 0.0
@@ -2328,19 +2389,30 @@ class ShinkaEvolveRunner:
                 )
                 meta_patch_data["novelty_explanation"] = novelty_explanation
 
+            evaluation_worker_id = None
             try:
                 # Submit job
                 job_id = await self.scheduler.submit_async_nonblocking(
                     exec_fname, results_dir
                 )
+                evaluation_submitted_at = time.time()
+                evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+                running_eval_jobs_at_submit = self.evaluation_slot_pool.in_use
+                await self.sampling_slot_pool.release(sampling_worker_id)
 
                 # Create running job
                 running_job = AsyncRunningJob(
                     job_id=job_id,
                     exec_fname=exec_fname,
                     results_dir=results_dir,
-                    start_time=time.time(),
+                    start_time=proposal_started_at,
+                    proposal_started_at=proposal_started_at,
+                    evaluation_submitted_at=evaluation_submitted_at,
                     generation=generation,
+                    sampling_worker_id=sampling_worker_id,
+                    evaluation_worker_id=evaluation_worker_id,
+                    active_proposals_at_start=active_proposals_at_start,
+                    running_eval_jobs_at_submit=running_eval_jobs_at_submit,
                     parent_id=parent_program.id,
                     archive_insp_ids=[p.id for p in archive_programs],
                     top_k_insp_ids=[p.id for p in top_k_programs],
@@ -2411,6 +2483,7 @@ class ShinkaEvolveRunner:
                 return running_job
 
             except Exception as e:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
                 logger.error(f"Error submitting job: {e}")
                 return None
 
@@ -2942,6 +3015,28 @@ class ShinkaEvolveRunner:
 
         return await get_code_embedding_async(exec_fname, self.embedding_client)
 
+    async def _persist_program_metadata_async(self, program: Program) -> None:
+        """Persist updated program metadata using a thread-local DB handle."""
+        if not program.metadata:
+            return
+
+        def update_metadata():
+            from shinka.database import ProgramDatabase
+
+            thread_db = ProgramDatabase(self.db.config)
+            try:
+                metadata_json = json.dumps(program.metadata)
+                thread_db.cursor.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (metadata_json, program.id),
+                )
+                thread_db.conn.commit()
+            finally:
+                thread_db.close()
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, update_metadata)
+
     async def _process_completed_jobs_safely(
         self, completed_jobs: List[AsyncRunningJob]
     ):
@@ -2987,10 +3082,19 @@ class ShinkaEvolveRunner:
 
     async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
         """Process a single job with comprehensive error handling. Returns True on success."""
+        postprocess_worker_id = None
+        source_job_id = str(job.job_id)
         try:
             logger.info(
                 f"🔄 SAFE PROCESSING: Starting job {job.job_id} (gen {job.generation})"
             )
+
+            if await self.async_db.has_program_with_source_job_id_async(source_job_id):
+                logger.info(
+                    f"⏭️  SKIP DUPLICATE: Job {job.job_id} (gen {job.generation}) "
+                    "already persisted to database"
+                )
+                return True
 
             # Get job results with timeout to prevent hanging
             try:
@@ -2998,12 +3102,18 @@ class ShinkaEvolveRunner:
                     self.scheduler.get_job_results_async(job.job_id, job.results_dir),
                     timeout=30.0,  # 30 second timeout
                 )
+                evaluation_finished_at = time.time()
+                job.results_retrieved_at = evaluation_finished_at
                 logger.info(
                     f"📂 RESULTS: Got results for {job.job_id}: {results is not None}"
                 )
             except asyncio.TimeoutError:
                 logger.error(f"❌ TIMEOUT: Getting results for {job.job_id} timed out")
                 return False
+            await self.evaluation_slot_pool.release(job.evaluation_worker_id)
+            postprocess_worker_id = await self.postprocess_slot_pool.acquire()
+            db_workers_in_use_at_postprocess_start = self.postprocess_slot_pool.in_use
+            postprocess_started_at = evaluation_finished_at
 
             # Always create a program entry, even if results are missing
             if results:
@@ -3056,8 +3166,8 @@ class ShinkaEvolveRunner:
                 code_diff=job.code_diff,
                 embedding=job.code_embedding or [],
                 system_prompt_id=system_prompt_id,  # Track evolved prompt
-                metadata={
-                    "compute_time": time.time() - job.start_time,
+                metadata=with_pipeline_timing(
+                    {
                     **(job.meta_patch_data or {}),
                     "embed_cost": job.embed_cost,
                     "novelty_cost": job.novelty_cost,
@@ -3065,7 +3175,27 @@ class ShinkaEvolveRunner:
                     "stderr_log": stderr_log,
                     "results_missing": results is None,
                     "safe_processing": True,
-                },
+                    "source_job_id": source_job_id,
+                    "source_generation": job.generation,
+                    "timeline_lane_mode": "pool_slots",
+                    "sampling_worker_id": job.sampling_worker_id,
+                    "evaluation_worker_id": job.evaluation_worker_id,
+                    "postprocess_worker_id": postprocess_worker_id,
+                    "active_proposals_at_start": job.active_proposals_at_start,
+                    "running_eval_jobs_at_submit": job.running_eval_jobs_at_submit,
+                    "db_workers_in_use_at_postprocess_start": db_workers_in_use_at_postprocess_start,
+                    "sampling_worker_capacity": self.max_proposal_jobs,
+                    "evaluation_worker_capacity": self.max_evaluation_jobs,
+                    "postprocess_worker_capacity": self.max_db_workers,
+                    },
+                    pipeline_started_at=job.proposal_started_at,
+                    sampling_started_at=job.proposal_started_at,
+                    sampling_finished_at=job.evaluation_submitted_at,
+                    evaluation_started_at=job.evaluation_submitted_at,
+                    evaluation_finished_at=evaluation_finished_at,
+                    postprocess_started_at=postprocess_started_at,
+                    postprocess_finished_at=postprocess_started_at,
+                ),
             )
 
             # Add to database with timeout protection
@@ -3197,29 +3327,6 @@ class ShinkaEvolveRunner:
                                 if program.metadata is None:
                                     program.metadata = {}
                                 program.metadata["meta_cost"] = meta_cost
-
-                                # Update the program in the database
-                                def update_metadata():
-                                    from shinka.database import (
-                                        ProgramDatabase,
-                                    )
-
-                                    thread_db = ProgramDatabase(self.db.config)
-                                    try:
-                                        metadata_json = json.dumps(program.metadata)
-                                        thread_db.cursor.execute(
-                                            (
-                                                "UPDATE programs SET "
-                                                "metadata = ? WHERE id = ?"
-                                            ),
-                                            (metadata_json, program.id),
-                                        )
-                                        thread_db.conn.commit()
-                                    finally:
-                                        thread_db.close()
-
-                                loop = asyncio.get_event_loop()
-                                await loop.run_in_executor(None, update_metadata)
                 except Exception as e:
                     logger.warning(f"Meta summarizer error for {job.job_id}: {e}")
                     # Don't fail the whole job for meta summarizer issues
@@ -3251,6 +3358,24 @@ class ShinkaEvolveRunner:
                 logger.warning(f"Best solution update error for {job.job_id}: {e}")
                 # Don't fail the whole job for best solution update issues
 
+            postprocess_finished_at = time.time()
+            program.metadata = with_pipeline_timing(
+                program.metadata,
+                pipeline_started_at=job.proposal_started_at,
+                sampling_started_at=job.proposal_started_at,
+                sampling_finished_at=job.evaluation_submitted_at,
+                evaluation_started_at=job.evaluation_submitted_at,
+                evaluation_finished_at=evaluation_finished_at,
+                postprocess_started_at=postprocess_started_at,
+                postprocess_finished_at=postprocess_finished_at,
+            )
+            try:
+                await self._persist_program_metadata_async(program)
+            except Exception as e:
+                logger.warning(
+                    f"Metadata persistence error for {job.job_id}: {e}"
+                )
+
             logger.info(
                 f"✅ JOB COMPLETE: Finished processing {job.job_id} - program {program.id} added (gen {job.generation})"
             )
@@ -3264,6 +3389,9 @@ class ShinkaEvolveRunner:
                 f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
             )
             return False
+        finally:
+            await self.evaluation_slot_pool.release(job.evaluation_worker_id)
+            await self.postprocess_slot_pool.release(postprocess_worker_id)
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
         """Legacy method - now redirects to safe processing."""

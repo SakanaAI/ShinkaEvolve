@@ -636,7 +636,7 @@ class AsyncProgramDatabase:
                         return result
                     finally:
                         thread_db.close()
-                except Exception as e:
+                except Exception:
                     self._debug_track_end(thread_op_id, success=False)
                     raise
 
@@ -669,7 +669,7 @@ class AsyncProgramDatabase:
                         return result
                     finally:
                         thread_db.close()
-                except Exception as e:
+                except Exception:
                     self._debug_track_end(thread_op_id, success=False)
                     raise
 
@@ -680,6 +680,35 @@ class AsyncProgramDatabase:
         except Exception as e:
             self._debug_track_end(op_id, success=False)
             logger.error(f"Error in async get_best_program: {e}")
+            raise
+
+    async def has_program_with_source_job_id_async(self, source_job_id: str) -> bool:
+        """Check whether a completed job has already been persisted."""
+        op_id = self._debug_track_start(
+            "has_program_with_source_job_id_async", source_job_id=source_job_id
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def exists_thread_safe():
+                thread_db = None
+                try:
+                    from .dbase import ProgramDatabase
+
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    return thread_db.has_program_with_source_job_id(source_job_id)
+                finally:
+                    if thread_db:
+                        thread_db.close()
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(self.executor, exists_thread_safe)
+            self._debug_track_end(op_id, success=True)
+            return result
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async source_job_id existence check: {e}")
             raise
 
     async def batch_sample_async(
