@@ -51,3 +51,35 @@ def test_async_db_add_without_openai_key_when_embeddings_disabled(monkeypatch):
                 sync_db.close()
 
     asyncio.run(_run())
+
+
+def test_async_db_add_skips_duplicate_source_job_id(monkeypatch):
+    """Async DB writes should be idempotent for the same completed scheduler job."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "duplicate_source_job.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                first = _program("async-p0")
+                first.metadata = {"source_job_id": "job-123"}
+                second = _program("async-p1")
+                second.metadata = {"source_job_id": "job-123"}
+
+                await async_db.add_program_async(first)
+                await async_db.add_program_async(second)
+
+                assert sync_db.get("async-p0") is not None
+                assert sync_db.get("async-p1") is None
+                assert sync_db._count_programs_in_db() == 1
+                assert sync_db.has_program_with_source_job_id("job-123") is True
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())

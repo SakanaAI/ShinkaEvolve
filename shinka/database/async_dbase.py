@@ -366,6 +366,7 @@ class AsyncProgramDatabase:
         try:
             # Prepare program data outside the lock to reduce lock time
             await asyncio.sleep(0)  # Yield control to event loop
+            should_recompute = False
 
             # Asynchronously calculate complexity if not provided
             if program.complexity == 0.0:
@@ -405,17 +406,20 @@ class AsyncProgramDatabase:
                 setattr(program, "code_embedding", code_embedding)
             setattr(program, "embed_cost", embed_cost)
 
-            # Use semaphore to prevent concurrent database operations that can deadlock
+            # Serialize writes so duplicate source_job_id checks and inserts
+            # happen in a single critical section.
             async with self._db_semaphore:
-                await self._add_program_fast_async(program)
-
-                # Track programs and schedule embedding recomputation (inside semaphore)
                 async with self._lock:
-                    self.programs_added_since_embedding_recompute += 1
-                    should_recompute = (
-                        self.programs_added_since_embedding_recompute
-                        >= self.embedding_recompute_interval
-                    )
+                    added = await self._add_program_fast_async(program)
+
+                    # Track programs and schedule embedding recomputation only
+                    # when a new row is actually inserted.
+                    if added:
+                        self.programs_added_since_embedding_recompute += 1
+                        should_recompute = (
+                            self.programs_added_since_embedding_recompute
+                            >= self.embedding_recompute_interval
+                        )
 
             # Schedule embedding recomputation outside lock
             if should_recompute:
@@ -532,7 +536,7 @@ class AsyncProgramDatabase:
             # Restore original methods
             self.sync_db._recompute_embeddings_and_clusters = original_embedding_method
 
-    async def _add_program_fast_async(self, program: Program):
+    async def _add_program_fast_async(self, program: Program) -> bool:
         """Async fast program addition that defers expensive operations."""
 
         def add_program_sync():
@@ -550,6 +554,20 @@ class AsyncProgramDatabase:
                         getattr(self.sync_db, "display_console", None)
                     )
 
+                source_job_id = None
+                if isinstance(program.metadata, dict):
+                    source_job_id = program.metadata.get("source_job_id")
+                if (
+                    isinstance(source_job_id, str)
+                    and source_job_id
+                    and thread_db.has_program_with_source_job_id(source_job_id)
+                ):
+                    logger.info(
+                        "Skipping duplicate persisted job for source_job_id=%s",
+                        source_job_id,
+                    )
+                    return False
+
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters
                 thread_db._recompute_embeddings_and_clusters = lambda: None
@@ -557,6 +575,7 @@ class AsyncProgramDatabase:
                 try:
                     # Use the full database add method which includes island assignment
                     thread_db.add(program, verbose=True)
+                    return True
                 finally:
                     # Restore original methods
                     thread_db._recompute_embeddings_and_clusters = (
@@ -577,7 +596,7 @@ class AsyncProgramDatabase:
 
         # Run the thread-safe database operation in an executor
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(self.executor, add_program_sync)
+        return await loop.run_in_executor(self.executor, add_program_sync)
 
     def _schedule_embedding_recomputation(self):
         """Schedule embedding recomputation as a background task."""
