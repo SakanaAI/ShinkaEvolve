@@ -14,3 +14,11 @@ def test_runtime_timeline_layout_reserves_space_for_legend():
     assert "xanchor: 'left'" in html
     assert "yanchor: 'bottom'" in html
     assert "y: 1.02" in html
+
+
+def test_embeddings_heatmap_uses_scroll_wrapper_for_full_size_matrix():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert '.attr("id", "main-heatmap-scroll")' in html
+    assert '.style("overflow", "auto")' in html
+    assert '.style("width", "max-content")' in html

@@ -8248,7 +8248,7 @@ console.error("[DEBUG] Error in processData:", error);
                 .append("div")
                 .style("display", "flex")
                 .style("flex-direction", "column")
-                .style("align-items", "center")
+                .style("align-items", "stretch")
                 .style("width", "100%")
                 .style("height", "100%")
                 .style("overflow-y", "auto")
@@ -8260,12 +8260,21 @@ console.error("[DEBUG] Error in processData:", error);
                 .style("margin", "0 0 10px 0")
                 .style("color", "#2c3e50")
                 .style("font-size", "18px")
+                .style("text-align", "center")
                 .text("All Programs - Embedding Similarity Matrix");
 
-            // Create main heatmap
-            const mainHeatmapContainer = mainContainer.append("div")
+            // Keep the matrix at its true pixel size and scroll when it
+            // outgrows the left panel.
+            const mainHeatmapScroll = mainContainer.append("div")
+                .attr("id", "main-heatmap-scroll")
+                .style("width", "100%")
+                .style("overflow", "auto")
+                .style("padding-bottom", "10px");
+
+            const mainHeatmapContainer = mainHeatmapScroll.append("div")
                 .attr("id", "main-heatmap")
-                .style("margin-bottom", "10px");
+                .style("width", "max-content")
+                .style("margin", "0 auto");
 
             createSingleEmbeddingHeatmap(dataWithEmbeddings, mainHeatmapContainer, "All Programs", bestEmbedNodeId);
 
@@ -8473,12 +8482,20 @@ console.error("[DEBUG] Error in processData:", error);
             // Calculate total SVG dimensions
             const totalWidth = heatmapWidth + margin.left + margin.right;
             const totalHeight = heatmapHeight + margin.top + margin.bottom;
+
+            if (!isSubplot) {
+                container
+                    .style("display", "inline-block")
+                    .style("width", "max-content")
+                    .style("min-width", totalWidth + "px");
+            }
             
             // Create SVG
             const svg = container
                 .append("svg")
                 .attr("width", totalWidth)
-                .attr("height", totalHeight);
+                .attr("height", totalHeight)
+                .style("display", "block");
             
             const g = svg.append("g")
                 .attr("transform", `translate(${margin.left},${margin.top})`);
