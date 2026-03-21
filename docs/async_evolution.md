@@ -89,6 +89,58 @@ Key settings on `EvolutionConfig`:
 - `proposal_target_hard_cap`
 - `proposal_target_ewma_alpha`
 
+### What Each Oversubscription Setting Does
+
+Oversubscription never increases evaluation concurrency.
+`max_evaluation_jobs` still caps concurrent evals.
+These settings only control how many proposal/sampling jobs Shinka is willing
+to keep in flight ahead of those eval workers.
+
+| Key | What it controls | When to raise it | When to lower it |
+|-----|------------------|------------------|------------------|
+| `enable_controlled_oversubscription` | Master on/off switch. If `false`, proposal target stays at `max_evaluation_jobs`. | Rarely needed; keep `true` if proposals are slower than evals. | Turn off if you want predictable sync-like behavior or easier debugging. |
+| `proposal_target_mode` | How Shinka chooses the proposal target. `adaptive` uses observed timings. `fixed` uses `max_evaluation_jobs + proposal_buffer_max`. | Use `adaptive` for most runs. Use `fixed` if workload timing is stable and you want deterministic behavior. | Switch away from `fixed` if it overfills the queue; switch away from `adaptive` if you need simpler tuning. |
+| `proposal_target_min_samples` | Warmup count before adaptive mode trusts observed timing ratios. Before this, Shinka only adds a small buffer. | Raise if early timings are noisy or unrepresentative. | Lower if you want the controller to react sooner. |
+| `proposal_target_ratio_cap` | Upper bound on the observed `sampling_seconds / evaluation_seconds` ratio used by adaptive mode. Prevents extreme spikes from asking for too many proposals. | Raise if proposal generation is consistently much slower than eval and backlog is still too small. | Lower if one slow sample causes too much queued proposal work. |
+| `proposal_buffer_max` | Max number of extra proposal jobs allowed above `max_evaluation_jobs`. Primary backlog-size knob. | Raise if eval workers go idle waiting for proposals. | Lower if memory/API pressure grows or proposal backlog gets too large. |
+| `proposal_target_hard_cap` | Absolute cap on adaptive/fixed proposal target before applying `max_proposal_jobs`. Useful when `max_proposal_jobs` is high but you want a lower oversub ceiling. | Raise if the controller is hitting the cap too early. | Lower if you want a strict safety stop regardless of timing estimates. |
+| `proposal_target_ewma_alpha` | Smoothing factor for timing EWMAs. Higher values react faster; lower values react more slowly but more stably. | Raise if workload phase changes quickly and the controller lags behind. | Lower if proposal target oscillates too much from noisy timings. |
+
+### How the Limits Combine
+
+Think of the final proposal target as:
+
+```text
+base target = max_evaluation_jobs
+adaptive/fixed target = mode-specific estimate
+final target = clamp(
+    adaptive/fixed target,
+    lower=max_evaluation_jobs,
+    upper=min(
+        max_evaluation_jobs + proposal_buffer_max,
+        proposal_target_hard_cap or max_proposal_jobs,
+        max_proposal_jobs,
+    ),
+)
+```
+
+Practical read:
+
+- `max_evaluation_jobs`: eval capacity.
+- `max_proposal_jobs`: hard ceiling for proposal workers.
+- `proposal_buffer_max`: how far above eval capacity you can go.
+- `proposal_target_hard_cap`: extra absolute stop, even if other limits are higher.
+- `proposal_target_ratio_cap`: only affects adaptive mode's estimate before clamping.
+
+### Tuning Heuristics
+
+- Eval workers idle often: raise `proposal_buffer_max` first, then maybe `max_proposal_jobs`.
+- Backlog too deep: lower `proposal_buffer_max` or `proposal_target_hard_cap`.
+- Controller too jumpy: lower `proposal_target_ewma_alpha`.
+- Controller too sluggish: raise `proposal_target_ewma_alpha`.
+- Startup phase too conservative: lower `proposal_target_min_samples`.
+- Startup phase too noisy: raise `proposal_target_min_samples`.
+
 Example:
 
 ```python
