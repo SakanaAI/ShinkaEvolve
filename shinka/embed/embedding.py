@@ -4,8 +4,12 @@ from typing import Union, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .client import get_client_embed, get_async_client_embed
-from .providers.pricing import get_provider, get_model_price
+from .client import (
+    get_async_client_embed,
+    get_client_embed,
+    resolve_embedding_backend,
+)
+from .providers.pricing import get_model_price, model_exists
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,17 @@ def _get_google_embeddings_and_cost(
         total_tokens += token_count
 
     return embeddings, total_tokens * price_per_token
+
+
+def _get_embedding_cost(response, model_name: str) -> float:
+    """Compute embedding cost, defaulting to zero for dynamic models without pricing."""
+    if not model_exists(model_name):
+        logger.warning(
+            "Embedding model '%s' has no pricing entry. Defaulting embedding cost to 0.",
+            model_name,
+        )
+        return 0.0
+    return response.usage.total_tokens * get_model_price(model_name)
 
 
 def count_tokens(
@@ -111,7 +126,7 @@ class EmbeddingClient:
         """
         self.model_name = model_name
         self.client, self.model = get_client_embed(model_name)
-        self.provider = get_provider(model_name)
+        self.provider = resolve_embedding_backend(model_name).provider
         self.verbose = verbose
 
     def count_tokens(self, text: Union[str, List[str]]) -> Union[int, List[int]]:
@@ -169,7 +184,7 @@ class EmbeddingClient:
             response = self.client.embeddings.create(
                 model=self.model, input=code, encoding_format="float"
             )
-            cost = response.usage.total_tokens * get_model_price(self.model_name)
+            cost = _get_embedding_cost(response, self.model_name)
             # Extract embedding from response
             if single_code:
                 return response.data[0].embedding, cost
@@ -378,7 +393,7 @@ class AsyncEmbeddingClient:
         """
         self.model_name = model_name
         self.async_client, self.model = get_async_client_embed(model_name)
-        self.provider = get_provider(model_name)
+        self.provider = resolve_embedding_backend(model_name).provider
         self.verbose = verbose
 
     async def embed_async(
@@ -429,7 +444,7 @@ class AsyncEmbeddingClient:
             response = await self.async_client.embeddings.create(
                 model=self.model, input=code, encoding_format="float"
             )
-            cost = response.usage.total_tokens * get_model_price(self.model_name)
+            cost = _get_embedding_cost(response, self.model_name)
             if single_code:
                 return response.data[0].embedding, cost
             else:
