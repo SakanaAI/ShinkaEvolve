@@ -124,6 +124,7 @@ class AsyncRunningJob:
     proposal_started_at: float
     evaluation_submitted_at: float
     generation: int
+    evaluation_started_at: Optional[float] = None
     sampling_worker_id: Optional[int] = None
     evaluation_worker_id: Optional[int] = None
     active_proposals_at_start: int = 0
@@ -2495,6 +2496,7 @@ class ShinkaEvolveRunner:
                 )
                 evaluation_submitted_at = time.time()
                 evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+                evaluation_started_at = time.time()
                 running_eval_jobs_at_submit = self.evaluation_slot_pool.in_use
                 await self.sampling_slot_pool.release(sampling_worker_id)
 
@@ -2507,6 +2509,7 @@ class ShinkaEvolveRunner:
                     proposal_started_at=proposal_started_at,
                     evaluation_submitted_at=evaluation_submitted_at,
                     generation=generation,
+                    evaluation_started_at=evaluation_started_at,
                     sampling_worker_id=sampling_worker_id,
                     evaluation_worker_id=evaluation_worker_id,
                     active_proposals_at_start=active_proposals_at_start,
@@ -3248,6 +3251,9 @@ class ShinkaEvolveRunner:
                 system_prompt_id = job.meta_patch_data.get("system_prompt_id")
 
             # Create program from results (or defaults if results missing)
+            evaluation_started_at = (
+                job.evaluation_started_at or job.evaluation_submitted_at
+            )
             program = Program(
                 id=str(uuid.uuid4()),
                 code=await self._read_file_async(job.exec_fname) or "",
@@ -3288,8 +3294,8 @@ class ShinkaEvolveRunner:
                     },
                     pipeline_started_at=job.proposal_started_at,
                     sampling_started_at=job.proposal_started_at,
-                    sampling_finished_at=job.evaluation_submitted_at,
-                    evaluation_started_at=job.evaluation_submitted_at,
+                    sampling_finished_at=evaluation_started_at,
+                    evaluation_started_at=evaluation_started_at,
                     evaluation_finished_at=evaluation_finished_at,
                     postprocess_started_at=postprocess_started_at,
                     postprocess_finished_at=postprocess_started_at,
@@ -3461,8 +3467,8 @@ class ShinkaEvolveRunner:
                 program.metadata,
                 pipeline_started_at=job.proposal_started_at,
                 sampling_started_at=job.proposal_started_at,
-                sampling_finished_at=job.evaluation_submitted_at,
-                evaluation_started_at=job.evaluation_submitted_at,
+                sampling_finished_at=evaluation_started_at,
+                evaluation_started_at=evaluation_started_at,
                 evaluation_finished_at=evaluation_finished_at,
                 postprocess_started_at=postprocess_started_at,
                 postprocess_finished_at=postprocess_finished_at,

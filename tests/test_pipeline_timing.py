@@ -137,6 +137,7 @@ def test_process_single_job_safely_persists_timing_metadata():
             start_time=now - 6.0,
             proposal_started_at=now - 6.0,
             evaluation_submitted_at=now - 2.0,
+            evaluation_started_at=now - 1.0,
             generation=3,
             sampling_worker_id=2,
             evaluation_worker_id=1,
@@ -154,9 +155,10 @@ def test_process_single_job_safely_persists_timing_metadata():
         assert len(runner.async_db.programs) == 1
         program = runner.async_db.programs[0]
         assert program.metadata["patch_name"] == "timed_patch"
-        assert program.metadata["sampling_seconds"] >= 3.5
-        assert program.metadata["sampling_seconds"] <= 4.5
-        assert program.metadata["evaluation_seconds"] >= 1.5
+        assert program.metadata["sampling_seconds"] >= 4.5
+        assert program.metadata["sampling_seconds"] <= 5.5
+        assert program.metadata["evaluation_seconds"] >= 0.5
+        assert program.metadata["evaluation_seconds"] <= 1.5
         assert program.metadata["postprocess_seconds"] >= 0.0
         assert program.metadata["pipeline_seconds"] >= program.metadata["evaluation_seconds"]
         assert program.metadata["compute_time"] == program.metadata["evaluation_seconds"]
@@ -168,7 +170,9 @@ def test_process_single_job_safely_persists_timing_metadata():
         assert program.metadata["evaluation_worker_capacity"] == 2
         assert program.metadata["postprocess_worker_capacity"] == 2
         assert persisted_metadata["pipeline_started_at"] == job.proposal_started_at
-        assert persisted_metadata["evaluation_started_at"] == job.evaluation_submitted_at
+        assert persisted_metadata["sampling_finished_at"] == job.evaluation_started_at
+        assert persisted_metadata["evaluation_started_at"] == job.evaluation_started_at
+        assert persisted_metadata["evaluation_started_at"] > job.evaluation_submitted_at
         assert persisted_metadata["postprocess_finished_at"] >= persisted_metadata["postprocess_started_at"]
 
     asyncio.run(_run())
@@ -207,6 +211,7 @@ def test_process_single_job_safely_skips_duplicate_source_job():
             start_time=time.time() - 4.0,
             proposal_started_at=time.time() - 4.0,
             evaluation_submitted_at=time.time() - 1.5,
+            evaluation_started_at=time.time() - 1.0,
             generation=4,
             sampling_worker_id=1,
             evaluation_worker_id=1,
