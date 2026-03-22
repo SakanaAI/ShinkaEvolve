@@ -5,10 +5,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" />
+  <a href="https://pypi.org/project/shinka-evolve/"><img src="https://img.shields.io/pypi/v/shinka-evolve.svg" /></a>
   <a href="https://github.com/SakanaAI/ShinkaEvolve/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache2.0-blue.svg" /></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
   <a href="https://arxiv.org/abs/2509.19349"><img src="http://img.shields.io/badge/paper-arxiv.2509.19349-B31B1B.svg" /></a>
-  <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/Blog%20%7C%20SakanaAI-0A66C2.svg" /></a>
+  <a href="https://sakana.ai/shinka-evolve/"><img src="https://img.shields.io/badge/Blog%20%7C%20Sakana-0A66C2.svg" /></a>
   <a href="https://colab.research.google.com/github/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" /></a>
 </p>
 
@@ -25,7 +26,7 @@
 npx skills add SakanaAI/ShinkaEvolve --skill '*' -a claude-code -a codex -y
 ```
 
-**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](https://github.com/SakanaAI/ShinkaEvolve/blob/main/CHANGELOG.md) with many new features.
+**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we [released an update](https://github.com/SakanaAI/ShinkaEvolve/blob/main/CHANGELOG.md) with new features.
 
 **Nov 2025 Update**: Rob gave several public talks about our ShinkaEvolve effort ([Official](https://x.com/SakanaAILabs/status/1989352976792846356?s=20), [AutoML Seminar](https://www.youtube.com/watch?v=dAOIer_1INo)).
 
