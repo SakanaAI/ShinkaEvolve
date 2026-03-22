@@ -22,3 +22,12 @@ def test_embeddings_heatmap_uses_scroll_wrapper_for_full_size_matrix():
     assert '.attr("id", "main-heatmap-scroll")' in html
     assert '.style("overflow", "auto")' in html
     assert '.style("width", "max-content")' in html
+
+
+def test_runtime_timeline_dedupes_source_jobs_and_deprioritizes_island_copies():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "function getRuntimeTimelineRowPriority(row)" in html
+    assert "isIslandCopy: Boolean(meta._spawned_island || meta._is_island_copy)" in html
+    assert "const dedupeKey = row.sourceJobId || row.id;" in html
+    assert "if (rowPriority > existingPriority)" in html

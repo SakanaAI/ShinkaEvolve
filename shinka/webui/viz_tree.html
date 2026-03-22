@@ -15347,10 +15347,18 @@ console.error("[DEBUG] Error in processData:", error);
             return Number.isFinite(parsed) ? parsed : null;
         }
 
+        function getRuntimeTimelineRowPriority(row) {
+            let priority = 0;
+            if (!row.isIslandCopy) priority += 10;
+            if (row.correct) priority += 2;
+            if (Number.isFinite(row.combinedScore)) priority += 1;
+            return priority;
+        }
+
         function getBaseRuntimeTimelineRows(data) {
             if (!Array.isArray(data) || data.length === 0) return [];
 
-            return data.map(program => {
+            const rows = data.map(program => {
                 const meta = program.metadata || {};
                 const pipelineStartedAt = parseRuntimeNumber(meta.pipeline_started_at);
                 const samplingStartedAt = parseRuntimeNumber(meta.sampling_started_at);
@@ -15374,7 +15382,12 @@ console.error("[DEBUG] Error in processData:", error);
 
                 return {
                     id: program.id,
+                    sourceJobId: meta.source_job_id || null,
+                    isIslandCopy: Boolean(meta._spawned_island || meta._is_island_copy),
                     generation: program.generation ?? 0,
+                    timestamp: typeof program.timestamp === 'number' ? program.timestamp : 0,
+                    correct: Boolean(program.correct),
+                    combinedScore: typeof program.combined_score === 'number' ? program.combined_score : null,
                     patchName: meta.patch_name || 'unnamed',
                     modelName: meta.model_name || meta.llm_result?.model || meta.model || 'N/A',
                     noveltyAttempt: parseRuntimeNumber(meta.novelty_attempt),
@@ -15399,6 +15412,29 @@ console.error("[DEBUG] Error in processData:", error);
                     postprocessSeconds: Math.max(0, postprocessFinishedAt - postprocessStartedAt)
                 };
             }).filter(row => row !== null);
+
+            const dedupedRows = new Map();
+            rows.forEach(row => {
+                const dedupeKey = row.sourceJobId || row.id;
+                const existing = dedupedRows.get(dedupeKey);
+                if (!existing) {
+                    dedupedRows.set(dedupeKey, row);
+                    return;
+                }
+
+                const existingPriority = getRuntimeTimelineRowPriority(existing);
+                const rowPriority = getRuntimeTimelineRowPriority(row);
+                if (rowPriority > existingPriority) {
+                    dedupedRows.set(dedupeKey, row);
+                    return;
+                }
+
+                if (rowPriority === existingPriority && row.timestamp < existing.timestamp) {
+                    dedupedRows.set(dedupeKey, row);
+                }
+            });
+
+            return Array.from(dedupedRows.values());
         }
 
         function computePeakConcurrency(rows, startKey, endKey) {
