@@ -25,7 +25,7 @@
 npx skills add SakanaAI/ShinkaEvolve --skill '*' -a claude-code -a codex -y
 ```
 
-**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/release_notes.md) with many new features.
+**Jan 2026 Update**: ShinkaEvolve was accepted at ICLR 2026 and we have [released v1.1](https://github.com/SakanaAI/ShinkaEvolve/blob/main/CHANGELOG.md) with many new features.
 
 **Nov 2025 Update**: Rob gave several public talks about our ShinkaEvolve effort ([Official](https://x.com/SakanaAILabs/status/1989352976792846356?s=20), [AutoML Seminar](https://www.youtube.com/watch?v=dAOIer_1INo)).
 
