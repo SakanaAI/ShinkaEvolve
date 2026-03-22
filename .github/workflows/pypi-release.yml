@@ -47,7 +47,7 @@ jobs:
         run: uv run --with twine twine check dist/*
 
       - name: Reject gitignored files in release artifacts
-        run: python -m shinka.release_check dist/*
+        run: uv run --with python-dotenv python -m shinka.release_check dist/*
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
