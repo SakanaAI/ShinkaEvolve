@@ -96,8 +96,6 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     assert evo_config.task_sys_msg is not None
     assert evo_config.patch_types == ["diff", "full", "cross"]
     assert evo_config.patch_type_probs == [0.6, 0.3, 0.1]
-    assert evo_config.max_proposal_jobs == 1
-    assert evo_config.max_db_workers == 4
     assert evo_config.max_patch_attempts == 1
     assert evo_config.llm_models == [
         "gpt-5-mini",
@@ -121,6 +119,8 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     assert db_config.migration_rate == pytest.approx(0.0)
     assert db_config.parent_selection_strategy == "weighted"
     assert job_config.time == "00:03:00"
+    assert not hasattr(evo_config, "max_proposal_jobs")
+    assert not hasattr(evo_config, "max_db_workers")
     assert "def run" in init_program_str
     assert "def main" in evaluate_str
 
@@ -239,6 +239,32 @@ def test_shinka_run_invalid_config_field_fails(tmp_path):
     task_dir = _make_task_dir(tmp_path)
     (task_dir / "bad.yaml").write_text(
         "evo_config:\n  unknown_field: 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli_run.main(
+            [
+                "--task-dir",
+                str(task_dir),
+                "--config-fname",
+                "bad.yaml",
+                "--results_dir",
+                str(tmp_path / "results"),
+                "--num_generations",
+                "5",
+            ]
+        )
+    assert exc_info.value.code == 2
+
+
+def test_shinka_run_rejects_nested_concurrency_config(tmp_path):
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "bad.yaml").write_text(
+        (
+            "evo_config:\n"
+            "  max_proposal_jobs: 3\n"
+            "  max_db_workers: 2\n"
+        ),
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc_info:

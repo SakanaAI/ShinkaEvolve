@@ -141,7 +141,7 @@ def get_async_client_llm(
                 client, mode=instructor.mode.Mode.ANTHROPIC_JSON
             )
     elif provider == "openai":
-        client = openai.AsyncOpenAI()
+        client = openai.AsyncOpenAI(timeout=TIMEOUT)
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
     elif provider == "azure_openai":

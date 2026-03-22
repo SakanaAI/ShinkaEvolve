@@ -14,9 +14,9 @@ db_config:
   # Fraction of top performers treated as elites.
   elite_selection_ratio: 0.3
   # Number of archive examples sampled as inspirations per proposal.
-  num_archive_inspirations: 4
+  num_archive_inspirations: 1
   # Number of highest-ranked inspirations forced into the sample.
-  num_top_k_inspirations: 2
+  num_top_k_inspirations: 1
   # Generations between migration events across islands.
   migration_interval: 10
   # Fraction of candidates migrated at each migration event.
@@ -68,9 +68,9 @@ evo_config:
   # Retries for resampling patch format/content before giving up.
   max_patch_resamples: 3
   # Retries for patch application/generation attempts.
-  max_patch_attempts: 3
+  max_patch_attempts: 2
   # Retries for novelty-evaluation attempts.
-  max_novelty_attempts: 3
+  max_novelty_attempts: 2
   # Job executor backend.
   job_type: local
   # Programming language of evolved programs.

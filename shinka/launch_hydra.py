@@ -15,6 +15,8 @@ def run_with_cfg(cfg: DictConfig) -> None:
     db_cfg = hydra.utils.instantiate(cfg.db_config)
     evo_cfg = hydra.utils.instantiate(cfg.evo_config)
     max_evaluation_jobs = int(cfg.get("max_evaluation_jobs", 2))
+    max_proposal_jobs = int(cfg.get("max_proposal_jobs", 1))
+    max_db_workers = int(cfg.get("max_db_workers", 4))
 
     evo_runner = ShinkaEvolveRunner(
         evo_config=evo_cfg,
@@ -22,8 +24,8 @@ def run_with_cfg(cfg: DictConfig) -> None:
         db_config=db_cfg,
         verbose=cfg.verbose,
         max_evaluation_jobs=max_evaluation_jobs,
-        max_proposal_jobs=evo_cfg.max_proposal_jobs,
-        max_db_workers=evo_cfg.max_db_workers,
+        max_proposal_jobs=max_proposal_jobs,
+        max_db_workers=max_db_workers,
     )
     evo_runner.run()
 
