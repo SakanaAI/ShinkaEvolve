@@ -2009,13 +2009,21 @@
                             <h3>Worker Occupancy Over Time</h3>
                             <div id="throughput-occupancy-plot" style="width: 100%; height: 360px; overflow: hidden;"></div>
                         </div>
-                        <div class="analysis-section">
-                            <h3>Evaluation Occupancy Distribution</h3>
-                            <div id="throughput-eval-distribution-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                        <div class="analysis-section full-width">
+                            <h3>Normalized Worker Occupancy Over Time</h3>
+                            <div id="throughput-occupancy-percent-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
                         </div>
-                        <div class="analysis-section">
-                            <h3>Completed Evaluations per Minute</h3>
-                            <div id="throughput-completion-rate-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                        <div class="analysis-section full-width">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                <div>
+                                    <h3>Evaluation Occupancy Distribution</h3>
+                                    <div id="throughput-eval-distribution-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                                </div>
+                                <div>
+                                    <h3>Completed Evaluations per Minute</h3>
+                                    <div id="throughput-completion-rate-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                                </div>
+                            </div>
                         </div>
                         <div class="analysis-section">
                             <h3>Stage Duration Summary</h3>
@@ -15579,16 +15587,17 @@ console.error("[DEBUG] Error in processData:", error);
             maxEndMs,
             runtimePlotHeight,
             yAxisTitle,
-            laneLabels = null
+            laneLabels = null,
+            laneCount = null
         }) {
             const layout = {
                 barmode: 'overlay',
                 height: runtimePlotHeight,
-                margin: { l: 150, r: 10, t: 90, b: 140 },
+                margin: { l: 150, r: 10, t: 60, b: 105 },
                 xaxis: {
                     title: {
                         text: 'Wall Clock Time',
-                        standoff: 20
+                        standoff: 14
                     },
                     type: 'date',
                     range: [minStartMs, maxEndMs],
@@ -15610,7 +15619,7 @@ console.error("[DEBUG] Error in processData:", error);
                     orientation: 'h',
                     x: 0.01,
                     xanchor: 'left',
-                    y: 1.02,
+                    y: 1.01,
                     yanchor: 'bottom',
                     bgcolor: 'rgba(255,255,255,0.9)'
                 }
@@ -15619,6 +15628,10 @@ console.error("[DEBUG] Error in processData:", error);
             if (laneLabels) {
                 layout.yaxis.categoryorder = 'array';
                 layout.yaxis.categoryarray = laneLabels;
+            }
+
+            if (Number.isFinite(laneCount) && laneCount > 0) {
+                layout.yaxis.range = [laneCount - 0.5, -0.5];
             }
 
             return layout;
@@ -15731,7 +15744,8 @@ console.error("[DEBUG] Error in processData:", error);
                     maxEndMs,
                     runtimePlotHeight,
                     yAxisTitle: 'Resource Pool',
-                    laneLabels
+                    laneLabels,
+                    laneCount: laneLabels.length
                 });
 
                 Plotly.newPlot(plotId, traces, layout, {
@@ -15829,7 +15843,8 @@ console.error("[DEBUG] Error in processData:", error);
                 minStartMs,
                 maxEndMs,
                 runtimePlotHeight,
-                yAxisTitle: 'Worker Lane'
+                yAxisTitle: 'Worker Lane',
+                laneCount
             });
 
             Plotly.newPlot(plotId, traces, layout, {
@@ -15942,7 +15957,7 @@ console.error("[DEBUG] Error in processData:", error);
             const throughputPerMinute = wallClockMinutes > 0 ? rows.length / wallClockMinutes : 0;
 
             container.innerHTML = `
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
+                <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px;">
                     <div style="background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px;">
                         <div style="font-size: 12px; color: #666;">Wall-Clock Span</div>
                         <div style="font-size: 20px; font-weight: 600;">${formatRuntimeSeconds(maxEnd - minStart)}</div>
@@ -16002,7 +16017,8 @@ console.error("[DEBUG] Error in processData:", error);
                 }
             ];
 
-            const traces = [];
+            const activeTraces = [];
+            const capacityTraces = [];
             let minStart = Infinity;
             let maxEnd = -Infinity;
 
@@ -16011,7 +16027,7 @@ console.error("[DEBUG] Error in processData:", error);
                 if (!series) return;
                 minStart = Math.min(minStart, series.minStart);
                 maxEnd = Math.max(maxEnd, series.maxEnd);
-                traces.push({
+                activeTraces.push({
                     x: series.x,
                     y: series.y,
                     name: `${stage.label} Active`,
@@ -16019,7 +16035,7 @@ console.error("[DEBUG] Error in processData:", error);
                     mode: 'lines',
                     line: { color: stage.color, width: 2 },
                 });
-                traces.push({
+                capacityTraces.push({
                     x: [series.minStart * 1000, series.maxEnd * 1000],
                     y: [stage.capacity, stage.capacity],
                     name: `${stage.label} Capacity`,
@@ -16030,16 +16046,93 @@ console.error("[DEBUG] Error in processData:", error);
                 });
             });
 
+            const traces = [...activeTraces, ...capacityTraces];
+
             if (!traces.length) {
                 container.innerHTML = '<p style="text-align: center; color: #999;">No occupancy data available.</p>';
                 return;
             }
 
             Plotly.newPlot('throughput-occupancy-plot', traces, {
-                title: 'Worker Occupancy Over Time',
                 xaxis: { title: 'Wall Clock Time', type: 'date' },
                 yaxis: { title: 'Active Workers', rangemode: 'tozero' },
                 height: 360,
+                margin: { l: 60, r: 20, t: 50, b: 50 },
+                legend: { orientation: 'h', x: 0.01, y: 1.18 },
+                hovermode: 'x unified',
+            }, { responsive: true, displayModeBar: false });
+        }
+
+        function renderThroughputOccupancyPercentPlot(rows, capacities) {
+            const container = document.getElementById('throughput-occupancy-percent-plot');
+            if (!container) return;
+
+            const stages = [
+                {
+                    label: 'Sampling',
+                    color: '#3b82f6',
+                    startKey: 'samplingStartedAt',
+                    endKey: 'samplingFinishedAt',
+                    capacity: capacities.sampling,
+                },
+                {
+                    label: 'Evaluation',
+                    color: '#f59e0b',
+                    startKey: 'evaluationStartedAt',
+                    endKey: 'evaluationFinishedAt',
+                    capacity: capacities.evaluation,
+                },
+                {
+                    label: 'Postprocess',
+                    color: '#10b981',
+                    startKey: 'postprocessStartedAt',
+                    endKey: 'postprocessFinishedAt',
+                    capacity: capacities.postprocess,
+                }
+            ];
+
+            const traces = [];
+            let minStart = Infinity;
+            let maxEnd = -Infinity;
+
+            stages.forEach(stage => {
+                const series = computeOccupancySeries(rows, stage.startKey, stage.endKey, stage.capacity);
+                if (!series || !Number.isFinite(stage.capacity) || stage.capacity <= 0) return;
+                minStart = Math.min(minStart, series.minStart);
+                maxEnd = Math.max(maxEnd, series.maxEnd);
+                traces.push({
+                    x: series.x,
+                    y: series.y.map(value => (value / stage.capacity) * 100),
+                    name: `${stage.label} Utilization`,
+                    type: 'scatter',
+                    mode: 'lines',
+                    line: { color: stage.color, width: 2 },
+                });
+            });
+
+            if (!traces.length) {
+                container.innerHTML = '<p style="text-align: center; color: #999;">No normalized occupancy data available.</p>';
+                return;
+            }
+
+            traces.push({
+                x: [minStart * 1000, maxEnd * 1000],
+                y: [100, 100],
+                name: '100% Capacity',
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#6b7280', width: 1, dash: 'dot' },
+                opacity: 0.6,
+            });
+
+            Plotly.newPlot('throughput-occupancy-percent-plot', traces, {
+                xaxis: { title: 'Wall Clock Time', type: 'date' },
+                yaxis: {
+                    title: 'Occupancy (%)',
+                    range: [0, 105],
+                    ticksuffix: '%',
+                },
+                height: 320,
                 margin: { l: 60, r: 20, t: 50, b: 50 },
                 legend: { orientation: 'h', x: 0.01, y: 1.12 },
                 hovermode: 'x unified',
@@ -16070,7 +16163,6 @@ console.error("[DEBUG] Error in processData:", error);
                     color: x.map(count => count === capacities.evaluation ? '#f59e0b' : '#60a5fa'),
                 },
             }], {
-                title: 'Evaluation Occupancy Distribution',
                 xaxis: { title: 'Occupied Evaluation Workers' },
                 yaxis: { title: 'Wall-Clock Share (%)', rangemode: 'tozero' },
                 height: 320,
@@ -16102,7 +16194,6 @@ console.error("[DEBUG] Error in processData:", error);
                 marker: { color: '#34d399' },
                 name: 'Evaluations / Minute',
             }], {
-                title: 'Completed Evaluations per Minute',
                 xaxis: { title: 'Wall Clock Time', type: 'date' },
                 yaxis: { title: 'Completed Evaluations', rangemode: 'tozero' },
                 height: 320,
@@ -16206,7 +16297,7 @@ console.error("[DEBUG] Error in processData:", error);
                 if (summary) {
                     summary.innerHTML = '<p style="text-align: center; color: #999;">No pool-based runtime data available.</p>';
                 }
-                ['throughput-runtime-plot', 'throughput-occupancy-plot', 'throughput-eval-distribution-plot', 'throughput-completion-rate-plot', 'throughput-duration-table', 'throughput-utilization-table'].forEach(id => {
+                ['throughput-runtime-plot', 'throughput-occupancy-plot', 'throughput-occupancy-percent-plot', 'throughput-eval-distribution-plot', 'throughput-completion-rate-plot', 'throughput-duration-table', 'throughput-utilization-table'].forEach(id => {
                     const el = document.getElementById(id);
                     if (el) el.innerHTML = '<p style="text-align: center; color: #999;">No throughput data available.</p>';
                 });
@@ -16216,6 +16307,7 @@ console.error("[DEBUG] Error in processData:", error);
             renderThroughputSummary(poolData.rows, poolData.capacities);
             renderRuntimeTimelinePlot(window.treeData, selectedNodeId, 'throughput-runtime-summary', 'throughput-runtime-plot');
             renderThroughputOccupancyPlot(poolData.rows, poolData.capacities);
+            renderThroughputOccupancyPercentPlot(poolData.rows, poolData.capacities);
             renderThroughputEvalDistributionPlot(poolData.rows, poolData.capacities);
             renderThroughputCompletionRatePlot(poolData.rows);
             renderThroughputDurationTable(poolData.rows);

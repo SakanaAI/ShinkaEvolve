@@ -9,11 +9,13 @@ def test_runtime_timeline_layout_reserves_space_for_legend():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
     assert "function getRuntimeTimelineLayout(" in html
-    assert "margin: { l: 150, r: 10, t: 90, b: 140 }" in html
+    assert "margin: { l: 150, r: 10, t: 60, b: 105 }" in html
+    assert "laneCount = null" in html
+    assert "layout.yaxis.range = [laneCount - 0.5, -0.5];" in html
     assert "orientation: 'h'" in html
     assert "xanchor: 'left'" in html
     assert "yanchor: 'bottom'" in html
-    assert "y: 1.02" in html
+    assert "y: 1.01" in html
 
 
 def test_embeddings_heatmap_uses_scroll_wrapper_for_full_size_matrix():
@@ -41,8 +43,10 @@ def test_throughput_tab_contains_runtime_and_utilization_sections():
     assert 'id="throughput-summary"' in html
     assert 'id="throughput-runtime-plot"' in html
     assert 'id="throughput-occupancy-plot"' in html
+    assert 'id="throughput-occupancy-percent-plot"' in html
     assert 'id="throughput-eval-distribution-plot"' in html
     assert 'id="throughput-completion-rate-plot"' in html
     assert 'id="throughput-duration-table"' in html
     assert 'id="throughput-utilization-table"' in html
     assert "function updateThroughputTab(selectedNodeId = null)" in html
+    assert "function renderThroughputOccupancyPercentPlot(rows, capacities)" in html
