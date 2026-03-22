@@ -31,3 +31,18 @@ def test_runtime_timeline_dedupes_source_jobs_and_deprioritizes_island_copies():
     assert "isIslandCopy: Boolean(meta._spawned_island || meta._is_island_copy)" in html
     assert "const dedupeKey = row.sourceJobId || row.id;" in html
     assert "if (rowPriority > existingPriority)" in html
+
+
+def test_throughput_tab_contains_runtime_and_utilization_sections():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert 'data-tab="throughput"' in html
+    assert 'id="throughput"' in html
+    assert 'id="throughput-summary"' in html
+    assert 'id="throughput-runtime-plot"' in html
+    assert 'id="throughput-occupancy-plot"' in html
+    assert 'id="throughput-eval-distribution-plot"' in html
+    assert 'id="throughput-completion-rate-plot"' in html
+    assert 'id="throughput-duration-table"' in html
+    assert 'id="throughput-utilization-table"' in html
+    assert "function updateThroughputTab(selectedNodeId = null)" in html
