@@ -27,7 +27,17 @@ jobs:
       - name: Verify tag matches package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PACKAGE_VERSION="$(python -c 'import shinka; print(shinka.__version__)')"
+          PACKAGE_VERSION="$(python - <<'PY'
+          from pathlib import Path
+          import re
+
+          init_py = Path("shinka/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__ = "([^"]+)"', init_py, re.MULTILINE)
+          if not match:
+              raise SystemExit("Could not find __version__ in shinka/__init__.py")
+          print(match.group(1))
+          PY
+          )"
           test "$TAG_VERSION" = "$PACKAGE_VERSION"
 
       - name: Build distributions
