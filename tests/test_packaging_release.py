@@ -80,6 +80,7 @@ def test_readme_documents_package_install():
     assert "pip install shinka-evolve" in readme
     assert "uv pip install shinka-evolve" in readme
     assert "CHANGELOG.md" in readme
+    assert "CONTRIBUTING.md" in readme
     assert "release_notes.md" not in readme
 
 

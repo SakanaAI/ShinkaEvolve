@@ -50,7 +50,6 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to use local LLMs with Shinka | Running open-source models & integration tips |
 | 🤖 **[Agentic Use](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
-
 ## Installation & Quick Start 🚀
 
 ```bash
@@ -442,6 +441,14 @@ shinka_visualize --port 8888 --open
 ```
 
 For detailed WebUI documentation, see the [WebUI Guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md).
+
+## Contributing 👥
+
+Contributions are welcome across code, docs, representative benchmarks, and bug reports.
+
+Please read the [contribution guide](https://github.com/SakanaAI/ShinkaEvolve/blob/main/CONTRIBUTING.md) before opening an issue or pull request. It documents the expected issue and PR structure, local checks, and the extra evidence required for changes to the core program evolution pipeline.
+
+If you propose a change to the core evolution pipeline, please include results on a representative runnable task that highlights the new capability and compare them against a baseline. Please do not add random benchmark tasks just to justify a PR.
 
 ## Related Open-Source Projects 🧑‍🔧
 

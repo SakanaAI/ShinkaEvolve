@@ -1,6 +1,6 @@
 # Contributing to `shinka`
 
-Thank you for your interest in contributing to `shinka` and ShinkaEvolve. We welcome code contributions, bug reports, feature requests, documentation improvements, examples, and benchmark results.
+Thank you for your interest in contributing to `shinka` and ShinkaEvolve. We welcome code contributions, bug reports, feature requests, documentation improvements, and representative benchmark results.
 
 ## Contributing code using pull requests
 
@@ -93,15 +93,23 @@ If you change user-facing behavior, docs, CLI output, or WebUI behavior, include
 
 Changes to the core program evolution pipeline require extra evidence. If your PR changes parent selection, mutation/edit generation, archive updates, prompt evolution, novelty logic, evaluation scheduling, proposal oversubscription, island behavior, or other central evolution logic, include:
 
-- Results on at least one runnable example
+- Results on at least one representative runnable example
 - A comparison against a baseline
 - The exact commands or config overrides used
 - The metric(s) you are comparing
 - A short interpretation of the result
 
-`examples/circle_packing` is a good default example if you do not have a more task-specific benchmark.
+Do not add random benchmark tasks or examples just to justify a PR. Use a representative task that highlights the capability you are changing, for example a new programming language backend, a new execution mode, or a new core optimization behavior.
 
 The baseline can be the current `main` branch, a tagged release, or an explicitly named prior configuration. Make the comparison easy for reviewers to reproduce.
+
+## AI-assisted contributions
+
+AI-assisted issue reports and pull requests are welcome, but not AI slop. Every submission should be human-verified, technically understood by the author, and edited into a clean, minimal, reviewable change.
+
+We will spend roughly as much time reviewing a PR as the human author spent creating it. Tid for tad. If a contributor did not invest the time to validate, simplify, benchmark, and explain a change, we will not invest that time on review either.
+
+Please take Occam's razor seriously. Prefer the smallest change that solves the problem clearly. A 1000-line implementation for a niche feature will not be merged.
 
 ## License
 
