@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose a new feature, workflow, or improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem first, then the proposed solution. Concrete examples make reviews much faster.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Short description of the requested feature.
+      placeholder: What should be added or improved?
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Why is it important?
+      placeholder: Current limitation, workflow pain point, or research use case.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the design, API, or behavior you want.
+      placeholder: CLI/API shape, config knobs, expected outputs, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you evaluated or current workarounds.
+      placeholder: Why not do X instead?
+    validations:
+      required: false
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan or example
+      description: How should reviewers know this feature works?
+      placeholder: Example task, benchmark, expected metrics, docs update, tests, etc.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true

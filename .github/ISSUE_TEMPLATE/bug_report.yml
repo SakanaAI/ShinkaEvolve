@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible bug or regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please provide a minimal, reproducible report. Include exact commands and logs whenever possible.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Short description of the bug.
+      placeholder: What broke?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, commands, config overrides, or files needed to reproduce.
+      placeholder: |
+        1. Run ...
+        2. Set ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, OS, install method, model/provider setup, and any relevant hardware details.
+      placeholder: Python 3.11, macOS/Linux, uv sync --dev, local/slurm, provider credentials present/absent, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Logs and artifacts
+      description: Paste stack traces, logs, screenshots, or a minimal script.
+      placeholder: Paste logs or link artifacts here.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I can reproduce this on the current main branch or current release.
+          required: false
