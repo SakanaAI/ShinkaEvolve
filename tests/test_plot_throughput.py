@@ -137,6 +137,21 @@ def test_prepare_pool_runtime_data_dedupes_rows_and_computes_capacities():
     assert prepared.peaks == {"sampling": 2, "evaluation": 2, "postprocess": 1}
 
 
+def test_prepare_pool_runtime_data_handles_missing_optional_columns():
+    runtime_df = _runtime_df().drop(
+        columns=["source_job_id", "is_island_copy", "patch_name", "model_name"]
+    )
+
+    prepared = _prepare_pool_runtime_data(runtime_df)
+
+    assert prepared is not None
+    assert list(prepared.rows["id"]) == ["job-a-main", "job-a-copy", "job-b"]
+    assert list(prepared.rows["source_job_id"]) == ["job-a-main", "job-a-copy", "job-b"]
+    assert list(prepared.rows["patch_name"]) == ["unnamed", "unnamed", "unnamed"]
+    assert list(prepared.rows["model_name"]) == ["N/A", "N/A", "N/A"]
+    assert prepared.capacities == {"sampling": 2, "evaluation": 2, "postprocess": 1}
+
+
 def test_compute_occupancy_series_matches_expected_utilization_stats():
     prepared = _prepare_pool_runtime_data(_runtime_df())
     assert prepared is not None
@@ -174,6 +189,10 @@ def test_plot_generation_runtime_timeline_uses_deduped_pool_rows():
         "Evaluation",
         "Postprocess",
     }
+    assert ax.get_legend()._ncols == 3
+    assert ax.get_legend()._loc == 9
+    assert {text.get_fontsize() for text in ax.get_legend().get_texts()} == {10.0}
+    assert ax.get_legend().get_bbox_to_anchor()._bbox.y0 < 0
 
 
 def test_plot_normalized_occupancy_over_time_adds_reference_line():
@@ -192,3 +211,7 @@ def test_plot_normalized_occupancy_over_time_adds_reference_line():
     ]
     assert ax.get_ylim()[1] >= 100
     assert list(ax.lines[-1].get_ydata()) == [100, 100]
+    assert ax.get_legend()._ncols == 2
+    assert ax.get_legend()._loc == 9
+    assert {text.get_fontsize() for text in ax.get_legend().get_texts()} == {10.0}
+    assert ax.get_legend().get_bbox_to_anchor()._bbox.y0 < 0

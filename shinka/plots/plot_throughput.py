@@ -114,6 +114,18 @@ def _coerce_numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(df[column], errors="coerce")
 
 
+def _get_series_with_default(
+    df: pd.DataFrame, column: str, default: object, dtype: Optional[str] = None
+) -> pd.Series:
+    if column in df.columns:
+        series = df[column].copy()
+    else:
+        series = pd.Series(default, index=df.index)
+    if dtype is not None:
+        return series.astype(dtype)
+    return series
+
+
 def _get_runtime_row_priority(row: pd.Series) -> int:
     priority = 0
     if not bool(row.get("is_island_copy", False)):
@@ -173,12 +185,18 @@ def _prepare_pool_runtime_data(df: pd.DataFrame) -> Optional[PoolRuntimeData]:
     runtime_df["source_job_id"] = runtime_df["source_job_id"].where(
         runtime_df["source_job_id"].notna(), runtime_df["id"]
     )
-    runtime_df["is_island_copy"] = (
-        runtime_df.get("is_island_copy", False).fillna(False).astype(bool)
-    )
-    runtime_df["correct"] = runtime_df.get("correct", False).fillna(False).astype(bool)
-    runtime_df["patch_name"] = runtime_df.get("patch_name", "unnamed").fillna("unnamed")
-    runtime_df["model_name"] = runtime_df.get("model_name", "N/A").fillna("N/A")
+    runtime_df["is_island_copy"] = _get_series_with_default(
+        runtime_df, "is_island_copy", False
+    ).fillna(False).astype(bool)
+    runtime_df["correct"] = _get_series_with_default(
+        runtime_df, "correct", False
+    ).fillna(False).astype(bool)
+    runtime_df["patch_name"] = _get_series_with_default(
+        runtime_df, "patch_name", "unnamed"
+    ).fillna("unnamed")
+    runtime_df["model_name"] = _get_series_with_default(
+        runtime_df, "model_name", "N/A"
+    ).fillna("N/A")
 
     complete_mask = runtime_df[list(REQUIRED_RUNTIME_COLUMNS[2:])].notna().all(axis=1)
     runtime_df = runtime_df.loc[complete_mask].copy()
@@ -332,7 +350,7 @@ def _configure_time_axis(ax: Axes) -> None:
 
 
 def _render_empty_plot(ax: Axes, title: str, message: str, ylabel: str) -> None:
-    ax.set_title(title, fontsize=28, weight="bold")
+    ax.set_title(title, fontsize=28, weight="bold", pad=24)
     ax.set_xlabel("Wall Clock Time", fontsize=18, weight="bold")
     ax.set_ylabel(ylabel, fontsize=18, weight="bold")
     ax.text(
@@ -431,27 +449,42 @@ def plot_generation_runtime_timeline(
     )
     ax.text(
         0.0,
-        1.02,
+        0.99,
         summary,
         transform=ax.transAxes,
         ha="left",
-        va="bottom",
-        fontsize=11,
+        va="top",
+        fontsize=10,
         color="#4b5563",
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8, "pad": 2.5},
     )
     ax.set_yticks(range(len(prepared.lane_labels)))
     ax.set_yticklabels(prepared.lane_labels)
     ax.invert_yaxis()
     ax.set_xlabel("Wall Clock Time", fontsize=18, weight="bold")
     ax.set_ylabel("Resource Pool", fontsize=18, weight="bold")
-    ax.set_title(title, fontsize=28, weight="bold")
+    ax.set_title(title, fontsize=28, weight="bold", pad=24)
     ax.tick_params(axis="both", which="major", labelsize=12)
     ax.grid(True, axis="x", alpha=0.3)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     _configure_time_axis(ax)
     if legend_handles:
-        ax.legend(handles=legend_handles, fontsize=12, loc="upper right")
+        ax.legend(
+            handles=legend_handles,
+            fontsize=10,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.14),
+            ncol=3,
+            frameon=True,
+            columnspacing=1.2,
+            handlelength=1.5,
+            borderaxespad=0.0,
+            fancybox=True,
+            framealpha=0.95,
+            facecolor="#f8fafc",
+            edgecolor="#d1d5db",
+        )
 
     fig.tight_layout()
     return fig, ax
@@ -535,7 +568,7 @@ def plot_normalized_occupancy_over_time(
     )
     ax.set_xlabel("Wall Clock Time", fontsize=18, weight="bold")
     ax.set_ylabel("Occupancy (%)", fontsize=18, weight="bold")
-    ax.set_title(title, fontsize=28, weight="bold")
+    ax.set_title(title, fontsize=28, weight="bold", pad=24)
     ax.set_ylim(0, 105)
     ax.tick_params(axis="both", which="major", labelsize=12)
     ax.grid(True, alpha=0.3)
@@ -544,7 +577,13 @@ def plot_normalized_occupancy_over_time(
     _configure_time_axis(ax)
     ax.legend(
         handles=[
-            Line2D([0], [0], color=stage.color, linewidth=2.2, label=f"{stage.label} Occupancy")
+            Line2D(
+                [0],
+                [0],
+                color=stage.color,
+                linewidth=2.2,
+                label=f"{stage.label} Occupancy",
+            )
             for stage in STAGE_CONFIGS
         ]
         + [
@@ -557,9 +596,18 @@ def plot_normalized_occupancy_over_time(
                 label="100% Capacity",
             )
         ],
-        fontsize=12,
-        loc="upper left",
+        fontsize=10,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
         ncol=2,
+        frameon=True,
+        columnspacing=1.2,
+        handlelength=1.5,
+        borderaxespad=0.0,
+        fancybox=True,
+        framealpha=0.95,
+        facecolor="#f8fafc",
+        edgecolor="#d1d5db",
     )
 
     fig.tight_layout()

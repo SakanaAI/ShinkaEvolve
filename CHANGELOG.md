@@ -8,14 +8,19 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 - Added local OpenAI-compatible embedding endpoint support via `evo.embedding_model=local/<model>@http(s)://host[:port]/v1`.
 - Added `CONTRIBUTING.md` plus GitHub issue and pull-request templates to document the contribution flow.
+- Added Python throughput plotting utilities in `shinka.plots` for generation runtime timelines and normalized occupancy-over-time views.
+- Added regression coverage for the new Python throughput plotting helpers, including pool-slot prep, occupancy math, and legend/layout behavior.
 
 ### Changed
 
 - Renamed the local backend guide from `docs/support_local_llm.md` to `docs/support_local_models.md` and expanded it to cover local embedding backends alongside local LLMs.
+- Updated `examples/circle_packing/load_results.ipynb` to include the new throughput plots at the bottom of the notebook.
+- Refined Python throughput plot legends to use compact centered panels below each subplot for cleaner notebook rendering.
 
 ### Fixed
 
 - Fixed async resume/recovery bookkeeping so restarted runs continue from the number of persisted completed programs instead of stopping early when failed proposals or hung local evals left gaps in generation IDs.
+- Fixed Python throughput plot preparation so frames without optional metadata columns like `is_island_copy`, `patch_name`, or `model_name` still render correctly.
 
 ## 0.0.2 - 2026-03-22
 
