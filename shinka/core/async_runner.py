@@ -144,6 +144,8 @@ class AsyncRunningJob:
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
     db_retry_count: int = 0  # Track number of DB write retry attempts
     results_retrieved_at: Optional[float] = None
+    discard_if_completed: bool = False
+    evaluation_slot_released: bool = False
 
 
 class ShinkaEvolveRunner:
@@ -1803,6 +1805,7 @@ class ShinkaEvolveRunner:
                         )
 
                     async with self.processing_lock:
+                        self._mark_surplus_completed_jobs_for_discard(completed_jobs)
                         old_retry_count = len(self.failed_jobs_for_retry)
                         await self._process_completed_jobs_safely(completed_jobs)
                         old_completed = self.completed_generations
@@ -1894,6 +1897,9 @@ class ShinkaEvolveRunner:
                     self.slot_available.set()
 
                 # Retry any failed DB jobs
+                if self.completed_generations >= self.evo_config.num_generations:
+                    await self._cancel_surplus_inflight_work()
+
                 if self.failed_jobs_for_retry:
                     try:
                         await self._retry_failed_db_jobs()
@@ -2047,15 +2053,15 @@ class ShinkaEvolveRunner:
                     self.finalization_complete.set()
                     break
                 elif self.completed_generations >= self.evo_config.num_generations:
-                    # We've reached target but still have running jobs
-                    # or proposals
+                    # We've reached target. Any extra work is being cancelled
+                    # or discarded; only wait for the cleanup to settle.
                     if self.verbose:
                         pending_jobs = len(self.running_jobs)
                         pending_proposals = len(self.active_proposal_tasks)
                         logger.debug(
-                            f"⏳ Target generations reached, waiting for "
-                            f"{pending_jobs} jobs and "
-                            f"{pending_proposals} proposals to complete..."
+                            f"⏳ Target generations reached, draining surplus "
+                            f"work: {pending_jobs} running jobs and "
+                            f"{pending_proposals} proposal tasks still active..."
                         )
 
             except Exception as e:
@@ -2082,6 +2088,24 @@ class ShinkaEvolveRunner:
                         break
 
                 proposals_remaining = self._get_remaining_completed_work()
+                proposal_slots_remaining = self._get_remaining_generation_slots()
+
+                if (
+                    proposal_slots_remaining == 0
+                    and self._get_in_flight_work_count() == 0
+                    and self.completed_generations < self.evo_config.num_generations
+                ):
+                    logger.warning(
+                        "Generation budget exhausted before reaching target "
+                        f"completed generations: completed={self.completed_generations}, "
+                        f"target={self.evo_config.num_generations}, "
+                        f"next_generation={self.next_generation_to_submit}. "
+                        "Stopping without oversampling additional generations."
+                    )
+                    self.should_stop.set()
+                    self.slot_available.set()
+                    self.finalization_complete.set()
+                    break
 
                 # Check if cost limit has been reached using committed cost
                 # Committed cost = actual cost + estimated cost of in-flight proposals
@@ -2116,6 +2140,7 @@ class ShinkaEvolveRunner:
                 proposals_needed = min(
                     max(0, pipeline_target - pipeline_capacity),  # Fill the pipeline
                     proposals_remaining,
+                    proposal_slots_remaining,
                     self.max_proposal_jobs - len(self.active_proposal_tasks),
                 )
 
@@ -2168,18 +2193,19 @@ class ShinkaEvolveRunner:
     async def _start_proposals(self, num_proposals: int):
         """Start the specified number of concurrent proposal generation tasks.
 
-        In async evolution, we continue generating proposals beyond num_generations
-        if needed to compensate for failed/rejected proposals, until we reach the
-        target number of completed generations.
+        Proposal assignment is hard-capped by num_generations so async runs do not
+        oversample more proposal generations than the configured budget.
         """
         for _ in range(num_proposals):
             # Only stop if we've reached max proposal concurrency
-            # Don't check num_generations here - the coordinator handles that
             if len(self.active_proposal_tasks) >= self.max_proposal_jobs:
                 break
 
             # Assign generation atomically to prevent duplicates
             generation = self.next_generation_to_submit
+
+            if generation >= self.evo_config.num_generations:
+                break
 
             # Double-check this generation hasn't been assigned already
             if generation in self.assigned_generations:
@@ -2519,15 +2545,17 @@ class ShinkaEvolveRunner:
 
             evaluation_worker_id = None
             try:
-                # Submit job
-                job_id = await self.scheduler.submit_async_nonblocking(
-                    exec_fname, results_dir
+                (
+                    job_id,
+                    evaluation_worker_id,
+                    evaluation_submitted_at,
+                    evaluation_started_at,
+                    running_eval_jobs_at_submit,
+                ) = await self._submit_evaluation_job_with_slot(
+                    exec_fname=exec_fname,
+                    results_dir=results_dir,
+                    sampling_worker_id=sampling_worker_id,
                 )
-                evaluation_submitted_at = time.time()
-                evaluation_worker_id = await self.evaluation_slot_pool.acquire()
-                evaluation_started_at = time.time()
-                running_eval_jobs_at_submit = self.evaluation_slot_pool.in_use
-                await self.sampling_slot_pool.release(sampling_worker_id)
 
                 # Create running job
                 running_job = AsyncRunningJob(
@@ -2561,27 +2589,6 @@ class ShinkaEvolveRunner:
 
                 # Update average proposal cost for in-flight estimation
                 self._update_avg_proposal_cost(proposal_total_cost)
-
-                # Check if we're exceeding max evaluation jobs (race condition protection)
-                while len(self.running_jobs) >= self.max_evaluation_jobs:
-                    if self.verbose:
-                        logger.info(
-                            f"⏳ Waiting for evaluation slot: {len(self.running_jobs)}/{self.max_evaluation_jobs} "
-                            f"jobs running, gen {generation} proposal ready"
-                        )
-                    # Wait for a slot to become available
-                    await asyncio.sleep(0.5)  # Short wait to avoid busy loop
-
-                    # Check if we should stop (in case system is shutting down)
-                    if self.should_stop.is_set():
-                        logger.warning(
-                            f"System shutting down, cancelling job for gen {generation}"
-                        )
-                        try:
-                            await self.scheduler.cancel_job_async(job_id)
-                        except Exception as e:
-                            logger.warning(f"Failed to cancel job during shutdown: {e}")
-                        return None
 
                 # Track job in both running list and submitted registry
                 self.running_jobs.append(running_job)
@@ -3219,6 +3226,13 @@ class ShinkaEvolveRunner:
                 f"🔄 SAFE PROCESSING: Starting job {job.job_id} (gen {job.generation})"
             )
 
+            if job.discard_if_completed:
+                logger.info(
+                    f"⏭️  DISCARD SURPLUS: Skipping persistence for {job.job_id} "
+                    f"(gen {job.generation}) after target was already reached"
+                )
+                return True
+
             if await self.async_db.has_program_with_source_job_id_async(source_job_id):
                 logger.info(
                     f"⏭️  SKIP DUPLICATE: Job {job.job_id} (gen {job.generation}) "
@@ -3240,7 +3254,7 @@ class ShinkaEvolveRunner:
             except asyncio.TimeoutError:
                 logger.error(f"❌ TIMEOUT: Getting results for {job.job_id} timed out")
                 return False
-            await self.evaluation_slot_pool.release(job.evaluation_worker_id)
+            await self._release_evaluation_slot_once(job)
             postprocess_worker_id = await self.postprocess_slot_pool.acquire()
             db_workers_in_use_at_postprocess_start = self.postprocess_slot_pool.in_use
             postprocess_started_at = evaluation_finished_at
@@ -3524,7 +3538,7 @@ class ShinkaEvolveRunner:
             )
             return False
         finally:
-            await self.evaluation_slot_pool.release(job.evaluation_worker_id)
+            await self._release_evaluation_slot_once(job)
             await self.postprocess_slot_pool.release(postprocess_worker_id)
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
@@ -3629,6 +3643,40 @@ class ShinkaEvolveRunner:
             - self._get_in_flight_work_count(),
         )
 
+    def _get_remaining_generation_slots(self) -> int:
+        """Return how many proposal generations can still be assigned."""
+        return max(0, self.evo_config.num_generations - self.next_generation_to_submit)
+
+    def _mark_surplus_completed_jobs_for_discard(
+        self, completed_jobs: List[AsyncRunningJob]
+    ) -> None:
+        """Mark completed jobs beyond the target budget so they are not persisted."""
+        remaining_slots = max(
+            0, self.evo_config.num_generations - self.completed_generations
+        )
+        if remaining_slots >= len(completed_jobs):
+            return
+
+        keep_job_ids = {
+            id(job)
+            for job in sorted(completed_jobs, key=lambda job: job.generation)[
+                :remaining_slots
+            ]
+        }
+        discarded_generations = []
+        for job in completed_jobs:
+            should_discard = id(job) not in keep_job_ids
+            job.discard_if_completed = should_discard
+            if should_discard:
+                discarded_generations.append(job.generation)
+
+        if discarded_generations:
+            logger.info(
+                f"🧹 Discarding {len(discarded_generations)} completed surplus "
+                f"job(s) from the current batch after reaching target: "
+                f"gens {sorted(discarded_generations)}"
+            )
+
     async def _cleanup_proposal_task_state(
         self,
         generation: int,
@@ -3641,6 +3689,43 @@ class ShinkaEvolveRunner:
             del self.active_proposal_tasks[task_id]
         if sampling_worker_id is not None:
             await self.sampling_slot_pool.release(sampling_worker_id)
+
+    async def _release_evaluation_slot_once(self, job: AsyncRunningJob) -> None:
+        """Release an evaluation slot at most once per job."""
+        if job.evaluation_slot_released:
+            return
+        await self.evaluation_slot_pool.release(job.evaluation_worker_id)
+        job.evaluation_slot_released = True
+
+    async def _submit_evaluation_job_with_slot(
+        self,
+        exec_fname: str,
+        results_dir: str,
+        sampling_worker_id: Optional[int],
+    ) -> tuple[Union[str, Any], int, float, float, int]:
+        """Reserve an evaluation slot before submitting the evaluation job."""
+        if sampling_worker_id is not None:
+            await self.sampling_slot_pool.release(sampling_worker_id)
+
+        evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        try:
+            job_id = await self.scheduler.submit_async_nonblocking(
+                exec_fname, results_dir
+            )
+        except Exception:
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+            raise
+
+        evaluation_submitted_at = time.time()
+        evaluation_started_at = evaluation_submitted_at
+        running_eval_jobs_at_submit = self.evaluation_slot_pool.in_use
+        return (
+            job_id,
+            evaluation_worker_id,
+            evaluation_submitted_at,
+            evaluation_started_at,
+            running_eval_jobs_at_submit,
+        )
 
     def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
         """Return the wall-clock runtime limit for a single evaluation job."""
@@ -3748,6 +3833,74 @@ class ShinkaEvolveRunner:
 
         for task_id in completed_tasks:
             del self.active_proposal_tasks[task_id]
+
+    async def _cancel_surplus_inflight_work(self) -> None:
+        """Cancel or discard work that is no longer needed after hitting target."""
+        if self.failed_jobs_for_retry:
+            dropped_retry_gens = [
+                job.generation for job in self.failed_jobs_for_retry.values()
+            ]
+            logger.info(
+                f"🧹 Dropping {len(dropped_retry_gens)} retry-queued jobs after "
+                f"reaching target: gens {dropped_retry_gens}"
+            )
+            for job in self.failed_jobs_for_retry.values():
+                job.discard_if_completed = True
+                self.submitted_jobs.pop(str(job.job_id), None)
+            self.failed_jobs_for_retry.clear()
+
+        if self.active_proposal_tasks:
+            logger.info(
+                f"🛑 Cancelling {len(self.active_proposal_tasks)} surplus proposal "
+                "task(s) after reaching target generations"
+            )
+            proposal_tasks = list(self.active_proposal_tasks.values())
+            for task in proposal_tasks:
+                task.cancel()
+            await asyncio.gather(*proposal_tasks, return_exceptions=True)
+            await self._cleanup_completed_proposal_tasks()
+
+        if self.running_jobs:
+            cancelled_jobs: List[AsyncRunningJob] = []
+            surviving_jobs: List[AsyncRunningJob] = []
+
+            for job in list(self.running_jobs):
+                job.discard_if_completed = True
+                try:
+                    cancelled = await self.scheduler.cancel_job_async(job.job_id)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to cancel surplus job {job.job_id} "
+                        f"(gen {job.generation}): {e}"
+                    )
+                    cancelled = False
+
+                if cancelled:
+                    cancelled_jobs.append(job)
+                    self.submitted_jobs.pop(str(job.job_id), None)
+                    await self._release_evaluation_slot_once(job)
+                else:
+                    surviving_jobs.append(job)
+
+            self.running_jobs = surviving_jobs
+
+            if cancelled_jobs:
+                cancelled_gens = [job.generation for job in cancelled_jobs]
+                logger.info(
+                    f"🧹 Cancelled {len(cancelled_jobs)} surplus evaluation job(s): "
+                    f"gens {cancelled_gens}"
+                )
+
+        remaining_task_generations = {
+            int(task.get_name().split("_", 1)[1])
+            for task in self.active_proposal_tasks.values()
+            if task.get_name().startswith("proposal_")
+            and task.get_name().split("_", 1)[1].isdigit()
+        }
+        self.assigned_generations = {
+            job.generation for job in self.running_jobs
+        } | remaining_task_generations
+        self.slot_available.set()
 
     def _is_system_stuck(self) -> bool:
         """

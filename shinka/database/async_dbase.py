@@ -97,6 +97,8 @@ class AsyncProgramDatabase:
             max_workers = 1
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._lock = asyncio.Lock()
+        self._source_job_id_lock = threading.Lock()
+        self._in_flight_source_job_ids: set[str] = set()
         # Semaphore to limit concurrent database operations and prevent deadlocks
         # With WAL mode enabled, we can handle more concurrent operations safely
         concurrent_ops = min(
@@ -555,18 +557,22 @@ class AsyncProgramDatabase:
                     )
 
                 source_job_id = None
+                source_job_id_registered = False
                 if isinstance(program.metadata, dict):
                     source_job_id = program.metadata.get("source_job_id")
-                if (
-                    isinstance(source_job_id, str)
-                    and source_job_id
-                    and thread_db.has_program_with_source_job_id(source_job_id)
-                ):
-                    logger.info(
-                        "Skipping duplicate persisted job for source_job_id=%s",
-                        source_job_id,
-                    )
-                    return False
+                if isinstance(source_job_id, str) and source_job_id:
+                    with self._source_job_id_lock:
+                        if (
+                            source_job_id in self._in_flight_source_job_ids
+                            or thread_db.has_program_with_source_job_id(source_job_id)
+                        ):
+                            logger.info(
+                                "Skipping duplicate persisted job for source_job_id=%s",
+                                source_job_id,
+                            )
+                            return False
+                        self._in_flight_source_job_ids.add(source_job_id)
+                        source_job_id_registered = True
 
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters
@@ -577,6 +583,9 @@ class AsyncProgramDatabase:
                     thread_db.add(program, verbose=True)
                     return True
                 finally:
+                    if source_job_id_registered:
+                        with self._source_job_id_lock:
+                            self._in_flight_source_job_ids.discard(source_job_id)
                     # Restore original methods
                     thread_db._recompute_embeddings_and_clusters = (
                         original_embedding_method
@@ -713,6 +722,10 @@ class AsyncProgramDatabase:
             def exists_thread_safe():
                 thread_db = None
                 try:
+                    with self._source_job_id_lock:
+                        if source_job_id in self._in_flight_source_job_ids:
+                            return True
+
                     from .dbase import ProgramDatabase
 
                     thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
