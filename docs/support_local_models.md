@@ -1,9 +1,11 @@
-# Local and OpenRouter LLM Backends
+# Local and OpenRouter Models
 
 Shinka supports dynamic LLM backend routing in `LLMClient` and `AsyncLLMClient`.
+It also supports dynamic embedding backend routing in `EmbeddingClient` and
+`AsyncEmbeddingClient`.
 You can use:
 
-- models listed in `shinka/llm/providers/pricing.csv` (existing behavior)
+- models listed in the provider pricing CSVs (existing behavior)
 - dynamic OpenRouter model IDs
 - local OpenAI-compatible servers via inline endpoint URIs
 
@@ -53,11 +55,30 @@ LOCAL_OPENAI_API_KEY=local
 
 If not set, Shinka uses `"local"` as a default token.
 
+## Local Embeddings
+
+The same inline local format also works for `embedding_model`.
+
+```yaml
+evo_config:
+  embedding_model: local/text-embeddings-inference@http://localhost:8080/v1
+```
+
+Common local embedding backends:
+
+- Hugging Face TEI:
+  `local/text-embeddings-inference@http://localhost:8080/v1`
+- vLLM or another OpenAI-compatible embedding server:
+  `local/BAAI/bge-small-en-v1.5@http://localhost:8000/v1`
+- Ollama OpenAI-compatible endpoint:
+  `local/embeddinggemma@http://localhost:11434/v1`
+
 ## Notes
 
 - Dynamic OpenRouter/local model IDs are allowed even if not listed in `pricing.csv`.
 - If a model has no pricing entry and the provider does not return cost metadata, Shinka records cost as `0.0`.
 - Local OpenAI-compatible backend path currently uses chat-completions style calls.
+- Local embedding backends use the OpenAI-compatible `/v1/embeddings` path.
 - Structured output is not supported yet for `local/...@...` models.
 
 ## Applies to Which Clients
@@ -68,3 +89,7 @@ These formats work across all LLM consumers that use `LLMClient` / `AsyncLLMClie
 - meta LLMs (`meta_llm_models`)
 - novelty judge LLMs (`novelty_llm_models`)
 - prompt evolution LLMs (`prompt_llm_models`)
+
+For embeddings, the same format applies to:
+
+- code similarity embeddings (`embedding_model`)

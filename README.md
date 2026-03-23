@@ -47,7 +47,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | ⚙️  **[Config](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md)** | Comprehensive config reference | All config options & advanced features |
 | 🎨 **[WebUI](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/webui.md)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging | 
 | ⚡ **[Async Evo](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/async_evolution.md)** | High-perf. throughput (5-10x speedup) | Concurrent processing, proposal/eval tuning | 
-| 🧠 **[Local LLM](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_llm.md)** | How to use local LLMs with Shinka | Running open-source models & integration tips |
+| 🧠 **[Local Models](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/support_local_models.md)** | How to use local LLMs and embeddings with Shinka | Running open-source models & integration tips |
 | 🤖 **[Agentic Use](https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/agentic_usage.md)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
 ## Installation & Quick Start 🚀
@@ -176,7 +176,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `meta_llm_kwargs` | `{}` | `dict` | Kwargs for meta-recommendation LLMs |
 | `meta_max_recommendations` | `5` | `int` | Max number of meta-recommendations |
 | `sample_single_meta_rec` | `True` | `bool` | Sample a single recommendation from meta output when enabled |
-| `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings |
+| `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings. Also accepts `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding servers. |
 | `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
 | `max_novelty_attempts` | `3` | `int` | Max attempts for novelty generation |

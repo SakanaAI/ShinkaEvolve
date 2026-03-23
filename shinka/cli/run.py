@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "Common evo settings via --set:\n"
         "  budget: --set evo.max_api_costs=0.5\n"
         "  models: --set "
-        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n"
+        'evo.llm_models=\'["gpt-5-mini","gemini-3-flash-preview"]\'\n'
         '  patching: --set evo.patch_types=\'["diff","full"]\' '
         "--set evo.patch_type_probs='[0.7,0.3]'\n"
         '  llm kwargs: --set evo.llm_kwargs=\'{"temperatures":[0.0,0.5,1.0],'
@@ -70,7 +70,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "  quality controls: --set evo.max_patch_resamples=3 "
         "--set evo.max_patch_attempts=1 --set evo.max_novelty_attempts=3\n"
         "  embeddings: --set evo.embedding_model=text-embedding-3-small "
-        "--set evo.code_embed_sim_threshold=0.99\n\n"
+        "--set evo.code_embed_sim_threshold=0.99\n"
+        "              --set "
+        "evo.embedding_model=local/text-embeddings-inference@http://localhost:8080/v1\n\n"
         "Common db settings via --set:\n"
         "  islands: --set db.num_islands=2\n"
         "  parent selection: --set db.parent_selection_strategy=weighted\n"
@@ -87,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--set job.time=00:10:00 "
         "--set job.activate_script=.venv/bin/activate "
         "--set "
-        "evo.llm_models='[\"gpt-5-mini\",\"gemini-3-flash-preview\"]'\n\n"
+        'evo.llm_models=\'["gpt-5-mini","gemini-3-flash-preview"]\'\n\n'
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"

@@ -2,6 +2,17 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## 0.0.3 - TBD
+
+### Added
+
+- Added local OpenAI-compatible embedding endpoint support via `evo.embedding_model=local/<model>@http(s)://host[:port]/v1`.
+- Added `CONTRIBUTING.md` plus GitHub issue and pull-request templates to document the contribution flow.
+
+### Changed
+
+- Renamed the local backend guide from `docs/support_local_llm.md` to `docs/support_local_models.md` and expanded it to cover local embedding backends alongside local LLMs.
+
 ## 0.0.2 - 2026-03-22
 
 ### Added
