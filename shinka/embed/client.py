@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import os
-from typing import Any, Tuple
+import re
+from typing import Any, Optional, Tuple
+from urllib.parse import urlparse
 
 from google import genai
 import openai
@@ -12,6 +14,7 @@ from .providers.pricing import get_provider
 load_shinka_dotenv()
 
 TIMEOUT = 600
+_LOCAL_MODEL_PATTERN = re.compile(r"^local/(?P<model>[^@]+)@(?P<url>https?://.+)$")
 _OPENROUTER_PREFIX = "openrouter/"
 
 
@@ -20,6 +23,7 @@ class ResolvedEmbeddingModel:
     original_model_name: str
     api_model_name: str
     provider: str
+    base_url: Optional[str] = None
 
 
 def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
@@ -31,12 +35,14 @@ def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
             original_model_name=model_name,
             api_model_name=api_model_name,
             provider=provider,
+            base_url=None,
         )
     if provider is not None:
         return ResolvedEmbeddingModel(
             original_model_name=model_name,
             api_model_name=model_name,
             provider=provider,
+            base_url=None,
         )
     if model_name.startswith(_OPENROUTER_PREFIX):
         api_model_name = model_name.split(_OPENROUTER_PREFIX, 1)[-1]
@@ -48,8 +54,30 @@ def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
             original_model_name=model_name,
             api_model_name=api_model_name,
             provider="openrouter",
+            base_url=None,
         )
-    raise ValueError(f"Embedding model {model_name} not supported.")
+
+    local_match = _LOCAL_MODEL_PATTERN.match(model_name)
+    if local_match:
+        api_model_name = local_match.group("model")
+        base_url = local_match.group("url")
+        parsed = urlparse(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                f"Invalid local model URL '{base_url}'. Expected http(s)://host[:port]/..."
+            )
+        return ResolvedEmbeddingModel(
+            original_model_name=model_name,
+            api_model_name=api_model_name,
+            provider="local_openai",
+            base_url=base_url,
+        )
+
+    raise ValueError(
+        f"Embedding model {model_name} not supported. "
+        "Use a known pricing.csv model, 'openrouter/<model>', "
+        "or 'local/<model>@http(s)://host[:port]/v1'."
+    )
 
 
 def get_client_embed(model_name: str) -> Tuple[Any, str]:
@@ -72,6 +100,12 @@ def get_client_embed(model_name: str) -> Tuple[Any, str]:
         client = openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
+            timeout=TIMEOUT,
+        )
+    elif provider == "local_openai":
+        client = openai.OpenAI(
+            api_key=os.getenv("LOCAL_OPENAI_API_KEY", "local"),
+            base_url=resolved.base_url,
             timeout=TIMEOUT,
         )
     else:
@@ -100,6 +134,12 @@ def get_async_client_embed(model_name: str) -> Tuple[Any, str]:
         client = openai.AsyncOpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
+            timeout=TIMEOUT,
+        )
+    elif provider == "local_openai":
+        client = openai.AsyncOpenAI(
+            api_key=os.getenv("LOCAL_OPENAI_API_KEY", "local"),
+            base_url=resolved.base_url,
             timeout=TIMEOUT,
         )
     else:
