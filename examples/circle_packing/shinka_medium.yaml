@@ -41,7 +41,7 @@ db_config:
     loc: -0.3
 
   # Whether to spawn new islands dynamically on stagnation.
-  enable_dynamic_islands: true
+  enable_dynamic_islands: false
   # Number of generations without progress before stagnation triggers.
   stagnation_threshold: 10
   # Strategy for choosing a seed when spawning a new island.
@@ -62,7 +62,7 @@ evo_config:
     - 0.3
     - 0.1
   # Total number of generations to run.
-  num_generations: 100
+  num_generations: 50
   # Max API spend budget for this run (USD).
   max_api_costs: 2.5
   # Retries for resampling patch format/content before giving up.
