@@ -13,6 +13,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 - Renamed the local backend guide from `docs/support_local_llm.md` to `docs/support_local_models.md` and expanded it to cover local embedding backends alongside local LLMs.
 
+### Fixed
+
+- Fixed async resume/recovery bookkeeping so restarted runs continue from the number of persisted completed programs instead of stopping early when failed proposals or hung local evals left gaps in generation IDs.
+
 ## 0.0.2 - 2026-03-22
 
 ### Added
