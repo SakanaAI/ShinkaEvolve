@@ -3,7 +3,7 @@ from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
-job_config = LocalJobConfig(eval_program_path="evaluate.py")
+job_config = LocalJobConfig(eval_program_path="evaluate.py", time="00:05:00")
 
 
 parent_config = dict(

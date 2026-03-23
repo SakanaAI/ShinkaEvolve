@@ -57,7 +57,7 @@ from shinka.core.prompt_evolver import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import print_gradient_logo, shinka_ascii
-from shinka.utils import get_language_extension
+from shinka.utils import get_language_extension, parse_time_to_seconds
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,9 @@ def _print_gradient_logo_and_mirror(log_path: Optional[Path] = None) -> None:
 
     try:
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n")
+            handle.write(
+                shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n"
+            )
     except Exception:
         # Never break startup output if log write fails.
         pass
@@ -108,7 +110,9 @@ class RichTeeConsole:
                 if not rendered:
                     return
                 with self._log_path.open("a", encoding="utf-8") as handle:
-                    handle.write(rendered if rendered.endswith("\n") else f"{rendered}\n")
+                    handle.write(
+                        rendered if rendered.endswith("\n") else f"{rendered}\n"
+                    )
         except Exception as e:
             logger.debug(f"Failed to mirror rich output to log file: {e}")
 
@@ -434,15 +438,11 @@ class ShinkaEvolveRunner:
         # Robust job tracking - ensure no jobs are lost
         self.submitted_jobs: Dict[str, AsyncRunningJob] = {}  # All jobs ever submitted
         self.processing_lock = asyncio.Lock()  # Prevent concurrent processing issues
-        self.sampling_slot_pool = LogicalSlotPool(
-            self.max_proposal_jobs, "sampling"
-        )
+        self.sampling_slot_pool = LogicalSlotPool(self.max_proposal_jobs, "sampling")
         self.evaluation_slot_pool = LogicalSlotPool(
             self.max_evaluation_jobs, "evaluation"
         )
-        self.postprocess_slot_pool = LogicalSlotPool(
-            self.max_db_workers, "postprocess"
-        )
+        self.postprocess_slot_pool = LogicalSlotPool(self.max_db_workers, "postprocess")
 
         # Database retry mechanism
         self.failed_jobs_for_retry: Dict[
@@ -557,7 +557,9 @@ class ShinkaEvolveRunner:
 
             # Warn if settings seem too high
             if max_evaluation_jobs + max_proposal_jobs > cpu_count:
-                logger.warning("⚠️  High concurrency settings may cause CPU oversubscription")
+                logger.warning(
+                    "⚠️  High concurrency settings may cause CPU oversubscription"
+                )
             if max_evaluation_jobs + max_proposal_jobs > memory_based_limit:
                 logger.warning(
                     f"⚠️  High concurrency settings may cause memory pressure (limit: {memory_based_limit})"
@@ -700,15 +702,21 @@ class ShinkaEvolveRunner:
         buffer_max = max(0, getattr(self.evo_config, "proposal_buffer_max", 0))
         hard_cap = getattr(self.evo_config, "proposal_target_hard_cap", None)
         effective_hard_cap = (
-            self.max_proposal_jobs if hard_cap is None else min(hard_cap, self.max_proposal_jobs)
+            self.max_proposal_jobs
+            if hard_cap is None
+            else min(hard_cap, self.max_proposal_jobs)
         )
 
         mode = getattr(self.evo_config, "proposal_target_mode", "adaptive")
         if mode == "fixed":
             raw_target = base_target + buffer_max
         else:
-            min_samples = max(1, getattr(self.evo_config, "proposal_target_min_samples", 5))
-            ratio_cap = max(1.0, getattr(self.evo_config, "proposal_target_ratio_cap", 2.0))
+            min_samples = max(
+                1, getattr(self.evo_config, "proposal_target_min_samples", 5)
+            )
+            ratio_cap = max(
+                1.0, getattr(self.evo_config, "proposal_target_ratio_cap", 2.0)
+            )
             if (
                 self._proposal_timing_samples < min_samples
                 or self._sampling_seconds_ewma is None
@@ -738,7 +746,11 @@ class ShinkaEvolveRunner:
         """Log proposal target changes with current timing stats."""
         sampling_ewma = self._sampling_seconds_ewma or 0.0
         evaluation_ewma = self._evaluation_seconds_ewma or 0.0
-        log_state = (pipeline_target, round(sampling_ewma, 3), round(evaluation_ewma, 3))
+        log_state = (
+            pipeline_target,
+            round(sampling_ewma, 3),
+            round(evaluation_ewma, 3),
+        )
         if self._last_proposal_target_log == log_state:
             return
         self._last_proposal_target_log = log_state
@@ -956,8 +968,7 @@ class ShinkaEvolveRunner:
             self._load_bandit_state()
 
             # Update state for resuming
-            self.completed_generations = self.db.last_iteration + 1
-            self.next_generation_to_submit = self.completed_generations
+            await self._restore_resume_progress()
         else:
             # Generate or copy initial program only if NOT resuming
             if (
@@ -1747,6 +1758,25 @@ class ShinkaEvolveRunner:
                             logger.info(
                                 f"✅ Job {job.job_id} completed (gen {job.generation}) after {runtime:.1f}s"
                             )
+                    elif self._is_job_hung(job):
+                        runtime = time.time() - (
+                            job.evaluation_started_at
+                            or job.evaluation_submitted_at
+                            or job.start_time
+                        )
+                        logger.warning(
+                            f"⏱️  Hung job detected for gen {job.generation}: "
+                            f"runtime={runtime:.1f}s. Cancelling for recovery."
+                        )
+                        cancelled = await self.scheduler.cancel_job_async(job.job_id)
+                        if not cancelled:
+                            logger.warning(
+                                f"Failed to cancel hung job {job.job_id} "
+                                f"(gen {job.generation}); keeping it running"
+                            )
+                            still_running.append(job)
+                            continue
+                        completed_jobs.append(job)
                     else:
                         still_running.append(job)
 
@@ -2051,11 +2081,7 @@ class ShinkaEvolveRunner:
                         # System determined to be permanently stuck, exit
                         break
 
-                # Simple approach: use next_generation_to_submit as hard cap
-                # This tracks total submitted proposals and prevents any overshoot
-                proposals_remaining = max(
-                    0, self.evo_config.num_generations - self.next_generation_to_submit
-                )
+                proposals_remaining = self._get_remaining_completed_work()
 
                 # Check if cost limit has been reached using committed cost
                 # Committed cost = actual cost + estimated cost of in-flight proposals
@@ -2100,7 +2126,9 @@ class ShinkaEvolveRunner:
                             f"Starting {proposals_needed} new proposals. "
                             f"Pipeline: {pipeline_capacity}/{pipeline_target} "
                             f"(running_jobs={len(self.running_jobs)}, active_proposals={len(self.active_proposal_tasks)}/{self.max_proposal_jobs}), "
-                            f"Proposals remaining: {proposals_remaining} (submitted={self.next_generation_to_submit}/{self.evo_config.num_generations})"
+                            f"Remaining completed work: {proposals_remaining} "
+                            f"(completed={self.completed_generations}/{self.evo_config.num_generations}, "
+                            f"next_generation={self.next_generation_to_submit})"
                         )
                     await self._start_proposals(proposals_needed)
                     # Record progress when we start new proposals
@@ -2289,10 +2317,11 @@ class ShinkaEvolveRunner:
                     f"Failed to cleanup lock file for generation {generation}: {e}"
                 )
 
-            # Remove from active tasks
-            if task_id in self.active_proposal_tasks:
-                del self.active_proposal_tasks[task_id]
-            await self.sampling_slot_pool.release(sampling_worker_id)
+            await self._cleanup_proposal_task_state(
+                generation=generation,
+                task_id=task_id,
+                sampling_worker_id=sampling_worker_id,
+            )
 
     async def _generate_evolved_proposal(
         self,
@@ -3272,25 +3301,25 @@ class ShinkaEvolveRunner:
                 system_prompt_id=system_prompt_id,  # Track evolved prompt
                 metadata=with_pipeline_timing(
                     {
-                    **(job.meta_patch_data or {}),
-                    "embed_cost": job.embed_cost,
-                    "novelty_cost": job.novelty_cost,
-                    "stdout_log": stdout_log,
-                    "stderr_log": stderr_log,
-                    "results_missing": results is None,
-                    "safe_processing": True,
-                    "source_job_id": source_job_id,
-                    "source_generation": job.generation,
-                    "timeline_lane_mode": "pool_slots",
-                    "sampling_worker_id": job.sampling_worker_id,
-                    "evaluation_worker_id": job.evaluation_worker_id,
-                    "postprocess_worker_id": postprocess_worker_id,
-                    "active_proposals_at_start": job.active_proposals_at_start,
-                    "running_eval_jobs_at_submit": job.running_eval_jobs_at_submit,
-                    "db_workers_in_use_at_postprocess_start": db_workers_in_use_at_postprocess_start,
-                    "sampling_worker_capacity": self.max_proposal_jobs,
-                    "evaluation_worker_capacity": self.max_evaluation_jobs,
-                    "postprocess_worker_capacity": self.max_db_workers,
+                        **(job.meta_patch_data or {}),
+                        "embed_cost": job.embed_cost,
+                        "novelty_cost": job.novelty_cost,
+                        "stdout_log": stdout_log,
+                        "stderr_log": stderr_log,
+                        "results_missing": results is None,
+                        "safe_processing": True,
+                        "source_job_id": source_job_id,
+                        "source_generation": job.generation,
+                        "timeline_lane_mode": "pool_slots",
+                        "sampling_worker_id": job.sampling_worker_id,
+                        "evaluation_worker_id": job.evaluation_worker_id,
+                        "postprocess_worker_id": postprocess_worker_id,
+                        "active_proposals_at_start": job.active_proposals_at_start,
+                        "running_eval_jobs_at_submit": job.running_eval_jobs_at_submit,
+                        "db_workers_in_use_at_postprocess_start": db_workers_in_use_at_postprocess_start,
+                        "sampling_worker_capacity": self.max_proposal_jobs,
+                        "evaluation_worker_capacity": self.max_evaluation_jobs,
+                        "postprocess_worker_capacity": self.max_db_workers,
                     },
                     pipeline_started_at=job.proposal_started_at,
                     sampling_started_at=job.proposal_started_at,
@@ -3364,6 +3393,7 @@ class ShinkaEvolveRunner:
                         f"(gen {job.generation}) added to retry queue"
                     )
                 else:
+                    self.failed_jobs_for_retry.pop(str(job.job_id), None)
                     logger.error(
                         f"❌ RETRY EXHAUSTED: Job {job.job_id} "
                         f"(gen {job.generation}) exceeded "
@@ -3389,6 +3419,7 @@ class ShinkaEvolveRunner:
                         f"(gen {job.generation}) added to retry queue"
                     )
                 else:
+                    self.failed_jobs_for_retry.pop(str(job.job_id), None)
                     logger.error(
                         f"❌ RETRY EXHAUSTED: Job {job.job_id} "
                         f"(gen {job.generation}) exceeded "
@@ -3476,9 +3507,7 @@ class ShinkaEvolveRunner:
             try:
                 await self._persist_program_metadata_async(program)
             except Exception as e:
-                logger.warning(
-                    f"Metadata persistence error for {job.job_id}: {e}"
-                )
+                logger.warning(f"Metadata persistence error for {job.job_id}: {e}")
             self._record_oversubscription_timing_sample(program.metadata or {})
 
             logger.info(
@@ -3571,6 +3600,75 @@ class ShinkaEvolveRunner:
                 f"jobs still in retry queue"
             )
 
+    async def _count_completed_generations_from_db(self) -> int:
+        """Count persisted completed generations, excluding island copies."""
+        total_programs = await self.async_db.get_total_program_count_async()
+        island_copies = max(0, getattr(self.db_config, "num_islands", 1) - 1)
+        completed_generations = max(0, total_programs - island_copies)
+        return min(completed_generations, self.evo_config.num_generations)
+
+    async def _restore_resume_progress(self) -> None:
+        """Restore progress counters from persisted database state."""
+        self.completed_generations = await self._count_completed_generations_from_db()
+        self.next_generation_to_submit = max(self.db.last_iteration + 1, 1)
+
+    def _get_in_flight_work_count(self) -> int:
+        """Return work that is expected to complete without new proposals."""
+        return (
+            len(self.running_jobs)
+            + len(self.active_proposal_tasks)
+            + len(self.failed_jobs_for_retry)
+        )
+
+    def _get_remaining_completed_work(self) -> int:
+        """Return how many completed generations are still needed."""
+        return max(
+            0,
+            self.evo_config.num_generations
+            - self.completed_generations
+            - self._get_in_flight_work_count(),
+        )
+
+    async def _cleanup_proposal_task_state(
+        self,
+        generation: int,
+        task_id: str,
+        sampling_worker_id: Optional[int],
+    ) -> None:
+        """Release proposal bookkeeping after a proposal attempt finishes."""
+        self.assigned_generations.discard(generation)
+        if task_id in self.active_proposal_tasks:
+            del self.active_proposal_tasks[task_id]
+        if sampling_worker_id is not None:
+            await self.sampling_slot_pool.release(sampling_worker_id)
+
+    def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
+        """Return the wall-clock runtime limit for a single evaluation job."""
+        job_timeout = getattr(self.job_config, "time", None)
+        if job_timeout:
+            return float(parse_time_to_seconds(job_timeout))
+
+        if getattr(self.scheduler, "job_type", None) == "local":
+            if self._evaluation_seconds_ewma is not None:
+                return max(60.0, self._evaluation_seconds_ewma * 5.0 + 60.0)
+
+        return None
+
+    def _is_job_hung(self, job: AsyncRunningJob, now: Optional[float] = None) -> bool:
+        """Detect a single evaluation job that has exceeded its runtime budget."""
+        runtime_limit = self._get_evaluation_runtime_limit_seconds()
+        if runtime_limit is None:
+            return False
+
+        started_at = (
+            job.evaluation_started_at or job.evaluation_submitted_at or job.start_time
+        )
+        if started_at is None:
+            return False
+
+        current_time = time.time() if now is None else now
+        return (current_time - started_at) > runtime_limit
+
     async def _update_completed_generations(self):
         """Update completed generations count for async evolution.
 
@@ -3586,31 +3684,7 @@ class ShinkaEvolveRunner:
         # More efficient approach: get total program count and subtract running jobs
         # This avoids expensive per-generation database queries
         try:
-            # Get total number of programs in database (much faster single query)
-            total_programs = await self.async_db.get_total_program_count_async()
-
-            # Account for island copies: the initial program gets duplicated
-            # (num_islands - 1) times, so we need to subtract these extra copies
-            num_islands = getattr(self.db_config, "num_islands", 1)
-            if num_islands > 1:
-                # Subtract the extra island copies of generation 0
-                island_copies = num_islands - 1
-                total_programs -= island_copies
-
-            # Each generation should have exactly 1 program when completed
-            # So completed generations = total programs - programs from running jobs
-            programs_from_running = len(self.running_jobs)
-
-            # Account for jobs in retry queue (completed eval but failed DB write)
-            # These jobs are not in running_jobs but also not in the database yet
-            programs_in_retry = len(self.failed_jobs_for_retry)
-
-            # The completed count is total programs minus running jobs
-            # and minus jobs waiting for DB retry
-            # (since each successful evaluation adds exactly 1 program)
-            calculated_completed = (
-                total_programs - programs_from_running - programs_in_retry
-            )
+            calculated_completed = await self._count_completed_generations_from_db()
 
             # Debug logging when count doesn't change
             if (
@@ -3619,17 +3693,11 @@ class ShinkaEvolveRunner:
                 and calculated_completed == self.completed_generations
             ):
                 logger.debug(
-                    f"📊 Completion calc: total_programs={total_programs}, "
-                    f"running={programs_from_running}, "
-                    f"retry={programs_in_retry}, "
-                    f"result={calculated_completed}"
+                    f"📊 Completion calc: persisted={calculated_completed}, "
+                    f"inflight={self._get_in_flight_work_count()}"
                 )
 
             self.completed_generations = calculated_completed
-
-            # Ensure we don't exceed target generations
-            max_gens = self.evo_config.num_generations
-            self.completed_generations = min(self.completed_generations, max_gens)
 
             # Periodically save bandit state (every 5 generations)
             if self.completed_generations % 5 == 0 and self.completed_generations > 0:
@@ -3732,7 +3800,7 @@ class ShinkaEvolveRunner:
         if time_since_progress > self.stuck_detection_timeout:
             self.stuck_detection_count += 1
 
-            pending_work = self.evo_config.num_generations - self.completed_generations
+            pending_work = self._get_remaining_completed_work()
             logger.warning(
                 f"🚨 STUCK SYSTEM DETECTED (#{self.stuck_detection_count}/{self.max_stuck_detections}): "
                 f"No progress for {time_since_progress:.1f}s. "
@@ -3761,9 +3829,7 @@ class ShinkaEvolveRunner:
             try:
                 # Force start at least one proposal if we have uncompleted work
                 # Use completed_generations to determine pending work, not next_generation_to_submit
-                pending_work = (
-                    self.evo_config.num_generations - self.completed_generations
-                )
+                pending_work = self._get_remaining_completed_work()
                 if pending_work > 0:
                     proposals_to_start = min(1, pending_work, self.max_proposal_jobs)
                     await self._start_proposals(proposals_to_start)
