@@ -249,6 +249,7 @@ evo_config = EvolutionConfig(
         "openrouter/qwen/qwen3-coder",
         "local/qwen2.5-coder@http://localhost:11434/v1",
     ],
+    embedding_model="local/text-embeddings-inference@http://localhost:8080/v1",
 )
 ```
 
