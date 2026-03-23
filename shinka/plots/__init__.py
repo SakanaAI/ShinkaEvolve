@@ -13,6 +13,10 @@ from .plot_time import (
     plot_time_throughput_compare,
 )
 from .plot_llm import plot_cumulative_llm_calls
+from .plot_throughput import (
+    plot_generation_runtime_timeline,
+    plot_normalized_occupancy_over_time,
+)
 
 __all__ = [
     "plot_lineage_tree",
@@ -28,4 +32,6 @@ __all__ = [
     "plot_time_performance_compare",
     "plot_time_throughput_compare",
     "plot_cumulative_llm_calls",
+    "plot_generation_runtime_timeline",
+    "plot_normalized_occupancy_over_time",
 ]
