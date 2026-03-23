@@ -3,12 +3,12 @@ max_evaluation_jobs: 20
 # Number of proposal-generation jobs to run in parallel.
 max_proposal_jobs: 26
 # Number of database worker jobs handling archive/selection updates.
-max_db_workers: 8
+max_db_workers: 4
 
 # Database/search-state settings for island evolution and archiving.
 db_config:
   # Number of independent evolutionary islands.
-  num_islands: 1
+  num_islands: 4
   # Maximum number of individuals stored in the archive.
   archive_size: 40
   # Fraction of top performers treated as elites.
@@ -41,7 +41,7 @@ db_config:
     loc: -0.3
 
   # Whether to spawn new islands dynamically on stagnation.
-  enable_dynamic_islands: true
+  enable_dynamic_islands: false
   # Number of generations without progress before stagnation triggers.
   stagnation_threshold: 10
   # Strategy for choosing a seed when spawning a new island.
