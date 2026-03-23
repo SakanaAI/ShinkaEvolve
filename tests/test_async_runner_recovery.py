@@ -2,7 +2,10 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from shinka.core.async_runner import AsyncRunningJob, ShinkaEvolveRunner
+from shinka.core.runtime_slots import LogicalSlotPool
 
 
 class _FakeAsyncDB:
@@ -20,6 +23,77 @@ class _FakeSlotPool:
     async def release(self, worker_id):
         self.released.append(worker_id)
 
+    async def acquire(self):
+        return 0
+
+
+class _FakeScheduler:
+    def __init__(self, cancelled_job_ids=None):
+        self.cancelled_job_ids = []
+        self._cancelled_job_ids = set(cancelled_job_ids or [])
+
+    async def cancel_job_async(self, job_id):
+        self.cancelled_job_ids.append(job_id)
+        return job_id in self._cancelled_job_ids
+
+    async def submit_async_nonblocking(self, exec_fname, results_dir):
+        return f"job-for-{exec_fname}"
+
+
+class _FakeAsyncDBWithGuard(_FakeAsyncDB):
+    def __init__(self):
+        super().__init__(total_programs=0)
+        self.add_calls = 0
+        self.source_job_checks = []
+
+    async def has_program_with_source_job_id_async(self, source_job_id: str):
+        self.source_job_checks.append(source_job_id)
+        return False
+
+    async def add_program_async(self, *args, **kwargs):
+        self.add_calls += 1
+        raise AssertionError("discarded jobs must not be persisted")
+
+
+class _FakeEvent:
+    def __init__(self):
+        self._is_set = False
+
+    def set(self):
+        self._is_set = True
+
+    def clear(self):
+        self._is_set = False
+
+    def is_set(self):
+        return self._is_set
+
+
+class _TrackedSlotPool:
+    def __init__(self, events, label):
+        self.events = events
+        self.label = label
+        self.in_use = 0
+
+    async def acquire(self):
+        self.events.append(f"{self.label}.acquire")
+        self.in_use += 1
+        return 7
+
+    async def release(self, worker_id):
+        self.events.append(f"{self.label}.release:{worker_id}")
+        if worker_id is not None and self.in_use > 0:
+            self.in_use -= 1
+
+
+class _TrackedScheduler:
+    def __init__(self, events):
+        self.events = events
+
+    async def submit_async_nonblocking(self, exec_fname, results_dir):
+        self.events.append(f"submit:{exec_fname}:{results_dir}")
+        return "job-123"
+
 
 def _build_runner(**overrides):
     runner = object.__new__(ShinkaEvolveRunner)
@@ -36,8 +110,16 @@ def _build_runner(**overrides):
     runner.failed_jobs_for_retry = overrides.get("failed_jobs_for_retry", {})
     runner.assigned_generations = overrides.get("assigned_generations", set())
     runner.evaluation_slot_pool = overrides.get("evaluation_slot_pool", _FakeSlotPool())
+    runner.postprocess_slot_pool = overrides.get("postprocess_slot_pool", _FakeSlotPool())
     runner.sampling_slot_pool = overrides.get("sampling_slot_pool", _FakeSlotPool())
+    runner.scheduler = overrides.get("scheduler", _FakeScheduler())
+    runner.submitted_jobs = overrides.get("submitted_jobs", {})
+    runner.slot_available = overrides.get("slot_available", _FakeEvent())
+    runner.max_evaluation_jobs = overrides.get("max_evaluation_jobs", 2)
+    runner.max_proposal_jobs = overrides.get("max_proposal_jobs", 1)
+    runner.max_db_workers = overrides.get("max_db_workers", 1)
     runner._evaluation_seconds_ewma = overrides.get("evaluation_ewma")
+    runner.verbose = overrides.get("verbose", False)
     return runner
 
 
@@ -71,6 +153,15 @@ def test_get_remaining_completed_work_accounts_for_inflight_jobs():
     assert runner._get_remaining_completed_work() == 1
 
 
+def test_get_remaining_generation_slots_uses_hard_generation_budget():
+    runner = _build_runner(
+        evo_config=SimpleNamespace(num_generations=5),
+        next_generation_to_submit=4,
+    )
+
+    assert runner._get_remaining_generation_slots() == 1
+
+
 def test_cleanup_proposal_task_state_releases_generation_and_slot():
     async def _run():
         slot_pool = _FakeSlotPool()
@@ -89,6 +180,97 @@ def test_cleanup_proposal_task_state_releases_generation_and_slot():
         assert runner.assigned_generations == set()
         assert runner.active_proposal_tasks == {}
         assert slot_pool.released == [3]
+
+    asyncio.run(_run())
+
+
+def test_start_proposals_does_not_assign_generation_past_target():
+    async def _run():
+        runner = _build_runner(
+            evo_config=SimpleNamespace(num_generations=5, max_api_costs=None),
+            next_generation_to_submit=4,
+            max_proposal_jobs=4,
+        )
+
+        async def _fake_generate(_generation, _task_id):
+            await asyncio.sleep(0)
+            return None
+
+        runner._generate_proposal_async = _fake_generate
+
+        await runner._start_proposals(3)
+
+        assert runner.next_generation_to_submit == 5
+        assert runner.assigned_generations == {4}
+        assert len(runner.active_proposal_tasks) == 1
+
+        await asyncio.gather(*runner.active_proposal_tasks.values(), return_exceptions=True)
+        await runner._cleanup_completed_proposal_tasks()
+
+    asyncio.run(_run())
+
+
+def test_submit_evaluation_job_acquires_slot_before_submitting():
+    async def _run():
+        events = []
+        eval_pool = _TrackedSlotPool(events, "eval")
+        sampling_pool = _TrackedSlotPool(events, "sampling")
+        runner = _build_runner(
+            scheduler=_TrackedScheduler(events),
+            evaluation_slot_pool=eval_pool,
+            sampling_slot_pool=sampling_pool,
+        )
+
+        (
+            job_id,
+            evaluation_worker_id,
+            _evaluation_submitted_at,
+            _evaluation_started_at,
+            running_eval_jobs_at_submit,
+        ) = await runner._submit_evaluation_job_with_slot(
+            exec_fname="candidate.py",
+            results_dir="results-dir",
+            sampling_worker_id=3,
+        )
+
+        assert events == [
+            "sampling.release:3",
+            "eval.acquire",
+            "submit:candidate.py:results-dir",
+        ]
+        assert job_id == "job-123"
+        assert evaluation_worker_id == 7
+        assert running_eval_jobs_at_submit == 1
+
+    asyncio.run(_run())
+
+
+def test_release_evaluation_slot_once_does_not_free_reassigned_slot():
+    async def _run():
+        runner = _build_runner(evaluation_slot_pool=LogicalSlotPool(1, "evaluation"))
+        old_job = AsyncRunningJob(
+            job_id="job-old",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            evaluation_started_at=time.time(),
+            generation=1,
+            evaluation_worker_id=1,
+        )
+
+        first_slot = await runner.evaluation_slot_pool.acquire()
+        assert first_slot == 1
+
+        await runner._release_evaluation_slot_once(old_job)
+        reassigned_slot = await runner.evaluation_slot_pool.acquire()
+        assert reassigned_slot == 1
+
+        await runner._release_evaluation_slot_once(old_job)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(runner.evaluation_slot_pool.acquire(), timeout=0.01)
 
     asyncio.run(_run())
 
@@ -121,3 +303,175 @@ def test_is_job_hung_when_runtime_exceeds_limit():
     )
 
     assert runner._is_job_hung(job) is True
+
+
+def test_cancel_surplus_inflight_work_cancels_backlog_once_target_hit():
+    async def _run():
+        scheduler = _FakeScheduler(cancelled_job_ids={"job-1", "job-2"})
+        eval_pool = _FakeSlotPool()
+
+        proposal_task = asyncio.create_task(asyncio.sleep(60))
+        job_1 = AsyncRunningJob(
+            job_id="job-1",
+            exec_fname="program_1.py",
+            results_dir="results_1",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            evaluation_started_at=time.time(),
+            generation=51,
+            evaluation_worker_id=3,
+        )
+        job_2 = AsyncRunningJob(
+            job_id="job-2",
+            exec_fname="program_2.py",
+            results_dir="results_2",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            evaluation_started_at=time.time(),
+            generation=52,
+            evaluation_worker_id=4,
+        )
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=eval_pool,
+            running_jobs=[job_1, job_2],
+            active_proposal_tasks={"proposal-1": proposal_task},
+            assigned_generations={51, 52, 53},
+            submitted_jobs={"job-1": job_1, "job-2": job_2},
+        )
+
+        await runner._cancel_surplus_inflight_work()
+
+        assert proposal_task.cancelled()
+        assert runner.running_jobs == []
+        assert runner.active_proposal_tasks == {}
+        assert runner.submitted_jobs == {}
+        assert runner.assigned_generations == set()
+        assert scheduler.cancelled_job_ids == ["job-1", "job-2"]
+        assert eval_pool.released == [3, 4]
+
+    asyncio.run(_run())
+
+
+def test_process_single_job_skips_persistence_for_discarded_surplus_job():
+    async def _run():
+        async_db = _FakeAsyncDBWithGuard()
+        eval_pool = _FakeSlotPool()
+        postprocess_pool = _FakeSlotPool()
+        runner = _build_runner(
+            async_db=async_db,
+            evaluation_slot_pool=eval_pool,
+            postprocess_slot_pool=postprocess_pool,
+        )
+        job = AsyncRunningJob(
+            job_id="job-surplus",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            evaluation_started_at=time.time(),
+            generation=53,
+            evaluation_worker_id=9,
+            discard_if_completed=True,
+        )
+
+        success = await runner._process_single_job_safely(job)
+
+        assert success is True
+        assert async_db.source_job_checks == []
+        assert async_db.add_calls == 0
+        assert eval_pool.released == [9]
+        assert postprocess_pool.released == [None]
+
+    asyncio.run(_run())
+
+
+def test_mark_surplus_completed_jobs_discards_batch_overflow_after_target():
+    runner = _build_runner(
+        evo_config=SimpleNamespace(num_generations=100),
+        completed_generations=98,
+    )
+    completed_jobs = [
+        AsyncRunningJob(
+            job_id="job-101",
+            exec_fname="program_101.py",
+            results_dir="results_101",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=101,
+        ),
+        AsyncRunningJob(
+            job_id="job-99",
+            exec_fname="program_99.py",
+            results_dir="results_99",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=99,
+        ),
+        AsyncRunningJob(
+            job_id="job-100",
+            exec_fname="program_100.py",
+            results_dir="results_100",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=100,
+        ),
+        AsyncRunningJob(
+            job_id="job-102",
+            exec_fname="program_102.py",
+            results_dir="results_102",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=102,
+        ),
+    ]
+
+    runner._mark_surplus_completed_jobs_for_discard(completed_jobs)
+
+    kept_generations = [
+        job.generation for job in completed_jobs if not job.discard_if_completed
+    ]
+    discarded_generations = [
+        job.generation for job in completed_jobs if job.discard_if_completed
+    ]
+
+    assert kept_generations == [99, 100]
+    assert discarded_generations == [101, 102]
+
+
+def test_mark_surplus_completed_jobs_discards_all_when_target_already_reached():
+    runner = _build_runner(
+        evo_config=SimpleNamespace(num_generations=100),
+        completed_generations=100,
+    )
+    completed_jobs = [
+        AsyncRunningJob(
+            job_id="job-101",
+            exec_fname="program_101.py",
+            results_dir="results_101",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=101,
+        ),
+        AsyncRunningJob(
+            job_id="job-102",
+            exec_fname="program_102.py",
+            results_dir="results_102",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=102,
+        ),
+    ]
+
+    runner._mark_surplus_completed_jobs_for_discard(completed_jobs)
+
+    assert all(job.discard_if_completed for job in completed_jobs)
