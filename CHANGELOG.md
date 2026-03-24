@@ -14,6 +14,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 ### Changed
 
 - Renamed the local backend guide from `docs/support_local_llm.md` to `docs/support_local_models.md` and expanded it to cover local embedding backends alongside local LLMs.
+- Refactored async code validation to use a shared subprocess helper across Python, Rust, Swift, JSON, and C++ validators without changing validation behavior.
 - Updated `examples/circle_packing/load_results.ipynb` to include the new throughput plots at the bottom of the notebook.
 - Updated `examples/circle_packing/load_results.ipynb` and `examples/circle_packing/shinka_long.yaml` for the latest large async circle-packing run analysis setup.
 - Refined Python throughput plot legends to use compact centered panels below each subplot for cleaner notebook rendering.
