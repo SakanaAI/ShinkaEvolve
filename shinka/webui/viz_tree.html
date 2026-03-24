@@ -1859,7 +1859,7 @@
                 <div id="meta-analysis" class="content-section">
                     <div id="meta-controls" style="display: flex; gap: 20px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
                         <div style="display: flex; align-items: center; gap: 10px;">
-                            <label for="generation-slider">Generation:</label>
+                            <label for="generation-slider">Meta Update:</label>
                             <input type="range" id="generation-slider" min="5" max="25" step="1" value="5" style="width: 200px;" disabled>
                             <span id="generation-value">5</span>
                         </div>
@@ -2586,7 +2586,7 @@
                 return;
             }
             
-            // Get the current generation
+            // Get the current meta update identifier
             const currentGen = document.getElementById('generation-value').textContent;
             
             console.log('[DEBUG] Starting PDF download process...');
@@ -2603,7 +2603,7 @@
                 console.log('[DEBUG] First 200 chars:', rawText.substring(0, 200));
                 
                 // Add header to the content
-                const header = `Meta Analysis - Generation ${generation}
+                const header = `Meta Analysis - Update ${generation}
 Database: ${dbName}
 ${'='.repeat(80)}
 `;
@@ -2664,9 +2664,9 @@ ${'='.repeat(80)}
                             // Update slider range based on available files
                             updateMetaSlider(metaFiles);
                             
-                            // Load the highest generation meta file by default
+                            // Load the highest update file by default
                             if (metaFiles.length > 0) {
-                                const highestGen = metaFiles[metaFiles.length - 1].generation;
+                                const highestGen = metaFiles[metaFiles.length - 1].processed_count;
                                 const slider = document.getElementById('generation-slider');
                                 if (slider) {
                                     slider.value = highestGen;
@@ -2704,7 +2704,9 @@ ${'='.repeat(80)}
                 return;
             }
             
-            const generations = metaFiles.map(f => f.generation).sort((a, b) => a - b);
+            const generations = metaFiles
+                .map(f => f.processed_count ?? f.generation)
+                .sort((a, b) => a - b);
             const minGen = Math.min(...generations);
             const maxGen = Math.max(...generations);
             
@@ -2728,21 +2730,28 @@ ${'='.repeat(80)}
             }
         }
         
-        // Function to load meta content for a specific generation
+        // Function to load meta content for a specific meta update
         function loadMetaContent(generation) {
             if (!window.currentDbPath) {
                 showMetaMessage("Please select a database first.");
                 return;
             }
-            
-            // Check if this generation is available
-            const availableGen = window.availableMetaFiles.find(f => f.generation == generation);
-            if (!availableGen) {
-                showMetaMessage(`Meta analysis for generation ${generation} is not available.`);
+
+            if (generation === undefined || generation === null || generation === '') {
+                showMetaMessage("Meta analysis for this update is not available.");
                 return;
             }
             
-            console.log("[DEBUG] Loading meta content for generation:", generation);
+            // Check if this update is available
+            const availableGen = window.availableMetaFiles.find(
+                f => (f.processed_count ?? f.generation) == generation
+            );
+            if (!availableGen) {
+                showMetaMessage(`Meta analysis for update ${generation} is not available.`);
+                return;
+            }
+            
+            console.log("[DEBUG] Loading meta analysis for update:", generation);
             
             // Show loading state
             const metaContent = document.getElementById('meta-content');
@@ -2752,7 +2761,7 @@ ${'='.repeat(80)}
             
             // Make request to server to get meta content
             const xhr = new XMLHttpRequest();
-            xhr.open('GET', `/get_meta_content?db_path=${encodeURIComponent(window.currentDbPath)}&generation=${generation}`, true);
+            xhr.open('GET', `/get_meta_content?db_path=${encodeURIComponent(window.currentDbPath)}&processed_count=${generation}`, true);
             
             xhr.onreadystatechange = function() {
                 if (xhr.readyState === 4) {
@@ -2764,7 +2773,9 @@ ${'='.repeat(80)}
                             displayMetaContent(response);
                             
                             // Preload previous generation for diff comparison
-                            const availableGens = window.availableMetaFiles.map(f => f.generation).sort((a, b) => a - b);
+                            const availableGens = window.availableMetaFiles
+                                .map(f => f.processed_count ?? f.generation)
+                                .sort((a, b) => a - b);
                             const currentIndex = availableGens.indexOf(parseInt(generation));
                             if (currentIndex > 0) {
                                 const prevGen = availableGens[currentIndex - 1];
@@ -2776,7 +2787,7 @@ ${'='.repeat(80)}
                         }
                     } else {
                         console.error("[ERROR] Failed to load meta content:", xhr.status, xhr.statusText);
-                        showMetaError(`Failed to load meta analysis for generation ${generation}.`);
+                        showMetaError(`Failed to load meta analysis for update ${generation}.`);
                     }
                 }
             };
@@ -3039,12 +3050,12 @@ ${'='.repeat(80)}
             if (!metaContent) return;
             
             try {
-                const currentGen = metaData.generation;
+                const currentGen = metaData.processed_count ?? metaData.generation;
                 
                 // Parse content into sections
                 window.parsedMetaSections = parseMetaIntoSections(metaData.content);
                 
-                console.log("[DEBUG] Displaying meta content for generation", currentGen);
+                console.log("[DEBUG] Displaying meta content for update", currentGen);
                 
                 // Show the content for the currently active sub-tab
                 const activeSubTab = document.querySelector('.meta-sub-tab.active');
@@ -3055,7 +3066,7 @@ ${'='.repeat(80)}
                 // Display the header info
                 metaContent.innerHTML = `
                     <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #eee;">
-                        <h3 style="margin: 0; color: #333;">Scratchpad - Generation ${metaData.generation}</h3>
+                        <h3 style="margin: 0; color: #333;">Scratchpad - Update ${currentGen}</h3>
                         <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">File: ${metaData.filename}</p>
                     </div>
                     <div class="meta-content-body" style="line-height: 1.6;" id="meta-section-content">
@@ -3068,7 +3079,7 @@ ${'='.repeat(80)}
                     showMetaSection(activeSection);
                 }, 0);
                 
-                console.log("[DEBUG] Successfully displayed meta content for generation", metaData.generation);
+                console.log("[DEBUG] Successfully displayed meta content for update", currentGen);
             } catch (e) {
                 console.error("[ERROR] Failed to render meta content:", e);
                 showMetaError("Failed to render meta analysis content.");
@@ -3111,8 +3122,8 @@ ${'='.repeat(80)}
         
         // Function to download meta content as PDF
         function downloadMetaPdf(dbPath, generation) {
-            console.log(`Downloading meta PDF for DB: ${dbPath}, Generation: ${generation}`);
-            const url = `/download_meta_pdf?db_path=${encodeURIComponent(dbPath)}&generation=${generation}`;
+            console.log(`Downloading meta PDF for DB: ${dbPath}, Update: ${generation}`);
+            const url = `/download_meta_pdf?db_path=${encodeURIComponent(dbPath)}&processed_count=${generation}`;
             window.open(url, '_blank');
         }
         
@@ -3126,14 +3137,14 @@ ${'='.repeat(80)}
             console.log("[DEBUG] Loading meta content for diff comparison:", generation);
             
             const xhr = new XMLHttpRequest();
-            xhr.open('GET', `/get_meta_content?db_path=${encodeURIComponent(window.currentDbPath)}&generation=${generation}`, true);
+            xhr.open('GET', `/get_meta_content?db_path=${encodeURIComponent(window.currentDbPath)}&processed_count=${generation}`, true);
             
             xhr.onreadystatechange = function() {
                 if (xhr.readyState === 4 && xhr.status === 200) {
                     try {
                         const response = JSON.parse(xhr.responseText);
                         window.metaContentCache[generation] = response;
-                        console.log("[DEBUG] Cached meta content for generation", generation);
+                        console.log("[DEBUG] Cached meta content for update", generation);
                         
                         // Call the completion callback if provided
                         if (onComplete) onComplete();
