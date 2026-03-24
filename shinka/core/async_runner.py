@@ -3304,7 +3304,44 @@ class ShinkaEvolveRunner:
                     status="persist_duplicate_skip",
                     source_job_id=job.job_id,
                 )
-                return CompletedJobPersistResult(job=job, success=True)
+
+                existing_program = await self.async_db.get_program_by_source_job_id_async(
+                    source_job_id
+                )
+                if existing_program is None:
+                    logger.warning(
+                        "Duplicate source_job_id %s was reported as persisted, "
+                        "but no matching program row could be loaded",
+                        source_job_id,
+                    )
+                    return CompletedJobPersistResult(job=job, success=True)
+
+                if (existing_program.metadata or {}).get(
+                    "postprocess_side_effects_applied"
+                ):
+                    logger.info(
+                        "⏭️  SKIP SIDE EFFECTS: Job %s (gen %s) already applied",
+                        job.job_id,
+                        job.generation,
+                    )
+                    return CompletedJobPersistResult(job=job, success=True)
+
+                recovered_finished_at = (
+                    (existing_program.metadata or {}).get("evaluation_finished_at")
+                    or job.results_retrieved_at
+                    or time.time()
+                )
+                return CompletedJobPersistResult(
+                    job=job,
+                    success=True,
+                    persisted_event=PersistedProgramEvent(
+                        job=job,
+                        program=existing_program,
+                        evaluation_finished_at=recovered_finished_at,
+                        postprocess_started_at=time.time(),
+                        postprocess_finished_at=time.time(),
+                    ),
+                )
 
             # Get job results with timeout to prevent hanging
             try:
@@ -3526,6 +3563,16 @@ class ShinkaEvolveRunner:
         job = persisted_event.job
         program = persisted_event.program
         apply_started_at = time.time()
+        metadata = dict(program.metadata or {})
+        if metadata.get("postprocess_side_effects_applied"):
+            logger.info(
+                "⏭️  SIDE EFFECTS ALREADY APPLIED: skipping job %s (gen %s)",
+                job.job_id,
+                job.generation,
+            )
+            return
+
+        side_effects_applied = False
 
         try:
             system_prompt_id = None
@@ -3614,6 +3661,8 @@ class ShinkaEvolveRunner:
                 logger.warning(f"Best solution update error for {job.job_id}: {e}")
                 # Don't fail the whole job for best solution update issues
 
+            side_effects_applied = True
+
         finally:
             apply_finished_at = time.time()
             program.metadata = dict(program.metadata or {})
@@ -3622,6 +3671,8 @@ class ShinkaEvolveRunner:
             program.metadata["postprocess_apply_seconds"] = max(
                 0.0, apply_finished_at - apply_started_at
             )
+            if side_effects_applied:
+                program.metadata["postprocess_side_effects_applied"] = True
             try:
                 await self._persist_program_metadata_async(program)
             except Exception as e:

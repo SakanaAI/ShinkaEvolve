@@ -744,6 +744,37 @@ class AsyncProgramDatabase:
             logger.error(f"Error in async source_job_id existence check: {e}")
             raise
 
+    async def get_program_by_source_job_id_async(
+        self, source_job_id: str
+    ) -> Optional[Program]:
+        """Fetch a persisted program row by completed scheduler job id."""
+        op_id = self._debug_track_start(
+            "get_program_by_source_job_id_async", source_job_id=source_job_id
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def fetch_thread_safe():
+                thread_db = None
+                try:
+                    from .dbase import ProgramDatabase
+
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    return thread_db.get_program_by_source_job_id(source_job_id)
+                finally:
+                    if thread_db:
+                        thread_db.close()
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(self.executor, fetch_thread_safe)
+            self._debug_track_end(op_id, success=True)
+            return result
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async source_job_id lookup: {e}")
+            raise
+
     async def record_generation_event_async(
         self,
         generation: int,

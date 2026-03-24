@@ -689,6 +689,24 @@ class ProgramDatabase:
         return self.cursor.fetchone() is not None
 
     @db_retry()
+    def get_program_by_source_job_id(self, source_job_id: str) -> Optional[Program]:
+        """Return the persisted program row for a completed scheduler job."""
+        if not self.cursor:
+            return None
+        self.cursor.execute(
+            """
+            SELECT *
+            FROM programs
+            WHERE json_valid(metadata)
+              AND json_extract(metadata, '$.source_job_id') = ?
+            LIMIT 1
+            """,
+            (source_job_id,),
+        )
+        row = self.cursor.fetchone()
+        return self._program_from_row(row) if row else None
+
+    @db_retry()
     def add(self, program: Program, verbose: bool = False) -> str:
         """
         Add a program to the database with optimized performance.

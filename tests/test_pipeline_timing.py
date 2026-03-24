@@ -78,6 +78,12 @@ class _FakeAsyncDB:
     async def has_program_with_source_job_id_async(self, source_job_id):
         return source_job_id in self.seen_source_job_ids
 
+    async def get_program_by_source_job_id_async(self, source_job_id):
+        for program in self.programs:
+            if (program.metadata or {}).get("source_job_id") == source_job_id:
+                return program
+        return None
+
 
 class _ConcurrentRecordingAsyncDB(_FakeAsyncDB):
     def __init__(self):
@@ -258,6 +264,174 @@ def test_process_single_job_safely_skips_duplicate_source_job():
         assert ok_first is True
         assert ok_second is True
         assert len(runner.async_db.programs) == 1
+
+    asyncio.run(_run())
+
+
+def test_process_single_job_safely_replays_side_effects_for_duplicate_without_marker():
+    class _FakeMetaSummarizer:
+        def __init__(self):
+            self.programs = []
+
+        def add_evaluated_program(self, program):
+            self.programs.append(program.id)
+
+        def should_update_meta(self, _interval):
+            return False
+
+    async def _run():
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.scheduler = _FakeScheduler()
+        runner.async_db = _FakeAsyncDB()
+        runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=5)
+        runner.meta_summarizer = _FakeMetaSummarizer()
+        runner.llm_selection = None
+        runner.MAX_DB_RETRY_ATTEMPTS = 3
+        runner.failed_jobs_for_retry = {}
+        runner.total_api_cost = 0.0
+        runner.verbose = False
+        runner.console = None
+        runner.max_proposal_jobs = 2
+        runner.max_evaluation_jobs = 2
+        runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
+        runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
+        runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.submitted_jobs = {}
+        runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
+        runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
+        runner._persist_program_metadata_async = lambda program: asyncio.sleep(
+            0, result=None
+        )
+        runner._record_oversubscription_timing_sample = lambda metadata: None
+
+        from shinka.database import Program
+
+        existing_program = Program(
+            id="persisted-dup",
+            code="print('hi')\n",
+            language="python",
+            generation=4,
+            correct=True,
+            combined_score=2.5,
+            public_metrics={"acc": 1.0},
+            private_metrics={"loss": 0.1},
+            text_feedback="ok",
+            metadata={"source_job_id": "job-dup"},
+        )
+        runner.async_db.programs.append(existing_program)
+        runner.async_db.seen_source_job_ids.add("job-dup")
+
+        job = AsyncRunningJob(
+            job_id="job-dup",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time() - 4.0,
+            proposal_started_at=time.time() - 4.0,
+            evaluation_submitted_at=time.time() - 1.5,
+            evaluation_started_at=time.time() - 1.0,
+            generation=4,
+            sampling_worker_id=1,
+            evaluation_worker_id=1,
+            active_proposals_at_start=1,
+            running_eval_jobs_at_submit=1,
+            meta_patch_data={"patch_name": "dup_patch"},
+        )
+
+        ok = await runner._process_single_job_safely(job)
+
+        assert ok is True
+        assert len(runner.async_db.programs) == 1
+        assert runner.meta_summarizer.programs == ["persisted-dup"]
+        assert existing_program.metadata["postprocess_side_effects_applied"] is True
+
+    asyncio.run(_run())
+
+
+def test_process_single_job_safely_skips_duplicate_side_effects_with_marker():
+    class _FakeMetaSummarizer:
+        def __init__(self):
+            self.programs = []
+
+        def add_evaluated_program(self, program):
+            self.programs.append(program.id)
+
+        def should_update_meta(self, _interval):
+            return False
+
+    async def _run():
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.scheduler = _FakeScheduler()
+        runner.async_db = _FakeAsyncDB()
+        runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=5)
+        runner.meta_summarizer = _FakeMetaSummarizer()
+        runner.llm_selection = None
+        runner.MAX_DB_RETRY_ATTEMPTS = 3
+        runner.failed_jobs_for_retry = {}
+        runner.total_api_cost = 0.0
+        runner.verbose = False
+        runner.console = None
+        runner.max_proposal_jobs = 2
+        runner.max_evaluation_jobs = 2
+        runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
+        runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
+        runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.submitted_jobs = {}
+        runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
+        runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
+        runner._persist_program_metadata_async = lambda program: asyncio.sleep(
+            0, result=None
+        )
+        runner._record_oversubscription_timing_sample = lambda metadata: None
+
+        from shinka.database import Program
+
+        existing_program = Program(
+            id="persisted-dup",
+            code="print('hi')\n",
+            language="python",
+            generation=4,
+            correct=True,
+            combined_score=2.5,
+            public_metrics={"acc": 1.0},
+            private_metrics={"loss": 0.1},
+            text_feedback="ok",
+            metadata={
+                "source_job_id": "job-dup",
+                "postprocess_side_effects_applied": True,
+            },
+        )
+        runner.async_db.programs.append(existing_program)
+        runner.async_db.seen_source_job_ids.add("job-dup")
+
+        job = AsyncRunningJob(
+            job_id="job-dup",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time() - 4.0,
+            proposal_started_at=time.time() - 4.0,
+            evaluation_submitted_at=time.time() - 1.5,
+            evaluation_started_at=time.time() - 1.0,
+            generation=4,
+            sampling_worker_id=1,
+            evaluation_worker_id=1,
+            active_proposals_at_start=1,
+            running_eval_jobs_at_submit=1,
+            meta_patch_data={"patch_name": "dup_patch"},
+        )
+
+        ok = await runner._process_single_job_safely(job)
+
+        assert ok is True
+        assert len(runner.async_db.programs) == 1
+        assert runner.meta_summarizer.programs == []
 
     asyncio.run(_run())
 
