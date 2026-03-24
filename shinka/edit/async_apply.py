@@ -18,6 +18,30 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+async def _run_validation_subprocess(
+    *args: str, timeout: int
+) -> Tuple[bool, Optional[str]]:
+    """Run a validator subprocess and normalize timeout/error handling."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return False, f"Validation timeout after {timeout}s"
+
+    if proc.returncode == 0:
+        return True, None
+
+    error_msg = stderr.decode() if stderr else "Unknown compilation error"
+    return False, error_msg
+
+
 async def apply_patch_async(
     original_str: str,
     patch_str: str,
@@ -94,125 +118,45 @@ async def validate_code_async(
     try:
         if language == "python":
             # Use python -m py_compile for syntax checking
-            proc = await asyncio.create_subprocess_exec(
+            return await _run_validation_subprocess(
                 "python",
                 "-m",
                 "py_compile",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
 
         elif language == "rust":
             # Use rustc for Rust syntax checking
-            proc = await asyncio.create_subprocess_exec(
+            return await _run_validation_subprocess(
                 "rustc",
                 "--crate-type=lib",
                 "-Zparse-only",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         elif language == "swift":
             # Use swiftc for Swift compilation check
-            proc = await asyncio.create_subprocess_exec(
+            return await _run_validation_subprocess(
                 "swiftc",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         elif language in ["json", "json5"]:
             # Use jsonschema for JSON validation
-            proc = await asyncio.create_subprocess_exec(
+            return await _run_validation_subprocess(
                 "jsonschema",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         elif language == "cpp":
             # Use g++ for C++ compilation check
-            proc = await asyncio.create_subprocess_exec(
+            return await _run_validation_subprocess(
                 "g++",
                 "-fsyntax-only",
                 code_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return False, f"Validation timeout after {timeout}s"
-
-            if proc.returncode == 0:
-                return True, None
-            else:
-                error_msg = stderr.decode() if stderr else "Unknown compilation error"
-                return False, error_msg
         else:
             # For other languages, just check if file exists and is readable
             try:
