@@ -515,6 +515,36 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.warning(f"Failed to load bandit state: {e}")
 
+    async def _record_generation_event(
+        self,
+        generation: int,
+        status: str,
+        source_job_id: Optional[Union[str, Any]] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort durable generation event logging."""
+        if not hasattr(self.async_db, "record_generation_event_async"):
+            return
+
+        normalized_job_id = None
+        if source_job_id is not None:
+            normalized_job_id = str(source_job_id)
+
+        try:
+            await self.async_db.record_generation_event_async(
+                generation=generation,
+                status=status,
+                source_job_id=normalized_job_id,
+                details=details,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record generation event %s for gen %s: %s",
+                status,
+                generation,
+                e,
+            )
+
     def _validate_concurrency_settings(
         self,
         max_evaluation_jobs: int,
@@ -2114,6 +2144,15 @@ class ShinkaEvolveRunner:
                     and self._get_in_flight_work_count() == 0
                     and self.completed_generations < self.evo_config.num_generations
                 ):
+                    await self._record_generation_event(
+                        generation=self.next_generation_to_submit,
+                        status="stopped_generation_budget_exhausted",
+                        details={
+                            "completed_generations": self.completed_generations,
+                            "target_generations": self.evo_config.num_generations,
+                            "next_generation_to_submit": self.next_generation_to_submit,
+                        },
+                    )
                     logger.warning(
                         "Generation budget exhausted before reaching target "
                         f"completed generations: completed={self.completed_generations}, "
@@ -2641,10 +2680,19 @@ class ShinkaEvolveRunner:
             except Exception as e:
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
                 logger.error(f"Error submitting job: {e}")
+                await self._record_generation_event(
+                    generation=generation,
+                    status="evaluation_submit_failed",
+                    details={"error": str(e)},
+                )
                 return None
 
         logger.warning(
             f"Failed to generate proposal for generation {generation} after all attempts"
+        )
+        await self._record_generation_event(
+            generation=generation,
+            status="proposal_failed",
         )
         return None
 
@@ -3239,12 +3287,22 @@ class ShinkaEvolveRunner:
                     f"⏭️  DISCARD SURPLUS: Skipping persistence for {job.job_id} "
                     f"(gen {job.generation}) after target was already reached"
                 )
+                await self._record_generation_event(
+                    generation=job.generation,
+                    status="discarded_surplus",
+                    source_job_id=job.job_id,
+                )
                 return CompletedJobPersistResult(job=job, success=True)
 
             if await self.async_db.has_program_with_source_job_id_async(source_job_id):
                 logger.info(
                     f"⏭️  SKIP DUPLICATE: Job {job.job_id} (gen {job.generation}) "
                     "already persisted to database"
+                )
+                await self._record_generation_event(
+                    generation=job.generation,
+                    status="persist_duplicate_skip",
+                    source_job_id=job.job_id,
                 )
                 return CompletedJobPersistResult(job=job, success=True)
 
@@ -3254,18 +3312,25 @@ class ShinkaEvolveRunner:
                     self.scheduler.get_job_results_async(job.job_id, job.results_dir),
                     timeout=30.0,  # 30 second timeout
                 )
-                evaluation_finished_at = time.time()
-                job.results_retrieved_at = evaluation_finished_at
+                results_retrieved_at = time.time()
+                if job.results_retrieved_at is None:
+                    job.results_retrieved_at = results_retrieved_at
+                evaluation_finished_at = job.results_retrieved_at
                 logger.info(
                     f"📂 RESULTS: Got results for {job.job_id}: {results is not None}"
                 )
             except asyncio.TimeoutError:
                 logger.error(f"❌ TIMEOUT: Getting results for {job.job_id} timed out")
+                await self._record_generation_event(
+                    generation=job.generation,
+                    status="results_timeout",
+                    source_job_id=job.job_id,
+                )
                 return CompletedJobPersistResult(job=job, success=False)
             await self._release_evaluation_slot_once(job)
             postprocess_worker_id = await self.postprocess_slot_pool.acquire()
             db_workers_in_use_at_postprocess_start = self.postprocess_slot_pool.in_use
-            postprocess_started_at = evaluation_finished_at
+            postprocess_started_at = time.time()
 
             # Always create a program entry, even if results are missing
             if results:
@@ -3384,6 +3449,12 @@ class ShinkaEvolveRunner:
                         f"Adding program to database for {job.job_id} timed out"
                     ),
                 )
+                await self._record_generation_event(
+                    generation=job.generation,
+                    status="persist_retry_queued",
+                    source_job_id=job.job_id,
+                    details={"reason": "db_timeout", "db_retry_count": job.db_retry_count},
+                )
                 return CompletedJobPersistResult(job=job, success=False)
             except Exception as e:
                 self._queue_failed_db_job(
@@ -3392,6 +3463,12 @@ class ShinkaEvolveRunner:
                     error_message=(
                         f"Failed to add program to database for {job.job_id}: {e}"
                     ),
+                )
+                await self._record_generation_event(
+                    generation=job.generation,
+                    status="persist_retry_queued",
+                    source_job_id=job.job_id,
+                    details={"reason": "db_error", "db_retry_count": job.db_retry_count},
                 )
                 return CompletedJobPersistResult(job=job, success=False)
 
@@ -3430,6 +3507,12 @@ class ShinkaEvolveRunner:
             )
             logger.error(
                 f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
+            )
+            await self._record_generation_event(
+                generation=job.generation,
+                status="persist_failed",
+                source_job_id=job.job_id,
+                details={"error": str(e)},
             )
             return CompletedJobPersistResult(job=job, success=False)
         finally:
@@ -3688,6 +3771,15 @@ class ShinkaEvolveRunner:
                     # Also remove from submitted_jobs
                     if str(job.job_id) in self.submitted_jobs:
                         del self.submitted_jobs[str(job.job_id)]
+                    await self._update_completed_generations()
+                    self._record_progress()
+                    self.slot_available.set()
+                    await self._record_generation_event(
+                        generation=job.generation,
+                        status="retry_success",
+                        source_job_id=job.job_id,
+                        details={"db_retry_count": job.db_retry_count},
+                    )
                     logger.info(
                         f"✅ RETRY SUCCESS: Job {job.job_id} "
                         f"(gen {job.generation}) "

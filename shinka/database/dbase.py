@@ -481,6 +481,24 @@ class ProgramDatabase:
             )
             """
         )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generation_event_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generation INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source_job_id TEXT,
+                details TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_generation_event_log_generation
+            ON generation_event_log(generation)
+            """
+        )
 
         self.conn.commit()
 
@@ -618,6 +636,31 @@ class ProgramDatabase:
         self.cursor.execute(
             "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
             (key, value),  # SQLite handles None as NULL
+        )
+        self.conn.commit()
+
+    @db_retry()
+    def record_generation_event(
+        self,
+        generation: int,
+        status: str,
+        source_job_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        payload = None
+        if details is not None:
+            payload = json.dumps(clean_nan_values(details), sort_keys=True)
+
+        self.cursor.execute(
+            """
+            INSERT INTO generation_event_log (
+                generation, status, source_job_id, details, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (generation, status, source_job_id, payload, time.time()),
         )
         self.conn.commit()
 

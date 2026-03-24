@@ -210,6 +210,71 @@ def test_start_proposals_does_not_assign_generation_past_target():
     asyncio.run(_run())
 
 
+def test_retry_failed_db_jobs_refreshes_completion_progress():
+    async def _run():
+        slot_event = _FakeEvent()
+        runner = _build_runner(
+            slot_available=slot_event,
+            failed_jobs_for_retry={},
+            submitted_jobs={},
+        )
+        runner.MAX_DB_RETRY_ATTEMPTS = 3
+
+        update_calls = 0
+        progress_calls = 0
+        generation_events = []
+
+        async def _process_single_job_safely(_job):
+            return True
+
+        async def _update_completed_generations():
+            nonlocal update_calls
+            update_calls += 1
+
+        def _record_progress():
+            nonlocal progress_calls
+            progress_calls += 1
+
+        runner._process_single_job_safely = _process_single_job_safely
+        runner._update_completed_generations = _update_completed_generations
+        runner._record_progress = _record_progress
+        runner.async_db.record_generation_event_async = (
+            lambda **kwargs: asyncio.sleep(
+                0, result=generation_events.append(kwargs)
+            )
+        )
+
+        job = AsyncRunningJob(
+            job_id="job-retry",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=7,
+        )
+        runner.failed_jobs_for_retry = {"job-retry": job}
+        runner.submitted_jobs = {"job-retry": job}
+
+        await runner._retry_failed_db_jobs()
+
+        assert update_calls == 1
+        assert progress_calls == 1
+        assert slot_event.is_set() is True
+        assert runner.failed_jobs_for_retry == {}
+        assert runner.submitted_jobs == {}
+        assert generation_events == [
+            {
+                "generation": 7,
+                "status": "retry_success",
+                "source_job_id": "job-retry",
+                "details": {"db_retry_count": 0},
+            }
+        ]
+
+    asyncio.run(_run())
+
+
 def test_submit_evaluation_job_acquires_slot_before_submitting():
     async def _run():
         events = []

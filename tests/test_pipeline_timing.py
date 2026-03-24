@@ -2,6 +2,8 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from shinka.core.async_runner import AsyncRunningJob, ShinkaEvolveRunner
 from shinka.core.pipeline_timing import with_pipeline_timing
 from shinka.core.runtime_slots import LogicalSlotPool
@@ -91,6 +93,18 @@ class _ConcurrentRecordingAsyncDB(_FakeAsyncDB):
             await super().add_program_async(program, **kwargs)
         finally:
             self.active_adds -= 1
+
+
+class _FailOnceAsyncDB(_FakeAsyncDB):
+    def __init__(self):
+        super().__init__()
+        self.add_attempts = 0
+
+    async def add_program_async(self, program, **kwargs):
+        self.add_attempts += 1
+        if self.add_attempts == 1:
+            raise asyncio.TimeoutError()
+        await super().add_program_async(program, **kwargs)
 
 
 def test_logical_slot_pool_reuses_slots():
@@ -244,6 +258,81 @@ def test_process_single_job_safely_skips_duplicate_source_job():
         assert ok_first is True
         assert ok_second is True
         assert len(runner.async_db.programs) == 1
+
+    asyncio.run(_run())
+
+
+def test_process_single_job_safely_reuses_initial_eval_finish_time_on_retry():
+    async def _run():
+        now = time.time()
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.scheduler = _FakeScheduler()
+        runner.async_db = _FailOnceAsyncDB()
+        runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
+        runner.meta_summarizer = None
+        runner.llm_selection = None
+        runner.MAX_DB_RETRY_ATTEMPTS = 3
+        runner.failed_jobs_for_retry = {}
+        runner.total_api_cost = 0.0
+        runner.verbose = False
+        runner.console = None
+        runner.max_proposal_jobs = 2
+        runner.max_evaluation_jobs = 2
+        runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
+        runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
+        runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.submitted_jobs = {}
+        await runner.evaluation_slot_pool.acquire()
+        runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
+        runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
+        runner._persist_program_metadata_async = lambda program: asyncio.sleep(
+            0, result=None
+        )
+        runner._record_oversubscription_timing_sample = lambda metadata: None
+
+        job = AsyncRunningJob(
+            job_id="job-retry",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=now - 6.0,
+            proposal_started_at=now - 6.0,
+            evaluation_submitted_at=now - 2.0,
+            evaluation_started_at=now - 1.0,
+            generation=5,
+            sampling_worker_id=1,
+            evaluation_worker_id=1,
+            active_proposals_at_start=1,
+            running_eval_jobs_at_submit=1,
+            meta_patch_data={"patch_name": "retry_patch"},
+        )
+
+        first_ok = await runner._process_single_job_safely(job)
+        first_finished_at = job.results_retrieved_at
+
+        assert first_ok is False
+        assert first_finished_at is not None
+        assert runner.evaluation_slot_pool.in_use == 0
+        assert "job-retry" in runner.failed_jobs_for_retry
+
+        await asyncio.sleep(0.02)
+        second_ok = await runner._process_single_job_safely(job)
+
+        assert second_ok is True
+        assert len(runner.async_db.programs) == 1
+        assert runner.async_db.add_attempts == 2
+
+        program = runner.async_db.programs[0]
+        assert program.metadata["evaluation_finished_at"] == pytest.approx(
+            first_finished_at
+        )
+        assert program.metadata["evaluation_started_at"] == pytest.approx(
+            job.evaluation_started_at
+        )
+        assert program.metadata["postprocess_started_at"] >= first_finished_at
 
     asyncio.run(_run())
 
