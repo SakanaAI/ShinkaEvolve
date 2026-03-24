@@ -26,6 +26,17 @@ def test_embeddings_heatmap_uses_scroll_wrapper_for_full_size_matrix():
     assert '.style("width", "max-content")' in html
 
 
+def test_embeddings_heatmap_requires_full_hydration_before_render():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "function datasetHasCompleteEmbeddings(data)" in html
+    assert "const programsNeedingEmbeddings = filteredData.filter(" in html
+    assert "return programsNeedingEmbeddings.every(" in html
+    assert "if (datasetHasCompleteEmbeddings(window.treeData)) {" in html
+    assert "window.fullProgramDataByDb = window.fullProgramDataByDb || {};" in html
+    assert "window.fullProgramDataByDb[window.currentDbPath] = fullData;" in html
+
+
 def test_runtime_timeline_dedupes_source_jobs_and_deprioritizes_island_copies():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 

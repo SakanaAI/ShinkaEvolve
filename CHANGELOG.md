@@ -11,6 +11,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Added Python throughput plotting utilities in `shinka.plots` for generation runtime timelines and normalized occupancy-over-time views.
 - Added regression coverage for the new Python throughput plotting helpers, including pool-slot prep, occupancy math, and legend/layout behavior.
 - Added regression coverage for concurrent async completed-job persistence so multi-worker postprocessing throughput stays exercised.
+- Added regression coverage for lightweight program summaries and WebUI embed-tab hydration so similarity matrices only render from fully loaded embedding data.
 
 ### Changed
 
@@ -28,6 +29,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Fixed async database retry races by treating in-flight `source_job_id` inserts as already claimed, preventing duplicate persisted programs while timed-out writes are still finishing in worker threads.
 - Fixed async resume/recovery bookkeeping so restarted runs continue from the number of persisted completed programs instead of stopping early when failed proposals or hung local evals left gaps in generation IDs.
 - Fixed Python throughput plot preparation so frames without optional metadata columns like `is_island_copy`, `patch_name`, or `model_name` still render correctly.
+- Fixed the WebUI embed tab so summary-only loads or single lazily hydrated programs no longer produce a misleading 1x1 similarity matrix instead of the full run.
 
 ## 0.0.2 - 2026-03-22
 
