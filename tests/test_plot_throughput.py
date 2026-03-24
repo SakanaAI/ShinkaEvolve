@@ -171,6 +171,81 @@ def test_compute_occupancy_series_matches_expected_utilization_stats():
     assert series.idle_pct == pytest.approx(0.0)
 
 
+def test_prepare_pool_runtime_data_reconciles_legacy_worker_overlap():
+    runtime_df = pd.DataFrame(
+        [
+            {
+                "id": "job-a",
+                "source_job_id": "job-a",
+                "is_island_copy": False,
+                "correct": True,
+                "combined_score": 0.9,
+                "timestamp": 10,
+                "generation": 1,
+                "patch_name": "patch-a",
+                "model_name": "model-a",
+                "timeline_lane_mode": "pool_slots",
+                "pipeline_started_at": 0,
+                "sampling_started_at": 0,
+                "sampling_finished_at": 2,
+                "evaluation_started_at": 2,
+                "evaluation_finished_at": 8,
+                "postprocess_started_at": 8,
+                "postprocess_finished_at": 9,
+                "sampling_worker_id": 1,
+                "evaluation_worker_id": 1,
+                "postprocess_worker_id": 1,
+                "sampling_worker_capacity": 1,
+                "evaluation_worker_capacity": 1,
+                "postprocess_worker_capacity": 1,
+            },
+            {
+                "id": "job-b",
+                "source_job_id": "job-b",
+                "is_island_copy": False,
+                "correct": True,
+                "combined_score": 0.8,
+                "timestamp": 20,
+                "generation": 2,
+                "patch_name": "patch-b",
+                "model_name": "model-b",
+                "timeline_lane_mode": "pool_slots",
+                "pipeline_started_at": 1,
+                "sampling_started_at": 1,
+                "sampling_finished_at": 5,
+                "evaluation_started_at": 5,
+                "evaluation_finished_at": 10,
+                "postprocess_started_at": 10,
+                "postprocess_finished_at": 11,
+                "sampling_worker_id": 1,
+                "evaluation_worker_id": 1,
+                "postprocess_worker_id": 1,
+                "sampling_worker_capacity": 1,
+                "evaluation_worker_capacity": 1,
+                "postprocess_worker_capacity": 1,
+            },
+        ]
+    )
+
+    prepared = _prepare_pool_runtime_data(runtime_df)
+
+    assert prepared is not None
+    assert prepared.peaks["evaluation"] == 1
+    assert list(prepared.rows["evaluation_started_at"]) == [2.0, 8.0]
+    assert list(prepared.rows["evaluation_finished_at"]) == [8.0, 10.0]
+
+    series = _compute_occupancy_series(
+        prepared.rows,
+        start_key="evaluation_started_at",
+        end_key="evaluation_finished_at",
+        capacity=prepared.capacities["evaluation"],
+    )
+
+    assert series is not None
+    assert max(series.y) == 1.0
+    assert series.utilization_pct == pytest.approx(100.0)
+
+
 def test_plot_generation_runtime_timeline_uses_deduped_pool_rows():
     fig, ax = plot_generation_runtime_timeline(_runtime_df(), title="Runtime Timeline")
 

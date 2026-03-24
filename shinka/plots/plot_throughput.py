@@ -168,6 +168,50 @@ def _format_worker_label(stage_label: str, worker_id: float) -> str:
     return f"{stage_label} W{int(worker_id)}"
 
 
+def _reconcile_stage_worker_overlaps(
+    rows: pd.DataFrame, stage: StageConfig
+) -> pd.DataFrame:
+    reconciled_rows = rows.copy()
+    if stage.worker_id_key not in reconciled_rows.columns:
+        return reconciled_rows
+
+    valid_rows = reconciled_rows.loc[
+        reconciled_rows[stage.worker_id_key].notna()
+        & reconciled_rows[stage.start_key].notna()
+        & reconciled_rows[stage.end_key].notna()
+    ].copy()
+    if valid_rows.empty:
+        return reconciled_rows
+
+    valid_rows = valid_rows.sort_values(
+        by=[
+            stage.worker_id_key,
+            stage.start_key,
+            stage.end_key,
+            "generation",
+            "pipeline_started_at",
+        ],
+        kind="stable",
+    )
+
+    previous_end_by_worker: dict[float, float] = {}
+    for row_index, row in valid_rows.iterrows():
+        worker_id = float(row[stage.worker_id_key])
+        start_at = float(row[stage.start_key])
+        end_at = float(row[stage.end_key])
+        previous_end = previous_end_by_worker.get(worker_id)
+        if previous_end is None:
+            normalized_start = start_at
+        else:
+            normalized_start = max(start_at, previous_end)
+        normalized_end = max(normalized_start, end_at)
+        reconciled_rows.at[row_index, stage.start_key] = normalized_start
+        reconciled_rows.at[row_index, stage.end_key] = normalized_end
+        previous_end_by_worker[worker_id] = normalized_end
+
+    return reconciled_rows
+
+
 def _prepare_pool_runtime_data(df: pd.DataFrame) -> Optional[PoolRuntimeData]:
     missing_columns = [col for col in REQUIRED_RUNTIME_COLUMNS if col not in df.columns]
     if missing_columns:
@@ -231,6 +275,8 @@ def _prepare_pool_runtime_data(df: pd.DataFrame) -> Optional[PoolRuntimeData]:
         by=["evaluation_started_at", "generation", "pipeline_started_at"],
         kind="stable",
     ).reset_index(drop=True)
+    for stage in STAGE_CONFIGS:
+        deduped_df = _reconcile_stage_worker_overlaps(deduped_df, stage)
 
     capacities = {
         stage.key: int(

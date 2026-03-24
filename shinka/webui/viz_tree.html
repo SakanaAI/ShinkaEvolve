@@ -15585,6 +15585,46 @@ console.error("[DEBUG] Error in processData:", error);
             return peak;
         }
 
+        function reconcileStageWorkerOverlaps(rows, { workerIdKey, startKey, endKey }) {
+            const reconciledRows = rows.map(row => ({ ...row }));
+            const validRows = reconciledRows
+                .filter(
+                    row => Number.isFinite(row[workerIdKey]) &&
+                        Number.isFinite(row[startKey]) &&
+                        Number.isFinite(row[endKey])
+                )
+                .sort((a, b) => {
+                    if (a[workerIdKey] !== b[workerIdKey]) {
+                        return a[workerIdKey] - b[workerIdKey];
+                    }
+                    if (a[startKey] !== b[startKey]) {
+                        return a[startKey] - b[startKey];
+                    }
+                    if (a[endKey] !== b[endKey]) {
+                        return a[endKey] - b[endKey];
+                    }
+                    if (a.generation !== b.generation) {
+                        return a.generation - b.generation;
+                    }
+                    return a.pipelineStartedAt - b.pipelineStartedAt;
+                });
+
+            const previousEndByWorker = new Map();
+            validRows.forEach(row => {
+                const workerId = row[workerIdKey];
+                const previousEnd = previousEndByWorker.get(workerId);
+                const normalizedStart = previousEnd === undefined
+                    ? row[startKey]
+                    : Math.max(row[startKey], previousEnd);
+                const normalizedEnd = Math.max(normalizedStart, row[endKey]);
+                row[startKey] = normalizedStart;
+                row[endKey] = normalizedEnd;
+                previousEndByWorker.set(workerId, normalizedEnd);
+            });
+
+            return reconciledRows;
+        }
+
         function getLegacyRuntimeTimelineRows(data) {
             const rows = getBaseRuntimeTimelineRows(data);
             if (rows.length === 0) return { rows: [], laneCount: 0 };
@@ -15616,10 +15656,30 @@ console.error("[DEBUG] Error in processData:", error);
         }
 
         function getPoolRuntimeTimelineData(data) {
-            const rows = getBaseRuntimeTimelineRows(data).filter(
+            let rows = getBaseRuntimeTimelineRows(data).filter(
                 row => row.timelineLaneMode === 'pool_slots'
             );
             if (rows.length === 0) return null;
+
+            [
+                {
+                    workerIdKey: 'samplingWorkerId',
+                    startKey: 'samplingStartedAt',
+                    endKey: 'samplingFinishedAt'
+                },
+                {
+                    workerIdKey: 'evaluationWorkerId',
+                    startKey: 'evaluationStartedAt',
+                    endKey: 'evaluationFinishedAt'
+                },
+                {
+                    workerIdKey: 'postprocessWorkerId',
+                    startKey: 'postprocessStartedAt',
+                    endKey: 'postprocessFinishedAt'
+                }
+            ].forEach(stage => {
+                rows = reconcileStageWorkerOverlaps(rows, stage);
+            });
 
             const capacities = {
                 sampling: Math.max(0, ...rows.map(row => row.samplingWorkerCapacity || row.samplingWorkerId || 0)),
