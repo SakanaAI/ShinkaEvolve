@@ -10,6 +10,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Added `CONTRIBUTING.md` plus GitHub issue and pull-request templates to document the contribution flow.
 - Added Python throughput plotting utilities in `shinka.plots` for generation runtime timelines and normalized occupancy-over-time views.
 - Added regression coverage for the new Python throughput plotting helpers, including pool-slot prep, occupancy math, and legend/layout behavior.
+- Added regression coverage for concurrent async completed-job persistence so multi-worker postprocessing throughput stays exercised.
 
 ### Changed
 
@@ -18,6 +19,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Updated `examples/circle_packing/load_results.ipynb` to include the new throughput plots at the bottom of the notebook.
 - Updated `examples/circle_packing/load_results.ipynb` and `examples/circle_packing/shinka_long.yaml` for the latest large async circle-packing run analysis setup.
 - Refined Python throughput plot legends to use compact centered panels below each subplot for cleaner notebook rendering.
+- Improved async postprocessing throughput by persisting completed jobs concurrently across multiple workers before applying slower follow-up side effects.
 
 ### Fixed
 

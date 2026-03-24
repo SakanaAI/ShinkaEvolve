@@ -148,6 +148,26 @@ class AsyncRunningJob:
     evaluation_slot_released: bool = False
 
 
+@dataclass
+class PersistedProgramEvent:
+    """Durably persisted program ready for slower follow-up side effects."""
+
+    job: AsyncRunningJob
+    program: Program
+    evaluation_finished_at: float
+    postprocess_started_at: float
+    postprocess_finished_at: float
+
+
+@dataclass
+class CompletedJobPersistResult:
+    """Result of the hot persistence path for one completed evaluation job."""
+
+    job: AsyncRunningJob
+    success: bool
+    persisted_event: Optional[PersistedProgramEvent] = None
+
+
 class ShinkaEvolveRunner:
     """Fully async evolution runner with concurrent proposal generation."""
 
@@ -1807,9 +1827,8 @@ class ShinkaEvolveRunner:
                     async with self.processing_lock:
                         self._mark_surplus_completed_jobs_for_discard(completed_jobs)
                         old_retry_count = len(self.failed_jobs_for_retry)
-                        await self._process_completed_jobs_safely(completed_jobs)
                         old_completed = self.completed_generations
-                        await self._update_completed_generations()
+                        await self._process_completed_jobs_safely(completed_jobs)
 
                         if self.verbose:
                             if self.completed_generations != old_completed:
@@ -3174,51 +3193,40 @@ class ShinkaEvolveRunner:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, update_metadata)
 
-    async def _process_completed_jobs_safely(
-        self, completed_jobs: List[AsyncRunningJob]
-    ):
-        """Process completed jobs with robust error handling to ensure no jobs are lost."""
-        successfully_processed = []
-
-        for job in completed_jobs:
-            try:
-                success = await self._process_single_job_safely(job)
-                if success:
-                    successfully_processed.append(job)
-                    # Mark job as processed in registry
-                    if str(job.job_id) in self.submitted_jobs:
-                        del self.submitted_jobs[str(job.job_id)]
-                else:
-                    logger.error(
-                        f"❌ CRITICAL: Failed to process job {job.job_id} (gen {job.generation})"
-                    )
-                    # Keep job in registry for potential retry
-
-            except Exception as e:
-                logger.error(
-                    f"❌ CRITICAL: Exception processing job {job.job_id} (gen {job.generation}): {e}"
-                )
-                # Keep job in registry for potential retry
-
-        logger.info(
-            f"✅ Successfully processed {len(successfully_processed)}/{len(completed_jobs)} jobs"
+    def _queue_failed_db_job(
+        self, job: AsyncRunningJob, *, log_prefix: str, error_message: str
+    ) -> None:
+        """Queue a completed job for DB retry bookkeeping."""
+        job.db_retry_count += 1
+        logger.error(
+            "%s %s (retry %s/%s)",
+            log_prefix,
+            error_message,
+            job.db_retry_count,
+            self.MAX_DB_RETRY_ATTEMPTS,
         )
 
-        # If some jobs failed, log the issue but don't lose them
-        if len(successfully_processed) < len(completed_jobs):
-            failed_jobs = [
-                job for job in completed_jobs if job not in successfully_processed
-            ]
-            failed_gens = [job.generation for job in failed_jobs]
-            logger.error(
-                f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: gens {failed_gens}"
+        if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+            self.failed_jobs_for_retry[str(job.job_id)] = job
+            logger.info(
+                "🔄 RETRY QUEUED: Job %s (gen %s) added to retry queue",
+                job.job_id,
+                job.generation,
             )
-            logger.error(
-                "   These jobs remain in submitted_jobs registry for potential recovery"
-            )
+            return
 
-    async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
-        """Process a single job with comprehensive error handling. Returns True on success."""
+        self.failed_jobs_for_retry.pop(str(job.job_id), None)
+        logger.error(
+            "❌ RETRY EXHAUSTED: Job %s (gen %s) exceeded max retry attempts (%s). Job permanently lost.",
+            job.job_id,
+            job.generation,
+            self.MAX_DB_RETRY_ATTEMPTS,
+        )
+
+    async def _persist_completed_job(
+        self, job: AsyncRunningJob
+    ) -> CompletedJobPersistResult:
+        """Persist a completed evaluation job without blocking on slower side effects."""
         postprocess_worker_id = None
         source_job_id = str(job.job_id)
         try:
@@ -3231,14 +3239,14 @@ class ShinkaEvolveRunner:
                     f"⏭️  DISCARD SURPLUS: Skipping persistence for {job.job_id} "
                     f"(gen {job.generation}) after target was already reached"
                 )
-                return True
+                return CompletedJobPersistResult(job=job, success=True)
 
             if await self.async_db.has_program_with_source_job_id_async(source_job_id):
                 logger.info(
                     f"⏭️  SKIP DUPLICATE: Job {job.job_id} (gen {job.generation}) "
                     "already persisted to database"
                 )
-                return True
+                return CompletedJobPersistResult(job=job, success=True)
 
             # Get job results with timeout to prevent hanging
             try:
@@ -3253,7 +3261,7 @@ class ShinkaEvolveRunner:
                 )
             except asyncio.TimeoutError:
                 logger.error(f"❌ TIMEOUT: Getting results for {job.job_id} timed out")
-                return False
+                return CompletedJobPersistResult(job=job, success=False)
             await self._release_evaluation_slot_once(job)
             postprocess_worker_id = await self.postprocess_slot_pool.acquire()
             db_workers_in_use_at_postprocess_start = self.postprocess_slot_pool.in_use
@@ -3368,82 +3376,98 @@ class ShinkaEvolveRunner:
                     f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
                 )
 
-                # Update prompt fitness if prompt evolution is enabled
-                if system_prompt_id and self.evo_config.evolve_prompts:
-                    # Calculate improvement (need parent score)
-                    parent_score = 0.0
-                    if job.parent_id:
-                        parent_program = await self.async_db.get_async(job.parent_id)
-                        if parent_program:
-                            parent_score = parent_program.combined_score or 0.0
-
-                    program_score = combined_score or 0.0
-                    improvement = program_score - parent_score
-                    await self._update_prompt_fitness(
-                        system_prompt_id,
-                        program.id,
-                        program_score=program_score,
-                        improvement=improvement,
-                        correct=correct_val,
-                    )
-
-                    # Check if we should evolve a new prompt
-                    await self._maybe_evolve_prompt()
-
             except asyncio.TimeoutError:
-                job.db_retry_count += 1
-                logger.error(
-                    f"❌ DB TIMEOUT: Adding program to database for "
-                    f"{job.job_id} timed out "
-                    f"(retry {job.db_retry_count}/"
-                    f"{self.MAX_DB_RETRY_ATTEMPTS})"
+                self._queue_failed_db_job(
+                    job,
+                    log_prefix="❌ DB TIMEOUT:",
+                    error_message=(
+                        f"Adding program to database for {job.job_id} timed out"
+                    ),
                 )
-
-                if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
-                    # Add to retry queue for later retry
-                    self.failed_jobs_for_retry[str(job.job_id)] = job
-                    logger.info(
-                        f"🔄 RETRY QUEUED: Job {job.job_id} "
-                        f"(gen {job.generation}) added to retry queue"
-                    )
-                else:
-                    self.failed_jobs_for_retry.pop(str(job.job_id), None)
-                    logger.error(
-                        f"❌ RETRY EXHAUSTED: Job {job.job_id} "
-                        f"(gen {job.generation}) exceeded "
-                        f"max retry attempts "
-                        f"({self.MAX_DB_RETRY_ATTEMPTS}). "
-                        f"Job permanently lost."
-                    )
-                return False
+                return CompletedJobPersistResult(job=job, success=False)
             except Exception as e:
-                job.db_retry_count += 1
-                logger.error(
-                    f"❌ DB ERROR: Failed to add program to database "
-                    f"for {job.job_id}: {e} "
-                    f"(retry {job.db_retry_count}/"
-                    f"{self.MAX_DB_RETRY_ATTEMPTS})"
+                self._queue_failed_db_job(
+                    job,
+                    log_prefix="❌ DB ERROR:",
+                    error_message=(
+                        f"Failed to add program to database for {job.job_id}: {e}"
+                    ),
                 )
+                return CompletedJobPersistResult(job=job, success=False)
 
-                if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
-                    # Add to retry queue for later retry
-                    self.failed_jobs_for_retry[str(job.job_id)] = job
-                    logger.info(
-                        f"🔄 RETRY QUEUED: Job {job.job_id} "
-                        f"(gen {job.generation}) added to retry queue"
-                    )
-                else:
-                    self.failed_jobs_for_retry.pop(str(job.job_id), None)
-                    logger.error(
-                        f"❌ RETRY EXHAUSTED: Job {job.job_id} "
-                        f"(gen {job.generation}) exceeded "
-                        f"max retry attempts "
-                        f"({self.MAX_DB_RETRY_ATTEMPTS}). "
-                        f"Job permanently lost."
-                    )
-                return False
+            postprocess_finished_at = time.time()
+            program.metadata = with_pipeline_timing(
+                program.metadata,
+                pipeline_started_at=job.proposal_started_at,
+                sampling_started_at=job.proposal_started_at,
+                sampling_finished_at=evaluation_started_at,
+                evaluation_started_at=evaluation_started_at,
+                evaluation_finished_at=evaluation_finished_at,
+                postprocess_started_at=postprocess_started_at,
+                postprocess_finished_at=postprocess_finished_at,
+            )
+            try:
+                await self._persist_program_metadata_async(program)
+            except Exception as e:
+                logger.warning(f"Metadata persistence error for {job.job_id}: {e}")
+            self._record_oversubscription_timing_sample(program.metadata or {})
 
-            # Handle meta summarizer and other post-processing
+            return CompletedJobPersistResult(
+                job=job,
+                success=True,
+                persisted_event=PersistedProgramEvent(
+                    job=job,
+                    program=program,
+                    evaluation_finished_at=evaluation_finished_at,
+                    postprocess_started_at=postprocess_started_at,
+                    postprocess_finished_at=postprocess_finished_at,
+                ),
+            )
+
+        except Exception as e:
+            logger.error(
+                f"❌ CRITICAL: Exception in safe processing for job {job.job_id} (gen {job.generation}): {e}"
+            )
+            logger.error(
+                f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
+            )
+            return CompletedJobPersistResult(job=job, success=False)
+        finally:
+            await self._release_evaluation_slot_once(job)
+            await self.postprocess_slot_pool.release(postprocess_worker_id)
+
+    async def _apply_persisted_program_side_effects(
+        self, persisted_event: PersistedProgramEvent
+    ) -> None:
+        """Apply slower post-persistence side effects for one completed program."""
+        job = persisted_event.job
+        program = persisted_event.program
+        apply_started_at = time.time()
+
+        try:
+            system_prompt_id = None
+            if job.meta_patch_data:
+                system_prompt_id = job.meta_patch_data.get("system_prompt_id")
+
+            # Update prompt fitness if prompt evolution is enabled
+            if system_prompt_id and self.evo_config.evolve_prompts:
+                parent_score = 0.0
+                if job.parent_id:
+                    parent_program = await self.async_db.get_async(job.parent_id)
+                    if parent_program:
+                        parent_score = parent_program.combined_score or 0.0
+
+                program_score = program.combined_score or 0.0
+                improvement = program_score - parent_score
+                await self._update_prompt_fitness(
+                    system_prompt_id,
+                    program.id,
+                    program_score=program_score,
+                    improvement=improvement,
+                    correct=program.correct,
+                )
+                await self._maybe_evolve_prompt()
+
             if self.meta_summarizer:
                 try:
                     self.meta_summarizer.add_evaluated_program(program)
@@ -3507,39 +3531,120 @@ class ShinkaEvolveRunner:
                 logger.warning(f"Best solution update error for {job.job_id}: {e}")
                 # Don't fail the whole job for best solution update issues
 
-            postprocess_finished_at = time.time()
-            program.metadata = with_pipeline_timing(
-                program.metadata,
-                pipeline_started_at=job.proposal_started_at,
-                sampling_started_at=job.proposal_started_at,
-                sampling_finished_at=evaluation_started_at,
-                evaluation_started_at=evaluation_started_at,
-                evaluation_finished_at=evaluation_finished_at,
-                postprocess_started_at=postprocess_started_at,
-                postprocess_finished_at=postprocess_finished_at,
+        finally:
+            apply_finished_at = time.time()
+            program.metadata = dict(program.metadata or {})
+            program.metadata["postprocess_apply_started_at"] = apply_started_at
+            program.metadata["postprocess_apply_finished_at"] = apply_finished_at
+            program.metadata["postprocess_apply_seconds"] = max(
+                0.0, apply_finished_at - apply_started_at
             )
             try:
                 await self._persist_program_metadata_async(program)
             except Exception as e:
-                logger.warning(f"Metadata persistence error for {job.job_id}: {e}")
-            self._record_oversubscription_timing_sample(program.metadata or {})
+                logger.warning(
+                    f"Apply-stage metadata persistence error for {job.job_id}: {e}"
+                )
 
-            logger.info(
-                f"✅ JOB COMPLETE: Finished processing {job.job_id} - program {program.id} added (gen {job.generation})"
+        logger.info(
+            "✅ JOB COMPLETE: Finished processing %s - program %s added (gen %s)",
+            job.job_id,
+            program.id,
+            job.generation,
+        )
+
+    async def _process_completed_jobs_safely(
+        self, completed_jobs: List[AsyncRunningJob]
+    ):
+        """Persist completed jobs concurrently, then apply slower side effects."""
+        persist_tasks = [
+            asyncio.create_task(
+                self._persist_completed_job(job),
+                name=f"persist_completed_{job.generation}",
             )
+            for job in completed_jobs
+        ]
+
+        persist_results = await asyncio.gather(*persist_tasks, return_exceptions=True)
+        successfully_processed: List[AsyncRunningJob] = []
+        persisted_events: List[PersistedProgramEvent] = []
+
+        for job, result in zip(completed_jobs, persist_results):
+            if isinstance(result, Exception):
+                logger.error(
+                    "❌ CRITICAL: Exception processing job %s (gen %s): %s",
+                    job.job_id,
+                    job.generation,
+                    result,
+                )
+                continue
+
+            if result.success:
+                successfully_processed.append(job)
+                self.submitted_jobs.pop(str(job.job_id), None)
+                if result.persisted_event is not None:
+                    persisted_events.append(result.persisted_event)
+                continue
+
+            logger.error(
+                "❌ CRITICAL: Failed to process job %s (gen %s)",
+                job.job_id,
+                job.generation,
+            )
+
+        await self._update_completed_generations()
+
+        for persisted_event in sorted(
+            persisted_events, key=lambda event: event.job.generation
+        ):
+            try:
+                await self._apply_persisted_program_side_effects(persisted_event)
+            except Exception as e:
+                logger.error(
+                    "❌ APPLY ERROR: Side effects failed for job %s (gen %s): %s",
+                    persisted_event.job.job_id,
+                    persisted_event.job.generation,
+                    e,
+                )
+
+        logger.info(
+            f"✅ Successfully processed {len(successfully_processed)}/{len(completed_jobs)} jobs"
+        )
+
+        if len(successfully_processed) < len(completed_jobs):
+            failed_jobs = [
+                job for job in completed_jobs if job not in successfully_processed
+            ]
+            failed_gens = [job.generation for job in failed_jobs]
+            logger.error(
+                f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: gens {failed_gens}"
+            )
+            logger.error(
+                "   These jobs remain in submitted_jobs registry for potential recovery"
+            )
+
+    async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
+        """Process a single job with comprehensive error handling. Returns True on success."""
+        persist_result = await self._persist_completed_job(job)
+        if not persist_result.success:
+            return False
+
+        self.submitted_jobs.pop(str(job.job_id), None)
+        if persist_result.persisted_event is None:
             return True
 
+        try:
+            await self._apply_persisted_program_side_effects(
+                persist_result.persisted_event
+            )
         except Exception as e:
             logger.error(
-                f"❌ CRITICAL: Exception in safe processing for job {job.job_id} (gen {job.generation}): {e}"
+                "❌ APPLY ERROR: Side effects failed for job %s (gen %s): %s",
+                job.job_id,
+                job.generation,
+                e,
             )
-            logger.error(
-                f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
-            )
-            return False
-        finally:
-            await self._release_evaluation_slot_once(job)
-            await self.postprocess_slot_pool.release(postprocess_worker_id)
+        return True
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
         """Legacy method - now redirects to safe processing."""

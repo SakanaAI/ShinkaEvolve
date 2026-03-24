@@ -77,6 +77,22 @@ class _FakeAsyncDB:
         return source_job_id in self.seen_source_job_ids
 
 
+class _ConcurrentRecordingAsyncDB(_FakeAsyncDB):
+    def __init__(self):
+        super().__init__()
+        self.active_adds = 0
+        self.peak_adds = 0
+
+    async def add_program_async(self, program, **kwargs):
+        self.active_adds += 1
+        self.peak_adds = max(self.peak_adds, self.active_adds)
+        try:
+            await asyncio.sleep(0.05)
+            await super().add_program_async(program, **kwargs)
+        finally:
+            self.active_adds -= 1
+
+
 def test_logical_slot_pool_reuses_slots():
     async def _run():
         pool = LogicalSlotPool(2, "test")
@@ -119,6 +135,7 @@ def test_process_single_job_safely_persists_timing_metadata():
         runner._last_proposal_target_log = None
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.submitted_jobs = {}
         await runner.evaluation_slot_pool.acquire()
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
@@ -200,6 +217,7 @@ def test_process_single_job_safely_skips_duplicate_source_job():
         runner._last_proposal_target_log = None
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.submitted_jobs = {}
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
         runner._persist_program_metadata_async = lambda program: asyncio.sleep(0, result=None)
@@ -226,5 +244,85 @@ def test_process_single_job_safely_skips_duplicate_source_job():
         assert ok_first is True
         assert ok_second is True
         assert len(runner.async_db.programs) == 1
+
+    asyncio.run(_run())
+
+
+def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
+    async def _run():
+        now = time.time()
+        async_db = _ConcurrentRecordingAsyncDB()
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.scheduler = _FakeScheduler()
+        runner.async_db = async_db
+        runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
+        runner.meta_summarizer = None
+        runner.llm_selection = None
+        runner.MAX_DB_RETRY_ATTEMPTS = 3
+        runner.failed_jobs_for_retry = {}
+        runner.total_api_cost = 0.0
+        runner.verbose = False
+        runner.console = None
+        runner.max_proposal_jobs = 2
+        runner.max_evaluation_jobs = 2
+        runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
+        runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
+        runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.running_jobs = []
+        runner.submitted_jobs = {}
+        runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
+        runner._persist_program_metadata_async = lambda program: asyncio.sleep(
+            0, result=None
+        )
+        runner._record_oversubscription_timing_sample = lambda metadata: None
+        runner._update_completed_generations = lambda: asyncio.sleep(0, result=None)
+
+        applied_program_ids = []
+
+        async def apply_side_effects(event):
+            applied_program_ids.append(event.program.id)
+            await asyncio.sleep(0)
+
+        runner._apply_persisted_program_side_effects = apply_side_effects
+
+        jobs = [
+            AsyncRunningJob(
+                job_id="job-a",
+                exec_fname="program_a.py",
+                results_dir="results_a",
+                start_time=now - 6.0,
+                proposal_started_at=now - 6.0,
+                evaluation_submitted_at=now - 2.0,
+                evaluation_started_at=now - 1.0,
+                generation=3,
+                sampling_worker_id=1,
+                evaluation_worker_id=1,
+                meta_patch_data={"patch_name": "patch_a"},
+            ),
+            AsyncRunningJob(
+                job_id="job-b",
+                exec_fname="program_b.py",
+                results_dir="results_b",
+                start_time=now - 5.5,
+                proposal_started_at=now - 5.5,
+                evaluation_submitted_at=now - 1.8,
+                evaluation_started_at=now - 0.9,
+                generation=4,
+                sampling_worker_id=2,
+                evaluation_worker_id=2,
+                meta_patch_data={"patch_name": "patch_b"},
+            ),
+        ]
+
+        await runner._process_completed_jobs_safely(jobs)
+
+        assert len(async_db.programs) == 2
+        assert async_db.peak_adds == 2
+        assert runner.postprocess_slot_pool.peak_in_use == 2
+        assert len(applied_program_ids) == 2
 
     asyncio.run(_run())
