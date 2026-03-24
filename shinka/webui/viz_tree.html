@@ -2400,14 +2400,14 @@
                     if (sortMethodSelect) {
                         sortMethodSelect.addEventListener('change', () => {
                             savePreferences();
-                            if (window.treeData) createEmbeddingsHeatmap(window.treeData);
+                            if (window.treeData) refreshEmbeddingsHeatmap();
                         });
                     }
                     
                     if (colorScale) {
                         colorScale.addEventListener('change', () => {
                             savePreferences();
-                            if (window.treeData) createEmbeddingsHeatmap(window.treeData);
+                            if (window.treeData) refreshEmbeddingsHeatmap();
                         });
                     }
                     
@@ -2415,21 +2415,21 @@
                         cellSize.addEventListener('input', () => {
                             cellSizeValue.textContent = cellSize.value + 'px';
                             savePreferences();
-                            if (window.treeData) createEmbeddingsHeatmap(window.treeData);
+                            if (window.treeData) refreshEmbeddingsHeatmap();
                         });
                     }
                     
                     if (heatMin) {
                         heatMin.addEventListener('input', () => {
                             savePreferences();
-                            if (window.treeData) createEmbeddingsHeatmap(window.treeData);
+                            if (window.treeData) refreshEmbeddingsHeatmap();
                         });
                     }
                     
                     if (heatMax) {
                         heatMax.addEventListener('input', () => {
                             savePreferences();
-                            if (window.treeData) createEmbeddingsHeatmap(window.treeData);
+                            if (window.treeData) refreshEmbeddingsHeatmap();
                         });
                     }
                 };
@@ -4036,7 +4036,7 @@ ${'='.repeat(80)}
                     // Process the active view to improve performance
                     setTimeout(() => {
                         if (activeLeftTabId === 'embeddings-view') {
-                            createEmbeddingsHeatmap(data);
+                            ensureEmbeddingsHeatmap();
                         } else if (activeLeftTabId === 'islands-view') {
                             createIslandsVisualization(data);
                         } else if (activeLeftTabId === 'best-path-view') {
@@ -8216,6 +8216,53 @@ console.error("[DEBUG] Error in processData:", error);
             return clusters[0]; // Return the final ordering
         }
 
+        function filterEmbeddingHeatmapData(data) {
+            if (!Array.isArray(data)) {
+                return [];
+            }
+
+            let filteredData = [...data];
+            const gen0Programs = filteredData.filter(d => d.generation === 0);
+
+            if (gen0Programs.length > 1) {
+                const gen0Groups = {};
+                gen0Programs.forEach(prog => {
+                    const key = prog.code || prog.id || 'no-code';
+                    if (!gen0Groups[key]) {
+                        gen0Groups[key] = [];
+                    }
+                    gen0Groups[key].push(prog);
+                });
+
+                const duplicateIds = new Set();
+                Object.values(gen0Groups).forEach(group => {
+                    if (group.length > 1) {
+                        group.sort((a, b) => (a.island_idx || 0) - (b.island_idx || 0));
+                        group.slice(1).forEach(prog => duplicateIds.add(prog.id));
+                    }
+                });
+
+                filteredData = filteredData.filter(d => !duplicateIds.has(d.id));
+            }
+
+            return filteredData;
+        }
+
+        function datasetHasCompleteEmbeddings(data) {
+            const filteredData = filterEmbeddingHeatmapData(data);
+            const programsNeedingEmbeddings = filteredData.filter(
+                d => d && d.id && !String(d.id).includes('___virtual_root')
+            );
+
+            if (programsNeedingEmbeddings.length === 0) {
+                return false;
+            }
+
+            return programsNeedingEmbeddings.every(
+                d => d.embedding && Array.isArray(d.embedding) && d.embedding.length > 0
+            );
+        }
+
         function createEmbeddingsHeatmap(data) {
             console.log("[DEBUG] Creating embeddings heatmap");
             
@@ -8239,37 +8286,23 @@ console.error("[DEBUG] Error in processData:", error);
             // Clear existing heatmap
             d3.select("#embeddings-heatmap").selectAll("*").remove();
             
-            // Deduplicate generation 0 programs for embeddings view (same logic as main tree)
-            let filteredData = [...data];
-            const gen0Programs = data.filter(d => d.generation === 0);
-            
-            if (gen0Programs.length > 1) {
-                // Group generation 0 programs by their code content to identify duplicates
-                const gen0Groups = {};
-                gen0Programs.forEach(prog => {
-                    const key = prog.code || 'no-code';
-                    if (!gen0Groups[key]) {
-                        gen0Groups[key] = [];
-                    }
-                    gen0Groups[key].push(prog);
-                });
-                
-                // For each group of duplicates, keep only the first one (usually lowest island_idx)
-                const duplicateIds = new Set();
-                Object.values(gen0Groups).forEach(group => {
-                    if (group.length > 1) {
-                        // Sort by island_idx to keep the first island's copy
-                        group.sort((a, b) => (a.island_idx || 0) - (b.island_idx || 0));
-                        // Mark all but the first as duplicates to remove
-                        group.slice(1).forEach(prog => duplicateIds.add(prog.id));
-                    }
-                });
-                
-                // Filter out the duplicate generation 0 programs
-                filteredData = data.filter(d => !duplicateIds.has(d.id));
-                console.log(`[DEBUG] Embeddings: Filtered out ${duplicateIds.size} duplicate generation 0 programs`);
+            const filteredData = filterEmbeddingHeatmapData(data);
+            if (filteredData.length !== data.length) {
+                console.log(
+                    `[DEBUG] Embeddings: Filtered out ${data.length - filteredData.length} duplicate generation 0 programs`
+                );
             }
-            
+
+            if (!datasetHasCompleteEmbeddings(filteredData)) {
+                d3.select("#embeddings-heatmap")
+                    .append("div")
+                    .style("text-align", "center")
+                    .style("color", "#666")
+                    .style("margin-top", "50px")
+                    .text("Loading full embedding data...");
+                return;
+            }
+
             // Filter data with embeddings
             const dataWithEmbeddings = filteredData.filter(d => d.embedding && Array.isArray(d.embedding) && d.embedding.length > 0);
             
@@ -9013,6 +9046,38 @@ console.error("[DEBUG] Error in processData:", error);
             }
         }
 
+        function mergeFullProgramData(existingData, fullData) {
+            const baseData = Array.isArray(existingData) ? existingData : [];
+            const fullPrograms = Array.isArray(fullData) ? fullData : [];
+            const fullDataMap = new Map(fullPrograms.map(program => [program.id, program]));
+
+            const merged = baseData.map(program => {
+                const fullProgram = fullDataMap.get(program.id);
+                return fullProgram ? { ...program, ...fullProgram } : program;
+            });
+
+            fullPrograms.forEach(program => {
+                if (!baseData.some(existing => existing.id === program.id)) {
+                    merged.push(program);
+                }
+            });
+
+            return merged;
+        }
+
+        function refreshEmbeddingsHeatmap() {
+            if (!window.treeData || window.treeData.length === 0) {
+                return;
+            }
+
+            if (datasetHasCompleteEmbeddings(window.treeData)) {
+                createEmbeddingsHeatmap(window.treeData);
+                return;
+            }
+
+            ensureEmbeddingsHeatmap();
+        }
+
         // Helper function to ensure embeddings heatmap is loaded
         function ensureEmbeddingsHeatmap() {
             const embeddingsView = document.getElementById('embeddings-view');
@@ -9025,23 +9090,38 @@ console.error("[DEBUG] Error in processData:", error);
                 return;
             }
             
-            // Check if heatmap already exists (has SVG content)
             const existingHeatmap = heatmapContainer.querySelector('svg');
-            if (existingHeatmap) {
+            if (existingHeatmap && datasetHasCompleteEmbeddings(window.treeData)) {
                 console.log("[DEBUG] Embeddings heatmap already exists");
                 return;
             }
             
             // If we have data but no heatmap, create it
             if (window.treeData && window.treeData.length > 0) {
-                // Check if we have full embeddings (summary data doesn't include them)
-                const hasEmbeddings = window.treeData.some(d => d.embedding && Array.isArray(d.embedding) && d.embedding.length > 0);
-                
-                if (hasEmbeddings) {
+                if (datasetHasCompleteEmbeddings(window.treeData)) {
                     console.log("[DEBUG] Creating embeddings heatmap with existing data");
                     createEmbeddingsHeatmap(window.treeData);
-                } else if (window.currentDbPath && !window.loadingFullEmbeddings) {
-                    // Need to fetch full data with embeddings
+                } else if (window.currentDbPath) {
+                    window.fullProgramDataByDb = window.fullProgramDataByDb || {};
+
+                    if (window.fullProgramDataByDb[window.currentDbPath]) {
+                        window.treeData = mergeFullProgramData(
+                            window.treeData,
+                            window.fullProgramDataByDb[window.currentDbPath]
+                        );
+                        window.rawDbData = mergeFullProgramData(
+                            window.rawDbData,
+                            window.fullProgramDataByDb[window.currentDbPath]
+                        );
+                        createEmbeddingsHeatmap(window.treeData);
+                        return;
+                    }
+
+                    if (window.loadingFullEmbeddings) {
+                        heatmapContainer.innerHTML = '<div style="text-align: center; color: #666; margin-top: 50px;">Loading embedding data...</div>';
+                        return;
+                    }
+
                     console.log("[DEBUG] Fetching full data with embeddings for heatmap");
                     heatmapContainer.innerHTML = '<div style="text-align: center; color: #666; margin-top: 50px;">Loading embedding data...</div>';
                     window.loadingFullEmbeddings = true;
@@ -9052,15 +9132,9 @@ console.error("[DEBUG] Error in processData:", error);
                             return r.json();
                         })
                         .then(fullData => {
-                            // Merge embeddings and code into existing treeData
-                            const fullDataMap = new Map(fullData.map(p => [p.id, p]));
-                            window.treeData.forEach(p => {
-                                const full = fullDataMap.get(p.id);
-                                if (full) {
-                                    if (full.embedding) p.embedding = full.embedding;
-                                    if (full.code) p.code = full.code;
-                                }
-                            });
+                            window.fullProgramDataByDb[window.currentDbPath] = fullData;
+                            window.treeData = mergeFullProgramData(window.treeData, fullData);
+                            window.rawDbData = mergeFullProgramData(window.rawDbData, fullData);
                             window.loadingFullEmbeddings = false;
                             console.log("[DEBUG] Embeddings loaded, creating heatmap");
                             createEmbeddingsHeatmap(window.treeData);
