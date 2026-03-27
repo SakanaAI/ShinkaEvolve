@@ -4,11 +4,16 @@ from pathlib import Path
 
 sys.modules.setdefault("markdown", types.SimpleNamespace(markdown=lambda text: text))
 
-from shinka.webui.visualization import DatabaseRequestHandler
+
+def _handler_cls():
+    from shinka.webui.visualization import DatabaseRequestHandler
+
+    return DatabaseRequestHandler
 
 
 def _make_handler(search_root: Path):
-    handler = DatabaseRequestHandler.__new__(DatabaseRequestHandler)
+    handler_cls = _handler_cls()
+    handler = handler_cls.__new__(handler_cls)
     handler.search_root = str(search_root)
     handler._get_actual_db_path = lambda db_path: db_path
     handler.send_response = lambda code: None
