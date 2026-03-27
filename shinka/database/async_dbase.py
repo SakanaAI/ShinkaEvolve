@@ -801,7 +801,7 @@ class AsyncProgramDatabase:
                         timeout=60.0,
                     )
                     conn.execute("PRAGMA journal_mode = WAL;")
-                    conn.execute("PRAGMA busy_timeout = 30000;")
+                    conn.execute("PRAGMA busy_timeout = 60000;")
                     payload = None
                     if details is not None:
                         import json

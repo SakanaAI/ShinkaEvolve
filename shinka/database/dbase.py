@@ -325,7 +325,7 @@ class ProgramDatabase:
                     if db_shm_file.exists():
                         db_shm_file.unlink()
                 db_file.parent.mkdir(parents=True, exist_ok=True)
-                self.conn = sqlite3.connect(str(db_file), timeout=30.0)
+                self.conn = sqlite3.connect(str(db_file), timeout=60.0)
                 logger.debug(f"Connected to SQLite database: {db_file}")
             else:
                 if not db_file.exists():
@@ -333,7 +333,7 @@ class ProgramDatabase:
                         f"Database file not found for read-only connection: {db_file}"
                     )
                 db_uri = f"file:{db_file}?mode=ro"
-                self.conn = sqlite3.connect(db_uri, uri=True, timeout=30.0)
+                self.conn = sqlite3.connect(db_uri, uri=True, timeout=60.0)
                 logger.debug(
                     "Connected to SQLite database in read-only mode: %s",
                     db_file,
@@ -406,7 +406,7 @@ class ProgramDatabase:
         # Set SQLite pragmas for better performance and stability
         # Use WAL mode for better concurrency support and reduced locking
         self.cursor.execute("PRAGMA journal_mode = WAL;")
-        self.cursor.execute("PRAGMA busy_timeout = 30000;")  # 30 second busy timeout
+        self.cursor.execute("PRAGMA busy_timeout = 60000;")  # 60 second busy timeout
         self.cursor.execute(
             "PRAGMA wal_autocheckpoint = 1000;"
         )  # Checkpoint every 1000 pages
@@ -1817,7 +1817,7 @@ class ProgramDatabase:
             )
             db_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        self.conn = sqlite3.connect(str(db_path_obj), timeout=30.0)
+        self.conn = sqlite3.connect(str(db_path_obj), timeout=60.0)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         self._create_tables()

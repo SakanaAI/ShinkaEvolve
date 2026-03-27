@@ -3472,7 +3472,7 @@ class ShinkaEvolveRunner:
                         code_embedding=job.code_embedding,
                         embed_cost=job.embed_cost,
                     ),
-                    timeout=30.0,  # 30 second timeout for DB operations
+                    timeout=90.0,  # 90 second timeout for DB operations
                 )
                 logger.info(
                     f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
@@ -3880,6 +3880,10 @@ class ShinkaEvolveRunner:
             len(self.running_jobs)
             + len(self.active_proposal_tasks)
             + len(self.failed_jobs_for_retry)
+            # Completed jobs being persisted still count as in-flight work.
+            + int(
+                hasattr(self, "processing_lock") and self.processing_lock.locked()
+            )
         )
 
     def _get_remaining_completed_work(self) -> int:
