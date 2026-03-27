@@ -1,8 +1,10 @@
 import sys
-import types
 from pathlib import Path
+from types import ModuleType
 
-sys.modules.setdefault("markdown", types.SimpleNamespace(markdown=lambda text: text))
+markdown_stub = ModuleType("markdown")
+setattr(markdown_stub, "markdown", lambda text: text)
+sys.modules.setdefault("markdown", markdown_stub)
 
 
 def _handler_cls():
