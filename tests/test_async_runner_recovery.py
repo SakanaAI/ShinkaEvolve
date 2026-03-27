@@ -115,11 +115,15 @@ def _build_runner(**overrides):
     runner.scheduler = overrides.get("scheduler", _FakeScheduler())
     runner.submitted_jobs = overrides.get("submitted_jobs", {})
     runner.slot_available = overrides.get("slot_available", _FakeEvent())
+    runner.should_stop = overrides.get("should_stop", _FakeEvent())
+    runner.finalization_complete = overrides.get("finalization_complete", _FakeEvent())
     runner.max_evaluation_jobs = overrides.get("max_evaluation_jobs", 2)
     runner.max_proposal_jobs = overrides.get("max_proposal_jobs", 1)
     runner.max_db_workers = overrides.get("max_db_workers", 1)
+    runner.processing_lock = overrides.get("processing_lock", asyncio.Lock())
     runner._evaluation_seconds_ewma = overrides.get("evaluation_ewma")
     runner.verbose = overrides.get("verbose", False)
+    runner.cost_limit_reached = overrides.get("cost_limit_reached", False)
     return runner
 
 
@@ -151,6 +155,25 @@ def test_get_remaining_completed_work_accounts_for_inflight_jobs():
     )
 
     assert runner._get_remaining_completed_work() == 1
+
+
+def test_get_in_flight_work_count_includes_completed_job_processing_lock():
+    async def _run():
+        runner = _build_runner(
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+        )
+
+        assert runner._get_in_flight_work_count() == 0
+
+        await runner.processing_lock.acquire()
+        try:
+            assert runner._get_in_flight_work_count() == 1
+        finally:
+            runner.processing_lock.release()
+
+    asyncio.run(_run())
 
 
 def test_get_remaining_generation_slots_uses_hard_generation_budget():
@@ -206,6 +229,48 @@ def test_start_proposals_does_not_assign_generation_past_target():
 
         await asyncio.gather(*runner.active_proposal_tasks.values(), return_exceptions=True)
         await runner._cleanup_completed_proposal_tasks()
+
+    asyncio.run(_run())
+
+
+def test_generation_budget_exhaustion_waits_for_completed_job_processing_to_finish():
+    async def _run():
+        runner = _build_runner(
+            evo_config=SimpleNamespace(num_generations=100, max_api_costs=None),
+            completed_generations=92,
+            next_generation_to_submit=100,
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+        )
+        runner.cost_limit_reached = False
+        recorded_events = []
+
+        async def _record_generation_event(**kwargs):
+            recorded_events.append(kwargs)
+
+        async def _wait_for_slot_or_stop(timeout):
+            runner.should_stop.set()
+
+        runner._record_generation_event = _record_generation_event
+        runner._wait_for_slot_or_stop = _wait_for_slot_or_stop
+        runner._cleanup_completed_proposal_tasks = lambda: asyncio.sleep(
+            0, result=None
+        )
+        runner._is_system_stuck = lambda: False
+        runner._handle_stuck_system = lambda: asyncio.sleep(0, result=True)
+        runner._compute_proposal_pipeline_target = lambda: 0
+        runner._log_proposal_target_decision = lambda target: None
+        runner._get_committed_cost = lambda: 0.0
+
+        await runner.processing_lock.acquire()
+        try:
+            await runner._proposal_coordinator_task()
+        finally:
+            runner.processing_lock.release()
+
+        assert recorded_events == []
+        assert runner.finalization_complete.is_set() is False
 
     asyncio.run(_run())
 
