@@ -325,7 +325,7 @@ class ProgramDatabase:
                     if db_shm_file.exists():
                         db_shm_file.unlink()
                 db_file.parent.mkdir(parents=True, exist_ok=True)
-                self.conn = sqlite3.connect(str(db_file), timeout=30.0)
+                self.conn = sqlite3.connect(str(db_file), timeout=60.0)
                 logger.debug(f"Connected to SQLite database: {db_file}")
             else:
                 if not db_file.exists():
@@ -333,7 +333,7 @@ class ProgramDatabase:
                         f"Database file not found for read-only connection: {db_file}"
                     )
                 db_uri = f"file:{db_file}?mode=ro"
-                self.conn = sqlite3.connect(db_uri, uri=True, timeout=30.0)
+                self.conn = sqlite3.connect(db_uri, uri=True, timeout=60.0)
                 logger.debug(
                     "Connected to SQLite database in read-only mode: %s",
                     db_file,
@@ -406,7 +406,7 @@ class ProgramDatabase:
         # Set SQLite pragmas for better performance and stability
         # Use WAL mode for better concurrency support and reduced locking
         self.cursor.execute("PRAGMA journal_mode = WAL;")
-        self.cursor.execute("PRAGMA busy_timeout = 30000;")  # 30 second busy timeout
+        self.cursor.execute("PRAGMA busy_timeout = 60000;")  # 60 second busy timeout
         self.cursor.execute(
             "PRAGMA wal_autocheckpoint = 1000;"
         )  # Checkpoint every 1000 pages
@@ -479,6 +479,24 @@ class ProgramDatabase:
             CREATE TABLE IF NOT EXISTS metadata_store (
                 key TEXT PRIMARY KEY, value TEXT
             )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generation_event_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generation INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source_job_id TEXT,
+                details TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_generation_event_log_generation
+            ON generation_event_log(generation)
             """
         )
 
@@ -622,6 +640,31 @@ class ProgramDatabase:
         self.conn.commit()
 
     @db_retry()
+    def record_generation_event(
+        self,
+        generation: int,
+        status: str,
+        source_job_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        payload = None
+        if details is not None:
+            payload = json.dumps(clean_nan_values(details), sort_keys=True)
+
+        self.cursor.execute(
+            """
+            INSERT INTO generation_event_log (
+                generation, status, source_job_id, details, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (generation, status, source_job_id, payload, time.time()),
+        )
+        self.conn.commit()
+
+    @db_retry()
     def _count_programs_in_db(self) -> int:
         if not self.cursor:
             return 0
@@ -644,6 +687,24 @@ class ProgramDatabase:
             (source_job_id,),
         )
         return self.cursor.fetchone() is not None
+
+    @db_retry()
+    def get_program_by_source_job_id(self, source_job_id: str) -> Optional[Program]:
+        """Return the persisted program row for a completed scheduler job."""
+        if not self.cursor:
+            return None
+        self.cursor.execute(
+            """
+            SELECT *
+            FROM programs
+            WHERE json_valid(metadata)
+              AND json_extract(metadata, '$.source_job_id') = ?
+            LIMIT 1
+            """,
+            (source_job_id,),
+        )
+        row = self.cursor.fetchone()
+        return self._program_from_row(row) if row else None
 
     @db_retry()
     def add(self, program: Program, verbose: bool = False) -> str:
@@ -1756,7 +1817,7 @@ class ProgramDatabase:
             )
             db_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        self.conn = sqlite3.connect(str(db_path_obj), timeout=30.0)
+        self.conn = sqlite3.connect(str(db_path_obj), timeout=60.0)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         self._create_tables()

@@ -61,3 +61,16 @@ def test_throughput_tab_contains_runtime_and_utilization_sections():
     assert 'id="throughput-utilization-table"' in html
     assert "function updateThroughputTab(selectedNodeId = null)" in html
     assert "function renderThroughputOccupancyPercentPlot(rows, capacities)" in html
+
+
+def test_meta_panel_uses_update_wording_instead_of_generation_wording():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert '<label for="generation-slider">Meta Update:</label>' in html
+    assert "Meta analysis for update ${generation} is not available." in html
+    assert 'Meta analysis for this update is not available.' in html
+    assert "Failed to load meta analysis for update ${generation}." in html
+    assert 'Loading meta analysis for update:' in html
+    assert "Load the highest update file by default" in html
+    assert "const currentGen = metaData.processed_count ?? metaData.generation;" in html
+    assert "Scratchpad - Update ${currentGen}" in html

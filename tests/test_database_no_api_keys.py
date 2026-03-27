@@ -107,6 +107,36 @@ def test_async_db_source_job_id_check_treats_inflight_insert_as_existing(monkeyp
     asyncio.run(_run())
 
 
+def test_async_db_can_fetch_program_by_source_job_id(monkeypatch):
+    """Async DB should recover the already-persisted row for retry side effects."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fetch_source_job.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                program = _program("async-p0")
+                program.metadata = {"source_job_id": "job-123"}
+
+                await async_db.add_program_async(program)
+
+                recovered = await async_db.get_program_by_source_job_id_async("job-123")
+
+                assert recovered is not None
+                assert recovered.id == "async-p0"
+                assert recovered.metadata["source_job_id"] == "job-123"
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+
 def test_async_db_add_skips_source_job_id_while_another_insert_is_inflight(monkeypatch):
     """Do not insert a duplicate row while the same source job is still in flight."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

@@ -9,6 +9,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Added local OpenAI-compatible embedding endpoint support via `evo.embedding_model=local/<model>@http(s)://host[:port]/v1`.
 - Added `CONTRIBUTING.md` plus GitHub issue and pull-request templates to document the contribution flow.
 - Added Python throughput plotting utilities in `shinka.plots` for generation runtime timelines and normalized occupancy-over-time views.
+- Added a durable SQLite `generation_event_log` journal for async generation lifecycle debugging, including stop and persistence-failure events.
 - Added regression coverage for the new Python throughput plotting helpers, including pool-slot prep, occupancy math, and legend/layout behavior.
 - Added regression coverage for concurrent async completed-job persistence so multi-worker postprocessing throughput stays exercised.
 - Added regression coverage for lightweight program summaries and WebUI embed-tab hydration so similarity matrices only render from fully loaded embedding data.
@@ -21,14 +22,22 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Updated `examples/circle_packing/load_results.ipynb` and `examples/circle_packing/shinka_long.yaml` for the latest large async circle-packing run analysis setup.
 - Refined Python throughput plot legends to use compact centered panels below each subplot for cleaner notebook rendering.
 - Improved async postprocessing throughput by persisting completed jobs concurrently across multiple workers before applying slower follow-up side effects.
+- Reduced the async generation journal to high-signal failure/stop events only so persistence debugging does not add heavy hot-path overhead.
 
 ### Fixed
 
 - Fixed async proposal scheduling so `num_generations` is now a hard cap on assigned proposal generations instead of launching extra `gen_*` attempts to compensate for failed or discarded work.
 - Fixed async evaluation slot lifecycle bugs so local evaluation concurrency no longer exceeds `max_evaluation_jobs` through stale double-release of reassigned worker slots.
+- Fixed retry-time completion accounting so successful DB retries refresh async progress before the hard generation-budget stop condition is evaluated.
 - Fixed async database retry races by treating in-flight `source_job_id` inserts as already claimed, preventing duplicate persisted programs while timed-out writes are still finishing in worker threads.
+- Fixed retry-time runtime metadata so evaluation windows stay pinned to first result retrieval instead of being inflated by later DB retries.
 - Fixed async resume/recovery bookkeeping so restarted runs continue from the number of persisted completed programs instead of stopping early when failed proposals or hung local evals left gaps in generation IDs.
+- Fixed WebUI meta-analysis labeling so `meta_*.txt` snapshots are presented as meta updates / processed-count checkpoints instead of misleading generation numbers.
+- Fixed duplicate-retry recovery so already-persisted jobs replay post-persistence side effects exactly once, restoring missing meta-memory updates after DB timeouts.
+- Fixed SQLite persistence stability by increasing busy timeouts and the outer async DB-add timeout for long high-concurrency runs.
+- Fixed generation-budget shutdown races so completed-job persistence still counts as in-flight work and late completed generations drain before async cleanup closes the database.
 - Fixed Python throughput plot preparation so frames without optional metadata columns like `is_island_copy`, `patch_name`, or `model_name` still render correctly.
+- Fixed legacy throughput accounting in both the Python plotter and WebUI Throughput tab so reused worker lanes no longer show impossible peaks like `31/20`.
 - Fixed the WebUI embed tab so summary-only loads or single lazily hydrated programs no longer produce a misleading 1x1 similarity matrix instead of the full run.
 
 ## 0.0.2 - 2026-03-22
