@@ -609,7 +609,7 @@ def test_process_completed_jobs_flushes_db_maintenance_before_side_effects():
         runner.stuck_detection_count = 0
         runner.cost_limit_reached = False
         runner.evo_config = SimpleNamespace(num_generations=10)
-        runner.verbose = False
+        runner.verbose = True
         runner._update_completed_generations = lambda: asyncio.sleep(0, result=None)
 
         events = []
@@ -621,8 +621,8 @@ def test_process_completed_jobs_flushes_db_maintenance_before_side_effects():
             def enqueue_program_maintenance(self, program):
                 events.append(f"enqueue:{program.id}")
 
-            async def flush_program_maintenance_async(self, force=False):
-                events.append(f"flush:{force}")
+            async def flush_program_maintenance_async(self, force=False, verbose=False):
+                events.append(f"flush:{force}:{verbose}")
 
         runner.async_db = _MaintenanceAsyncDB()
 
@@ -665,7 +665,7 @@ def test_process_completed_jobs_flushes_db_maintenance_before_side_effects():
 
         assert events == [
             "enqueue:program-1",
-            "flush:False",
+            "flush:False:True",
             "apply:program-1",
         ]
 

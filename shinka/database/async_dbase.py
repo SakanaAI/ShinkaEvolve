@@ -405,6 +405,7 @@ class AsyncProgramDatabase:
         meta_patch_data: Optional[Dict[str, Any]] = None,
         code_embedding: Optional[List[float]] = None,
         embed_cost: float = 0.0,
+        verbose: bool = False,
         defer_maintenance: bool = False,
     ) -> None:
         """Async version of adding a program to the database.
@@ -418,6 +419,7 @@ class AsyncProgramDatabase:
             meta_patch_data: Metadata about patch generation
             code_embedding: Code embedding vector
             embed_cost: Cost of embedding generation
+            verbose: Whether to print the per-program rich summary
             defer_maintenance: When true, skip archive / best / migration
                 follow-up work so it can run later off the insert hot path.
         """
@@ -477,7 +479,9 @@ class AsyncProgramDatabase:
             async with self._db_semaphore:
                 async with self._lock:
                     added = await self._add_program_fast_async(
-                        program, defer_maintenance=defer_maintenance
+                        program,
+                        verbose=verbose,
+                        defer_maintenance=defer_maintenance,
                     )
 
                     # Track programs and schedule embedding recomputation only
@@ -605,7 +609,10 @@ class AsyncProgramDatabase:
             self.sync_db._recompute_embeddings_and_clusters = original_embedding_method
 
     async def _add_program_fast_async(
-        self, program: Program, defer_maintenance: bool = False
+        self,
+        program: Program,
+        verbose: bool = False,
+        defer_maintenance: bool = False,
     ) -> bool:
         """Async fast program addition that defers expensive operations."""
 
@@ -639,7 +646,7 @@ class AsyncProgramDatabase:
                     # Keep the insert path quiet; summaries happen outside the writer hot path.
                     thread_db.add(
                         program,
-                        verbose=False,
+                        verbose=verbose,
                         defer_maintenance=defer_maintenance,
                     )
                     self._sync_runtime_metadata_from_db(thread_db)

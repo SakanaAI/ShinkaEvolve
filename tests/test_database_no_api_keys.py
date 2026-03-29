@@ -81,6 +81,43 @@ def test_async_db_add_without_openai_key_when_embeddings_disabled(monkeypatch):
     asyncio.run(_run())
 
 
+def test_async_db_add_forwards_verbose_flag(monkeypatch):
+    """Async add should forward verbose to the underlying writer database."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    observed = {}
+    original_add = ProgramDatabase.add
+
+    def tracking_add(self, program, verbose=False, defer_maintenance=False):
+        observed["verbose"] = verbose
+        observed["defer_maintenance"] = defer_maintenance
+        return original_add(
+            self,
+            program,
+            verbose=verbose,
+            defer_maintenance=defer_maintenance,
+        )
+
+    monkeypatch.setattr(ProgramDatabase, "add", tracking_add)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "verbose_forwarding.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                await async_db.add_program_async(_program("async-p0"), verbose=True)
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+    assert observed == {"verbose": True, "defer_maintenance": False}
+
+
 def test_async_db_add_skips_duplicate_source_job_id(monkeypatch):
     """Async DB writes should be idempotent for the same completed scheduler job."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -298,3 +335,47 @@ def test_async_db_batches_deferred_program_maintenance(monkeypatch):
                 sync_db.close()
 
     asyncio.run(_run())
+
+
+def test_async_db_flush_forwards_verbose_flag(monkeypatch):
+    """Deferred maintenance flush should forward verbose to maintenance replay."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    observed = {}
+    original_run = ProgramDatabase.run_post_add_maintenance_batch
+
+    def tracking_run(self, programs, verbose=False, recompute_embeddings=False):
+        observed["verbose"] = verbose
+        observed["count"] = len(programs)
+        return original_run(
+            self,
+            programs,
+            verbose=verbose,
+            recompute_embeddings=recompute_embeddings,
+        )
+
+    monkeypatch.setattr(ProgramDatabase, "run_post_add_maintenance_batch", tracking_run)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "verbose_flush.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                program = _program("async-p0")
+                await async_db.add_program_async(program, defer_maintenance=True)
+                async_db.enqueue_program_maintenance(program)
+
+                await async_db.flush_program_maintenance_async(
+                    force=True,
+                    verbose=True,
+                )
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+    assert observed == {"verbose": True, "count": 1}

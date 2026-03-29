@@ -1505,7 +1505,7 @@ class ShinkaEvolveRunner:
             )
 
         # Add to database
-        await self.async_db.add_program_async(initial_program)
+        await self.async_db.add_program_async(initial_program, verbose=self.verbose)
 
         # Add initial program costs to in-memory total for accurate budget tracking
         initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
@@ -3493,6 +3493,7 @@ class ShinkaEvolveRunner:
                         meta_patch_data=job.meta_patch_data,
                         code_embedding=job.code_embedding,
                         embed_cost=job.embed_cost,
+                        verbose=self.verbose,
                         defer_maintenance=True,
                     ),
                     timeout=90.0,  # 90 second timeout for DB operations
@@ -3755,7 +3756,10 @@ class ShinkaEvolveRunner:
         """Flush queued deferred DB maintenance if the async DB supports it."""
         async_db = getattr(self, "async_db", None)
         if async_db is not None and hasattr(async_db, "flush_program_maintenance_async"):
-            await async_db.flush_program_maintenance_async(force=force)
+            await async_db.flush_program_maintenance_async(
+                force=force,
+                verbose=self.verbose,
+            )
 
     def _get_background_side_effect_work_count(self) -> int:
         """Return queued side effects plus the currently running one."""
