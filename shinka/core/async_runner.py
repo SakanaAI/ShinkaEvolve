@@ -874,7 +874,6 @@ class ShinkaEvolveRunner:
                         self._get_background_side_effect_work_count(),
                     )
                 await self._wait_for_background_side_effects()
-            await self._flush_program_maintenance(force=True)
             await self._shutdown_background_side_effect_worker()
 
             # Perform final operations before cleanup
@@ -3494,7 +3493,6 @@ class ShinkaEvolveRunner:
                         code_embedding=job.code_embedding,
                         embed_cost=job.embed_cost,
                         verbose=self.verbose,
-                        defer_maintenance=True,
                     ),
                     timeout=90.0,  # 90 second timeout for DB operations
                 )
@@ -3742,25 +3740,6 @@ class ShinkaEvolveRunner:
             name="background_side_effects",
         )
 
-    async def _enqueue_program_maintenance_for_events(
-        self, persisted_events: List[PersistedProgramEvent]
-    ) -> None:
-        """Queue persisted programs for deferred DB maintenance."""
-        async_db = getattr(self, "async_db", None)
-        if async_db is None or not hasattr(async_db, "enqueue_program_maintenance"):
-            return
-        for persisted_event in persisted_events:
-            async_db.enqueue_program_maintenance(persisted_event.program)
-
-    async def _flush_program_maintenance(self, force: bool = False) -> None:
-        """Flush queued deferred DB maintenance if the async DB supports it."""
-        async_db = getattr(self, "async_db", None)
-        if async_db is not None and hasattr(async_db, "flush_program_maintenance_async"):
-            await async_db.flush_program_maintenance_async(
-                force=force,
-                verbose=self.verbose,
-            )
-
     def _get_background_side_effect_work_count(self) -> int:
         """Return queued side effects plus the currently running one."""
         pending = int(getattr(self, "_background_side_effects_pending", 0) or 0)
@@ -3886,8 +3865,6 @@ class ShinkaEvolveRunner:
 
         await self._update_completed_generations()
         ordered_events = sorted(persisted_events, key=lambda event: event.job.generation)
-        await self._enqueue_program_maintenance_for_events(ordered_events)
-        await self._flush_program_maintenance(force=False)
         await self._enqueue_background_side_effects(ordered_events)
 
         logger.info(
@@ -3916,8 +3893,6 @@ class ShinkaEvolveRunner:
         if persist_result.persisted_event is None:
             return True
 
-        await self._enqueue_program_maintenance_for_events([persist_result.persisted_event])
-        await self._flush_program_maintenance(force=True)
         await self._enqueue_background_side_effects([persist_result.persisted_event])
         await self._wait_for_background_side_effects()
         return True

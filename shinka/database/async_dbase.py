@@ -102,11 +102,6 @@ class AsyncProgramDatabase:
         self._source_job_id_lock = threading.Lock()
         self._in_flight_source_job_ids: set[str] = set()
         self._writer_local = threading.local()
-        self.maintenance_batch_size = 8
-        self._pending_maintenance_order: List[str] = []
-        self._pending_maintenance_programs: Dict[str, Program] = {}
-        self._maintenance_applied_program_ids: set[str] = set()
-        self._maintenance_flush_lock = asyncio.Lock()
         # Semaphore to limit concurrent database operations and prevent deadlocks
         # With WAL mode enabled, we can handle more concurrent operations safely
         concurrent_ops = min(
@@ -169,22 +164,6 @@ class AsyncProgramDatabase:
         ):
             if hasattr(source_db, attr) and hasattr(self.sync_db, attr):
                 setattr(self.sync_db, attr, getattr(source_db, attr))
-
-    def enqueue_program_maintenance(self, program: Program) -> None:
-        """Queue a persisted program for deferred maintenance."""
-        program_id = program.id
-        if (program.metadata or {}).get("postprocess_db_maintenance_applied"):
-            self._maintenance_applied_program_ids.add(program_id)
-            return
-        if program_id in self._maintenance_applied_program_ids:
-            return
-        if program_id not in self._pending_maintenance_programs:
-            self._pending_maintenance_order.append(program_id)
-        self._pending_maintenance_programs[program_id] = program
-
-    def pending_program_maintenance_count(self) -> int:
-        """Return the number of programs waiting for deferred maintenance."""
-        return len(self._pending_maintenance_order)
 
     def _debug_track_start(self, operation: str, **kwargs):
         """Helper to conditionally track debug operations."""
@@ -406,7 +385,6 @@ class AsyncProgramDatabase:
         code_embedding: Optional[List[float]] = None,
         embed_cost: float = 0.0,
         verbose: bool = False,
-        defer_maintenance: bool = False,
     ) -> None:
         """Async version of adding a program to the database.
 
@@ -420,8 +398,6 @@ class AsyncProgramDatabase:
             code_embedding: Code embedding vector
             embed_cost: Cost of embedding generation
             verbose: Whether to print the per-program rich summary
-            defer_maintenance: When true, skip archive / best / migration
-                follow-up work so it can run later off the insert hot path.
         """
         # Debug tracking
         op_id = self._debug_track_start(
@@ -481,7 +457,6 @@ class AsyncProgramDatabase:
                     added = await self._add_program_fast_async(
                         program,
                         verbose=verbose,
-                        defer_maintenance=defer_maintenance,
                     )
 
                     # Track programs and schedule embedding recomputation only
@@ -612,7 +587,6 @@ class AsyncProgramDatabase:
         self,
         program: Program,
         verbose: bool = False,
-        defer_maintenance: bool = False,
     ) -> bool:
         """Async fast program addition that defers expensive operations."""
 
@@ -643,11 +617,9 @@ class AsyncProgramDatabase:
                 thread_db._recompute_embeddings_and_clusters = lambda: None
 
                 try:
-                    # Keep the insert path quiet; summaries happen outside the writer hot path.
                     thread_db.add(
                         program,
                         verbose=verbose,
-                        defer_maintenance=defer_maintenance,
                     )
                     self._sync_runtime_metadata_from_db(thread_db)
                     return True
@@ -667,71 +639,6 @@ class AsyncProgramDatabase:
         # Run the thread-safe database operation in an executor
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self.write_executor, add_program_sync)
-
-    async def run_program_maintenance_async(
-        self, program: Program, verbose: bool = False
-    ) -> None:
-        """Backward-compatible wrapper for immediate deferred-maintenance replay."""
-        self.enqueue_program_maintenance(program)
-        await self.flush_program_maintenance_async(force=True, verbose=verbose)
-
-    async def flush_program_maintenance_async(
-        self, force: bool = False, verbose: bool = False
-    ) -> int:
-        """Flush queued deferred maintenance on the serialized writer lane."""
-        if not self._pending_maintenance_order:
-            return 0
-        if not force and len(self._pending_maintenance_order) < self.maintenance_batch_size:
-            return 0
-
-        async with self._maintenance_flush_lock:
-            if not self._pending_maintenance_order:
-                return 0
-            if (
-                not force
-                and len(self._pending_maintenance_order) < self.maintenance_batch_size
-            ):
-                return 0
-
-            pending_ids = list(self._pending_maintenance_order)
-            pending_programs = [
-                self._pending_maintenance_programs[program_id]
-                for program_id in pending_ids
-            ]
-            self._pending_maintenance_order = []
-            self._pending_maintenance_programs = {}
-
-            op_id = self._debug_track_start(
-                "flush_program_maintenance_async",
-                batch_size=len(pending_programs),
-                force=force,
-            )
-
-            try:
-                def run_maintenance_sync():
-                    thread_db = self._get_writer_program_db()
-                    thread_db.run_post_add_maintenance_batch(
-                        pending_programs,
-                        verbose=verbose,
-                        recompute_embeddings=False,
-                    )
-                    self._sync_runtime_metadata_from_db(thread_db)
-
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(self.write_executor, run_maintenance_sync)
-                self._maintenance_applied_program_ids.update(pending_ids)
-                self._debug_track_end(op_id, success=True)
-                return len(pending_ids)
-            except Exception as e:
-                for program_id, program in reversed(
-                    list(zip(pending_ids, pending_programs))
-                ):
-                    if program_id not in self._pending_maintenance_programs:
-                        self._pending_maintenance_order.insert(0, program_id)
-                        self._pending_maintenance_programs[program_id] = program
-                self._debug_track_end(op_id, success=False)
-                logger.error(f"Error in deferred program maintenance flush: {e}")
-                raise
 
     def _schedule_embedding_recomputation(self):
         """Schedule embedding recomputation as a background task."""
@@ -1022,8 +929,6 @@ class AsyncProgramDatabase:
                 for op_id, op in db_debugger.active_operations.items():
                     duration = time.time() - op["start_time"]
                     logger.warning(f"  {op_id}: {op['operation']} ({duration:.1f}s)")
-
-        await self.flush_program_maintenance_async(force=True)
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self.write_executor, self._close_writer_program_db)
