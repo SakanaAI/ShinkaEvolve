@@ -69,6 +69,20 @@ class _FakeEvent:
         return self._is_set
 
 
+class _FakeLock:
+    def __init__(self):
+        self._locked = False
+
+    async def acquire(self):
+        self._locked = True
+
+    def release(self):
+        self._locked = False
+
+    def locked(self):
+        return self._locked
+
+
 class _TrackedSlotPool:
     def __init__(self, events, label):
         self.events = events
@@ -120,7 +134,7 @@ def _build_runner(**overrides):
     runner.max_evaluation_jobs = overrides.get("max_evaluation_jobs", 2)
     runner.max_proposal_jobs = overrides.get("max_proposal_jobs", 1)
     runner.max_db_workers = overrides.get("max_db_workers", 1)
-    runner.processing_lock = overrides.get("processing_lock", asyncio.Lock())
+    runner.processing_lock = overrides.get("processing_lock", _FakeLock())
     runner._evaluation_seconds_ewma = overrides.get("evaluation_ewma")
     runner.verbose = overrides.get("verbose", False)
     runner.cost_limit_reached = overrides.get("cost_limit_reached", False)
@@ -174,6 +188,37 @@ def test_get_in_flight_work_count_includes_completed_job_processing_lock():
             runner.processing_lock.release()
 
     asyncio.run(_run())
+
+
+def test_is_system_stuck_ignores_inflight_persistence_work():
+    async def _run():
+        runner = _build_runner(
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+            completed_generations=4,
+            evo_config=SimpleNamespace(num_generations=10),
+        )
+
+        await runner.processing_lock.acquire()
+        try:
+            assert runner._is_system_stuck() is False
+        finally:
+            runner.processing_lock.release()
+
+    asyncio.run(_run())
+
+
+def test_is_system_stuck_ignores_retry_queue_work():
+    runner = _build_runner(
+        running_jobs=[],
+        active_proposal_tasks={},
+        failed_jobs_for_retry={"retry-1": object()},
+        completed_generations=4,
+        evo_config=SimpleNamespace(num_generations=10),
+    )
+
+    assert runner._is_system_stuck() is False
 
 
 def test_get_remaining_generation_slots_uses_hard_generation_budget():
@@ -336,6 +381,88 @@ def test_retry_failed_db_jobs_refreshes_completion_progress():
                 "details": {"db_retry_count": 0},
             }
         ]
+
+    asyncio.run(_run())
+
+
+def test_update_prompt_fitness_only_recomputes_after_correct_programs():
+    class _FakePromptDB:
+        def __init__(self):
+            self.update_calls = []
+            self.recompute_calls = []
+
+        def update_fitness(self, **kwargs):
+            self.update_calls.append(kwargs)
+
+        def recompute_all_percentiles(self, all_correct_scores, program_id_to_score):
+            self.recompute_calls.append((list(all_correct_scores), dict(program_id_to_score)))
+
+    class _FakeAsyncDB:
+        async def compute_percentile_async(self, program_score, correct_only=True):
+            assert correct_only is True
+            return 0.75
+
+    async def _run():
+        prompt_db = _FakePromptDB()
+        runner = _build_runner(
+            async_db=_FakeAsyncDB(),
+            db=SimpleNamespace(
+                get_all_programs=lambda: [
+                    SimpleNamespace(id="p0", correct=True, combined_score=1.0),
+                    SimpleNamespace(id="p1", correct=True, combined_score=2.0),
+                ]
+            ),
+            evo_config=SimpleNamespace(
+                num_generations=10,
+                prompt_percentile_recompute_interval=2,
+            ),
+        )
+        runner.prompt_db = prompt_db
+        runner.prompt_percentile_recompute_counter = 0
+
+        await runner._update_prompt_fitness(
+            prompt_id="prompt-1",
+            program_id="prog-incorrect",
+            program_score=0.0,
+            improvement=0.0,
+            correct=False,
+        )
+        await runner._update_prompt_fitness(
+            prompt_id="prompt-1",
+            program_id="prog-correct-1",
+            program_score=2.5,
+            improvement=0.1,
+            correct=True,
+        )
+        await runner._update_prompt_fitness(
+            prompt_id="prompt-1",
+            program_id="prog-correct-2",
+            program_score=2.8,
+            improvement=0.2,
+            correct=True,
+        )
+
+        assert len(prompt_db.update_calls) == 3
+        assert len(prompt_db.recompute_calls) == 1
+        assert runner.prompt_percentile_recompute_counter == 0
+
+    asyncio.run(_run())
+
+
+def test_get_missing_persisted_generations_reports_budget_gap():
+    class _FakeAsyncDB:
+        async def get_persisted_generation_ids_async(self):
+            return {0, 1, 3, 4}
+
+    async def _run():
+        runner = _build_runner(
+            async_db=_FakeAsyncDB(),
+            evo_config=SimpleNamespace(num_generations=5),
+        )
+
+        missing = await runner._get_missing_persisted_generations()
+
+        assert missing == [2]
 
     asyncio.run(_run())
 

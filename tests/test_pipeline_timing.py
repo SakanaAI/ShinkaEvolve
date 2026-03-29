@@ -7,6 +7,7 @@ import pytest
 from shinka.core.async_runner import AsyncRunningJob, ShinkaEvolveRunner
 from shinka.core.pipeline_timing import with_pipeline_timing
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.database import Program
 
 
 def test_with_pipeline_timing_adds_boundaries_and_durations():
@@ -582,6 +583,8 @@ def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
         ]
 
         await runner._process_completed_jobs_safely(jobs)
+        await runner._wait_for_background_side_effects()
+        await runner._cancel_background_side_effect_worker()
 
         assert len(async_db.programs) == 2
         assert async_db.peak_adds == 2
@@ -589,3 +592,182 @@ def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
         assert len(applied_program_ids) == 2
 
     asyncio.run(_run())
+
+
+def test_process_completed_jobs_flushes_db_maintenance_before_side_effects():
+    async def _run():
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.running_jobs = []
+        runner.active_proposal_tasks = {}
+        runner.failed_jobs_for_retry = {}
+        runner.processing_lock = asyncio.Lock()
+        runner.submitted_jobs = {"job-1": object()}
+        runner.should_stop = asyncio.Event()
+        runner.slot_available = asyncio.Event()
+        runner.completed_generations = 3
+        runner.last_progress_time = time.time()
+        runner.stuck_detection_count = 0
+        runner.cost_limit_reached = False
+        runner.evo_config = SimpleNamespace(num_generations=10)
+        runner.verbose = False
+        runner._update_completed_generations = lambda: asyncio.sleep(0, result=None)
+
+        events = []
+
+        class _MaintenanceAsyncDB:
+            def __init__(self):
+                self.programs = []
+
+            def enqueue_program_maintenance(self, program):
+                events.append(f"enqueue:{program.id}")
+
+            async def flush_program_maintenance_async(self, force=False):
+                events.append(f"flush:{force}")
+
+        runner.async_db = _MaintenanceAsyncDB()
+
+        job = AsyncRunningJob(
+            job_id="job-1",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time() - 3.0,
+            proposal_started_at=time.time() - 3.0,
+            evaluation_submitted_at=time.time() - 1.0,
+            generation=4,
+        )
+        program = Program(
+            id="program-1",
+            code="print('hi')\n",
+            language="python",
+            generation=4,
+            metadata={},
+        )
+        persisted_event = runner._make_persisted_event(
+            job=job,
+            program=program,
+            evaluation_finished_at=time.time() - 0.5,
+            postprocess_started_at=time.time() - 0.25,
+            postprocess_finished_at=time.time() - 0.1,
+        )
+
+        async def persist_completed_job(_job):
+            return SimpleNamespace(success=True, persisted_event=persisted_event)
+
+        async def apply_side_effects(event):
+            events.append(f"apply:{event.program.id}")
+
+        runner._persist_completed_job = persist_completed_job
+        runner._apply_persisted_program_side_effects = apply_side_effects
+
+        await runner._process_completed_jobs_safely([job])
+        await runner._wait_for_background_side_effects()
+        await runner._cancel_background_side_effect_worker()
+
+        assert events == [
+            "enqueue:program-1",
+            "flush:False",
+            "apply:program-1",
+        ]
+
+    asyncio.run(_run())
+
+
+def test_process_completed_jobs_safely_does_not_block_on_slow_side_effects():
+    async def _run():
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.running_jobs = []
+        runner.active_proposal_tasks = {}
+        runner.failed_jobs_for_retry = {}
+        runner.processing_lock = asyncio.Lock()
+        runner.submitted_jobs = {"job-1": object()}
+        runner.should_stop = asyncio.Event()
+        runner.slot_available = asyncio.Event()
+        runner.completed_generations = 3
+        runner.last_progress_time = time.time()
+        runner.stuck_detection_count = 0
+        runner.cost_limit_reached = False
+        runner.evo_config = SimpleNamespace(num_generations=10)
+        runner.verbose = False
+        runner._update_completed_generations = lambda: asyncio.sleep(0, result=None)
+
+        job = AsyncRunningJob(
+            job_id="job-1",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time() - 3.0,
+            proposal_started_at=time.time() - 3.0,
+            evaluation_submitted_at=time.time() - 1.0,
+            generation=4,
+        )
+        program = Program(
+            id="program-1",
+            code="print('hi')\n",
+            language="python",
+            generation=4,
+            metadata={},
+        )
+        persisted_event = runner._make_persisted_event(
+            job=job,
+            program=program,
+            evaluation_finished_at=time.time() - 0.5,
+            postprocess_started_at=time.time() - 0.25,
+            postprocess_finished_at=time.time() - 0.1,
+        )
+
+        async def persist_completed_job(_job):
+            return SimpleNamespace(
+                success=True,
+                persisted_event=persisted_event,
+            )
+
+        runner._persist_completed_job = persist_completed_job
+
+        side_effect_started = asyncio.Event()
+        allow_side_effect_finish = asyncio.Event()
+        applied_program_ids = []
+
+        async def apply_side_effects(event):
+            side_effect_started.set()
+            await allow_side_effect_finish.wait()
+            applied_program_ids.append(event.program.id)
+
+        runner._apply_persisted_program_side_effects = apply_side_effects
+
+        await asyncio.wait_for(
+            runner._process_completed_jobs_safely([job]),
+            timeout=0.2,
+        )
+
+        await asyncio.wait_for(side_effect_started.wait(), timeout=0.2)
+        assert applied_program_ids == []
+        assert runner._get_background_side_effect_work_count() == 1
+        assert "job-1" not in runner.submitted_jobs
+
+        allow_side_effect_finish.set()
+        await runner._wait_for_background_side_effects()
+        await runner._cancel_background_side_effect_worker()
+
+        assert applied_program_ids == ["program-1"]
+        assert runner._get_background_side_effect_work_count() == 0
+
+    asyncio.run(_run())
+
+
+def test_is_system_stuck_treats_background_side_effect_drain_as_progress():
+    class _FakeLock:
+        def locked(self):
+            return False
+
+    runner = object.__new__(ShinkaEvolveRunner)
+    runner.running_jobs = []
+    runner.active_proposal_tasks = {}
+    runner.failed_jobs_for_retry = {}
+    runner.processing_lock = _FakeLock()
+    runner.should_stop = SimpleNamespace(is_set=lambda: False)
+    runner.cost_limit_reached = False
+    runner.completed_generations = 4
+    runner.evo_config = SimpleNamespace(num_generations=10)
+    runner._background_side_effects_pending = 1
+    runner._background_side_effects_busy = True
+
+    assert runner._is_system_stuck() is False

@@ -465,6 +465,10 @@ class ShinkaEvolveRunner:
             self.max_evaluation_jobs, "evaluation"
         )
         self.postprocess_slot_pool = LogicalSlotPool(self.max_db_workers, "postprocess")
+        self.side_effect_event_queue: asyncio.Queue = asyncio.Queue()
+        self._background_side_effect_task: Optional[asyncio.Task] = None
+        self._background_side_effects_pending = 0
+        self._background_side_effects_busy = False
 
         # Database retry mechanism
         self.failed_jobs_for_retry: Dict[
@@ -863,6 +867,16 @@ class ShinkaEvolveRunner:
             # Wait for the finalization signal instead of gathering all tasks
             await self.finalization_complete.wait()
 
+            if self._has_background_side_effect_work():
+                if self.verbose:
+                    logger.info(
+                        "Draining %s queued background side effect(s) before finalization...",
+                        self._get_background_side_effect_work_count(),
+                    )
+                await self._wait_for_background_side_effects()
+            await self._flush_program_maintenance(force=True)
+            await self._shutdown_background_side_effect_worker()
+
             # Perform final operations before cleanup
             if self.verbose:
                 logger.info(
@@ -965,6 +979,7 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
+            await self._cancel_background_side_effect_worker()
             # Ensure all tasks are cancelled on exit
             for task in tasks:
                 task.cancel()
@@ -1183,10 +1198,12 @@ class ShinkaEvolveRunner:
 
             # Periodically recompute all prompt percentiles to avoid stale fitness values
             # As population grows, old percentiles become outdated
-            self.prompt_percentile_recompute_counter += 1
+            if correct:
+                self.prompt_percentile_recompute_counter += 1
             recompute_interval = self.evo_config.prompt_percentile_recompute_interval
             if (
-                recompute_interval > 0
+                correct
+                and recompute_interval > 0
                 and self.prompt_percentile_recompute_counter >= recompute_interval
             ):
                 self.prompt_percentile_recompute_counter = 0
@@ -1986,6 +2003,7 @@ class ShinkaEvolveRunner:
                         if (
                             len(self.running_jobs) == 0
                             and len(self.active_proposal_tasks) == 0
+                            and not self._has_persistence_work_in_progress()
                         ):
                             # Final retry attempt for any remaining failed jobs
                             # before cost-limit shutdown
@@ -2055,6 +2073,7 @@ class ShinkaEvolveRunner:
                     self.completed_generations >= self.evo_config.num_generations
                     and len(self.running_jobs) == 0
                     and len(self.active_proposal_tasks) == 0
+                    and not self._has_persistence_work_in_progress()
                 ):
                     # Final retry attempt for any remaining failed jobs
                     # before shutdown
@@ -2144,6 +2163,7 @@ class ShinkaEvolveRunner:
                     and self._get_in_flight_work_count() == 0
                     and self.completed_generations < self.evo_config.num_generations
                 ):
+                    missing_generations = await self._get_missing_persisted_generations()
                     await self._record_generation_event(
                         generation=self.next_generation_to_submit,
                         status="stopped_generation_budget_exhausted",
@@ -2151,13 +2171,15 @@ class ShinkaEvolveRunner:
                             "completed_generations": self.completed_generations,
                             "target_generations": self.evo_config.num_generations,
                             "next_generation_to_submit": self.next_generation_to_submit,
+                            "missing_generations": missing_generations,
                         },
                     )
                     logger.warning(
                         "Generation budget exhausted before reaching target "
                         f"completed generations: completed={self.completed_generations}, "
                         f"target={self.evo_config.num_generations}, "
-                        f"next_generation={self.next_generation_to_submit}. "
+                        f"next_generation={self.next_generation_to_submit}, "
+                        f"missing_generations={missing_generations}. "
                         "Stopping without oversampling additional generations."
                     )
                     self.should_stop.set()
@@ -3334,7 +3356,7 @@ class ShinkaEvolveRunner:
                 return CompletedJobPersistResult(
                     job=job,
                     success=True,
-                    persisted_event=PersistedProgramEvent(
+                    persisted_event=self._make_persisted_event(
                         job=job,
                         program=existing_program,
                         evaluation_finished_at=recovered_finished_at,
@@ -3471,6 +3493,7 @@ class ShinkaEvolveRunner:
                         meta_patch_data=job.meta_patch_data,
                         code_embedding=job.code_embedding,
                         embed_cost=job.embed_cost,
+                        defer_maintenance=True,
                     ),
                     timeout=90.0,  # 90 second timeout for DB operations
                 )
@@ -3529,7 +3552,7 @@ class ShinkaEvolveRunner:
             return CompletedJobPersistResult(
                 job=job,
                 success=True,
-                persisted_event=PersistedProgramEvent(
+                persisted_event=self._make_persisted_event(
                     job=job,
                     program=program,
                     evaluation_finished_at=evaluation_finished_at,
@@ -3687,6 +3710,137 @@ class ShinkaEvolveRunner:
             job.generation,
         )
 
+    def _make_persisted_event(
+        self,
+        job: AsyncRunningJob,
+        program: Program,
+        evaluation_finished_at: float,
+        postprocess_started_at: float,
+        postprocess_finished_at: float,
+    ) -> PersistedProgramEvent:
+        """Construct a persisted-program event for follow-up side effects."""
+        return PersistedProgramEvent(
+            job=job,
+            program=program,
+            evaluation_finished_at=evaluation_finished_at,
+            postprocess_started_at=postprocess_started_at,
+            postprocess_finished_at=postprocess_finished_at,
+        )
+
+    async def _ensure_background_side_effect_worker(self) -> None:
+        """Start the background side-effect worker if needed."""
+        task = getattr(self, "_background_side_effect_task", None)
+        if task is not None and not task.done():
+            return
+
+        if getattr(self, "side_effect_event_queue", None) is None:
+            self.side_effect_event_queue = asyncio.Queue()
+
+        self._background_side_effect_task = asyncio.create_task(
+            self._background_side_effect_worker_loop(),
+            name="background_side_effects",
+        )
+
+    async def _enqueue_program_maintenance_for_events(
+        self, persisted_events: List[PersistedProgramEvent]
+    ) -> None:
+        """Queue persisted programs for deferred DB maintenance."""
+        async_db = getattr(self, "async_db", None)
+        if async_db is None or not hasattr(async_db, "enqueue_program_maintenance"):
+            return
+        for persisted_event in persisted_events:
+            async_db.enqueue_program_maintenance(persisted_event.program)
+
+    async def _flush_program_maintenance(self, force: bool = False) -> None:
+        """Flush queued deferred DB maintenance if the async DB supports it."""
+        async_db = getattr(self, "async_db", None)
+        if async_db is not None and hasattr(async_db, "flush_program_maintenance_async"):
+            await async_db.flush_program_maintenance_async(force=force)
+
+    def _get_background_side_effect_work_count(self) -> int:
+        """Return queued side effects plus the currently running one."""
+        pending = int(getattr(self, "_background_side_effects_pending", 0) or 0)
+        busy = int(bool(getattr(self, "_background_side_effects_busy", False)))
+        return max(pending, busy)
+
+    async def _enqueue_background_side_effects(
+        self, persisted_events: List[PersistedProgramEvent]
+    ) -> None:
+        """Queue persisted events so slow side effects do not block persistence."""
+        if not persisted_events:
+            return
+
+        await self._ensure_background_side_effect_worker()
+        self._background_side_effects_pending = int(
+            getattr(self, "_background_side_effects_pending", 0)
+        )
+
+        for persisted_event in persisted_events:
+            self._background_side_effects_pending += 1
+            await self.side_effect_event_queue.put(persisted_event)
+
+        logger.debug(
+            "Queued %s persisted side-effect event(s); backlog=%s",
+            len(persisted_events),
+            self._background_side_effects_pending,
+        )
+
+    async def _background_side_effect_worker_loop(self) -> None:
+        """Drain side effects in generation order without blocking completions."""
+        while True:
+            persisted_event = await self.side_effect_event_queue.get()
+            if persisted_event is None:
+                self.side_effect_event_queue.task_done()
+                break
+
+            self._background_side_effects_busy = True
+            try:
+                await self._apply_persisted_program_side_effects(persisted_event)
+                self._record_progress()
+            except Exception as e:
+                logger.error(
+                    "❌ APPLY ERROR: Side effects failed for job %s (gen %s): %s",
+                    persisted_event.job.job_id,
+                    persisted_event.job.generation,
+                    e,
+                )
+            finally:
+                self._background_side_effects_busy = False
+                self._background_side_effects_pending = max(
+                    0,
+                    int(getattr(self, "_background_side_effects_pending", 0)) - 1,
+                )
+                self.side_effect_event_queue.task_done()
+
+    async def _wait_for_background_side_effects(self) -> None:
+        """Wait until the background side-effect backlog has drained."""
+        queue = getattr(self, "side_effect_event_queue", None)
+        if queue is None:
+            return
+        await queue.join()
+
+    async def _shutdown_background_side_effect_worker(self) -> None:
+        """Gracefully stop the background side-effect worker after draining."""
+        task = getattr(self, "_background_side_effect_task", None)
+        if task is None:
+            return
+
+        await self._wait_for_background_side_effects()
+        if not task.done():
+            await self.side_effect_event_queue.put(None)
+        await asyncio.gather(task, return_exceptions=True)
+        self._background_side_effect_task = None
+
+    async def _cancel_background_side_effect_worker(self) -> None:
+        """Cancel the background side-effect worker during exceptional shutdown."""
+        task = getattr(self, "_background_side_effect_task", None)
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self._background_side_effect_task = None
+
     async def _process_completed_jobs_safely(
         self, completed_jobs: List[AsyncRunningJob]
     ):
@@ -3727,19 +3881,10 @@ class ShinkaEvolveRunner:
             )
 
         await self._update_completed_generations()
-
-        for persisted_event in sorted(
-            persisted_events, key=lambda event: event.job.generation
-        ):
-            try:
-                await self._apply_persisted_program_side_effects(persisted_event)
-            except Exception as e:
-                logger.error(
-                    "❌ APPLY ERROR: Side effects failed for job %s (gen %s): %s",
-                    persisted_event.job.job_id,
-                    persisted_event.job.generation,
-                    e,
-                )
+        ordered_events = sorted(persisted_events, key=lambda event: event.job.generation)
+        await self._enqueue_program_maintenance_for_events(ordered_events)
+        await self._flush_program_maintenance(force=False)
+        await self._enqueue_background_side_effects(ordered_events)
 
         logger.info(
             f"✅ Successfully processed {len(successfully_processed)}/{len(completed_jobs)} jobs"
@@ -3767,17 +3912,10 @@ class ShinkaEvolveRunner:
         if persist_result.persisted_event is None:
             return True
 
-        try:
-            await self._apply_persisted_program_side_effects(
-                persist_result.persisted_event
-            )
-        except Exception as e:
-            logger.error(
-                "❌ APPLY ERROR: Side effects failed for job %s (gen %s): %s",
-                job.job_id,
-                job.generation,
-                e,
-            )
+        await self._enqueue_program_maintenance_for_events([persist_result.persisted_event])
+        await self._flush_program_maintenance(force=True)
+        await self._enqueue_background_side_effects([persist_result.persisted_event])
+        await self._wait_for_background_side_effects()
         return True
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
@@ -3869,6 +4007,12 @@ class ShinkaEvolveRunner:
         completed_generations = max(0, total_programs - island_copies)
         return min(completed_generations, self.evo_config.num_generations)
 
+    async def _get_missing_persisted_generations(self) -> List[int]:
+        """Return budgeted generations that do not yet have persisted rows."""
+        persisted_generations = await self.async_db.get_persisted_generation_ids_async()
+        budgeted_generations = set(range(self.evo_config.num_generations))
+        return sorted(budgeted_generations - set(persisted_generations))
+
     async def _restore_resume_progress(self) -> None:
         """Restore progress counters from persisted database state."""
         self.completed_generations = await self._count_completed_generations_from_db()
@@ -3885,6 +4029,14 @@ class ShinkaEvolveRunner:
                 hasattr(self, "processing_lock") and self.processing_lock.locked()
             )
         )
+
+    def _has_background_side_effect_work(self) -> bool:
+        """Return whether background side effects are still queued or running."""
+        return self._get_background_side_effect_work_count() > 0
+
+    def _has_persistence_work_in_progress(self) -> bool:
+        """Return whether persistence or retry bookkeeping is still active."""
+        return self._get_in_flight_work_count() > 0
 
     def _get_remaining_completed_work(self) -> int:
         """Return how many completed generations are still needed."""
@@ -4174,6 +4326,12 @@ class ShinkaEvolveRunner:
 
         # Don't consider system stuck if we're waiting for cost-limited jobs
         if self.cost_limit_reached and running_eval_jobs > 0:
+            return False
+
+        if self._has_persistence_work_in_progress():
+            return False
+
+        if self._has_background_side_effect_work():
             return False
 
         # System is stuck if all conditions are met
