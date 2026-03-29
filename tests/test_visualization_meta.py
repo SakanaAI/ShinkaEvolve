@@ -1,4 +1,5 @@
 import sys
+import sqlite3
 from pathlib import Path
 from types import ModuleType
 
@@ -81,3 +82,103 @@ def test_handle_get_meta_content_returns_processed_count(tmp_path):
         "filename": "meta_60.txt",
         "content": "# META RECOMMENDATIONS",
     }
+
+
+def test_handle_get_database_stats_uses_best_correct_program(tmp_path):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True)
+    db_path = results_dir / "programs.sqlite"
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE programs (
+            id TEXT PRIMARY KEY,
+            code TEXT,
+            generation INTEGER,
+            correct INTEGER,
+            combined_score REAL,
+            timestamp REAL,
+            metadata TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "incorrect-best",
+                "print('bad')",
+                5,
+                0,
+                10.0,
+                200.0,
+                '{"pipeline_started_at": 100.0, "postprocess_finished_at": 200.0}',
+            ),
+            (
+                "correct-best",
+                "print('good')",
+                2,
+                1,
+                3.5,
+                150.0,
+                '{"pipeline_started_at": 110.0, "postprocess_finished_at": 150.0}',
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    handler = _make_handler(tmp_path)
+    sent = {}
+    handler.send_json_response = lambda data: sent.setdefault("data", data)
+    handler.send_error = lambda code, msg: sent.setdefault("error", (code, msg))
+
+    handler.handle_get_database_stats("results/programs.sqlite")
+
+    assert "error" not in sent
+    assert sent["data"]["correct_count"] == 1
+    assert sent["data"]["best_score"] == 3.5
+    assert sent["data"]["gens_since_improvement"] == 3
+
+
+def test_handle_get_database_stats_returns_no_best_when_no_correct_programs(tmp_path):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True)
+    db_path = results_dir / "programs.sqlite"
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE programs (
+            id TEXT PRIMARY KEY,
+            code TEXT,
+            generation INTEGER,
+            correct INTEGER,
+            combined_score REAL,
+            timestamp REAL,
+            metadata TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("p1", "print('a')", 1, 0, 2.0, 100.0, "{}"),
+            ("p2", "print('b')", 4, 0, 9.0, 130.0, "{}"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    handler = _make_handler(tmp_path)
+    sent = {}
+    handler.send_json_response = lambda data: sent.setdefault("data", data)
+    handler.send_error = lambda code, msg: sent.setdefault("error", (code, msg))
+
+    handler.handle_get_database_stats("results/programs.sqlite")
+
+    assert "error" not in sent
+    assert sent["data"]["correct_count"] == 0
+    assert sent["data"]["best_score"] is None
+    assert sent["data"]["gens_since_improvement"] == 4

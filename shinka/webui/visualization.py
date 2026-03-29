@@ -873,7 +873,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     SELECT
                         COUNT(*) as program_count,
                         SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_count,
-                        MAX(combined_score) as best_score,
+                        MAX(
+                            CASE WHEN correct = 1
+                            THEN combined_score
+                            ELSE NULL END
+                        ) as best_score,
                         MAX(generation) as max_generation,
                         MIN(timestamp) as first_update,
                         MAX(timestamp) as last_update,
@@ -914,13 +918,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 row = cursor.fetchone()
 
                 # Get the generation where best score was achieved
-                best_gen = row["max_generation"] or 0
+                best_gen = 0
                 if row["best_score"] is not None:
                     cursor.execute(
                         """
                         SELECT MIN(generation) as best_gen
                         FROM programs
-                        WHERE combined_score = ?
+                        WHERE correct = 1
+                          AND combined_score = ?
                     """,
                         (row["best_score"],),
                     )
