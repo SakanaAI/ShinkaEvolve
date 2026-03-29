@@ -31,6 +31,34 @@ def test_program_database_init_without_openai_key(monkeypatch):
             db.close()
 
 
+def test_program_database_can_defer_post_add_maintenance(monkeypatch):
+    """Deferred maintenance should keep insert hot path separate from archive updates."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "deferred_maintenance.db"
+        db = ProgramDatabase(
+            config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+            embedding_model="",
+        )
+        try:
+            program = _program("p0")
+
+            db.add(program, defer_maintenance=True)
+
+            db.cursor.execute("SELECT COUNT(*) FROM archive")
+            assert db.cursor.fetchone()[0] == 0
+            assert db.best_program_id is None
+
+            db.run_post_add_maintenance(program)
+
+            db.cursor.execute("SELECT COUNT(*) FROM archive")
+            assert db.cursor.fetchone()[0] == 1
+            assert db.best_program_id == "p0"
+        finally:
+            db.close()
+
+
 def test_async_db_add_without_openai_key_when_embeddings_disabled(monkeypatch):
     """Async wrapper should preserve disabled embedding mode in worker DBs."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -158,6 +186,113 @@ def test_async_db_add_skips_source_job_id_while_another_insert_is_inflight(monke
 
                 assert sync_db.get("async-p1") is None
                 assert sync_db._count_programs_in_db() == 0
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+
+def test_async_db_reuses_writer_database_for_multiple_adds(monkeypatch):
+    """Async DB should keep one long-lived writer DB instead of reopening per add."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "writer_reuse.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            original_factory = async_db._create_writer_program_db
+            writer_db_ids = []
+
+            def tracking_factory():
+                writer_db = original_factory()
+                writer_db_ids.append(id(writer_db))
+                return writer_db
+
+            async_db._create_writer_program_db = tracking_factory
+            try:
+                await async_db.add_program_async(_program("async-p0"))
+                await async_db.add_program_async(_program("async-p1"))
+
+                assert len(writer_db_ids) == 1
+                assert sync_db.get("async-p0") is not None
+                assert sync_db.get("async-p1") is not None
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+
+def test_async_db_can_defer_program_maintenance(monkeypatch):
+    """Async hot-path adds can skip archive maintenance until explicitly replayed."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "async_deferred_maintenance.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                program = _program("async-p0")
+
+                await async_db.add_program_async(program, defer_maintenance=True)
+
+                sync_db.cursor.execute("SELECT COUNT(*) FROM archive")
+                assert sync_db.cursor.fetchone()[0] == 0
+                assert sync_db.best_program_id is None
+
+                await async_db.run_program_maintenance_async(program)
+
+                sync_db.cursor.execute("SELECT COUNT(*) FROM archive")
+                assert sync_db.cursor.fetchone()[0] == 1
+                assert sync_db.best_program_id == "async-p0"
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+
+def test_async_db_batches_deferred_program_maintenance(monkeypatch):
+    """Deferred maintenance should not flush until forced when below batch size."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "async_batched_maintenance.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                first = _program("async-p0")
+                second = _program("async-p1")
+                second.generation = 1
+
+                await async_db.add_program_async(first, defer_maintenance=True)
+                await async_db.add_program_async(second, defer_maintenance=True)
+                async_db.enqueue_program_maintenance(first)
+                async_db.enqueue_program_maintenance(second)
+
+                assert async_db.pending_program_maintenance_count() == 2
+
+                await async_db.flush_program_maintenance_async(force=False)
+                sync_db.cursor.execute("SELECT COUNT(*) FROM archive")
+                assert sync_db.cursor.fetchone()[0] == 0
+
+                await async_db.flush_program_maintenance_async(force=True)
+                sync_db.cursor.execute("SELECT COUNT(*) FROM archive")
+                assert sync_db.cursor.fetchone()[0] == 2
+                assert async_db.pending_program_maintenance_count() == 0
             finally:
                 await async_db.close_async()
                 sync_db.close()
