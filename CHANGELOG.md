@@ -22,6 +22,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Updated `examples/circle_packing/load_results.ipynb` and `examples/circle_packing/shinka_long.yaml` for the latest large async circle-packing run analysis setup.
 - Refined Python throughput plot legends to use compact centered panels below each subplot for cleaner notebook rendering.
 - Improved async postprocessing throughput by persisting completed jobs concurrently across multiple workers before applying slower follow-up side effects.
+- Rolled back deferred post-insert database maintenance batching, so completed-program inserts once again update archive / best-program / island bookkeeping inline while keeping the serialized async writer lane and shutdown-drain safeguards.
 - Reduced the async generation journal to high-signal failure/stop events only so persistence debugging does not add heavy hot-path overhead.
 
 ### Fixed
