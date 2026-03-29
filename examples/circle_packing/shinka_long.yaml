@@ -109,7 +109,7 @@ evo_config:
   proposal_target_ewma_alpha: 0.25
 
   # Interval (in generations) for meta-recommendation updates.
-  meta_rec_interval: 5
+  meta_rec_interval: 10
   # LLMs used for meta-analysis/recommendation steps.
   meta_llm_models:
     - gpt-5.4-mini
@@ -151,7 +151,7 @@ evo_config:
   # Whether prompt variants are evolved during the run.
   evolve_prompts: True
   # Interval (in generations) between prompt-evolution steps.
-  prompt_evolution_interval: 5
+  prompt_evolution_interval: 10
   # Allowed patch formats when mutating prompts.
   prompt_patch_types: ["diff", "full"]
   # Sampling probabilities aligned with prompt_patch_types order.
@@ -159,7 +159,7 @@ evo_config:
   # Maximum number of prompt variants kept in the prompt archive.
   prompt_archive_size: 10
   # Interval (in generations) for recomputing prompt percentiles.
-  prompt_percentile_recompute_interval: 1
+  prompt_percentile_recompute_interval: 10
   # UCB exploration constant for prompt selection.
   prompt_ucb_exploration_constant: 2.0
   # Epsilon-greedy random selection probability for prompt exploration.
