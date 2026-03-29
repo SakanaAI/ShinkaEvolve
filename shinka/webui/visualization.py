@@ -875,7 +875,18 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_count,
                         MAX(combined_score) as best_score,
                         MAX(generation) as max_generation,
+                        MIN(timestamp) as first_update,
                         MAX(timestamp) as last_update,
+                        MIN(
+                            CASE WHEN json_valid(metadata)
+                            THEN json_extract(metadata, '$.pipeline_started_at')
+                            ELSE NULL END
+                        ) as first_pipeline_start,
+                        MAX(
+                            CASE WHEN json_valid(metadata)
+                            THEN json_extract(metadata, '$.postprocess_finished_at')
+                            ELSE NULL END
+                        ) as last_postprocess_finish,
                         SUM(
                             COALESCE(
                                 CASE WHEN json_valid(metadata)
@@ -919,6 +930,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                 max_gen = row["max_generation"] or 0
                 gens_since_improvement = max_gen - best_gen
+                runtime_start = row["first_pipeline_start"]
+                if runtime_start is None:
+                    runtime_start = row["first_update"]
+                runtime_end = row["last_postprocess_finish"]
+                if runtime_end is None:
+                    runtime_end = row["last_update"]
+                total_runtime_seconds = None
+                if runtime_start is not None and runtime_end is not None:
+                    total_runtime_seconds = max(0.0, runtime_end - runtime_start)
 
                 stats = {
                     "program_count": row["program_count"] or 0,
@@ -928,6 +948,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "last_update": row["last_update"],
                     "gens_since_improvement": gens_since_improvement,
                     "total_cost": row["total_cost"] or 0,
+                    "total_runtime_seconds": total_runtime_seconds,
                     "prompt_count": 0,
                     "prompt_evo_cost": 0,
                     "has_prompt_evo": False,
@@ -987,6 +1008,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "best_score": None,
                         "max_generation": 0,
                         "total_cost": 0,
+                        "total_runtime_seconds": None,
                         "error": str(e),
                     }
                 )
@@ -998,6 +1020,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "best_score": None,
                         "max_generation": 0,
                         "total_cost": 0,
+                        "total_runtime_seconds": None,
                         "error": str(e),
                     }
                 )

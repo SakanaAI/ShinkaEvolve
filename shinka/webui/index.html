@@ -517,6 +517,7 @@
                         <th class="numeric hide-tablet">P-Evo</th>
                         <th class="numeric hide-mobile">Cost ($)</th>
                         <th class="hide-mobile">Updated</th>
+                        <th class="numeric">Runtime</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -620,7 +621,7 @@
                 headerRow.className = 'task-group-header';
                 headerRow.dataset.taskId = taskId;
                 headerRow.innerHTML = `
-                    <td colspan="12">
+                    <td colspan="13">
                         <span class="task-toggle">▼</span>
                         📁 ${escapeHtml(task)}
                         <span class="task-badge">${filteredResults.length}</span>
@@ -669,6 +670,7 @@
                     const peCell = cached ? formatPromptEvo(cached) : '<span class="stat-loading">...</span>';
                     const costCell = cached ? formatCost(cached.total_cost + (cached.prompt_evo_cost || 0)) : '<span class="stat-loading">...</span>';
                     const lastUpdateCell = cached ? formatTimeAgo(cached.last_update) : '<span class="stat-loading">...</span>';
+                    const runtimeCell = cached ? formatDuration(cached.total_runtime_seconds) : '<span class="stat-loading">...</span>';
 
                     // Split result name: remove task prefix, then split into taskName and setting
                     // e.g., "results_coral/batched_2d_motion/cuda" -> taskName="batched_2d_motion", setting="cuda"
@@ -695,6 +697,7 @@
                         <td class="numeric hide-tablet" data-stat="prompt_evo">${peCell}</td>
                         <td class="numeric hide-mobile" data-stat="total_cost">${costCell}</td>
                         <td class="hide-mobile" data-stat="last_update">${lastUpdateCell}</td>
+                        <td class="numeric" data-stat="total_runtime_seconds">${runtimeCell}</td>
                         <td class="arrow-cell">→</td>
                     `;
 
@@ -780,7 +783,8 @@
                 'best_score': formatScore(stats.best_score),
                 'prompt_evo': formatPromptEvo(stats),
                 'total_cost': formatCost(totalCost),
-                'last_update': formatTimeAgo(stats.last_update)
+                'last_update': formatTimeAgo(stats.last_update),
+                'total_runtime_seconds': formatDuration(stats.total_runtime_seconds)
             };
 
             for (const [stat, value] of Object.entries(cells)) {
@@ -859,6 +863,14 @@
             const cost = stats.prompt_evo_cost || 0;
             const costStr = cost > 0 ? ` ($${cost.toFixed(2)})` : '';
             return `<span class="pe-active" title="${count} prompts, $${cost.toFixed(4)} cost">${count}${costStr}</span>`;
+        }
+
+        function formatDuration(seconds) {
+            if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '-';
+            if (seconds < 60) return `${seconds.toFixed(0)}s`;
+            if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
+            if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`;
+            return `${(seconds / 86400).toFixed(1)}d`;
         }
 
         function formatStall(gens) {
