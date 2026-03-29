@@ -12,15 +12,11 @@ def _make_task_dir(tmp_path: Path, *, include_evaluate: bool = True) -> Path:
     task_dir.mkdir()
     if include_evaluate:
         (task_dir / "evaluate.py").write_text(
-            "def main(program_path: str, results_dir: str):\n"
-            "    pass\n",
+            "def main(program_path: str, results_dir: str):\n    pass\n",
             encoding="utf-8",
         )
     (task_dir / "initial.py").write_text(
-        "# EVOLVE-BLOCK-START\n"
-        "def run():\n"
-        "    return 0\n"
-        "# EVOLVE-BLOCK-END\n",
+        "# EVOLVE-BLOCK-START\ndef run():\n    return 0\n# EVOLVE-BLOCK-END\n",
         encoding="utf-8",
     )
     return task_dir
@@ -175,6 +171,49 @@ def test_shinka_run_parses_activate_script_override(tmp_path, monkeypatch):
     assert job_config.activate_script == ".venv/bin/activate"
 
 
+def test_shinka_run_defaults_to_verbose_logging(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    results_dir = tmp_path / "results_default_verbose"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    assert _DummyRunner.last_kwargs["verbose"] is True
+
+
+def test_shinka_run_allows_disabling_verbose_logging(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    results_dir = tmp_path / "results_no_verbose"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+            "--no-verbose",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    assert _DummyRunner.last_kwargs["verbose"] is False
+
+
 def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeypatch):
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)
@@ -192,7 +231,7 @@ def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeyp
             "evo_config:\n"
             "  num_generations: 999\n"
             "  results_dir: from_config\n"
-            "  llm_models: [\"gpt-5-nano\"]\n"
+            '  llm_models: ["gpt-5-nano"]\n'
         ),
         encoding="utf-8",
     )
@@ -235,6 +274,33 @@ def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeyp
     assert _DummyRunner.last_kwargs["debug"] is True
 
 
+def test_shinka_run_respects_config_verbose_false(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "shinka.yaml").write_text(
+        "verbose: false\n",
+        encoding="utf-8",
+    )
+    results_dir = tmp_path / "results_config_no_verbose"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--config-fname",
+            "shinka.yaml",
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    assert _DummyRunner.last_kwargs["verbose"] is False
+
+
 def test_shinka_run_invalid_config_field_fails(tmp_path):
     task_dir = _make_task_dir(tmp_path)
     (task_dir / "bad.yaml").write_text(
@@ -260,11 +326,7 @@ def test_shinka_run_invalid_config_field_fails(tmp_path):
 def test_shinka_run_rejects_nested_concurrency_config(tmp_path):
     task_dir = _make_task_dir(tmp_path)
     (task_dir / "bad.yaml").write_text(
-        (
-            "evo_config:\n"
-            "  max_proposal_jobs: 3\n"
-            "  max_db_workers: 2\n"
-        ),
+        ("evo_config:\n  max_proposal_jobs: 3\n  max_db_workers: 2\n"),
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc_info:
