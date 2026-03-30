@@ -1785,15 +1785,16 @@ class ShinkaEvolveRunner:
                 continue
 
             try:
+                monitored_jobs = list(self.running_jobs)
                 # Check job statuses concurrently
                 status_results = await self.scheduler.batch_check_status_async(
-                    self.running_jobs
+                    monitored_jobs
                 )
                 if self.verbose:
                     # Create safe status display to avoid race conditions
                     try:
                         status_display = []
-                        for i, job in enumerate(self.running_jobs):
+                        for i, job in enumerate(monitored_jobs):
                             if i < len(status_results):
                                 status_display.append(
                                     f"{job.generation} - {status_results[i]}"
@@ -1802,7 +1803,7 @@ class ShinkaEvolveRunner:
                                 status_display.append(f"{job.generation} - unknown")
 
                         logger.debug(
-                            f"Job statuses ({len(self.running_jobs)}): gen [{', '.join(status_display)}]"
+                            f"Job statuses ({len(monitored_jobs)}): gen [{', '.join(status_display)}]"
                         )
                         logger.debug(
                             f"Active proposal jobs ({len(self.active_proposal_tasks)}): gen [{', '.join([task.get_name().split('_')[1] if task.get_name().startswith('proposal_') else 'unknown' for task in self.active_proposal_tasks.values()])}]"
@@ -1814,8 +1815,18 @@ class ShinkaEvolveRunner:
                         )
                 completed_jobs = []
                 still_running = []
+                current_running_jobs = list(self.running_jobs)
+                current_job_ids = {id(job) for job in current_running_jobs}
+                monitored_job_ids = {id(job) for job in monitored_jobs}
+                concurrently_added_jobs = [
+                    job
+                    for job in current_running_jobs
+                    if id(job) not in monitored_job_ids
+                ]
 
-                for job, is_running in zip(self.running_jobs, status_results):
+                for job, is_running in zip(monitored_jobs, status_results):
+                    if id(job) not in current_job_ids:
+                        continue
                     if isinstance(is_running, Exception):
                         logger.warning(f"Error checking job {job.job_id}: {is_running}")
                         still_running.append(job)
@@ -1848,7 +1859,7 @@ class ShinkaEvolveRunner:
                     else:
                         still_running.append(job)
 
-                self.running_jobs = still_running
+                self.running_jobs = still_running + concurrently_added_jobs
 
                 # Process completed jobs atomically with lock to prevent race conditions
                 if completed_jobs:
@@ -2450,6 +2461,12 @@ class ShinkaEvolveRunner:
         novelty_total_cost = 0.0
         novelty_explanation = ""
         proposal_accepted = False
+        parent_program: Optional[Program] = None
+        archive_programs: List[Program] = []
+        top_k_programs: List[Program] = []
+        code_diff: Optional[str] = None
+        meta_patch_data: Dict[str, Any] = {}
+        code_embedding: Optional[List[float]] = None
 
         # Select LLM once per program generation (before all loops)
         model_sample_probs = None
@@ -2701,19 +2718,65 @@ class ShinkaEvolveRunner:
             except Exception as e:
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
                 logger.error(f"Error submitting job: {e}")
+                failed_program = await self._persist_failed_generation(
+                    generation=generation,
+                    exec_fname=exec_fname,
+                    proposal_started_at=proposal_started_at,
+                    sampling_worker_id=sampling_worker_id,
+                    active_proposals_at_start=active_proposals_at_start,
+                    parent_program=parent_program,
+                    archive_programs=archive_programs,
+                    top_k_programs=top_k_programs,
+                    code_diff=code_diff,
+                    meta_patch_data=meta_patch_data,
+                    code_embedding=code_embedding,
+                    embed_cost=embed_cost,
+                    novelty_cost=novelty_total_cost,
+                    api_costs=api_costs,
+                    failure_stage="evaluation_submit_failed",
+                    failure_reason=str(e),
+                )
                 await self._record_generation_event(
                     generation=generation,
                     status="evaluation_submit_failed",
-                    details={"error": str(e)},
+                    details={
+                        "error": str(e),
+                        "persisted_program_id": (
+                            failed_program.id if failed_program is not None else None
+                        ),
+                    },
                 )
                 return None
 
         logger.warning(
             f"Failed to generate proposal for generation {generation} after all attempts"
         )
+        failed_program = await self._persist_failed_generation(
+            generation=generation,
+            exec_fname=exec_fname,
+            proposal_started_at=proposal_started_at,
+            sampling_worker_id=sampling_worker_id,
+            active_proposals_at_start=active_proposals_at_start,
+            parent_program=parent_program,
+            archive_programs=archive_programs,
+            top_k_programs=top_k_programs,
+            code_diff=code_diff,
+            meta_patch_data=meta_patch_data,
+            code_embedding=code_embedding,
+            embed_cost=embed_cost,
+            novelty_cost=novelty_total_cost,
+            api_costs=api_costs,
+            failure_stage="proposal_failed",
+            failure_reason="LLM failed to generate a valid proposal after all attempts",
+        )
         await self._record_generation_event(
             generation=generation,
             status="proposal_failed",
+            details={
+                "persisted_program_id": (
+                    failed_program.id if failed_program is not None else None
+                )
+            },
         )
         return None
 
@@ -3291,6 +3354,142 @@ class ShinkaEvolveRunner:
             job.generation,
             self.MAX_DB_RETRY_ATTEMPTS,
         )
+
+    async def _persist_failed_generation(
+        self,
+        *,
+        generation: int,
+        exec_fname: str,
+        proposal_started_at: float,
+        sampling_worker_id: Optional[int],
+        active_proposals_at_start: int,
+        parent_program: Optional[Program],
+        archive_programs: List[Program],
+        top_k_programs: List[Program],
+        code_diff: Optional[str],
+        meta_patch_data: Optional[Dict[str, Any]],
+        code_embedding: Optional[List[float]],
+        embed_cost: float,
+        novelty_cost: float,
+        api_costs: float,
+        failure_stage: str,
+        failure_reason: str,
+    ) -> Optional[Program]:
+        """Persist a pre-evaluation failure as an incorrect program row."""
+        postprocess_worker_id = None
+        sampling_finished_at = time.time()
+        postprocess_started_at = sampling_finished_at
+        source_job_id = f"failed:{failure_stage}:{generation}"
+        try:
+            code = await self._read_file_async(exec_fname) or ""
+            postprocess_worker_id = await self.postprocess_slot_pool.acquire()
+            metadata = with_pipeline_timing(
+                {
+                    **(meta_patch_data or {}),
+                    "api_costs": api_costs,
+                    "embed_cost": embed_cost,
+                    "novelty_cost": novelty_cost,
+                    "failure_stage": failure_stage,
+                    "failure_reason": failure_reason,
+                    "failure_persisted": True,
+                    "results_missing": True,
+                    "safe_processing": False,
+                    "source_job_id": source_job_id,
+                    "source_generation": generation,
+                    "stdout_log": "",
+                    "stderr_log": failure_reason,
+                    "sampling_worker_id": sampling_worker_id,
+                    "evaluation_worker_id": None,
+                    "postprocess_worker_id": postprocess_worker_id,
+                    "active_proposals_at_start": active_proposals_at_start,
+                    "running_eval_jobs_at_submit": 0,
+                    "timeline_lane_mode": "pool_slots",
+                    "sampling_worker_capacity": self.max_proposal_jobs,
+                    "evaluation_worker_capacity": self.max_evaluation_jobs,
+                    "postprocess_worker_capacity": self.max_db_workers,
+                },
+                pipeline_started_at=proposal_started_at,
+                sampling_started_at=proposal_started_at,
+                sampling_finished_at=sampling_finished_at,
+                evaluation_started_at=sampling_finished_at,
+                evaluation_finished_at=sampling_finished_at,
+                postprocess_started_at=postprocess_started_at,
+                postprocess_finished_at=postprocess_started_at,
+            )
+            program = Program(
+                id=str(uuid.uuid4()),
+                code=code,
+                generation=generation,
+                correct=False,
+                combined_score=0.0,
+                public_metrics={},
+                private_metrics={},
+                text_feedback=failure_reason,
+                timestamp=datetime.now().timestamp(),
+                parent_id=parent_program.id if parent_program else None,
+                archive_inspiration_ids=[p.id for p in archive_programs],
+                top_k_inspiration_ids=[p.id for p in top_k_programs],
+                code_diff=code_diff,
+                embedding=code_embedding or [],
+                system_prompt_id=(meta_patch_data or {}).get("system_prompt_id"),
+                metadata=metadata,
+            )
+
+            await asyncio.wait_for(
+                self.async_db.add_program_async(
+                    program,
+                    parent_id=program.parent_id,
+                    archive_insp_ids=program.archive_inspiration_ids,
+                    top_k_insp_ids=program.top_k_inspiration_ids,
+                    code_diff=program.code_diff,
+                    meta_patch_data=meta_patch_data,
+                    code_embedding=program.embedding,
+                    embed_cost=embed_cost,
+                    verbose=self.verbose,
+                ),
+                timeout=90.0,
+            )
+
+            postprocess_finished_at = time.time()
+            program.metadata = with_pipeline_timing(
+                program.metadata,
+                pipeline_started_at=proposal_started_at,
+                sampling_started_at=proposal_started_at,
+                sampling_finished_at=sampling_finished_at,
+                evaluation_started_at=sampling_finished_at,
+                evaluation_finished_at=sampling_finished_at,
+                postprocess_started_at=postprocess_started_at,
+                postprocess_finished_at=postprocess_finished_at,
+            )
+            try:
+                await self._persist_program_metadata_async(program)
+            except Exception as e:
+                logger.warning(
+                    "Metadata persistence error for failed generation %s: %s",
+                    generation,
+                    e,
+                )
+
+            await self._update_completed_generations()
+            self._record_progress()
+            self.slot_available.set()
+            logger.info(
+                "Persisted failed generation %s as incorrect program %s (%s)",
+                generation,
+                program.id,
+                failure_stage,
+            )
+            return program
+        except Exception as e:
+            logger.error(
+                "Failed to persist failed generation %s (%s): %s",
+                generation,
+                failure_stage,
+                e,
+            )
+            return None
+        finally:
+            await self.postprocess_slot_pool.release(postprocess_worker_id)
 
     async def _persist_completed_job(
         self, job: AsyncRunningJob
@@ -4144,7 +4343,7 @@ class ShinkaEvolveRunner:
         and progress tracking, what matters is the total count of completed work,
         not whether it's contiguous. This counts all generations that have:
         1. No running jobs AND
-        2. Programs in the database (successful evaluation)
+        2. Programs in the database (successful or persisted-failed generations)
         """
         # Get all generations that have running jobs
         running_generations = {job.generation for job in self.running_jobs}
