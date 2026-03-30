@@ -509,7 +509,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if not os.path.exists(meta_dir):
             # Fall back to looking in the db_dir for backward compatibility
-            print(f"[SERVER] Meta subdirectory not found, checking DB directory")
+            print("[SERVER] Meta subdirectory not found, checking DB directory")
             meta_dir = db_dir
 
         if not os.path.exists(meta_dir):
@@ -635,7 +635,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 print("[SERVER] All PDF generation methods failed, serving text")
                 # Fall back to serving formatted text with PDF headers
                 formatted_content = (
-                    f"Meta Generation {generation}\n{'=' * 50}\n\n{content}"
+                    f"Meta Generation {processed_count}\n{'=' * 50}\n\n{content}"
                 )
                 pdf_bytes = formatted_content.encode("utf-8")
 
@@ -872,6 +872,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 cursor.execute("""
                     SELECT
                         COUNT(*) as program_count,
+                        COUNT(DISTINCT generation) as generation_count,
                         SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_count,
                         MAX(
                             CASE WHEN correct = 1
@@ -918,7 +919,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 row = cursor.fetchone()
 
                 # Get the generation where best score was achieved
-                best_gen = 0
+                best_gen = None
                 if row["best_score"] is not None:
                     cursor.execute(
                         """
@@ -934,7 +935,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         best_gen = best_row["best_gen"]
 
                 max_gen = row["max_generation"] or 0
-                gens_since_improvement = max_gen - best_gen
+                gens_since_improvement = (
+                    max_gen - best_gen if best_gen is not None else max_gen
+                )
                 runtime_start = row["first_pipeline_start"]
                 if runtime_start is None:
                     runtime_start = row["first_update"]
@@ -947,8 +950,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                 stats = {
                     "program_count": row["program_count"] or 0,
+                    "generation_count": row["generation_count"] or 0,
                     "correct_count": row["correct_count"] or 0,
                     "best_score": row["best_score"],
+                    "best_generation": best_gen,
                     "max_generation": max_gen,
                     "last_update": row["last_update"],
                     "gens_since_improvement": gens_since_improvement,

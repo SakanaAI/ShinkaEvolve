@@ -137,6 +137,9 @@ def test_handle_get_database_stats_uses_best_correct_program(tmp_path):
     handler.handle_get_database_stats("results/programs.sqlite")
 
     assert "error" not in sent
+    assert sent["data"]["generation_count"] == 2
+    assert sent["data"]["best_generation"] == 2
+    assert sent["data"]["max_generation"] == 5
     assert sent["data"]["correct_count"] == 1
     assert sent["data"]["best_score"] == 3.5
     assert sent["data"]["gens_since_improvement"] == 3
@@ -179,6 +182,9 @@ def test_handle_get_database_stats_returns_no_best_when_no_correct_programs(tmp_
     handler.handle_get_database_stats("results/programs.sqlite")
 
     assert "error" not in sent
+    assert sent["data"]["generation_count"] == 2
+    assert sent["data"]["best_generation"] is None
+    assert sent["data"]["max_generation"] == 4
     assert sent["data"]["correct_count"] == 0
     assert sent["data"]["best_score"] is None
     assert sent["data"]["gens_since_improvement"] == 4
