@@ -512,11 +512,12 @@
                         <th class="numeric"># P</th>
                         <th class="numeric hide-tablet">✔</th>
                         <th class="numeric"># G</th>
-                        <th class="numeric hide-tablet">Stall</th>
+                        <th class="numeric hide-tablet">G*</th>
                         <th class="numeric">Best</th>
                         <th class="numeric hide-tablet">P-Evo</th>
                         <th class="numeric hide-mobile">Cost ($)</th>
                         <th class="hide-mobile">Updated</th>
+                        <th class="numeric">Runtime</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -620,7 +621,7 @@
                 headerRow.className = 'task-group-header';
                 headerRow.dataset.taskId = taskId;
                 headerRow.innerHTML = `
-                    <td colspan="12">
+                    <td colspan="13">
                         <span class="task-toggle">▼</span>
                         📁 ${escapeHtml(task)}
                         <span class="task-badge">${filteredResults.length}</span>
@@ -663,12 +664,13 @@
 
                     const programsCell = cached ? formatNumber(cached.program_count) : '<span class="stat-loading">...</span>';
                     const correctCell = cached ? formatNumber(cached.correct_count) : '<span class="stat-loading">...</span>';
-                    const gensCell = cached ? cached.max_generation : '<span class="stat-loading">...</span>';
-                    const stallCell = cached ? formatStall(cached.gens_since_improvement) : '<span class="stat-loading">...</span>';
+                    const gensCell = cached ? formatGenerations(cached) : '<span class="stat-loading">...</span>';
+                    const bestGenCell = cached ? formatBestGeneration(cached.best_generation) : '<span class="stat-loading">...</span>';
                     const scoreCell = cached ? formatScore(cached.best_score) : '<span class="stat-loading">...</span>';
                     const peCell = cached ? formatPromptEvo(cached) : '<span class="stat-loading">...</span>';
                     const costCell = cached ? formatCost(cached.total_cost + (cached.prompt_evo_cost || 0)) : '<span class="stat-loading">...</span>';
                     const lastUpdateCell = cached ? formatTimeAgo(cached.last_update) : '<span class="stat-loading">...</span>';
+                    const runtimeCell = cached ? formatDuration(cached.total_runtime_seconds) : '<span class="stat-loading">...</span>';
 
                     // Split result name: remove task prefix, then split into taskName and setting
                     // e.g., "results_coral/batched_2d_motion/cuda" -> taskName="batched_2d_motion", setting="cuda"
@@ -689,12 +691,13 @@
                         </td>
                         <td class="numeric" data-stat="program_count">${programsCell}</td>
                         <td class="numeric hide-tablet" data-stat="correct_count">${correctCell}</td>
-                        <td class="numeric" data-stat="max_generation">${gensCell}</td>
-                        <td class="numeric hide-tablet" data-stat="gens_since_improvement">${stallCell}</td>
+                        <td class="numeric" data-stat="generation_count">${gensCell}</td>
+                        <td class="numeric hide-tablet" data-stat="best_generation">${bestGenCell}</td>
                         <td class="numeric" data-stat="best_score">${scoreCell}</td>
                         <td class="numeric hide-tablet" data-stat="prompt_evo">${peCell}</td>
                         <td class="numeric hide-mobile" data-stat="total_cost">${costCell}</td>
                         <td class="hide-mobile" data-stat="last_update">${lastUpdateCell}</td>
+                        <td class="numeric" data-stat="total_runtime_seconds">${runtimeCell}</td>
                         <td class="arrow-cell">→</td>
                     `;
 
@@ -775,12 +778,13 @@
             const cells = {
                 'program_count': formatNumber(stats.program_count),
                 'correct_count': formatNumber(stats.correct_count),
-                'max_generation': stats.max_generation || 0,
-                'gens_since_improvement': formatStall(stats.gens_since_improvement),
+                'generation_count': formatGenerations(stats),
+                'best_generation': formatBestGeneration(stats.best_generation),
                 'best_score': formatScore(stats.best_score),
                 'prompt_evo': formatPromptEvo(stats),
                 'total_cost': formatCost(totalCost),
-                'last_update': formatTimeAgo(stats.last_update)
+                'last_update': formatTimeAgo(stats.last_update),
+                'total_runtime_seconds': formatDuration(stats.total_runtime_seconds)
             };
 
             for (const [stat, value] of Object.entries(cells)) {
@@ -861,12 +865,36 @@
             return `<span class="pe-active" title="${count} prompts, $${cost.toFixed(4)} cost">${count}${costStr}</span>`;
         }
 
+        function formatGenerations(stats) {
+            if (!stats) return '-';
+            const count = stats.generation_count ?? stats.max_generation ?? null;
+            if (count === null || count === undefined) return '-';
+            const totalCost = (stats.total_cost || 0) + (stats.prompt_evo_cost || 0);
+            const costStr = totalCost > 0 ? ` ($${totalCost.toFixed(2)})` : '';
+            const titleCount = stats.generation_count ?? count;
+            const maxGen = stats.max_generation ?? '-';
+            return `<span title="${titleCount} generations, max generation ${maxGen}, $${totalCost.toFixed(4)} total cost">${titleCount}${costStr}</span>`;
+        }
+
+        function formatDuration(seconds) {
+            if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '-';
+            if (seconds < 60) return `${seconds.toFixed(0)}s`;
+            if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
+            if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`;
+            return `${(seconds / 86400).toFixed(1)}d`;
+        }
+
         function formatStall(gens) {
             if (gens === null || gens === undefined) return '-';
             if (gens === 0) return '<span class="stall-ok">✓</span>';
             if (gens <= 10) return `<span class="stall-ok">${gens}</span>`;
             if (gens <= 50) return `<span class="stall-warn">${gens}</span>`;
             return `<span class="stall-bad">${gens}</span>`;
+        }
+
+        function formatBestGeneration(generation) {
+            if (generation === null || generation === undefined) return '-';
+            return formatNumber(generation);
         }
 
         function formatTimeAgo(timestamp) {
