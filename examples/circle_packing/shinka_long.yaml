@@ -8,7 +8,7 @@ max_db_workers: 4
 # Database/search-state settings for island evolution and archiving.
 db_config:
   # Number of independent evolutionary islands.
-  num_islands: 4
+  num_islands: 2
   # Maximum number of individuals stored in the archive.
   archive_size: 40
   # Fraction of top performers treated as elites.
@@ -62,15 +62,15 @@ evo_config:
     - 0.3
     - 0.1
   # Total number of generations to run.
-  num_generations: 100
+  num_generations: 50
   # Max API spend budget for this run (USD).
-  max_api_costs: 5.0
+  max_api_costs: 2.5
   # Retries for resampling patch format/content before giving up.
   max_patch_resamples: 3
   # Retries for patch application/generation attempts.
-  max_patch_attempts: 2
+  max_patch_attempts: 1
   # Retries for novelty-evaluation attempts.
-  max_novelty_attempts: 2
+  max_novelty_attempts: 1
   # Job executor backend.
   job_type: local
   # Programming language of evolved programs.

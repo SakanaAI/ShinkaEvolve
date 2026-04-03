@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 .DS_Store
 results/
+results*
+shinka_scale*
 examples/mnist_train/
 
 # C extensions

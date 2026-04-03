@@ -200,6 +200,28 @@ def test_get_in_flight_work_count_includes_completed_job_processing_lock():
     asyncio.run(_run())
 
 
+def test_job_monitor_stops_when_target_reached_with_no_running_jobs():
+    async def _run():
+        runner = _build_runner(
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+            completed_generations=50,
+            evo_config=SimpleNamespace(num_generations=50, max_api_costs=None),
+            verbose=True,
+        )
+        runner._has_persistence_work_in_progress = lambda: False
+        runner._cancel_surplus_inflight_work = lambda: asyncio.sleep(0, result=None)
+        runner._retry_failed_db_jobs = lambda: asyncio.sleep(0, result=None)
+
+        await runner._job_monitor_task()
+
+        assert runner.should_stop.is_set() is True
+        assert runner.finalization_complete.is_set() is True
+
+    asyncio.run(_run())
+
+
 def test_is_system_stuck_ignores_inflight_persistence_work():
     async def _run():
         runner = _build_runner(
@@ -1005,5 +1027,71 @@ def test_job_monitor_preserves_jobs_added_during_status_poll():
         await runner._job_monitor_task()
 
         assert runner.running_jobs == [first_job, second_job]
+
+    asyncio.run(_run())
+
+
+def test_job_monitor_releases_eval_slot_before_background_persistence_finishes():
+    async def _run():
+        runner = _build_runner(
+            evo_config=SimpleNamespace(num_generations=10, max_api_costs=None),
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+            evaluation_slot_pool=LogicalSlotPool(1, "evaluation"),
+            verbose=False,
+        )
+        runner.processing_lock = asyncio.Lock()
+        runner._completed_job_batch_tasks = set()
+        runner._completed_jobs_pending = 0
+        runner._cancel_surplus_inflight_work = lambda: asyncio.sleep(0, result=None)
+        runner._retry_failed_db_jobs = lambda: asyncio.sleep(0, result=None)
+        runner._record_progress = lambda: None
+        runner._mark_surplus_completed_jobs_for_discard = lambda jobs: None
+
+        batch_started = asyncio.Event()
+        allow_finish = asyncio.Event()
+
+        async def slow_process(completed_jobs):
+            batch_started.set()
+            await allow_finish.wait()
+
+        runner._process_completed_jobs_safely = slow_process
+
+        now = time.time()
+        job = AsyncRunningJob(
+            job_id="job-complete",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=now - 3.0,
+            proposal_started_at=now - 3.0,
+            evaluation_submitted_at=now - 1.0,
+            evaluation_started_at=now - 1.0,
+            evaluation_worker_id=1,
+            generation=4,
+        )
+        await runner.evaluation_slot_pool.acquire()
+        runner.running_jobs = [job]
+
+        class _CompletedScheduler:
+            async def batch_check_status_async(self, jobs):
+                return [False for _ in jobs]
+
+        runner.scheduler = _CompletedScheduler()
+
+        monitor_task = asyncio.create_task(runner._job_monitor_task())
+        await asyncio.wait_for(batch_started.wait(), timeout=0.2)
+
+        assert runner.running_jobs == []
+        assert runner.evaluation_slot_pool.in_use == 0
+        assert runner._completed_jobs_pending == 1
+        assert job.completion_detected_at is not None
+
+        runner.should_stop.set()
+        allow_finish.set()
+        await asyncio.wait_for(monitor_task, timeout=0.2)
+        await runner._wait_for_completed_job_batches()
+
+        assert runner._completed_jobs_pending == 0
 
     asyncio.run(_run())

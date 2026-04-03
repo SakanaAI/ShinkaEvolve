@@ -707,7 +707,12 @@ class ProgramDatabase:
         return self._program_from_row(row) if row else None
 
     @db_retry()
-    def add(self, program: Program, verbose: bool = False) -> str:
+    def add(
+        self,
+        program: Program,
+        verbose: bool = False,
+        defer_maintenance: bool = False,
+    ) -> str:
         """
         Add a program to the database with optimized performance.
 
@@ -723,6 +728,9 @@ class ProgramDatabase:
         Args:
             program: The Program object to add
             verbose: Whether to print the per-program summary.
+            defer_maintenance: When true, skip archive / best / migration
+                follow-up work so callers can replay it later off the insert
+                hot path.
 
         Returns:
             str: The ID of the added program
@@ -849,48 +857,94 @@ class ProgramDatabase:
             logger.error(f"Error adding program {program.id}: {e}")
             raise
 
-        self._update_archive(program)
-
-        # Update best program tracking
-        self._update_best_program(program)
-
-        # Recompute embeddings and clusters for all programs
-        self._recompute_embeddings_and_clusters()
-
         # Update generation tracking
         if program.generation > self.last_iteration:
             self.last_iteration = program.generation
             self._update_metadata_in_db("last_iteration", str(self.last_iteration))
 
-        # Print verbose summary if requested
-        if verbose:
-            self._print_program_summary(program)
+        if defer_maintenance:
+            return program.id
 
-        # Check if this program needs to be copied to other islands
-        if self.island_manager.needs_island_copies(program):
-            logger.info(
-                f"Creating copies of initial program {program.id} for all islands"
-            )
-            self.island_manager.copy_program_to_islands(program)
-            # Remove the flag from the original program's metadata
-            if program.metadata:
-                program.metadata.pop("_needs_island_copies", None)
-                metadata_json = json.dumps(program.metadata)
-                self.cursor.execute(
-                    "UPDATE programs SET metadata = ? WHERE id = ?",
-                    (metadata_json, program.id),
+        self.run_post_add_maintenance(
+            program,
+            verbose=verbose,
+            recompute_embeddings=True,
+        )
+        return program.id
+
+    def run_post_add_maintenance(
+        self,
+        program: Program,
+        verbose: bool = False,
+        recompute_embeddings: bool = False,
+    ) -> None:
+        """Replay deferred maintenance for a program that is already inserted."""
+        self.run_post_add_maintenance_batch(
+            [program],
+            verbose=verbose,
+            recompute_embeddings=recompute_embeddings,
+        )
+
+    def run_post_add_maintenance_batch(
+        self,
+        programs: List[Program],
+        verbose: bool = False,
+        recompute_embeddings: bool = False,
+    ) -> None:
+        """Replay deferred maintenance for already-inserted programs."""
+        if not programs:
+            return
+
+        for program in sorted(programs, key=lambda item: item.generation):
+            maintenance_started_at = time.time()
+            self._update_archive(program)
+            self._update_best_program(program)
+
+            if verbose:
+                self._print_program_summary(program)
+
+            if self.island_manager.needs_island_copies(program):
+                logger.info(
+                    f"Creating copies of initial program {program.id} for all islands"
                 )
-                self.conn.commit()
+                self.island_manager.copy_program_to_islands(program)
+                if program.metadata:
+                    program.metadata.pop("_needs_island_copies", None)
+                    metadata_json = json.dumps(program.metadata)
+                    self.cursor.execute(
+                        "UPDATE programs SET metadata = ? WHERE id = ?",
+                        (metadata_json, program.id),
+                    )
+                    self.conn.commit()
 
-        # Check if migration should be scheduled
-        if self.island_manager.should_schedule_migration(program):
-            self._schedule_migration = True
+            if self.island_manager.should_schedule_migration(program):
+                self._schedule_migration = True
 
-        # Check for stagnation and spawn new island if needed
-        self.check_and_spawn_island_if_stagnant(program.generation)
+            self.check_and_spawn_island_if_stagnant(program.generation)
+
+            maintenance_finished_at = time.time()
+            program.metadata = dict(program.metadata or {})
+            program.metadata["postprocess_db_maintenance_applied"] = True
+            program.metadata["postprocess_db_maintenance_started_at"] = (
+                maintenance_started_at
+            )
+            program.metadata["postprocess_db_maintenance_finished_at"] = (
+                maintenance_finished_at
+            )
+            program.metadata["postprocess_db_maintenance_seconds"] = max(
+                0.0, maintenance_finished_at - maintenance_started_at
+            )
+            metadata_json = json.dumps(program.metadata)
+            self.cursor.execute(
+                "UPDATE programs SET metadata = ? WHERE id = ?",
+                (metadata_json, program.id),
+            )
+            self.conn.commit()
+
+        if recompute_embeddings:
+            self._recompute_embeddings_and_clusters()
 
         self.check_scheduled_operations()
-        return program.id
 
     def _program_from_row(self, row: sqlite3.Row) -> Optional[Program]:
         """Helper to create a Program object from a database row."""
