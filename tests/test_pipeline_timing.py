@@ -12,6 +12,7 @@ from shinka.core.pipeline_timing import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.database import Program
+from shinka.launch import LocalJobConfig
 
 
 def test_with_pipeline_timing_adds_boundaries_and_durations():
@@ -58,6 +59,17 @@ def test_with_pipeline_timing_clamps_negative_stage_durations():
     assert metadata["pipeline_accounted_seconds"] == 0.0
     assert metadata["pipeline_seconds"] == 0.0
     assert metadata["pipeline_unaccounted_seconds"] == 0.0
+
+
+def test_configure_local_job_runtime_sets_numeric_thread_cap_from_eval_concurrency():
+    runner = object.__new__(ShinkaEvolveRunner)
+    runner.job_config = LocalJobConfig()
+    runner.max_evaluation_jobs = 10
+    runner.verbose = False
+
+    runner._configure_local_job_runtime(cpu_count=32)
+
+    assert runner.job_config.numeric_threads_per_job == 3
 
 
 def test_with_side_effect_timing_adds_wait_and_end_to_end_fields():

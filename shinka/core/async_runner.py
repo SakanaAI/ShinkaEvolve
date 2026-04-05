@@ -37,7 +37,7 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.embed import AsyncEmbeddingClient
-from shinka.launch import JobScheduler, JobConfig
+from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -281,6 +281,7 @@ class ShinkaEvolveRunner:
         self.max_evaluation_jobs = max_evaluation_jobs
         self.max_proposal_jobs = max_proposal_jobs
         self.max_db_workers = max_db_workers
+        self._configure_local_job_runtime(cpu_count)
 
         if self.evo_config.num_generations is None:
             assert self.evo_config.max_api_costs is not None, (
@@ -481,6 +482,8 @@ class ShinkaEvolveRunner:
         self._meta_side_effect_lock = asyncio.Lock()
         self._prompt_side_effect_lock = asyncio.Lock()
         self._best_solution_lock = asyncio.Lock()
+        self._prompt_percentile_recompute_task: Optional[asyncio.Task] = None
+        self._prompt_percentile_recompute_pending = False
 
         # Database retry mechanism
         self.failed_jobs_for_retry: Dict[
@@ -635,6 +638,20 @@ class ShinkaEvolveRunner:
 
         return max_evaluation_jobs, max_proposal_jobs, max_db_workers
 
+    def _configure_local_job_runtime(self, cpu_count: int) -> None:
+        """Tune local evaluation subprocess runtime defaults for scaling."""
+        if not isinstance(self.job_config, LocalJobConfig):
+            return
+
+        if self.job_config.numeric_threads_per_job is None:
+            numeric_threads = max(1, cpu_count // max(1, self.max_evaluation_jobs))
+            self.job_config.numeric_threads_per_job = numeric_threads
+            if self.verbose:
+                logger.info(
+                    "Configured local numeric thread cap per eval process: %s",
+                    numeric_threads,
+                )
+
     async def _get_total_api_costs(self) -> float:
         """Calculate total API costs from all programs and prompt evolution."""
 
@@ -769,6 +786,18 @@ class ShinkaEvolveRunner:
 
         buffer_max = max(0, getattr(self.evo_config, "proposal_buffer_max", 0))
         hard_cap = getattr(self.evo_config, "proposal_target_hard_cap", None)
+        if hard_cap is not None and hard_cap < base_target:
+            if not getattr(
+                self, "_warned_invalid_proposal_target_hard_cap", False
+            ):
+                logger.warning(
+                    "Ignoring proposal_target_hard_cap=%s because it is below "
+                    "max_evaluation_jobs=%s and would disable oversubscription.",
+                    hard_cap,
+                    base_target,
+                )
+                self._warned_invalid_proposal_target_hard_cap = True
+            hard_cap = None
         effective_hard_cap = (
             self.max_proposal_jobs
             if hard_cap is None
@@ -889,6 +918,11 @@ class ShinkaEvolveRunner:
                     )
                 await self._wait_for_background_side_effects()
             await self._shutdown_background_side_effect_worker()
+            if self._prompt_percentile_recompute_task is not None:
+                await asyncio.gather(
+                    self._prompt_percentile_recompute_task,
+                    return_exceptions=True,
+                )
 
             # Perform final operations before cleanup
             if self.verbose:
@@ -1221,37 +1255,87 @@ class ShinkaEvolveRunner:
                 and self.prompt_percentile_recompute_counter >= recompute_interval
             ):
                 self.prompt_percentile_recompute_counter = 0
-                try:
-                    # Get all correct program scores from main database
-                    # This matches what the webUI uses for beat percentage calculation
-                    all_programs = self.db.get_all_programs()
-                    all_correct_scores = [
-                        p.combined_score
-                        for p in all_programs
-                        if p.correct and p.combined_score is not None
-                    ]
-                    # Build mapping from program_id to current score
-                    # This ensures we use actual current scores, not stale stored ones
-                    program_id_to_score = {
-                        p.id: p.combined_score
-                        for p in all_programs
-                        if p.correct and p.combined_score is not None
-                    }
-                    self.prompt_db.recompute_all_percentiles(
-                        all_correct_scores, program_id_to_score
-                    )
-                    logger.info(
-                        f"Recomputed prompt fitness percentiles "
-                        f"(every {recompute_interval} programs, "
-                        f"using {len(all_correct_scores)} correct program scores)"
-                    )
-                except Exception as recompute_err:
-                    logger.warning(
-                        f"Failed to recompute prompt percentiles: {recompute_err}"
-                    )
+                self._schedule_prompt_percentile_recompute(recompute_interval)
 
         except Exception as e:
             logger.error(f"Failed to update prompt fitness: {e}")
+
+    def _schedule_prompt_percentile_recompute(self, recompute_interval: int) -> None:
+        """Debounce global prompt percentile recomputation onto a background task."""
+        if not self.prompt_db:
+            return
+
+        task = self._prompt_percentile_recompute_task
+        if task is not None and not task.done():
+            self._prompt_percentile_recompute_pending = True
+            return
+
+        self._prompt_percentile_recompute_pending = False
+        self._prompt_percentile_recompute_task = asyncio.create_task(
+            self._recompute_prompt_percentiles_async(recompute_interval),
+            name="prompt_percentile_recompute",
+        )
+
+    async def _recompute_prompt_percentiles_async(self, recompute_interval: int) -> None:
+        """Refresh prompt fitness percentiles without blocking side-effect workers."""
+        try:
+            loop = asyncio.get_event_loop()
+            if hasattr(self.db, "config"):
+
+                def load_program_scores_thread_safe() -> Tuple[List[float], Dict[str, float]]:
+                    thread_db = None
+                    try:
+                        thread_db = ProgramDatabase(self.db.config, read_only=True)
+                        all_programs = thread_db.get_all_programs()
+                        all_correct_scores = [
+                            p.combined_score
+                            for p in all_programs
+                            if p.correct and p.combined_score is not None
+                        ]
+                        program_id_to_score = {
+                            p.id: p.combined_score
+                            for p in all_programs
+                            if p.correct and p.combined_score is not None
+                        }
+                        return all_correct_scores, program_id_to_score
+                    finally:
+                        if thread_db is not None:
+                            thread_db.close()
+
+                all_correct_scores, program_id_to_score = await loop.run_in_executor(
+                    None, load_program_scores_thread_safe
+                )
+            else:
+                all_programs = self.db.get_all_programs()
+                all_correct_scores = [
+                    p.combined_score
+                    for p in all_programs
+                    if p.correct and p.combined_score is not None
+                ]
+                program_id_to_score = {
+                    p.id: p.combined_score
+                    for p in all_programs
+                    if p.correct and p.combined_score is not None
+                }
+            self.prompt_db.recompute_all_percentiles(
+                all_correct_scores, program_id_to_score
+            )
+            logger.info(
+                "Recomputed prompt fitness percentiles "
+                "(every %s programs, using %s correct program scores)",
+                recompute_interval,
+                len(all_correct_scores),
+            )
+        except Exception as recompute_err:
+            logger.warning(
+                "Failed to recompute prompt percentiles: %s", recompute_err
+            )
+        finally:
+            rerun_requested = self._prompt_percentile_recompute_pending
+            self._prompt_percentile_recompute_pending = False
+            self._prompt_percentile_recompute_task = None
+            if rerun_requested:
+                self._schedule_prompt_percentile_recompute(recompute_interval)
 
     async def _maybe_evolve_prompt(self):
         """
