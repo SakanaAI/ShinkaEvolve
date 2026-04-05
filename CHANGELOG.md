@@ -20,6 +20,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 - Fixed adaptive proposal targeting so invalid `proposal_target_hard_cap` values below evaluation capacity no longer silently disable oversubscription.
 - Fixed prompt-percentile background refresh to avoid SQLite thread-affinity failures when recomputing prompt fitness during async runs.
+- Fixed Windows Unicode handling for async candidate-file I/O, diff summaries, and best-path exports by forcing UTF-8 reads and writes on LLM-generated artifacts.
 
 ## 0.0.3 - 2026-04-04
 
