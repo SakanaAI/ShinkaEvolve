@@ -2,6 +2,7 @@ import logging
 import time
 import asyncio
 import shlex
+import sys
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,8 @@ class LocalJobConfig(JobConfig):
     time: Optional[str] = None
     conda_env: Optional[str] = None
     activate_script: Optional[str] = None
+    python_executable: Optional[str] = None
+    numeric_threads_per_job: Optional[int] = None
 
     def __post_init__(self) -> None:
         _validate_activation_config(self.conda_env, self.activate_script)
@@ -120,6 +123,16 @@ class JobScheduler:
             )
 
     def _build_command(self, exec_fname_t: str, results_dir_t: str) -> List[str]:
+        python_executable = "python"
+        if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
+            if not (
+                _has_value(self.config.conda_env)
+                or _has_value(self.config.activate_script)
+            ):
+                python_executable = (
+                    self.config.python_executable or sys.executable or "python"
+                )
+
         if self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
             python_cmd = [
@@ -132,7 +145,7 @@ class JobScheduler:
             ]
         else:
             python_cmd = [
-                "python",
+                python_executable,
                 f"{self.config.eval_program_path}",
                 "--program_path",
                 f"{exec_fname_t}",
@@ -162,6 +175,32 @@ class JobScheduler:
 
         return python_cmd
 
+    def _build_local_env_overrides(self) -> Optional[Dict[str, str]]:
+        """Build environment overrides for local evaluation subprocesses."""
+        if self.job_type != "local" or not isinstance(self.config, LocalJobConfig):
+            return None
+
+        numeric_threads = self.config.numeric_threads_per_job
+        if numeric_threads is None:
+            return None
+
+        normalized_threads = max(1, int(numeric_threads))
+        thread_value = str(normalized_threads)
+        return {
+            "OMP_NUM_THREADS": thread_value,
+            "OMP_THREAD_LIMIT": thread_value,
+            "OMP_DYNAMIC": "FALSE",
+            "OMP_WAIT_POLICY": "PASSIVE",
+            "OPENBLAS_NUM_THREADS": thread_value,
+            "MKL_NUM_THREADS": thread_value,
+            "MKL_DYNAMIC": "FALSE",
+            "NUMEXPR_NUM_THREADS": thread_value,
+            "NUMEXPR_MAX_THREADS": thread_value,
+            "VECLIB_MAXIMUM_THREADS": thread_value,
+            "BLIS_NUM_THREADS": thread_value,
+            "GOTO_NUM_THREADS": thread_value,
+        }
+
     def run(
         self, exec_fname_t: str, results_dir_t: str
     ) -> Tuple[Dict[str, Any], float]:
@@ -171,7 +210,12 @@ class JobScheduler:
 
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
-            job_id = submit_local(results_dir_t, cmd, verbose=self.verbose)
+            job_id = submit_local(
+                results_dir_t,
+                cmd,
+                verbose=self.verbose,
+                env_overrides=self._build_local_env_overrides(),
+            )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
             job_id = submit_slurm_docker(
@@ -226,7 +270,12 @@ class JobScheduler:
         cmd = self._build_command(exec_fname_t, results_dir_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
-            return submit_local(results_dir_t, cmd, verbose=self.verbose)
+            return submit_local(
+                results_dir_t,
+                cmd,
+                verbose=self.verbose,
+                env_overrides=self._build_local_env_overrides(),
+            )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
             return submit_slurm_docker(

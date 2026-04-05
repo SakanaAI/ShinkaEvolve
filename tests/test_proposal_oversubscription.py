@@ -63,6 +63,22 @@ def test_compute_proposal_pipeline_target_respects_disable_flag():
     assert target == 5
 
 
+def test_compute_proposal_pipeline_target_ignores_invalid_hard_cap_below_eval_capacity():
+    runner = _build_runner(
+        sampling_ewma=120.0,
+        evaluation_ewma=60.0,
+        timing_samples=8,
+        proposal_buffer_max=2,
+        max_evaluation_jobs=10,
+        max_proposal_jobs=14,
+        proposal_target_hard_cap=7,
+    )
+
+    target = runner._compute_proposal_pipeline_target()
+
+    assert target == 12
+
+
 def test_record_oversubscription_timing_sample_uses_ewma():
     runner = _build_runner()
 

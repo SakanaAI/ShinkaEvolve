@@ -148,6 +148,13 @@ def _build_runner(**overrides):
     runner._evaluation_seconds_ewma = overrides.get("evaluation_ewma")
     runner.verbose = overrides.get("verbose", False)
     runner.cost_limit_reached = overrides.get("cost_limit_reached", False)
+    runner.prompt_db = overrides.get("prompt_db")
+    runner._prompt_percentile_recompute_task = overrides.get(
+        "_prompt_percentile_recompute_task"
+    )
+    runner._prompt_percentile_recompute_pending = overrides.get(
+        "_prompt_percentile_recompute_pending", False
+    )
     return runner
 
 
@@ -682,6 +689,8 @@ def test_update_prompt_fitness_only_recomputes_after_correct_programs():
             improvement=0.2,
             correct=True,
         )
+        if runner._prompt_percentile_recompute_task is not None:
+            await runner._prompt_percentile_recompute_task
 
         assert len(prompt_db.update_calls) == 3
         assert len(prompt_db.recompute_calls) == 1

@@ -3,7 +3,7 @@ import time
 import threading
 import os
 from pathlib import Path
-from typing import Optional, Tuple, TextIO
+from typing import Optional, Tuple, TextIO, Dict
 from shinka.utils import load_results, parse_time_to_seconds
 import logging
 
@@ -71,7 +71,12 @@ def _stream_output(pipe, file_handle, verbose_prefix=None):
         pipe.close()
 
 
-def submit(log_dir: str, cmd: list[str], verbose: bool = False):
+def submit(
+    log_dir: str,
+    cmd: list[str],
+    verbose: bool = False,
+    env_overrides: Optional[Dict[str, str]] = None,
+):
     """
     Submits a command for local execution with real-time logging.
 
@@ -93,6 +98,8 @@ def submit(log_dir: str, cmd: list[str], verbose: bool = False):
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"  # Force Python to be unbuffered
     env["PYTHONIOENCODING"] = "utf-8"  # Ensure proper encoding
+    if env_overrides:
+        env.update(env_overrides)
 
     # Use PIPE to capture output and redirect to files in real-time
     process = subprocess.Popen(
@@ -138,7 +145,7 @@ def submit(log_dir: str, cmd: list[str], verbose: bool = False):
 def monitor(
     process: ProcessWithLogging,
     results_dir: str,
-    poll_interval: int = 10,
+    poll_interval: float = 0.5,
     verbose: bool = False,
     timeout: Optional[str] = None,
 ):

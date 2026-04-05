@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -114,6 +115,36 @@ def test_job_scheduler_builds_local_sourced_command() -> None:
     assert cmd[0:2] == ["bash", "-lc"]
     assert 'source ".venv/bin/activate"' in cmd[2]
     assert "evaluate.py" in cmd[2]
+
+
+def test_job_scheduler_uses_current_python_without_activation() -> None:
+    scheduler = JobScheduler(
+        job_type="local",
+        config=LocalJobConfig(eval_program_path="evaluate.py"),
+    )
+
+    cmd = scheduler._build_command("program.py", "results")
+
+    assert cmd[0] == sys.executable
+    assert cmd[1:3] == ["evaluate.py", "--program_path"]
+
+
+def test_job_scheduler_builds_local_numeric_thread_env_overrides() -> None:
+    scheduler = JobScheduler(
+        job_type="local",
+        config=LocalJobConfig(
+            eval_program_path="evaluate.py",
+            numeric_threads_per_job=3,
+        ),
+    )
+
+    env_overrides = scheduler._build_local_env_overrides()
+
+    assert env_overrides is not None
+    assert env_overrides["OMP_NUM_THREADS"] == "3"
+    assert env_overrides["OPENBLAS_NUM_THREADS"] == "3"
+    assert env_overrides["MKL_NUM_THREADS"] == "3"
+    assert env_overrides["NUMEXPR_NUM_THREADS"] == "3"
 
 
 def test_slurm_conda_job_config_allows_activate_script_for_back_compat() -> None:
