@@ -45,10 +45,12 @@ Validate the exact run config against `shinka_models`:
 - Meta recommendation models: if `evo.meta_rec_interval` is set and `evo.meta_llm_models` is set, every meta model must appear in the `llm` list.
 - Prompt evolution models: if `evo.evolve_prompts=true`, use `evo.prompt_llm_models` when provided, otherwise `evo.llm_models`; every selected model must appear in the `llm` list.
 - Embedding model: if `evo.embedding_model` is set, it must appear in the `embedding` list.
+- Local OpenAI-compatible models are allowed for LLMs and embeddings via `local/<model>@http(s)://host[:port]/v1`, and these local models are not expected to appear in `shinka_models`.
 
 Important runtime rules:
 - Do not assume meta recommendations fall back to `evo.llm_models`. In the current runner, meta recommendations are only enabled when `evo.meta_llm_models` is explicitly set.
 - Prompt evolution does fall back to `evo.llm_models` when `evo.prompt_llm_models` is unset.
+- Treat `local/<model>@http(s)://host[:port]/v1` values as an explicit exception to the `shinka_models` membership check. Instead, confirm the local endpoint URL and serving status separately before running.
 - If any required model is missing from `shinka_models`, stop and ask the user to either change the config or set the missing credentials first.
 
 4. Confirm first-batch configuration with the user
