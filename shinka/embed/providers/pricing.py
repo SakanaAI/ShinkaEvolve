@@ -69,6 +69,11 @@ def get_all_models() -> list:
     return _PRICING_DF.index.tolist()
 
 
+def get_all_providers() -> list:
+    """Get the distinct providers represented in pricing data."""
+    return _PRICING_DF["provider"].drop_duplicates().tolist()
+
+
 def get_models_by_provider(provider: str) -> list:
     """Get list of embedding models for a given provider."""
     return _PRICING_DF[_PRICING_DF["provider"] == provider].index.tolist()
