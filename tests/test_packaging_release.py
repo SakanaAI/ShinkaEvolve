@@ -53,6 +53,7 @@ def test_project_metadata_targets_pypi_release():
     assert project["license"] == "Apache-2.0"
     assert project["scripts"] == {
         "shinka_launch": "shinka.cli.launch:main",
+        "shinka_models": "shinka.cli.models:main",
         "shinka_run": "shinka.cli.run:main",
         "shinka_visualize": "shinka.webui.visualization:main",
     }
