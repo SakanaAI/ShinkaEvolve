@@ -2,6 +2,17 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Added a new `shinka_models` CLI that inspects the current environment plus discovered `.env` files and reports which priced LLM and embedding models are available to use.
+
+### Changed
+
+- Changed `shinka_models` default output to a compact JSON object with separate `embedding` and `llm` model lists, while `--verbose` now emits provider-level availability details with the same top-level lists.
+- Updated the `shinka-run` skill so run planning must validate mutation, meta-recommendation, prompt-evolution, and embedding models against `shinka_models` before launching evolution.
+
 ## 0.0.3 - 2026-04-04
 
 ### Added
