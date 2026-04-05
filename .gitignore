@@ -6,6 +6,7 @@ __pycache__/
 results/
 results*
 shinka_scale*
+!examples/circle_packing/shinka_scale*.yaml
 examples/mnist_train/
 
 # C extensions
