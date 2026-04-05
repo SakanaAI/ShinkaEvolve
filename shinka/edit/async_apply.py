@@ -16,6 +16,7 @@ except ImportError:
     aiofiles = None
 
 logger = logging.getLogger(__name__)
+TEXT_ENCODING = "utf-8"
 
 
 async def _run_validation_subprocess(
@@ -160,12 +161,21 @@ async def validate_code_async(
         else:
             # For other languages, just check if file exists and is readable
             try:
-                async with aiofiles.open(code_path, "r") as f:
-                    content = await f.read()
-                    if len(content.strip()) > 0:
-                        return True, None
-                    else:
-                        return False, "Empty code file"
+                if aiofiles:
+                    async with aiofiles.open(
+                        code_path, "r", encoding=TEXT_ENCODING
+                    ) as f:
+                        content = await f.read()
+                else:
+                    loop = asyncio.get_event_loop()
+                    content = await loop.run_in_executor(
+                        None,
+                        lambda: Path(code_path).read_text(encoding=TEXT_ENCODING),
+                    )
+
+                if len(content.strip()) > 0:
+                    return True, None
+                return False, "Empty code file"
             except Exception as e:
                 return False, f"File read error: {str(e)}"
 
@@ -193,13 +203,16 @@ async def write_file_async(file_path: str, content: str) -> bool:
 
         if aiofiles:
             # Use aiofiles if available
-            async with aiofiles.open(file_path, "w") as f:
+            async with aiofiles.open(file_path, "w", encoding=TEXT_ENCODING) as f:
                 await f.write(content)
         else:
             # Fall back to sync I/O in thread pool
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
-                None, lambda: Path(file_path).write_text(content)
+                None,
+                lambda: Path(file_path).write_text(
+                    content, encoding=TEXT_ENCODING
+                ),
             )
 
         return True
@@ -221,13 +234,13 @@ async def read_file_async(file_path: str) -> Optional[str]:
     try:
         if aiofiles:
             # Use aiofiles if available
-            async with aiofiles.open(file_path, "r") as f:
+            async with aiofiles.open(file_path, "r", encoding=TEXT_ENCODING) as f:
                 content = await f.read()
         else:
             # Fall back to sync I/O in thread pool
             loop = asyncio.get_event_loop()
             content = await loop.run_in_executor(
-                None, lambda: Path(file_path).read_text()
+                None, lambda: Path(file_path).read_text(encoding=TEXT_ENCODING)
             )
         return content
 
