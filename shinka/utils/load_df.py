@@ -350,11 +350,11 @@ def store_best_path(df: pd.DataFrame, results_dir: str):
 
         if row["code_diff"] is not None:
             patch_path = patch_dir / f"patch_{i}.patch"
-            patch_path.write_text(str(row["code_diff"]))
+            patch_path.write_text(str(row["code_diff"]), encoding="utf-8")
             print(f"Saved patch to {patch_path}")
 
         base_path = code_dir / f"main_{i}.py"
-        base_path.write_text(str(row["code"]))
+        base_path.write_text(str(row["code"]), encoding="utf-8")
 
         # store row data as json, handle non-serializable types
         import datetime
@@ -372,7 +372,10 @@ def store_best_path(df: pd.DataFrame, results_dir: str):
             return str(obj)
 
         row_data_path = meta_dir / f"meta_{i}.json"
-        row_data_path.write_text(json.dumps(row.to_dict(), default=default_serializer))
+        row_data_path.write_text(
+            json.dumps(row.to_dict(), default=default_serializer),
+            encoding="utf-8",
+        )
         print(f"Saved meta data to {row_data_path}")
         print(f"Saved base code to {base_path}")
         print(row["patch_name"])

@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 def summarize_diff(diff_file_path: str) -> dict:
     summary = {}
     try:
-        with open(diff_file_path, "r") as f:
+        with open(diff_file_path, "r", encoding="utf-8") as f:
             patch = PatchSet(f)
 
         for patched_file in patch:

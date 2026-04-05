@@ -5278,7 +5278,7 @@ class ShinkaEvolveRunner:
         try:
 
             def read_file():
-                with open(file_path, "r") as f:
+                with open(file_path, "r", encoding="utf-8") as f:
                     return f.read()
 
             loop = asyncio.get_event_loop()
