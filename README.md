@@ -100,6 +100,7 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | 🎮 [Game 2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) | Optimize a policy for the Game of 2048. | `LocalJobConfig` |
 | ∑ [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
 | ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
+| 🏠 [Real Estate Scorer](https://github.com/SakanaAI/ShinkaEvolve/tree/main/tasks/real_estate_scorer) | Evolve an investment scoring function for Buenos Aires apartments. | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
