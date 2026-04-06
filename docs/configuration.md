@@ -40,7 +40,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `meta_llm_kwargs` | `dict` | `{}` | kwargs for meta-recommendation LLM calls. |
 | `meta_max_recommendations` | `int` | `5` | Max recommendations produced per meta step. |
 | `sample_single_meta_rec` | `bool` | `True` | Whether to sample one recommendation when multiple exist. |
-| `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. Also supports `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding endpoints. |
+| `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. Also supports `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding endpoints, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `init_program_path` | `Optional[str]` | `'initial.py'` | Initial program path. |
 | `results_dir` | `Optional[str]` | `None` | Results directory; auto-assigned when `None`. |
 | `max_novelty_attempts` | `int` | `3` | Max novelty loops per generation. |

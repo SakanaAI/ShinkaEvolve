@@ -1,20 +1,21 @@
 from dataclasses import dataclass
 import os
-import re
 from typing import Any, Optional, Tuple
-from urllib.parse import urlparse
 
 from google import genai
 import openai
 
 from shinka.env import load_shinka_dotenv
+from shinka.local_openai_config import (
+    parse_local_openai_model,
+    resolve_local_openai_api_key,
+)
 
 from .providers.pricing import get_provider
 
 load_shinka_dotenv()
 
 TIMEOUT = 600
-_LOCAL_MODEL_PATTERN = re.compile(r"^local/(?P<model>[^@]+)@(?P<url>https?://.+)$")
 _OPENROUTER_PREFIX = "openrouter/"
 
 
@@ -24,6 +25,7 @@ class ResolvedEmbeddingModel:
     api_model_name: str
     provider: str
     base_url: Optional[str] = None
+    api_key_env_name: Optional[str] = None
 
 
 def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
@@ -57,20 +59,14 @@ def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
             base_url=None,
         )
 
-    local_match = _LOCAL_MODEL_PATTERN.match(model_name)
+    local_match = parse_local_openai_model(model_name)
     if local_match:
-        api_model_name = local_match.group("model")
-        base_url = local_match.group("url")
-        parsed = urlparse(base_url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ValueError(
-                f"Invalid local model URL '{base_url}'. Expected http(s)://host[:port]/..."
-            )
         return ResolvedEmbeddingModel(
             original_model_name=model_name,
-            api_model_name=api_model_name,
+            api_model_name=local_match.api_model_name,
             provider="local_openai",
-            base_url=base_url,
+            base_url=local_match.base_url,
+            api_key_env_name=local_match.api_key_env_name,
         )
 
     raise ValueError(
@@ -104,7 +100,7 @@ def get_client_embed(model_name: str) -> Tuple[Any, str]:
         )
     elif provider == "local_openai":
         client = openai.OpenAI(
-            api_key=os.getenv("LOCAL_OPENAI_API_KEY", "local"),
+            api_key=resolve_local_openai_api_key(resolved.api_key_env_name),
             base_url=resolved.base_url,
             timeout=TIMEOUT,
         )
@@ -138,7 +134,7 @@ def get_async_client_embed(model_name: str) -> Tuple[Any, str]:
         )
     elif provider == "local_openai":
         client = openai.AsyncOpenAI(
-            api_key=os.getenv("LOCAL_OPENAI_API_KEY", "local"),
+            api_key=resolve_local_openai_api_key(resolved.api_key_env_name),
             base_url=resolved.base_url,
             timeout=TIMEOUT,
         )

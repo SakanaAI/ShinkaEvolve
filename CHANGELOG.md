@@ -7,6 +7,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 ### Added
 
 - Added a new `shinka_models` CLI that inspects the current environment plus discovered `.env` files and reports which priced LLM and embedding models are available to use.
+- Added per-model `api_key_env` support for local OpenAI-compatible LLM and embedding backends, allowing credentials to be selected inline via `local/<model>@http(s)://...?...api_key_env=ENV_VAR`.
 
 ### Changed
 
