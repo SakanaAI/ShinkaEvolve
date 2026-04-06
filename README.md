@@ -176,7 +176,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `meta_llm_kwargs` | `{}` | `dict` | Kwargs for meta-recommendation LLMs |
 | `meta_max_recommendations` | `5` | `int` | Max number of meta-recommendations |
 | `sample_single_meta_rec` | `True` | `bool` | Sample a single recommendation from meta output when enabled |
-| `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings. Also accepts `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding servers. |
+| `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings. Also accepts `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding servers, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
 | `max_novelty_attempts` | `3` | `int` | Max attempts for novelty generation |

@@ -93,6 +93,7 @@ OPENAI_API_KEY=sk-proj-your-key-here
 ANTHROPIC_API_KEY=your-anthropic-key-here  # Optional
 OPENROUTER_API_KEY=sk-or-v1-...             # Optional (for openrouter/* models)
 LOCAL_OPENAI_API_KEY=local                  # Optional (for local/*@http(s)://... models)
+CUSTOM_API_KEY=...                          # Optional (for local/*@...?...api_key_env=CUSTOM_API_KEY)
 ```
 
 ### Step 4: Verify Installation
@@ -248,6 +249,7 @@ evo_config = EvolutionConfig(
     llm_models=[
         "openrouter/qwen/qwen3-coder",
         "local/qwen2.5-coder@http://localhost:11434/v1",
+        "local/dummy-model@https://api.example.test/v1?api_key_env=CUSTOM_API_KEY",
     ],
     embedding_model="local/text-embeddings-inference@http://localhost:8080/v1",
 )
