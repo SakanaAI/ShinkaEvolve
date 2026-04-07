@@ -1,7 +1,11 @@
 import os
+from typing import Literal, Optional
 
 
-shinka_ascii = """  @@@@@@@@@@@@@@@@@@@@@      ░██████╗██╗░░██╗██╗███╗░░██╗██╗░░██╗░█████╗░
+BannerStyle = Literal["full", "minimal"]
+
+
+full_shinka_ascii = """  @@@@@@@@@@@@@@@@@@@@@      ░██████╗██╗░░██╗██╗███╗░░██╗██╗░░██╗░█████╗░
   @                   @      ██╔════╝██║░░██║██║████╗░██║██║░██╔╝██╔══██╗
   @          @        @      ╚█████╗░███████║██║██╔██╗██║█████═╝░███████║
   @    @@   @@  @@    @      ░╚═══██╗██╔══██║██║██║╚████║██╔═██╗░██╔══██║
@@ -32,6 +36,28 @@ shinka_ascii = """  @@@@@@@@@@@@@@@@@@@@@      ░██████╗██╗
 """
 
 
+minimal_shinka_ascii = """
+░██████╗██╗░░██╗██╗███╗░░██╗██╗░░██╗░█████╗░   ░█████╗░██╗░░░░░██╗
+██╔════╝██║░░██║██║████╗░██║██║░██╔╝██╔══██╗   ██╔══██╗██║░░░░░██║
+╚█████╗░███████║██║██╔██╗██║█████═╝░███████║   ██║░░╚═╝██║░░░░░██║
+░╚═══██╗██╔══██║██║██║╚████║██╔═██╗░██╔══██║   ██║░░██╗██║░░░░░██║
+██████╔╝██║░░██║██║██║░╚███║██║░╚██╗██║░░██║   ╚█████╔╝███████╗██║
+╚═════╝░╚═╝░░╚═╝╚═╝╚═╝░░╚══╝╚═╝░░╚═╝╚═╝░░╚═╝   ░╚════╝░╚══════╝╚═╝
+"""
+
+
+shinka_ascii = full_shinka_ascii
+
+
+def get_logo_ascii(style: BannerStyle = "full") -> str:
+    """Return the configured Shinka banner payload."""
+    if style == "full":
+        return full_shinka_ascii
+    if style == "minimal":
+        return minimal_shinka_ascii
+    raise ValueError(f"Unknown banner style: {style}")
+
+
 def rgb_to_ansi(r, g, b):
     """Convert RGB values to ANSI 256-color code."""
     # Use the 216-color cube (16-231) for better color precision
@@ -53,7 +79,11 @@ def create_gradient_colors(start_color, end_color, steps):
     return colors
 
 
-def print_gradient_logo(start_color=(255, 100, 50), end_color=(100, 200, 255)):
+def print_gradient_logo(
+    start_color=(255, 100, 50),
+    end_color=(100, 200, 255),
+    logo_ascii: Optional[str] = None,
+):
     """
     Print the Shinka logo with a color gradient.
 
@@ -61,14 +91,17 @@ def print_gradient_logo(start_color=(255, 100, 50), end_color=(100, 200, 255)):
         start_color: RGB tuple for the starting color (default: orange-red)
         end_color: RGB tuple for the ending color (default: light blue)
     """
+    if logo_ascii is None:
+        logo_ascii = shinka_ascii
+
     # Check if terminal supports colors
     if os.getenv("NO_COLOR") or not (
         hasattr(os.sys.stdout, "isatty") and os.sys.stdout.isatty()
     ):
-        print(shinka_ascii)
+        print(logo_ascii)
         return
 
-    lines = shinka_ascii.split("\n")
+    lines = logo_ascii.split("\n")
     num_lines = len(lines)
 
     # Create gradient colors for each line
@@ -94,7 +127,10 @@ GRADIENT_PRESETS = {
 }
 
 
-def print_preset_gradient_logo(preset="sunset"):
+def print_preset_gradient_logo(
+    preset="sunset",
+    logo_ascii: Optional[str] = None,
+):
     """
     Print the logo with a preset gradient.
 
@@ -104,13 +140,13 @@ def print_preset_gradient_logo(preset="sunset"):
     """
     if preset in GRADIENT_PRESETS:
         start_color, end_color = GRADIENT_PRESETS[preset]
-        print_gradient_logo(start_color, end_color)
+        print_gradient_logo(start_color, end_color, logo_ascii=logo_ascii)
     else:
         print(
             f"Unknown preset '{preset}'. Available presets: "
             f"{list(GRADIENT_PRESETS.keys())}"
         )
-        print_gradient_logo()  # Use default gradient
+        print_gradient_logo(logo_ascii=logo_ascii)  # Use default gradient
 
 
 # https://fsymbols.com/text-art/

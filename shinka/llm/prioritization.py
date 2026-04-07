@@ -8,6 +8,8 @@ import rich.box
 import pickle
 from pathlib import Path
 
+from shinka.local_openai_config import parse_local_openai_model
+
 Arm = Union[int, str]
 Subset = Optional[Union[np.ndarray, Sequence[Arm]]]
 
@@ -32,6 +34,37 @@ def _logexpm1(z):
     z = np.asarray(z, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(z > 50.0, z, np.log(np.expm1(z)))
+
+
+def _truncate_middle(text: str, max_width: int) -> str:
+    if len(text) <= max_width:
+        return text
+    if max_width <= 3:
+        return text[:max_width]
+
+    left_width = (max_width - 3) // 2
+    right_width = max_width - 3 - left_width
+    return f"{text[:left_width]}...{text[-right_width:]}"
+
+
+def _format_arm_display_name(name: Arm, max_width: int) -> str:
+    text = str(name)
+    if not isinstance(name, str):
+        return _truncate_middle(text, max_width)
+
+    try:
+        local_match = parse_local_openai_model(name)
+    except ValueError:
+        local_match = None
+
+    if local_match is not None:
+        text = f"local/{local_match.api_model_name}"
+    elif name.startswith("openrouter/"):
+        text = name
+    else:
+        text = name.split("/")[-1]
+
+    return _truncate_middle(text, max_width)
 
 
 class BanditBase(ABC):
@@ -760,11 +793,7 @@ class AsymmetricUCB(BanditBase):
 
         # Add rows
         for i, name in enumerate(names):
-            # Split name by "/" and take last part, then last 25 chars
-            if isinstance(name, str):
-                display_name = name.split("/")[-1][-25:]
-            else:
-                display_name = str(name)
+            display_name = _format_arm_display_name(name, max_width=25)
 
             if n_costs[i] > 0:
                 mean_cost_str = f"{mean_costs[i]:.4f}"
@@ -940,11 +969,7 @@ class FixedSampler(BanditBase):
 
         # Add rows
         for i, name in enumerate(names):
-            # Split name by "/" and take last part, then last 28 chars
-            if isinstance(name, str):
-                display_name = name.split("/")[-1][-28:]
-            else:
-                display_name = str(name)
+            display_name = _format_arm_display_name(name, max_width=28)
             table.add_row(
                 display_name,
                 f"{n[i]:d}",
@@ -1300,10 +1325,7 @@ class ThompsonSampler(BanditBase):
         table.add_column("post", justify="right", style="bright_green")
 
         for i, name in enumerate(names):
-            if isinstance(name, str):
-                display_name = name.split("/")[-1][-25:]
-            else:
-                display_name = str(name)
+            display_name = _format_arm_display_name(name, max_width=25)
             table.add_row(
                 display_name,
                 f"{n[i]:d}",

@@ -60,24 +60,26 @@ from shinka.core.prompt_evolver import (
     AsyncSystemPromptEvolver,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
-from shinka.logo import print_gradient_logo, shinka_ascii
+from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.utils import get_language_extension, parse_time_to_seconds
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
 
 
-def _print_gradient_logo_and_mirror(log_path: Optional[Path] = None) -> None:
+def _print_gradient_logo_and_mirror(
+    log_path: Optional[Path] = None,
+    banner_style: BannerStyle = "full",
+) -> None:
     """Print gradient logo to terminal and mirror plain ASCII to log."""
-    print_gradient_logo((255, 0, 0), (255, 255, 255))
+    logo_ascii = get_logo_ascii(banner_style)
+    print_gradient_logo((255, 0, 0), (255, 255, 255), logo_ascii=logo_ascii)
     if log_path is None:
         return
 
     try:
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                shinka_ascii if shinka_ascii.endswith("\n") else f"{shinka_ascii}\n"
-            )
+            handle.write(logo_ascii if logo_ascii.endswith("\n") else f"{logo_ascii}\n")
     except Exception:
         # Never break startup output if log write fails.
         pass
@@ -181,6 +183,7 @@ class ShinkaEvolveRunner:
         evo_config: EvolutionConfig,
         job_config: JobConfig,
         db_config: DatabaseConfig,
+        banner_style: BannerStyle = "full",
         verbose: bool = True,
         max_evaluation_jobs: int = 2,
         max_proposal_jobs: int = 1,
@@ -218,6 +221,7 @@ class ShinkaEvolveRunner:
         self.evo_config = evo_config
         self.job_config = job_config
         self.db_config = db_config
+        self.banner_style = banner_style
         self.enable_deadlock_debugging = debug
         log_filename = f"{self.results_dir}/evolution_run.log"
 
@@ -246,7 +250,9 @@ class ShinkaEvolveRunner:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
 
-        _print_gradient_logo_and_mirror(Path(log_filename))
+        _print_gradient_logo_and_mirror(
+            Path(log_filename), banner_style=self.banner_style
+        )
 
         # Handle init_program_str: write to file and update config path
         if init_program_str is not None:

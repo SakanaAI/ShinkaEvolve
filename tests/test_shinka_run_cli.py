@@ -190,6 +190,7 @@ def test_shinka_run_defaults_to_verbose_logging(tmp_path, monkeypatch):
 
     assert _DummyRunner.last_kwargs is not None
     assert _DummyRunner.last_kwargs["verbose"] is True
+    assert _DummyRunner.last_kwargs["banner_style"] == "minimal"
 
 
 def test_shinka_run_allows_disabling_verbose_logging(tmp_path, monkeypatch):
@@ -212,6 +213,7 @@ def test_shinka_run_allows_disabling_verbose_logging(tmp_path, monkeypatch):
 
     assert _DummyRunner.last_kwargs is not None
     assert _DummyRunner.last_kwargs["verbose"] is False
+    assert _DummyRunner.last_kwargs["banner_style"] == "minimal"
 
 
 def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeypatch):

@@ -2,6 +2,16 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## 0.0.5 - Unreleased
+
+### Changed
+
+- Changed `shinka_run` startup output to use a minimal `Shinka CLI` banner while other launch paths keep the full gradient banner.
+
+### Fixed
+
+- Fixed bandit summary tables to preserve readable `local/<model>` and `openrouter/<model>` labels while stripping endpoint and API-key query details from local OpenAI-compatible model labels.
+
 ## 0.0.4 - 2026-04-06
 
 ### Added
