@@ -195,3 +195,6 @@ cython_debug/
 # Local editor metadata
 .idea/
 .vscode/
+
+# Local browser automation state
+.playwright-cli/

@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-urls = {Homepage = "https://sakana.ai/shinka-evolve/", Documentation = "https://github.com/SakanaAI/ShinkaEvolve#readme", Repository = "https://github.com/SakanaAI/ShinkaEvolve", Issues = "https://github.com/SakanaAI/ShinkaEvolve/issues"}
+urls = {Homepage = "https://sakana.ai/shinka-evolve/", Documentation = "https://sakanaai.github.io/shinkaevolve/", Repository = "https://github.com/SakanaAI/ShinkaEvolve", Issues = "https://github.com/SakanaAI/ShinkaEvolve/issues"}
 dependencies = [
     "openai",
     "numpy",
@@ -87,6 +87,12 @@ dev = [
     "black",
     "isort",
     "flake8",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.6",
+    "mkdocstrings[python]>=0.30",
+    "pymdown-extensions>=10.15",
 ]
 
 [tool.pytest.ini_options]
