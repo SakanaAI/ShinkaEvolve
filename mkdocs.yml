@@ -9,7 +9,6 @@ site_dir: site
 
 theme:
   name: material
-  custom_dir: overrides
   logo: media/favicon.png
   favicon: media/favicon.png
   icon:
