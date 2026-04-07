@@ -15,6 +15,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 ### Fixed
 
 - Fixed bandit summary tables to preserve readable `local/<model>` and `openrouter/<model>` labels while stripping endpoint and API-key query details from local OpenAI-compatible model labels.
+- Fixed documentation links and metadata URLs to use the deployed GitHub Pages path capitalization (`/ShinkaEvolve/`).
 
 ## 0.0.4 - 2026-04-06
 
