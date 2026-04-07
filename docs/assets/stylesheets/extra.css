@@ -1,0 +1,483 @@
+/* ═══════════════════════════════════════════════════════════════
+   ShinkaEvolve — Brutalist documentation theme
+   Palette: red (#CC0000), black (#000), white (#FFF)
+   All corners: 0. No rounding. Hard edges only.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Palette tokens ─────────────────────────────────────────── */
+:root {
+  --md-primary-fg-color: #CC0000;
+  --md-primary-fg-color--light: #E60000;
+  --md-primary-fg-color--dark: #990000;
+  --md-accent-fg-color: #CC0000;
+  --md-accent-fg-color--transparent: rgba(204, 0, 0, 0.12);
+  --md-typeset-a-color: #CC0000;
+
+  --se-black: #000;
+  --se-white: #FFF;
+  --se-red: #CC0000;
+  --se-red-dark: #990000;
+  --se-gray-100: #F5F5F5;
+  --se-gray-200: #E0E0E0;
+  --se-gray-600: #555;
+  --se-gray-800: #222;
+  --se-border: #000;
+}
+
+/* ── Global resets ──────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+/* ── Header bar ─────────────────────────────────────────────── */
+.md-header {
+  background: var(--se-black);
+  border-bottom: 3px solid var(--se-red);
+  box-shadow: none;
+}
+
+
+.md-header__title {
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ── Navigation tabs ────────────────────────────────────────── */
+.md-tabs {
+  background: var(--se-black);
+  border-bottom: 1px solid var(--se-gray-800);
+}
+
+.md-tabs__link--active,
+.md-tabs__link:hover {
+  color: var(--se-red) !important;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+.md-sidebar {
+  border-right: 2px solid var(--se-gray-200);
+}
+
+.md-nav__link--active {
+  color: var(--se-red) !important;
+  font-weight: 700;
+  border-left: 3px solid var(--se-red);
+  padding-left: 0.6rem;
+}
+
+/* ── Typography ─────────────────────────────────────────────── */
+.md-typeset {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--se-black);
+}
+
+.md-typeset h1 {
+  color: var(--se-black);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  border-bottom: 4px solid var(--se-red);
+  padding-bottom: 0.4rem;
+  margin-bottom: 1.2rem;
+}
+
+.md-typeset h2 {
+  color: var(--se-black);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  border-bottom: 2px solid var(--se-gray-200);
+  padding-bottom: 0.3rem;
+  margin-top: 2rem;
+}
+
+.md-typeset h3 {
+  color: var(--se-black);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 1.5rem;
+}
+
+.md-typeset h4 {
+  color: var(--se-gray-800);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+}
+
+/* ── Links ──────────────────────────────────────────────────── */
+.md-typeset a {
+  color: var(--se-red);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.md-typeset a:hover {
+  border-bottom-color: var(--se-red);
+}
+
+/* ── Code blocks ────────────────────────────────────────────── */
+.md-typeset code {
+  background: var(--se-gray-100);
+  border: 1px solid var(--se-gray-200);
+  color: var(--se-black);
+  padding: 0.1em 0.35em;
+  font-size: 0.82em;
+}
+
+.md-typeset pre {
+  border: none;
+  background: transparent;
+}
+
+.md-typeset pre > code {
+  background: transparent;
+  border: none;
+  font-size: 0.8em;
+  line-height: 1.5;
+}
+
+.highlight {
+  border: 2px solid var(--se-black);
+  background: var(--se-gray-100);
+}
+
+.highlight pre {
+  margin: 0;
+  background: transparent;
+}
+
+/* ── Tables ─────────────────────────────────────────────────── */
+.md-typeset table:not([class]) {
+  border: 2px solid var(--se-black);
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  width: 100%;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--se-black);
+  color: var(--se-white);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--se-black);
+}
+
+.md-typeset table:not([class]) td {
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--se-gray-200);
+  vertical-align: top;
+}
+
+.md-typeset table:not([class]) tr:nth-child(even) {
+  background: var(--se-gray-100);
+}
+
+/* ── Admonitions ────────────────────────────────────────────── */
+.md-typeset .admonition,
+.md-typeset details {
+  border: 2px solid var(--se-black);
+  border-left: 5px solid var(--se-red);
+  box-shadow: none;
+  background: var(--se-white);
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background: var(--se-gray-100) !important;
+  border-bottom: 1px solid var(--se-gray-200);
+  font-weight: 700;
+}
+
+/* ── Buttons ────────────────────────────────────────────────── */
+.md-button {
+  border: 2px solid var(--se-black);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.78rem;
+  padding: 0.6rem 1.4rem;
+  transition: all 0.1s;
+}
+
+.md-button--primary {
+  background: var(--se-red);
+  color: var(--se-white);
+  border-color: var(--se-red);
+}
+
+.md-button--primary:hover {
+  background: var(--se-red-dark);
+  border-color: var(--se-red-dark);
+  color: var(--se-white);
+}
+
+.md-button:not(.md-button--primary) {
+  background: var(--se-white);
+  color: var(--se-black);
+}
+
+.md-button:not(.md-button--primary):hover {
+  background: var(--se-black);
+  color: var(--se-white);
+}
+
+/* ── Hero section (index page) ──────────────────────────────── */
+.hero {
+  margin: 0 0 2.5rem;
+  padding: 2.5rem;
+  border: 3px solid var(--se-black);
+  background: var(--se-white);
+  position: relative;
+}
+
+.hero::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  background: var(--se-red);
+}
+
+.hero-kicker {
+  margin: 0 0 0.5rem;
+  color: var(--se-red);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.hero-title {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.hero-logo {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+}
+
+.hero-copy h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1;
+  border-bottom: none;
+  padding-bottom: 0;
+  white-space: nowrap;
+}
+
+.hero-lead {
+  max-width: 38rem;
+  margin: 1rem 0 1.5rem;
+  color: var(--se-gray-600);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+@media screen and (max-width: 45em) {
+  .hero {
+    padding: 1.5rem;
+  }
+  .hero-logo {
+    width: 48px;
+    height: 48px;
+  }
+  .hero-copy h1 {
+    font-size: 1.8rem;
+  }
+}
+
+/* ── Feature grid ───────────────────────────────────────────── */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0;
+  margin: 1.5rem 0 2rem;
+  border: 2px solid var(--se-black);
+}
+
+.feature-card {
+  padding: 1rem;
+  border: 1px solid var(--se-gray-200);
+  background: var(--se-white);
+  position: relative;
+}
+
+.feature-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: var(--se-red);
+}
+
+.feature-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.feature-card p {
+  margin: 0;
+  color: var(--se-gray-600);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+/* ── Section dividers ───────────────────────────────────────── */
+.md-typeset hr {
+  border: none;
+  border-top: 2px solid var(--se-black);
+  margin: 2rem 0;
+}
+
+/* ── Footer ─────────────────────────────────────────────────── */
+.md-footer {
+  background: var(--se-black);
+  border-top: 3px solid var(--se-red);
+}
+
+/* ── Search ─────────────────────────────────────────────────── */
+.md-search__form {
+  border: 2px solid var(--se-gray-200);
+  background: var(--se-white);
+}
+
+.md-search-result__link:hover {
+  background: var(--se-gray-100);
+}
+
+/* ── Content area density ───────────────────────────────────── */
+.md-content {
+  max-width: 52rem;
+}
+
+.md-typeset p {
+  margin-top: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.md-typeset ul,
+.md-typeset ol {
+  margin-top: 0.3rem;
+  margin-bottom: 0.6rem;
+}
+
+.md-typeset li {
+  margin-bottom: 0.15rem;
+}
+
+/* ── Tabbed content ─────────────────────────────────────────── */
+.md-typeset .tabbed-labels > label {
+  border-bottom: 2px solid transparent;
+  font-weight: 700;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.md-typeset .tabbed-labels > label--active,
+.md-typeset .tabbed-labels > label:hover {
+  border-bottom-color: var(--se-red);
+  color: var(--se-red);
+}
+
+/* ── TOC (right sidebar) ───────────────────────────────────── */
+.md-nav__link[data-md-level] {
+  font-size: 0.72rem;
+}
+
+/* ── Permalink anchors ──────────────────────────────────────── */
+.md-typeset .headerlink {
+  color: var(--se-red);
+}
+
+/* ── Copy button ────────────────────────────────────────────── */
+.md-clipboard {
+  color: var(--se-gray-600);
+}
+
+.md-clipboard:hover {
+  color: var(--se-red);
+}
+
+/* ── Info boxes (custom) ────────────────────────────────────── */
+.info-box {
+  border: 2px solid var(--se-black);
+  padding: 1rem;
+  margin: 1rem 0;
+  background: var(--se-gray-100);
+}
+
+.info-box-title {
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--se-red);
+  margin-bottom: 0.4rem;
+}
+
+/* ── Dense list styling for nav pages ───────────────────────── */
+.nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 2px solid var(--se-black);
+}
+
+.nav-list li {
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--se-gray-200);
+  margin: 0;
+}
+
+.nav-list li:last-child {
+  border-bottom: none;
+}
+
+.nav-list li a {
+  font-weight: 700;
+}
+
+/* ── Tag / label styling ────────────────────────────────────── */
+.tag {
+  display: inline-block;
+  background: var(--se-black);
+  color: var(--se-white);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.15em 0.5em;
+  margin-right: 0.3em;
+}
+
+.tag--red {
+  background: var(--se-red);
+}

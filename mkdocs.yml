@@ -1,0 +1,98 @@
+site_name: ShinkaEvolve
+site_description: Open-ended, sample-efficient program evolution with LLMs
+site_url: https://sakanaai.github.io/shinkaevolve/
+repo_url: https://github.com/SakanaAI/ShinkaEvolve
+repo_name: SakanaAI/ShinkaEvolve
+edit_uri: edit/docs/
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  custom_dir: overrides
+  logo: media/favicon.png
+  favicon: media/favicon.png
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/SakanaAI/ShinkaEvolve
+    - icon: fontawesome/solid/newspaper
+      link: https://sakana.ai/shinka-evolve/
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - .
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            line_length: 88
+            docstring_section_style: table
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting Started: getting_started.md
+  - Core Concepts:
+      - Overview: core_concepts.md
+      - CLI Usage: cli_usage.md
+      - Configuration: configuration.md
+      - Async Evolution: async_evolution.md
+      - Local Models: support_local_models.md
+  - WebUI: webui.md
+  - Agentic Usage: agentic_usage.md
+  - API Reference:
+      - Overview: reference/index.md
+      - Core Runtime: reference/core_api.md
+      - Database: reference/database_api.md
+      - Launch: reference/launch_api.md
+      - LLM: reference/llm_api.md
+      - Embeddings: reference/embed_api.md
+  - Examples: examples.md
