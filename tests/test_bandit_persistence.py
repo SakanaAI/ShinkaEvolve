@@ -2,9 +2,11 @@
 Test script to verify bandit state persistence works correctly.
 """
 
+from io import StringIO
 import numpy as np
 from pathlib import Path
 import tempfile
+from rich.console import Console
 from shinka.llm import AsymmetricUCB, ThompsonSampler, FixedSampler
 
 
@@ -152,6 +154,27 @@ def test_fixed_sampler_persistence():
         assert bandit._baseline == bandit2._baseline, "baseline mismatch!"
 
         print("✅ FixedSampler persistence test passed!")
+
+
+def test_asymmetric_ucb_print_summary_preserves_local_model_name():
+    arm_name = (
+        "local/example-model@https://api.example.test/v1?api_key_env=CUSTOM_API_KEY"
+    )
+    bandit = AsymmetricUCB(
+        arm_names=[arm_name],
+        exploration_coef=2.0,
+        epsilon=0.1,
+        auto_decay=0.95,
+    )
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, width=200)
+    bandit.print_summary(console=console)
+    output = buffer.getvalue()
+
+    assert "local/example-mod" in output
+    assert "api.example.test" not in output
+    assert "CUSTOM_API_KEY" not in output
 
 
 if __name__ == "__main__":
