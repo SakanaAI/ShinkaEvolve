@@ -16,12 +16,14 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Improved local async runtime scaling by launching evaluation subprocesses with the active project interpreter, capping per-process numeric-library thread fan-out, and reducing local monitor polling latency.
 - Moved prompt-fitness percentile recomputation off the prompt side-effect hot path and onto a debounced background task using fresh read-only database connections.
 - Updated the circle-packing scaling presets to run for `100` generations and reduced `max_patch_resamples` to `1` for the small / medium / large benchmark configs.
+- Changed `shinka_run` startup output to use a minimal `Shinka CLI` banner while other launch paths keep the full gradient banner.
 
 ### Fixed
 
 - Fixed adaptive proposal targeting so invalid `proposal_target_hard_cap` values below evaluation capacity no longer silently disable oversubscription.
 - Fixed prompt-percentile background refresh to avoid SQLite thread-affinity failures when recomputing prompt fitness during async runs.
 - Fixed Windows Unicode handling for async candidate-file I/O, diff summaries, and best-path exports by forcing UTF-8 reads and writes on LLM-generated artifacts.
+- Fixed bandit summary tables to preserve readable `local/<model>` names while stripping endpoint and API-key query details from local OpenAI-compatible model labels.
 
 ## 0.0.3 - 2026-04-04
 
