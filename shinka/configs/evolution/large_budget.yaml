@@ -35,5 +35,6 @@ evo_config:
     temperatures:
       - 0.0
   embedding_model: "text-embedding-3-small"
+  enable_controlled_oversubscription: false
   results_dir: ${output_dir}
   

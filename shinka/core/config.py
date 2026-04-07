@@ -47,7 +47,7 @@ class EvolutionConfig:
     use_text_feedback: bool = False
     max_api_costs: Optional[float] = None
     inspiration_sort_order: str = "ascending"
-    enable_controlled_oversubscription: bool = True
+    enable_controlled_oversubscription: bool = False
     proposal_target_mode: str = "adaptive"
     proposal_target_min_samples: int = 5
     proposal_target_ratio_cap: float = 2.0

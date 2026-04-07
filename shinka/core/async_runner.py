@@ -787,7 +787,7 @@ class ShinkaEvolveRunner:
     def _compute_proposal_pipeline_target(self) -> int:
         """Compute the bounded proposal target for controlled oversubscription."""
         base_target = self.max_evaluation_jobs
-        if not getattr(self.evo_config, "enable_controlled_oversubscription", True):
+        if not getattr(self.evo_config, "enable_controlled_oversubscription", False):
             return base_target
 
         buffer_max = max(0, getattr(self.evo_config, "proposal_buffer_max", 0))
