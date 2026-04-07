@@ -53,7 +53,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `novelty_llm_kwargs` | `dict` | `{}` | kwargs for novelty-judge LLM calls. |
 | `use_text_feedback` | `bool` | `False` | Include text feedback in mutation prompts. |
 | `max_api_costs` | `Optional[float]` | `None` | API budget cap in USD; stops new submissions at cap. |
-| `enable_controlled_oversubscription` | `bool` | `True` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
+| `enable_controlled_oversubscription` | `bool` | `False` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `str` | `'adaptive'` | Proposal target controller mode: `adaptive` or `fixed`. |
 | `proposal_target_min_samples` | `int` | `5` | Minimum completed timing samples required before adaptive targeting activates. |
 | `proposal_target_ratio_cap` | `float` | `2.0` | Maximum sampling/evaluation ratio used by the adaptive controller. |
@@ -198,7 +198,7 @@ evo_config:
   meta_rec_interval: 10
   embedding_model: "text-embedding-3-small"
   code_embed_sim_threshold: 0.99
-  enable_controlled_oversubscription: true
+  enable_controlled_oversubscription: false
   proposal_target_mode: adaptive
   proposal_target_min_samples: 5
   proposal_target_ratio_cap: 2.0
@@ -235,7 +235,7 @@ evo_config:
   meta_llm_kwargs:
     temperatures: [0.0]
   embedding_model: "text-embedding-3-small"
-  enable_controlled_oversubscription: true
+  enable_controlled_oversubscription: false
   proposal_target_mode: adaptive
   proposal_target_min_samples: 5
   proposal_target_ratio_cap: 2.0
