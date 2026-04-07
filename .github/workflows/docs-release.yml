@@ -1,9 +1,7 @@
-name: Docs Release
+name: Docs Deploy
 
 on:
-  release:
-    types:
-      - published
+  workflow_dispatch:
 
 permissions:
   contents: read
