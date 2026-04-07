@@ -4,6 +4,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ## 0.0.5 - Unreleased
 
+### Added
+
+- Added the GitHub Pages documentation website for `shinka-evolve`.
+
 ### Changed
 
 - Changed `shinka_run` startup output to use a minimal `Shinka CLI` banner while other launch paths keep the full gradient banner.

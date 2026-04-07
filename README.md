@@ -18,6 +18,8 @@
 
 ---
 
+**Apr 2026 Update**: Added the new [documentation website](https://sakanaai.github.io/ShinkaEvolve/) with guides for getting started, configuration, async evolution, local models, WebUI usage, and agentic workflows.
+
 **Mar 2026 Update**: Refactored API and unified runner `ShinkaEvolveRunner` (replacing `EvolutionRunner` and `AsyncEvolutionRunner`). You can now install `shinka` via PyPI and `uv`: `pip install shinka-evolve`.
 
 **Feb 2026 Update**: Added [agent skills](https://sakanaai.github.io/shinkaevolve/agentic_usage/) for using `shinka` within coding agents (Claude Code, Codex, etc.) for new task generation ([`shinka-setup`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-setup/SKILL.md)), converting your repo ([`shinka-convert`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-convert/SKILL.md)),  evolution ([`shinka-run`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-run/SKILL.md)), and result inspection ([`shinka-inspect`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/skills/shinka-inspect/SKILL.md)). Install them via `npx`:
