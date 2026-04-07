@@ -1,159 +1,125 @@
-# Getting Started with Shinka 🧬
+# Getting Started
 
-Shinka is a framework that combines Large Language Models (LLMs) with evolutionary algorithms to drive scientific discovery. This guide will help you get started with installing, configuring, and running your first evolutionary experiments.
+Shinka combines Large Language Models with evolutionary algorithms to drive
+scientific discovery. This guide covers installation, first run, and API usage.
 
-## Table of Contents
-
-1. [What is Shinka?](#what-is-shinka)
-2. [Installation](#installation)
-3. [Basic Usage](#basic-usage)
-4. [Examples](#examples)
-5. [Advanced Usage](#advanced-usage)
-6. [Troubleshooting](#troubleshooting)
-7. [Next Steps](#next-steps)
+---
 
 ## What is Shinka?
 
-Shinka enables automated exploration and improvement of scientific code by:
+Shinka enables automated exploration and improvement of scientific code:
 
-- **Evolutionary Search**: Maintains a population of programs that evolve over generations
-- **LLM-Powered Mutations**: Uses LLMs as intelligent mutation operators to suggest code improvements
-- **Parallel Evaluation**: Supports parallel evaluation locally or on Slurm clusters
-- **Knowledge Transfer**: Maintains archives of successful solutions for cross-pollination between evolutionary islands
-- **Scientific Focus**: Optimized for tasks with verifiable correctness and performance metrics
+- **Evolutionary Search** — Maintains a population of programs that evolve over generations
+- **LLM-Powered Mutations** — Uses LLMs as intelligent mutation operators for code improvement
+- **Parallel Evaluation** — Supports parallel evaluation locally or on SLURM clusters
+- **Knowledge Transfer** — Archives of successful solutions for cross-pollination between islands
+- **Scientific Focus** — Optimized for tasks with verifiable correctness and performance metrics
 
-The framework is particularly well-suited for optimization problems, algorithm design, and scientific computing tasks where you can define clear evaluation criteria.
+Best suited for optimization problems, algorithm design, and scientific computing
+tasks with clear evaluation criteria.
+
+---
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.10+ (Python 3.11 recommended)
+- Python 3.10+ (3.11 recommended)
 - Git
-- Either uv (recommended) or conda/pip for environment management
+- Either uv (recommended) or conda/pip
 
-### Option 1: Using uv (Recommended - Faster) ⚡
+### Option 1: uv (Recommended)
 
-[uv](https://docs.astral.sh/uv/) is a modern, fast Python package installer and environment manager that's significantly faster than pip.
+[uv](https://docs.astral.sh/uv/) is a modern, fast Python package installer.
 
-#### Step 1: Install uv
+#### Install uv
 
 ```bash
-# On macOS and Linux
+# macOS / Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# On Windows
+# Windows
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# Or using pip
+# Or via pip
 pip install uv
 ```
 
-#### Step 2: Clone and Install Shinka
+#### Clone and install
 
 ```bash
 git clone <shinka-repository-url>
 cd ShinkaEvolve
-
-# Create virtual environment with Python 3.11
 uv venv --python 3.11
-
-# Activate the environment
-source .venv/bin/activate  # On macOS/Linux
-# .venv\Scripts\activate   # On Windows
-
-# Install Shinka in development mode
+source .venv/bin/activate    # macOS/Linux
+# .venv\Scripts\activate     # Windows
 uv pip install -e .
 ```
 
-### Option 2: Using conda/pip (Traditional)
-
-#### Step 1: Create Environment
+### Option 2: conda/pip
 
 ```bash
 conda create -n shinka python=3.11
 conda activate shinka
-```
-
-#### Step 2: Clone and Install
-
-```bash
 git clone <shinka-repository-url>
 cd ShinkaEvolve
 pip install -e .
 ```
 
-### Step 3: Set Up Credentials
+### Set up credentials
 
-Create a `.env` file in the project root with your API keys:
+Create a `.env` file in the project root:
 
 ```bash
-# .env file
 OPENAI_API_KEY=sk-proj-your-key-here
-ANTHROPIC_API_KEY=your-anthropic-key-here  # Optional
-OPENROUTER_API_KEY=sk-or-v1-...             # Optional (for openrouter/* models)
-LOCAL_OPENAI_API_KEY=local                  # Optional (for local/*@http(s)://... models)
-CUSTOM_API_KEY=...                          # Optional (for local/*@...?...api_key_env=CUSTOM_API_KEY)
+ANTHROPIC_API_KEY=your-anthropic-key-here              # Optional
+OPENROUTER_API_KEY=sk-or-v1-...                        # Optional
+LOCAL_OPENAI_API_KEY=local                             # Optional
+CUSTOM_API_KEY=...                                     # Optional
 ```
 
-### Step 4: Verify Installation
+### Verify installation
 
 ```bash
-# Test the CLI launcher
 shinka_launch --help
-
-# Test Python imports
-python -c "from shinka.core import ShinkaEvolveRunner; print('Installation successful!')"
+python -c "from shinka.core import ShinkaEvolveRunner; print('OK')"
 ```
 
-### Step 5: Optional Agent Skills Install
+### Optional: Agent skills
 
-If you want Claude Code or Codex to use the bundled Shinka skills directly from this repo, install them with the upstream `skills` CLI:
+Install bundled Shinka skills for Claude Code or Codex:
 
 ```bash
 npx skills add SakanaAI/ShinkaEvolve --skill '*' -g -a claude-code -a codex -y
 ```
 
-This installs the repo skills without any manual file copying.
+See [Agentic Usage Guide](agentic_usage.md) for per-skill walkthroughs.
 
-For the full agent workflow and per-skill walkthroughs, see [Agentic Usage Guide](agentic_usage.md).
+### Advanced uv features
 
-### Advanced uv Features (Optional)
-
-If you're using uv, you can take advantage of additional features:
-
-#### Create a lockfile for reproducible environments:
 ```bash
-# Generate uv.lock file
+# Lockfile for reproducible environments
 uv pip compile pyproject.toml --output-file requirements.lock
-
-# Install from lockfile
 uv pip install -r requirements.lock
-```
 
-#### Install development dependencies:
-```bash
-# Install with dev dependencies (includes pytest, black, etc.)
+# Dev dependencies
 uv pip install -e ".[dev]"
-```
 
-#### Sync environment to exact specifications:
-```bash
-# Sync environment to match pyproject.toml exactly
+# Sync environment to exact spec
 uv pip sync pyproject.toml
 ```
 
+---
+
 ## Basic Usage
 
-### Quick Start with CLI
-
-The easiest way to get started is using the Hydra-based CLI launcher:
+### CLI Quick Start
 
 ```bash
-# Run circle packing with the shared default baseline
+# Default baseline
 shinka_launch
 
-# Run with custom parameters
+# Custom parameters
 shinka_launch \
     task=circle_packing \
     database=island_small \
@@ -162,9 +128,10 @@ shinka_launch \
     evo_config.num_generations=5
 ```
 
-The original shorthand group syntax still works (`task=...`, `database=...`, `evolution=...`, `cluster=...`, `variant=...`). Built-in presets ship inside the package under `shinka/configs/`.
+The shorthand group syntax (`task=...`, `database=...`, `evolution=...`,
+`cluster=...`, `variant=...`) maps to presets under `shinka/configs/`.
 
-To add your own Hydra presets from a PyPI install without cloning the repo, create your own config directory and pass `--config-dir`:
+Custom Hydra presets from a PyPI install:
 
 ```bash
 mkdir -p ~/my-shinka-configs/variant
@@ -174,10 +141,9 @@ shinka_launch --config-dir ~/my-shinka-configs variant=my_variant
 
 ### Agent-Friendly CLI (`shinka_run`)
 
-Use `shinka_run` when you want a direct task-directory launcher for agents.
+Direct task-directory launcher for agents:
 
 ```bash
-# Full CLI docs
 shinka_run --help
 
 # Minimal async run
@@ -186,7 +152,7 @@ shinka_run \
     --results_dir results/circle_agent_run \
     --num_generations 20
 
-# With namespaced keyword overrides
+# With namespaced overrides
 shinka_run \
     --task-dir examples/circle_packing \
     --results_dir results/circle_agent_custom \
@@ -196,26 +162,24 @@ shinka_run \
     --set job.time=00:10:00
 ```
 
-`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
-`--set` uses strict namespaces: `evo.<field>`, `db.<field>`, `job.<field>`.  
-`--results_dir` and `--num_generations` are always authoritative.
+| Constraint | Rule |
+|------------|------|
+| `--task-dir` | Must contain `evaluate.py` and `initial.<ext>` |
+| `--set` | Strict namespaces: `evo.<field>`, `db.<field>`, `job.<field>` |
+| `--results_dir` / `--num_generations` | Always authoritative |
 
-### Python API Usage
-
-For more control, you can use the Python API directly:
+### Python API
 
 ```python
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
-# Configure the job execution environment
 job_config = LocalJobConfig(
     eval_program_path="examples/circle_packing/evaluate.py",
-    activate_script=".venv/bin/activate",  # Optional: source uv/venv env for each job
+    activate_script=".venv/bin/activate",
 )
 
-# Configure the evolution database
 db_config = DatabaseConfig(
     archive_size=40,
     num_archive_inspirations=1,
@@ -223,7 +187,6 @@ db_config = DatabaseConfig(
     migration_interval=10,
 )
 
-# Configure the evolution parameters
 evo_config = EvolutionConfig(
     num_generations=50,
     llm_models=["gpt-5-mini", "gemini-3-flash-preview"],
@@ -237,12 +200,12 @@ runner = ShinkaEvolveRunner(
     job_config=job_config,
     db_config=db_config,
     max_evaluation_jobs=1,
-    max_proposal_jobs=1,  # sync-like proposal behavior
+    max_proposal_jobs=1,
 )
 runner.run()
 ```
 
-Dynamic backend model formats are also supported:
+Dynamic backend model formats:
 
 ```python
 evo_config = EvolutionConfig(
@@ -255,48 +218,48 @@ evo_config = EvolutionConfig(
 )
 ```
 
-For detailed configuration options and advanced settings, see the [Configuration Guide](configuration.md).
+See the [Configuration Guide](configuration.md) for detailed options.
 
-## Examples
+---
 
-### Circle Packing Example
+## Circle Packing Example
 
-This example demonstrates optimizing the arrangement of 26 circles in a unit square to maximize the sum of their radii.
+Recommended first example: optimize arrangement of 26 circles in a unit square
+to maximize the sum of radii.
 
-#### Files Structure
+### File structure
+
 ```
 examples/circle_packing/
-├── initial.py     # Starting solution
-├── evaluate.py    # Evaluation script
-└── run_evo.py     # Direct Python runner
+  initial.py       Seed solution
+  evaluate.py      Evaluation harness
+  run_evo.py       Direct Python runner
 ```
 
-#### Running the Example
+### Run it
 
 ```bash
-# Using CLI launcher (recommended)
 shinka_launch
 
-# Or with custom settings
+# Custom settings
 shinka_launch \
     task=circle_packing \
     cluster=local \
     evo_config.num_generations=20 \
     db_config.num_islands=4
 
-# Or just via the python API
+# Direct Python
 python run_evo.py
 ```
 
-#### Understanding the Initial Code Solution
+### Initial code structure
 
-The `initial.py` contains the code that will be evolved:
+The `EVOLVE-BLOCK-START/END` markers define mutable code regions:
 
 ```python
 # EVOLVE-BLOCK-START
 def construct_packing():
     """Construct arrangement of 26 circles in unit square"""
-    # This code will be modified by the LLM
     n = 26
     centers = np.zeros((n, 2))
     # ... placement logic ...
@@ -304,57 +267,45 @@ def construct_packing():
 # EVOLVE-BLOCK-END
 ```
 
-The `EVOLVE-BLOCK-START/END` markers define which parts of the code can be modified during evolution.
+### Evaluation script
 
-#### Understanding the Evaluation Script
-
-The `evaluate.py` script uses Shinka's `run_shinka_eval` function to test and score evolved solutions:
+Uses `run_shinka_eval` to test and score evolved solutions:
 
 ```python
 from shinka.core import run_shinka_eval
 
 def main(program_path: str, results_dir: str):
-    """Main evaluation function called by Shinka"""
-    
     metrics, correct, error_msg = run_shinka_eval(
         program_path=program_path,
         results_dir=results_dir,
-        experiment_fn_name="run_packing",        # Function to call in evolved code
-        num_runs=1,                              # Number of test runs
-        run_workers=1,                           # >1 enables per-run process parallelism
-        get_experiment_kwargs=get_kwargs_fn,     # Arguments for each run
-        validate_fn=validation_function,         # Validation logic
-        aggregate_metrics_fn=metrics_function,   # Metrics computation
+        experiment_fn_name="run_packing",
+        num_runs=1,
+        run_workers=1,
+        get_experiment_kwargs=get_kwargs_fn,
+        validate_fn=validation_function,
+        aggregate_metrics_fn=metrics_function,
     )
 ```
 
-`run_workers` controls only repeated runs *inside one evaluation script call*.  
-This is separate from evolution-level job concurrency (`max_evaluation_jobs`).  
-Early stopping (`early_stop_method`) is currently supported only with `run_workers=1`.
+`run_workers` controls repeated runs *inside one evaluation call* — separate
+from evolution-level concurrency (`max_evaluation_jobs`).
 
-**Key Components:**
+### Validation function
 
-**1. Validation Function** - Checks if solutions meet constraints:
 ```python
 def validate_packing(run_output):
     """Returns (is_valid: bool, error_msg: str or None)"""
     centers, radii, reported_sum = run_output
-    
-    # Check constraints (bounds, overlaps, etc.)
     if constraint_violated:
         return False, "Specific error description"
-    
-    return True, None  # Valid solution
+    return True, None
 ```
 
-**2. Metrics Aggregation Function** - Computes fitness and organizes results:
+### Metrics aggregation
+
 ```python
 def aggregate_metrics(results, results_dir):
-    """Returns metrics dictionary with required structure"""
-    
-    # Extract data from results
     centers, radii, reported_sum = results[0]
-    
     return {
         "combined_score": float(reported_sum),    # PRIMARY FITNESS (higher = better)
         "public": {                               # Visible in WebUI/logs
@@ -368,251 +319,153 @@ def aggregate_metrics(results, results_dir):
     }
 ```
 
-**What run_shinka_eval Returns:**
+### What `run_shinka_eval` returns
 
-The `run_shinka_eval` function returns three values:
+| Return value | Type | Description |
+|-------------|------|-------------|
+| `metrics` | `dict` | `combined_score` (fitness), `public` (WebUI), `private` (internal) |
+| `correct` | `bool` | `True` = valid, can reproduce; `False` = discarded |
+| `error_msg` | `str` or `None` | Error description if validation failed |
 
-1. **`metrics` (dict)**: Structured performance data
-   - `combined_score`: Primary fitness value (higher = better)
-   - `public`: Metrics shown in WebUI and logs
-   - `private`: Internal metrics for analysis
+**Public** metrics appear in WebUI and logs. **Private** metrics are for
+internal analysis and debugging only.
 
-2. **`correct` (bool)**: Whether solution passed validation
-   - `True`: Solution is valid, can reproduce
-   - `False`: Solution failed, will be discarded
+---
 
-3. **`error_msg` (str or None)**: Error description if validation failed
-
-**Public vs Private Metrics:**
-- **Public**: Displayed in WebUI, included in logs, used for monitoring
-- **Private**: Internal analysis, debugging, not shown in main interface
-
-
-
-### Other Available Examples
+## Other Examples
 
 | Example | Description | Use Case |
 |---------|-------------|----------|
-| **[Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing)** | Pack 26 circles in a unit square; maximize sum of radii | Geometric optimization / continuous search |
-| **[2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048)** | Evolve a policy to play 2048 under action/time constraints | Game-playing / heuristic optimization |
-| **[Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting)** | Optimize a Julia solution for repeated prime-count queries (\(\pi(n)\)) | Algorithmic optimization (correctness + runtime) |
-| **[Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator)** | Generate diverse outputs scored by LLM-as-a-judge novelty metrics | Open-ended exploration / creative generation |
-| **[Shinka Tutorial (Notebook)](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Guided walkthrough of setup + running/inspecting Circle Packing and Novelty Generator | Interactive onboarding / WebUI + configs |
+| [Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing) | 26 circles in unit square; maximize sum of radii | Geometric optimization |
+| [2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) | Evolve a policy to play 2048 | Game-playing / heuristic optimization |
+| [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize Julia prime-count queries | Algorithmic optimization |
+| [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Diverse outputs scored by LLM-as-a-judge | Open-ended exploration |
+| [Tutorial Notebook](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb) | Guided walkthrough of Circle Packing and Novelty Generator | Interactive onboarding |
 
-
+---
 
 ## Advanced Usage
 
-### Resuming Experiments
+### Resuming experiments
 
-If you need to pause and resume an evolutionary run, or extend a completed run with more generations, Shinka supports seamless resumption from existing results.
+When you specify an existing `results_dir` containing a database, Shinka will
+detect the previous run, restore the population and history, and resume from the
+last completed generation.
 
-#### How Resuming Works
-
-When you specify an existing `results_dir` that contains a database, Shinka will:
-- Detect the previous run automatically
-- Restore the population database and all program history
-- Resume meta-recommendations from the last checkpoint
-- Continue from the last completed generation
-
-#### Using the CLI (Hydra)
+#### CLI (Hydra)
 
 ```bash
-# Resume an existing run and extend to 50 generations
 shinka_launch \
     variant=default \
     evo_config.results_dir=results_20250101_120000 \
     evo_config.num_generations=50
-
-# Or with a custom task
-shinka_launch \
-    task=circle_packing \
-    database=island_small \
-    evolution=small_budget \
-    cluster=local \
-    evo_config.results_dir=path/to/previous/results \
-    evo_config.num_generations=100
 ```
 
-#### Using the Python API
+#### Python API
 
 ```python
-from shinka.core import ShinkaEvolveRunner, EvolutionConfig
-from shinka.database import DatabaseConfig
-from shinka.launch import LocalJobConfig
-
-# Point to existing results directory
 evo_config = EvolutionConfig(
-    num_generations=50,  # Extend to 50 total generations
-    results_dir="results_20250101_120000",  # Existing results
-    # ... other config parameters ...
+    num_generations=50,
+    results_dir="results_20250101_120000",
 )
-
-job_config = LocalJobConfig(
-    eval_program_path="examples/circle_packing/evaluate.py",
-)
-
-db_config = DatabaseConfig(
-    archive_size=20,
-    num_islands=2,
-)
-
 runner = ShinkaEvolveRunner(
     evo_config=evo_config,
-    job_config=job_config,
-    db_config=db_config,
-    max_proposal_jobs=1,  # sync-like proposal behavior
+    job_config=LocalJobConfig(eval_program_path="evaluate.py"),
+    db_config=DatabaseConfig(archive_size=20, num_islands=2),
+    max_proposal_jobs=1,
 )
 runner.run()
 ```
 
-**Important Notes:**
-- The `num_generations` parameter should be set to the **total** number of generations you want (not additional generations)
-- For example, if you completed 20 generations and want 30 more, set `num_generations=50`
-- The database configuration (number of islands, archive size, etc.) should match the original run
-- All previous progress, including the best solutions and meta-recommendations, will be preserved
+| Rule | Detail |
+|------|--------|
+| `num_generations` | Set to **total** desired, not additional (completed 20, want 30 more = set 50) |
+| DB config | Must match the original run |
+| Prior state | Best solutions and meta-recommendations are preserved |
 
-### Environment Management for Local Jobs
+### Environment management
 
-When running jobs locally, you have several options for managing Python environments:
+| Mode | Config |
+|------|--------|
+| Current env (default) | `LocalJobConfig(eval_program_path="evaluate.py")` |
+| Sourced env | `LocalJobConfig(..., activate_script=".venv/bin/activate")` |
+| Conda env | `LocalJobConfig(..., conda_env="my_project_env")` |
 
-#### Option 1: Use Current Environment (Default)
-```python
-job_config = LocalJobConfig(
-    eval_program_path="evaluate.py"
-)
-# Uses the currently active Python environment
-```
+`conda_env` and `activate_script` are mutually exclusive.
 
-#### Option 2: Source a Specific Python Environment Script
-```python
-job_config = LocalJobConfig(
-    eval_program_path="evaluate.py",
-    activate_script=".venv/bin/activate"  # Runs after `source .venv/bin/activate`
-)
-```
+### Creating custom tasks
 
-Use this for uv/venv-style workflows where the job should bootstrap from a sourceable activation script.
+1. **Define the problem** — task config in `shinka/configs/task/my_task.yaml`
+2. **Initial solution** — `initial.py` with `EVOLVE-BLOCK` markers
+3. **Evaluation script** — `evaluate.py` with validation logic
+4. **Variant config** — combine settings in `shinka/configs/variant/my_variant.yaml`
 
-#### Option 3: Use Specific Conda Environment
-```python
-job_config = LocalJobConfig(
-    eval_program_path="evaluate.py",
-    conda_env="my_project_env"  # Runs in specified conda environment
-)
-```
+See the [Configuration Guide](configuration.md) for parameter explanations.
 
-This is particularly useful when:
-- Different experiments require different dependency versions
-- You want to isolate evaluation environments from your main development environment
-- Testing compatibility across multiple Python/package versions
-- `conda_env` and `activate_script` should not be set together
-
-### Creating Custom Tasks
-
-1. **Define the Problem**: Create task config in `shinka/configs/task/my_task.yaml`
-2. **Initial Solution**: Write `initial.py` with `EVOLVE-BLOCK` markers
-3. **Evaluation Script**: Create `evaluate.py` with validation logic
-4. **Variant Config**: Combine settings in `shinka/configs/variant/my_variant.yaml`
-
-For detailed configuration options, parameter explanations, and advanced patterns, see the [Configuration Guide](configuration.md).
-
-### Code Evolution Animation
-
-Generate animations showing how code evolves:
+### Code evolution animation
 
 ```bash
 python code_path_anim.py --results_dir examples/circle_packing/results_20250101_120000
 ```
 
+---
+
 ## Troubleshooting
 
-### Common Issues
+### Import errors
 
-**1. Import Errors**
 ```bash
-# If using uv
-uv pip install -e .
-# If using pip
-pip install -e .
-# Check Python path
+uv pip install -e .          # or: pip install -e .
 python -c "import shinka; print(shinka.__file__)"
 ```
 
-**2. API Key Issues**
+### API key issues
+
 ```bash
-# Verify .env file exists and contains valid keys
 cat .env
-# Check environment variables
 python -c "import os; print(os.getenv('OPENAI_API_KEY'))"
-python -c "import os; print(os.getenv('OPENROUTER_API_KEY'))"
 ```
 
-**3. Evaluation Failures**
-- Check that your evaluation script has correct function signatures
-- Verify the `EVOLVE-BLOCK` markers are properly placed
-- Ensure the evaluation function returns expected data types
+### Evaluation failures
 
-**4. Memory Issues**
-- Reduce `max_evaluation_jobs` for local execution
+- Check evaluation script function signatures
+- Verify `EVOLVE-BLOCK` markers are placed correctly
+- Ensure evaluation function returns expected types
+
+### Memory issues
+
+- Reduce `max_evaluation_jobs`
 - Increase memory allocation for cluster jobs
 - Monitor database size and archive settings
 
-**5. uv-Specific Issues**
+### uv issues
+
 ```bash
-# Check uv version
 uv --version
-
-# Verify virtual environment is activated
-which python  # Should point to .venv/bin/python
-
-# Reset environment if needed
-rm -rf .venv
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e .
-
-# Check uv cache if having dependency issues
+which python           # Should point to .venv/bin/python
+rm -rf .venv && uv venv --python 3.11 && source .venv/bin/activate && uv pip install -e .
 uv cache clean
 ```
 
-**6. Conda Environment Issues (Local Jobs)**
+### Conda environment issues
+
 ```bash
-# Verify conda environment exists
 conda env list
-
-# Test conda environment works
 conda run -n my_env python --version
-
-# Check if required packages are installed in target environment
 conda run -n my_env python -c "import shinka; print('OK')"
-
-# Install shinka in specific conda environment
-conda activate my_env
-pip install -e .
-conda deactivate
 ```
 
-### Debug Mode
+### Debug mode
 
-Enable verbose logging:
 ```bash
 shinka_launch variant=my_variant verbose=true
 ```
 
-### Getting Help
-
-- Check the [examples](../examples/) directory for reference implementations
-- See the [Configuration Guide](configuration.md) for detailed parameter explanations
-- Examine the generated experiment logs in the results directory
+---
 
 ## Next Steps
 
-Now that you have Shinka running:
-
-1. **Try the Examples**: Run the circle packing example to see evolution in action
-2. **Explore the WebUI**: See the [WebUI Guide](webui.md) to visualize how solutions evolve
-3. **Create Custom Tasks**: Adapt the framework to your specific optimization problems
-4. **Scale Up**: Deploy on clusters for large-scale evolutionary experiments
-
-Happy evolving! 🧬
+1. **Run the examples** — Circle packing is the best starting point
+2. **Explore the WebUI** — see the [WebUI Guide](webui.md) for live visualization
+3. **Create custom tasks** — adapt the framework to your optimization problems
+4. **Scale up** — deploy on clusters for large-scale experiments

@@ -9,6 +9,8 @@ You can use:
 - dynamic OpenRouter model IDs
 - local OpenAI-compatible servers via inline endpoint URIs
 
+---
+
 ## Supported Model Name Formats
 
 ### 1) Known models (from `pricing.csv`)
@@ -69,6 +71,8 @@ CUSTOM_API_KEY=...
 
 Shinka strips `api_key_env` from the runtime base URL before creating the client.
 
+---
+
 ## Local Embeddings
 
 The same inline local format also works for `embedding_model`.
@@ -94,6 +98,8 @@ Common local embedding backends:
 - Ollama OpenAI-compatible endpoint:
   `local/embeddinggemma@http://localhost:11434/v1`
 
+---
+
 ## Notes
 
 - Dynamic OpenRouter/local model IDs are allowed even if not listed in `pricing.csv`.
@@ -102,6 +108,8 @@ Common local embedding backends:
 - Local embedding backends use the OpenAI-compatible `/v1/embeddings` path.
 - `api_key_env` must reference a single environment variable name, for example `CUSTOM_API_KEY`.
 - Structured output is not supported yet for `local/...@...` models.
+
+---
 
 ## Applies to Which Clients
 

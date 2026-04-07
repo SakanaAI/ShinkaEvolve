@@ -1,6 +1,8 @@
-# Shinka Configuration Guide ⚙️
+# Configuration Guide
 
 This document is synced to the current code + config files in this repo.
+
+---
 
 ## Default Layers (Source of Truth)
 
@@ -14,6 +16,8 @@ Configuration values are resolved in this order (later wins):
 3. Task/cluster/variant overrides from Hydra composition
 4. CLI overrides (`shinka_launch ... key=value`, or `shinka_run --set ...`)
 5. Authoritative `shinka_run` flags (`--results_dir`, `--num_generations`)
+
+---
 
 ## Runtime Config Objects
 
@@ -141,7 +145,9 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 
 `conda_env` and `activate_script` are mutually exclusive.
 
-## Hydra Presets In `shinka/configs/`
+---
+
+## Hydra Presets
 
 ### Evolution Presets
 
@@ -350,6 +356,8 @@ Only these task files currently exist:
 
 Both define task-specific `evaluate_function`, `distributed_job_config`, and `evo_config` task prompt/init path.
 
+---
+
 ## Current Hydra Composition Defaults
 
 `shinka/configs/config.yaml` defaults chain:
@@ -368,6 +376,8 @@ So default `shinka_launch` behavior is a neutral medium shared baseline on the
 `circle_packing` task with `variant=default`. Example-heavy stacks remain
 available via explicit variants such as `variant=circle_packing_example`.
 
+---
+
 ## `shinka_run` Config File Schema
 
 `shinka_run --config-fname <yaml>` accepts:
@@ -384,7 +394,9 @@ Precedence for `shinka_run`:
    - `--results_dir` always sets `evo.results_dir`
    - `--num_generations` always sets `evo.num_generations`
 
-## Current Config Directory Structure
+---
+
+## Config Directory Structure
 
 ```text
 shinka/configs/
@@ -409,6 +421,8 @@ shinka/configs/
     ├── default.yaml
     └── novelty_generator_example.yaml
 ```
+
+---
 
 ## Quick Valid Overrides
 

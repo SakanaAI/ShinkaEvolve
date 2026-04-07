@@ -3,6 +3,8 @@
 Shinka runs evolution through `ShinkaEvolveRunner`.
 Use proposal concurrency to control throughput and emulate prior sync behavior.
 
+---
+
 ## Quick Start
 
 ```python
@@ -34,6 +36,8 @@ In async contexts (for example notebooks/async apps), use:
 await runner.run_async()
 ```
 
+---
+
 ## Concurrency Knobs
 
 - `max_evaluation_jobs`: max concurrent evaluation jobs.
@@ -51,6 +55,8 @@ When sampling/proposal generation is slower than evaluation, set
 This allows a small backlog of proposals to keep evaluation workers fed without
 creating an unbounded queue.
 
+---
+
 ## ShinkaEvolveRunner Parameters
 
 ```python
@@ -65,6 +71,8 @@ ShinkaEvolveRunner(
 )
 ```
 
+---
+
 ## Recommended Settings
 
 | Scale | max_evaluation_jobs | max_proposal_jobs | Notes |
@@ -73,6 +81,8 @@ ShinkaEvolveRunner(
 | Small | 2-6 | eval + 1 | good default if eval waits on proposals |
 | Medium | 5-20 | eval + 1 to eval + 2 | use adaptive oversubscription |
 | Large | 20+ | eval + 2 to eval + 6 | keep bounded with caps |
+
+---
 
 ## Controlled Oversubscription
 
@@ -165,6 +175,8 @@ runner = ShinkaEvolveRunner(
     max_db_workers=4,
 )
 ```
+
+---
 
 ## Troubleshooting
 
