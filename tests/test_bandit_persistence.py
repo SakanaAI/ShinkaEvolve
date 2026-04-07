@@ -177,6 +177,23 @@ def test_asymmetric_ucb_print_summary_preserves_local_model_name():
     assert "CUSTOM_API_KEY" not in output
 
 
+def test_asymmetric_ucb_print_summary_preserves_openrouter_prefix():
+    arm_name = "openrouter/example-model"
+    bandit = AsymmetricUCB(
+        arm_names=[arm_name],
+        exploration_coef=2.0,
+        epsilon=0.1,
+        auto_decay=0.95,
+    )
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, width=200)
+    bandit.print_summary(console=console)
+    output = buffer.getvalue()
+
+    assert "openrouter/exampl" in output
+
+
 if __name__ == "__main__":
     test_asymmetric_ucb_persistence()
     test_thompson_sampler_persistence()

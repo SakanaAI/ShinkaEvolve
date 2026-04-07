@@ -59,6 +59,8 @@ def _format_arm_display_name(name: Arm, max_width: int) -> str:
 
     if local_match is not None:
         text = f"local/{local_match.api_model_name}"
+    elif name.startswith("openrouter/"):
+        text = name
     else:
         text = name.split("/")[-1]
 
