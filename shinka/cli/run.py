@@ -408,6 +408,7 @@ def _build_runner(
         "evo_config": evo_config,
         "job_config": job_config,
         "db_config": db_config,
+        "banner_style": "minimal",
         "verbose": args.verbose,
         "debug": args.debug,
         "init_program_str": init_program_str,

@@ -41,6 +41,7 @@ def test_launch_hydra_uses_async_runner(monkeypatch):
     assert _DummyRunner.last_kwargs["max_evaluation_jobs"] == 7
     assert _DummyRunner.last_kwargs["max_proposal_jobs"] == 3
     assert _DummyRunner.last_kwargs["max_db_workers"] == 5
+    assert _DummyRunner.last_kwargs.get("banner_style", "full") == "full"
 
 
 def test_default_launch_config_uses_neutral_shared_defaults():
