@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "skills": {
+    "shinka-convert": {
+      "source": "SakanaAI/ShinkaEvolve",
+      "sourceType": "github",
+      "computedHash": "de38bf8603767aefe73249bf5a8c5efc38df84c6d57120e1f06811bdf962b24b"
+    },
+    "shinka-inspect": {
+      "source": "SakanaAI/ShinkaEvolve",
+      "sourceType": "github",
+      "computedHash": "f4c3d044e60018d45332d827646ba8a37d4621d9abfd775c5fcb2b452260cf2f"
+    },
+    "shinka-run": {
+      "source": "SakanaAI/ShinkaEvolve",
+      "sourceType": "github",
+      "computedHash": "749c87d2ca9f9bf5ddeabe634eab19d442376127f318c6a96a7ddc497a072f41"
+    },
+    "shinka-setup": {
+      "source": "SakanaAI/ShinkaEvolve",
+      "sourceType": "github",
+      "computedHash": "30e224d01e8993e0e864e269837db88a5cb594e3d8c212db62d98ccdb720f7b9"
+    }
+  }
+}
