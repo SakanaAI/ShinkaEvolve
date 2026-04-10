@@ -185,9 +185,9 @@ class ShinkaEvolveRunner:
         db_config: DatabaseConfig,
         banner_style: BannerStyle = "full",
         verbose: bool = True,
-        max_evaluation_jobs: int = 2,
-        max_proposal_jobs: int = 1,
-        max_db_workers: int = 4,
+        max_evaluation_jobs: int = 4,
+        max_proposal_jobs: int = 6,
+        max_db_workers: int = 2,
         debug: bool = False,
         init_program_str: Optional[str] = None,
         evaluate_str: Optional[str] = None,
@@ -200,11 +200,11 @@ class ShinkaEvolveRunner:
             db_config: Database configuration
             verbose: Enable verbose logging
             max_evaluation_jobs: Maximum concurrent evaluation jobs
-                (defaults to 2)
-            max_proposal_jobs: Maximum concurrent proposal generation tasks
-                (defaults to 1)
-            max_db_workers: Maximum concurrent async DB worker threads
                 (defaults to 4)
+            max_proposal_jobs: Maximum concurrent proposal generation tasks
+                (defaults to 6)
+            max_db_workers: Maximum concurrent async DB worker threads
+                (defaults to 2)
             init_program_str: Optional string content for initial program
                 (will be saved to results dir and path updated in evo_config)
             evaluate_str: Optional string content for evaluate script

@@ -1,6 +1,6 @@
 max_evaluation_jobs: 6
-max_proposal_jobs: 1
-max_db_workers: 4
+max_proposal_jobs: 8
+max_db_workers: 2
 
 evo_config:
   _target_: shinka.core.EvolutionConfig
@@ -35,6 +35,6 @@ evo_config:
     temperatures:
       - 0.0
   embedding_model: "text-embedding-3-small"
-  enable_controlled_oversubscription: false
+  enable_controlled_oversubscription: true
   results_dir: ${output_dir}
   

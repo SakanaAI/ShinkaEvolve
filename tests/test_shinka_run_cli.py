@@ -424,7 +424,7 @@ def test_dataclass_defaults_match_shared_baseline():
     assert evo_config.meta_rec_interval == 10
     assert evo_config.embedding_model == "text-embedding-3-small"
     assert evo_config.code_embed_sim_threshold == pytest.approx(0.99)
-    assert evo_config.enable_controlled_oversubscription is False
+    assert evo_config.enable_controlled_oversubscription is True
 
     assert db_config.num_islands == 2
     assert db_config.archive_size == 40
