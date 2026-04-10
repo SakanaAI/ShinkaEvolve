@@ -374,7 +374,7 @@ def test_start_proposals_does_not_assign_generation_past_target():
     asyncio.run(_run())
 
 
-def test_generate_evolved_proposal_persists_failed_program_when_all_attempts_fail(tmp_path):
+def test_generate_evolved_proposal_returns_none_when_all_attempts_fail(tmp_path):
     async def _run():
         runner = _build_runner(
             async_db=SimpleNamespace(
@@ -398,22 +398,10 @@ def test_generate_evolved_proposal_persists_failed_program_when_all_attempts_fai
         )
         runner.llm_selection = None
         runner.novelty_judge = None
-        persisted_calls = []
-        generation_events = []
-
         async def _run_patch_async(*args, **kwargs):
             return None
 
-        async def _persist_failed_generation(**kwargs):
-            persisted_calls.append(kwargs)
-            return SimpleNamespace(id="persisted-proposal-failure")
-
-        async def _record_generation_event(**kwargs):
-            generation_events.append(kwargs)
-
         runner._run_patch_async = _run_patch_async
-        runner._persist_failed_generation = _persist_failed_generation
-        runner._record_generation_event = _record_generation_event
 
         exec_path = tmp_path / "proposal_failed.py"
         exec_path.write_text("print('candidate')\n")
@@ -432,19 +420,11 @@ def test_generate_evolved_proposal_persists_failed_program_when_all_attempts_fai
         )
 
         assert result is None
-        assert persisted_calls[0]["failure_stage"] == "proposal_failed"
-        assert generation_events == [
-            {
-                "generation": 4,
-                "status": "proposal_failed",
-                "details": {"persisted_program_id": "persisted-proposal-failure"},
-            }
-        ]
 
     asyncio.run(_run())
 
 
-def test_generate_evolved_proposal_persists_failed_program_when_submit_fails(tmp_path):
+def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
     async def _run():
         runner = _build_runner(
             async_db=SimpleNamespace(
@@ -472,26 +452,14 @@ def test_generate_evolved_proposal_persists_failed_program_when_submit_fails(tmp
         runner._get_code_embedding_async = lambda _path: asyncio.sleep(
             0, result=([0.1], 0.01)
         )
-        persisted_calls = []
-        generation_events = []
-
         async def _run_patch_async(*args, **kwargs):
             return ("diff", {"api_costs": 0.2, "system_prompt_id": "prompt-1"}, True)
 
         async def _submit_evaluation_job_with_slot(**kwargs):
             raise RuntimeError("submit boom")
 
-        async def _persist_failed_generation(**kwargs):
-            persisted_calls.append(kwargs)
-            return SimpleNamespace(id="persisted-submit-failure")
-
-        async def _record_generation_event(**kwargs):
-            generation_events.append(kwargs)
-
         runner._run_patch_async = _run_patch_async
         runner._submit_evaluation_job_with_slot = _submit_evaluation_job_with_slot
-        runner._persist_failed_generation = _persist_failed_generation
-        runner._record_generation_event = _record_generation_event
 
         exec_path = tmp_path / "submit_failed.py"
         exec_path.write_text("print('candidate')\n")
@@ -510,18 +478,6 @@ def test_generate_evolved_proposal_persists_failed_program_when_submit_fails(tmp
         )
 
         assert result is None
-        assert persisted_calls[0]["failure_stage"] == "evaluation_submit_failed"
-        assert persisted_calls[0]["failure_reason"] == "submit boom"
-        assert generation_events == [
-            {
-                "generation": 4,
-                "status": "evaluation_submit_failed",
-                "details": {
-                    "error": "submit boom",
-                    "persisted_program_id": "persisted-submit-failure",
-                },
-            }
-        ]
 
     asyncio.run(_run())
 
@@ -580,8 +536,6 @@ def test_retry_failed_db_jobs_refreshes_completion_progress():
 
         update_calls = 0
         progress_calls = 0
-        generation_events = []
-
         async def _process_single_job_safely(_job):
             return True
 
@@ -596,12 +550,6 @@ def test_retry_failed_db_jobs_refreshes_completion_progress():
         runner._process_single_job_safely = _process_single_job_safely
         runner._update_completed_generations = _update_completed_generations
         runner._record_progress = _record_progress
-        runner.async_db.record_generation_event_async = (
-            lambda **kwargs: asyncio.sleep(
-                0, result=generation_events.append(kwargs)
-            )
-        )
-
         job = AsyncRunningJob(
             job_id="job-retry",
             exec_fname="program.py",
@@ -621,14 +569,6 @@ def test_retry_failed_db_jobs_refreshes_completion_progress():
         assert slot_event.is_set() is True
         assert runner.failed_jobs_for_retry == {}
         assert runner.submitted_jobs == {}
-        assert generation_events == [
-            {
-                "generation": 7,
-                "status": "retry_success",
-                "source_job_id": "job-retry",
-                "details": {"db_retry_count": 0},
-            }
-        ]
 
     asyncio.run(_run())
 
@@ -1040,7 +980,7 @@ def test_job_monitor_preserves_jobs_added_during_status_poll():
     asyncio.run(_run())
 
 
-def test_job_monitor_releases_eval_slot_before_background_persistence_finishes():
+def test_job_monitor_processes_completed_jobs_inline():
     async def _run():
         runner = _build_runner(
             evo_config=SimpleNamespace(num_generations=10, max_api_costs=None),
@@ -1051,8 +991,6 @@ def test_job_monitor_releases_eval_slot_before_background_persistence_finishes()
             verbose=False,
         )
         runner.processing_lock = asyncio.Lock()
-        runner._completed_job_batch_tasks = set()
-        runner._completed_jobs_pending = 0
         runner._cancel_surplus_inflight_work = lambda: asyncio.sleep(0, result=None)
         runner._retry_failed_db_jobs = lambda: asyncio.sleep(0, result=None)
         runner._record_progress = lambda: None
@@ -1092,15 +1030,10 @@ def test_job_monitor_releases_eval_slot_before_background_persistence_finishes()
         await asyncio.wait_for(batch_started.wait(), timeout=0.2)
 
         assert runner.running_jobs == []
-        assert runner.evaluation_slot_pool.in_use == 0
-        assert runner._completed_jobs_pending == 1
-        assert job.completion_detected_at is not None
+        assert runner.evaluation_slot_pool.in_use == 1
 
         runner.should_stop.set()
         allow_finish.set()
         await asyncio.wait_for(monitor_task, timeout=0.2)
-        await runner._wait_for_completed_job_batches()
-
-        assert runner._completed_jobs_pending == 0
 
     asyncio.run(_run())

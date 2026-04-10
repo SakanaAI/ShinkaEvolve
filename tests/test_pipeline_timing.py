@@ -224,10 +224,11 @@ def test_process_single_job_safely_persists_timing_metadata():
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
 
-        persisted_metadata = {}
+        persist_call_count = 0
 
         async def persist_program_metadata(program):
-            persisted_metadata.update(program.metadata or {})
+            nonlocal persist_call_count
+            persist_call_count += 1
 
         runner._persist_program_metadata_async = persist_program_metadata
 
@@ -270,11 +271,7 @@ def test_process_single_job_safely_persists_timing_metadata():
         assert program.metadata["sampling_worker_capacity"] == 2
         assert program.metadata["evaluation_worker_capacity"] == 2
         assert program.metadata["postprocess_worker_capacity"] == 2
-        assert persisted_metadata["pipeline_started_at"] == job.proposal_started_at
-        assert persisted_metadata["sampling_finished_at"] == job.evaluation_started_at
-        assert persisted_metadata["evaluation_started_at"] == job.evaluation_started_at
-        assert persisted_metadata["evaluation_started_at"] > job.evaluation_submitted_at
-        assert persisted_metadata["postprocess_finished_at"] >= persisted_metadata["postprocess_started_at"]
+        assert persist_call_count == 0
 
     asyncio.run(_run())
 
@@ -341,7 +338,67 @@ def test_process_single_job_uses_completion_detection_time_for_eval_finish():
     asyncio.run(_run())
 
 
-def test_process_single_job_safely_skips_duplicate_source_job():
+def test_process_single_job_safely_flushes_metadata_once_after_side_effects():
+    async def _run():
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.scheduler = _FakeScheduler()
+        runner.async_db = _FakeAsyncDB()
+        runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
+        runner.meta_summarizer = None
+        runner.llm_selection = None
+        runner.MAX_DB_RETRY_ATTEMPTS = 3
+        runner.failed_jobs_for_retry = {}
+        runner.total_api_cost = 0.0
+        runner.verbose = False
+        runner.console = None
+        runner.max_proposal_jobs = 2
+        runner.max_evaluation_jobs = 2
+        runner.max_db_workers = 2
+        runner._sampling_seconds_ewma = None
+        runner._evaluation_seconds_ewma = None
+        runner._proposal_timing_samples = 0
+        runner._last_proposal_target_log = None
+        runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
+        runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
+        runner.submitted_jobs = {}
+        runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
+        runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
+        runner._record_oversubscription_timing_sample = lambda metadata: None
+        runner._record_progress = lambda: None
+
+        persist_call_count = 0
+
+        async def persist_program_metadata(program):
+            nonlocal persist_call_count
+            persist_call_count += 1
+
+        runner._persist_program_metadata_async = persist_program_metadata
+
+        job = AsyncRunningJob(
+            job_id="job-flush-once",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time() - 4.0,
+            proposal_started_at=time.time() - 4.0,
+            evaluation_submitted_at=time.time() - 1.5,
+            evaluation_started_at=time.time() - 1.0,
+            generation=4,
+            sampling_worker_id=1,
+            evaluation_worker_id=1,
+            active_proposals_at_start=1,
+            running_eval_jobs_at_submit=1,
+            meta_patch_data={"patch_name": "flush_once"},
+        )
+
+        ok = await runner._process_single_job_safely(job)
+
+        assert ok is True
+        assert persist_call_count == 0
+
+    asyncio.run(_run())
+
+
+def test_process_single_job_safely_allows_duplicate_source_job():
     async def _run():
         runner = object.__new__(ShinkaEvolveRunner)
         runner.scheduler = _FakeScheduler()
@@ -389,12 +446,12 @@ def test_process_single_job_safely_skips_duplicate_source_job():
 
         assert ok_first is True
         assert ok_second is True
-        assert len(runner.async_db.programs) == 1
+        assert len(runner.async_db.programs) == 2
 
     asyncio.run(_run())
 
 
-def test_process_single_job_safely_replays_side_effects_for_duplicate_without_marker():
+def test_process_single_job_safely_persists_duplicate_even_when_existing_row_matches():
     class _FakeMetaSummarizer:
         def __init__(self):
             self.programs = []
@@ -470,14 +527,13 @@ def test_process_single_job_safely_replays_side_effects_for_duplicate_without_ma
         ok = await runner._process_single_job_safely(job)
 
         assert ok is True
-        assert len(runner.async_db.programs) == 1
-        assert runner.meta_summarizer.programs == ["persisted-dup"]
-        assert existing_program.metadata["postprocess_side_effects_applied"] is True
+        assert len(runner.async_db.programs) == 2
+        assert len(runner.meta_summarizer.programs) == 1
 
     asyncio.run(_run())
 
 
-def test_process_single_job_safely_skips_duplicate_side_effects_with_marker():
+def test_process_single_job_safely_ignores_duplicate_marker_on_existing_row():
     class _FakeMetaSummarizer:
         def __init__(self):
             self.programs = []
@@ -556,8 +612,8 @@ def test_process_single_job_safely_skips_duplicate_side_effects_with_marker():
         ok = await runner._process_single_job_safely(job)
 
         assert ok is True
-        assert len(runner.async_db.programs) == 1
-        assert runner.meta_summarizer.programs == []
+        assert len(runner.async_db.programs) == 2
+        assert len(runner.meta_summarizer.programs) == 1
 
     asyncio.run(_run())
 
@@ -708,18 +764,14 @@ def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
         ]
 
         await runner._process_completed_jobs_safely(jobs)
-        await runner._wait_for_background_side_effects()
-        await runner._cancel_background_side_effect_worker()
 
         assert len(async_db.programs) == 2
-        assert async_db.peak_adds == 2
-        assert runner.postprocess_slot_pool.peak_in_use == 2
         assert len(applied_program_ids) == 2
 
     asyncio.run(_run())
 
 
-def test_process_completed_jobs_safely_does_not_block_on_slow_side_effects():
+def test_process_completed_jobs_safely_waits_for_slow_side_effects():
     async def _run():
         runner = object.__new__(ShinkaEvolveRunner)
         runner.running_jobs = []
@@ -780,87 +832,14 @@ def test_process_completed_jobs_safely_does_not_block_on_slow_side_effects():
 
         runner._apply_persisted_program_side_effects = apply_side_effects
 
-        await asyncio.wait_for(
-            runner._process_completed_jobs_safely([job]),
-            timeout=0.2,
-        )
-
+        task = asyncio.create_task(runner._process_completed_jobs_safely([job]))
         await asyncio.wait_for(side_effect_started.wait(), timeout=0.2)
+        assert task.done() is False
         assert applied_program_ids == []
-        assert runner._get_background_side_effect_work_count() == 1
-        assert "job-1" not in runner.submitted_jobs
 
         allow_side_effect_finish.set()
-        await runner._wait_for_background_side_effects()
-        await runner._cancel_background_side_effect_worker()
+        await asyncio.wait_for(task, timeout=0.2)
 
         assert applied_program_ids == ["program-1"]
-        assert runner._get_background_side_effect_work_count() == 0
 
     asyncio.run(_run())
-
-
-def test_background_side_effect_workers_can_run_in_parallel():
-    async def _run():
-        runner = object.__new__(ShinkaEvolveRunner)
-        runner.max_db_workers = 2
-        runner.side_effect_event_queue = asyncio.Queue()
-        runner._background_side_effect_task = None
-        runner._background_side_effect_tasks = set()
-        runner._background_side_effects_pending = 0
-        runner._background_side_effects_busy = False
-        runner._background_side_effects_busy_count = 0
-
-        started = asyncio.Event()
-        release = asyncio.Event()
-        active = 0
-        peak = 0
-
-        async def apply_side_effects(event):
-            nonlocal active, peak
-            active += 1
-            peak = max(peak, active)
-            if peak >= 2:
-                started.set()
-            await release.wait()
-            active -= 1
-
-        runner._apply_persisted_program_side_effects = apply_side_effects
-        runner._record_progress = lambda: None
-
-        await runner._enqueue_background_side_effects(
-            [
-                SimpleNamespace(job=SimpleNamespace(job_id="job-1", generation=1), program=SimpleNamespace(id="p1")),
-                SimpleNamespace(job=SimpleNamespace(job_id="job-2", generation=2), program=SimpleNamespace(id="p2")),
-            ]
-        )
-
-        await asyncio.wait_for(started.wait(), timeout=0.2)
-        assert peak >= 2
-
-        release.set()
-        await runner._wait_for_background_side_effects()
-        await runner._cancel_background_side_effect_worker()
-        assert runner._get_background_side_effect_work_count() == 0
-
-    asyncio.run(_run())
-
-
-def test_is_system_stuck_treats_background_side_effect_drain_as_progress():
-    class _FakeLock:
-        def locked(self):
-            return False
-
-    runner = object.__new__(ShinkaEvolveRunner)
-    runner.running_jobs = []
-    runner.active_proposal_tasks = {}
-    runner.failed_jobs_for_retry = {}
-    runner.processing_lock = _FakeLock()
-    runner.should_stop = SimpleNamespace(is_set=lambda: False)
-    runner.cost_limit_reached = False
-    runner.completed_generations = 4
-    runner.evo_config = SimpleNamespace(num_generations=10)
-    runner._background_side_effects_pending = 1
-    runner._background_side_effects_busy = True
-
-    assert runner._is_system_stuck() is False

@@ -599,24 +599,6 @@ class AsyncProgramDatabase:
                         getattr(self.sync_db, "display_console", None)
                     )
 
-                source_job_id = None
-                source_job_id_registered = False
-                if isinstance(program.metadata, dict):
-                    source_job_id = program.metadata.get("source_job_id")
-                if isinstance(source_job_id, str) and source_job_id:
-                    with self._source_job_id_lock:
-                        if (
-                            source_job_id in self._in_flight_source_job_ids
-                            or thread_db.has_program_with_source_job_id(source_job_id)
-                        ):
-                            logger.info(
-                                "Skipping duplicate persisted job for source_job_id=%s",
-                                source_job_id,
-                            )
-                            return False
-                        self._in_flight_source_job_ids.add(source_job_id)
-                        source_job_id_registered = True
-
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters
                 thread_db._recompute_embeddings_and_clusters = lambda: None
@@ -630,9 +612,6 @@ class AsyncProgramDatabase:
                     self._merge_runtime_metadata_from_db(thread_db)
                     return True
                 finally:
-                    if source_job_id_registered:
-                        with self._source_job_id_lock:
-                            self._in_flight_source_job_ids.discard(source_job_id)
                     # Restore original methods
                     thread_db._recompute_embeddings_and_clusters = (
                         original_embedding_method
@@ -685,6 +664,35 @@ class AsyncProgramDatabase:
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self.write_executor, run_maintenance_sync)
+
+    async def update_program_metadata_async(
+        self,
+        program_id: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Persist program metadata on the dedicated writer lane."""
+
+        def update_metadata_sync():
+            thread_db = None
+            try:
+                thread_db = ProgramDatabase(
+                    self.sync_db.config,
+                    embedding_model=self.sync_db.embedding_model,
+                )
+                payload = json.dumps(metadata)
+                thread_db.cursor.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (payload, program_id),
+                )
+                thread_db.conn.commit()
+            finally:
+                if thread_db is not None:
+                    thread_db.close()
+
+        import json
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self.write_executor, update_metadata_sync)
 
     def _schedule_embedding_recomputation(self):
         """Schedule embedding recomputation as a background task."""

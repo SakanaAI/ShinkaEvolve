@@ -53,7 +53,6 @@ from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
     with_pipeline_timing,
-    with_side_effect_timing,
 )
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
@@ -548,6 +547,8 @@ class ShinkaEvolveRunner:
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Best-effort durable generation event logging."""
+        if not getattr(self, "enable_deadlock_debugging", False):
+            return
         if not hasattr(self.async_db, "record_generation_event_async"):
             return
 
@@ -1973,8 +1974,6 @@ class ShinkaEvolveRunner:
 
                     self.running_jobs = still_running + concurrently_added_jobs
 
-                # Hand completed jobs off to background persistence so status polling
-                # stays responsive at high concurrency.
                 if completed_jobs:
                     if self.verbose:
                         job_gens = [job.generation for job in completed_jobs]
@@ -1994,9 +1993,85 @@ class ShinkaEvolveRunner:
                             f"gens {job_gens}{cost_info}"
                         )
 
-                    self._mark_surplus_completed_jobs_for_discard(completed_jobs)
-                    await self._mark_completed_jobs_detected(completed_jobs)
-                    self._schedule_completed_jobs_for_processing(completed_jobs)
+                    async with self.processing_lock:
+                        old_retry_count = len(self.failed_jobs_for_retry)
+                        self._mark_surplus_completed_jobs_for_discard(completed_jobs)
+                        await self._process_completed_jobs_safely(completed_jobs)
+                        old_completed = self.completed_generations
+                        await self._update_completed_generations()
+
+                        if self.verbose:
+                            if self.completed_generations != old_completed:
+                                if self.evo_config.max_api_costs is not None:
+                                    cost_str = (
+                                        f"${self.total_api_cost:.4f}/"
+                                        f"${self.evo_config.max_api_costs:.2f}"
+                                    )
+                                    cost_pct = (
+                                        self.total_api_cost
+                                        / self.evo_config.max_api_costs
+                                    ) * 100
+                                    cost_info = f" (cost: {cost_str}, {cost_pct:.1f}%)"
+                                else:
+                                    cost_info = f" (cost: ${self.total_api_cost:.4f})"
+
+                                logger.info(
+                                    f"✅ Completed generations updated: "
+                                    f"{old_completed} -> {self.completed_generations}"
+                                    f"{cost_info}"
+                                )
+                            else:
+                                retry_count = len(self.failed_jobs_for_retry)
+                                new_retries = retry_count - old_retry_count
+                                running_count = len(self.running_jobs)
+                                at_target = (
+                                    self.completed_generations
+                                    >= self.evo_config.num_generations
+                                )
+
+                                if at_target:
+                                    logger.debug(
+                                        f"📊 Completed generations at target: "
+                                        f"{self.completed_generations}"
+                                    )
+                                elif new_retries > 0:
+                                    if self.evo_config.max_api_costs is not None:
+                                        cost_str = (
+                                            f"${self.total_api_cost:.4f}/"
+                                            f"${self.evo_config.max_api_costs:.2f}"
+                                        )
+                                        cost_pct = (
+                                            self.total_api_cost
+                                            / self.evo_config.max_api_costs
+                                        ) * 100
+                                        cost_info = (
+                                            f", cost: {cost_str} ({cost_pct:.1f}%)"
+                                        )
+                                    else:
+                                        cost_info = (
+                                            f", cost: ${self.total_api_cost:.4f}"
+                                        )
+
+                                    logger.info(
+                                        f"📊 Completed generations: "
+                                        f"{self.completed_generations} "
+                                        f"({new_retries} new jobs in retry queue, "
+                                        f"{retry_count} total pending retry"
+                                        f"{cost_info})"
+                                    )
+                                elif retry_count > 0 or running_count > 0:
+                                    logger.debug(
+                                        f"📊 Completed generations: "
+                                        f"{self.completed_generations} "
+                                        f"(running={running_count}, "
+                                        f"retry={retry_count})"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"⚠️  Completed generations unchanged "
+                                        f"after processing jobs: "
+                                        f"{self.completed_generations}"
+                                    )
 
                     # Record progress when jobs complete
                     self._record_progress()
@@ -2045,7 +2120,6 @@ class ShinkaEvolveRunner:
                         if (
                             len(self.running_jobs) == 0
                             and len(self.active_proposal_tasks) == 0
-                            and not self._has_persistence_work_in_progress()
                         ):
                             # Final retry attempt for any remaining failed jobs
                             # before cost-limit shutdown
@@ -2115,7 +2189,6 @@ class ShinkaEvolveRunner:
                     self.completed_generations >= self.evo_config.num_generations
                     and len(self.running_jobs) == 0
                     and len(self.active_proposal_tasks) == 0
-                    and not self._has_persistence_work_in_progress()
                 ):
                     # Final retry attempt for any remaining failed jobs
                     # before shutdown
@@ -2367,8 +2440,8 @@ class ShinkaEvolveRunner:
         # Count all proposal attempts (including failures)
         self.total_proposals_generated += 1
         proposal_started_at = time.time()
-        sampling_worker_id = await self.sampling_slot_pool.acquire()
-        active_proposals_at_start = self.sampling_slot_pool.in_use
+        sampling_worker_id = None
+        active_proposals_at_start = len(self.active_proposal_tasks)
         try:
             if self.verbose:
                 logger.info(f"Generating proposal for generation {generation}")
@@ -2481,7 +2554,7 @@ class ShinkaEvolveRunner:
         meta_summary: Optional[str],
         meta_scratch: Optional[str],
         proposal_started_at: float,
-        sampling_worker_id: int,
+        sampling_worker_id: Optional[int],
         active_proposals_at_start: int,
     ) -> Optional[AsyncRunningJob]:
         """Generate an evolved proposal through the full pipeline."""
@@ -2671,19 +2744,14 @@ class ShinkaEvolveRunner:
                 )
                 meta_patch_data["novelty_explanation"] = novelty_explanation
 
-            evaluation_worker_id = None
             try:
-                (
-                    job_id,
-                    evaluation_worker_id,
-                    evaluation_submitted_at,
-                    evaluation_started_at,
-                    running_eval_jobs_at_submit,
-                ) = await self._submit_evaluation_job_with_slot(
-                    exec_fname=exec_fname,
-                    results_dir=results_dir,
-                    sampling_worker_id=sampling_worker_id,
+                job_id = await self.scheduler.submit_async_nonblocking(
+                    exec_fname, results_dir
                 )
+                evaluation_submitted_at = time.time()
+                evaluation_started_at = evaluation_submitted_at
+                evaluation_worker_id = None
+                running_eval_jobs_at_submit = len(self.running_jobs) + 1
 
                 # Create running job
                 running_job = AsyncRunningJob(
@@ -2718,6 +2786,24 @@ class ShinkaEvolveRunner:
                 # Update average proposal cost for in-flight estimation
                 self._update_avg_proposal_cost(proposal_total_cost)
 
+                while len(self.running_jobs) >= self.max_evaluation_jobs:
+                    if self.verbose:
+                        logger.info(
+                            f"⏳ Waiting for evaluation slot: {len(self.running_jobs)}/{self.max_evaluation_jobs} "
+                            f"jobs running, gen {generation} proposal ready"
+                        )
+                    await asyncio.sleep(0.5)
+
+                    if self.should_stop.is_set():
+                        logger.warning(
+                            f"System shutting down, cancelling job for gen {generation}"
+                        )
+                        try:
+                            await self.scheduler.cancel_job_async(job_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to cancel job during shutdown: {e}")
+                        return None
+
                 # Track job in both running list and submitted registry
                 self.running_jobs.append(running_job)
                 self.submitted_jobs[str(job_id)] = running_job
@@ -2748,67 +2834,11 @@ class ShinkaEvolveRunner:
                 return running_job
 
             except Exception as e:
-                await self.evaluation_slot_pool.release(evaluation_worker_id)
                 logger.error(f"Error submitting job: {e}")
-                failed_program = await self._persist_failed_generation(
-                    generation=generation,
-                    exec_fname=exec_fname,
-                    proposal_started_at=proposal_started_at,
-                    sampling_worker_id=sampling_worker_id,
-                    active_proposals_at_start=active_proposals_at_start,
-                    parent_program=parent_program,
-                    archive_programs=archive_programs,
-                    top_k_programs=top_k_programs,
-                    code_diff=code_diff,
-                    meta_patch_data=meta_patch_data,
-                    code_embedding=code_embedding,
-                    embed_cost=embed_cost,
-                    novelty_cost=novelty_total_cost,
-                    api_costs=api_costs,
-                    failure_stage="evaluation_submit_failed",
-                    failure_reason=str(e),
-                )
-                await self._record_generation_event(
-                    generation=generation,
-                    status="evaluation_submit_failed",
-                    details={
-                        "error": str(e),
-                        "persisted_program_id": (
-                            failed_program.id if failed_program is not None else None
-                        ),
-                    },
-                )
                 return None
 
         logger.warning(
             f"Failed to generate proposal for generation {generation} after all attempts"
-        )
-        failed_program = await self._persist_failed_generation(
-            generation=generation,
-            exec_fname=exec_fname,
-            proposal_started_at=proposal_started_at,
-            sampling_worker_id=sampling_worker_id,
-            active_proposals_at_start=active_proposals_at_start,
-            parent_program=parent_program,
-            archive_programs=archive_programs,
-            top_k_programs=top_k_programs,
-            code_diff=code_diff,
-            meta_patch_data=meta_patch_data,
-            code_embedding=code_embedding,
-            embed_cost=embed_cost,
-            novelty_cost=novelty_total_cost,
-            api_costs=api_costs,
-            failure_stage="proposal_failed",
-            failure_reason="LLM failed to generate a valid proposal after all attempts",
-        )
-        await self._record_generation_event(
-            generation=generation,
-            status="proposal_failed",
-            details={
-                "persisted_program_id": (
-                    failed_program.id if failed_program is not None else None
-                )
-            },
         )
         return None
 
@@ -3340,6 +3370,12 @@ class ShinkaEvolveRunner:
         if not program.metadata:
             return
 
+        if hasattr(self.async_db, "update_program_metadata_async"):
+            await self.async_db.update_program_metadata_async(
+                program.id, dict(program.metadata)
+            )
+            return
+
         def update_metadata():
             from shinka.database import ProgramDatabase
 
@@ -3552,62 +3588,7 @@ class ShinkaEvolveRunner:
                     f"⏭️  DISCARD SURPLUS: Skipping persistence for {job.job_id} "
                     f"(gen {job.generation}) after target was already reached"
                 )
-                await self._record_generation_event(
-                    generation=job.generation,
-                    status="discarded_surplus",
-                    source_job_id=job.job_id,
-                )
                 return CompletedJobPersistResult(job=job, success=True)
-
-            if await self.async_db.has_program_with_source_job_id_async(source_job_id):
-                logger.info(
-                    f"⏭️  SKIP DUPLICATE: Job {job.job_id} (gen {job.generation}) "
-                    "already persisted to database"
-                )
-                await self._record_generation_event(
-                    generation=job.generation,
-                    status="persist_duplicate_skip",
-                    source_job_id=job.job_id,
-                )
-
-                existing_program = await self.async_db.get_program_by_source_job_id_async(
-                    source_job_id
-                )
-                if existing_program is None:
-                    logger.warning(
-                        "Duplicate source_job_id %s was reported as persisted, "
-                        "but no matching program row could be loaded",
-                        source_job_id,
-                    )
-                    return CompletedJobPersistResult(job=job, success=True)
-
-                if (existing_program.metadata or {}).get(
-                    "postprocess_side_effects_applied"
-                ):
-                    logger.info(
-                        "⏭️  SKIP SIDE EFFECTS: Job %s (gen %s) already applied",
-                        job.job_id,
-                        job.generation,
-                    )
-                    return CompletedJobPersistResult(job=job, success=True)
-
-                recovered_finished_at = (
-                    job.completion_detected_at
-                    or (existing_program.metadata or {}).get("evaluation_finished_at")
-                    or job.results_retrieved_at
-                    or time.time()
-                )
-                return CompletedJobPersistResult(
-                    job=job,
-                    success=True,
-                    persisted_event=self._make_persisted_event(
-                        job=job,
-                        program=existing_program,
-                        evaluation_finished_at=recovered_finished_at,
-                        postprocess_started_at=time.time(),
-                        postprocess_finished_at=time.time(),
-                    ),
-                )
 
             # Get job results with timeout to prevent hanging
             try:
@@ -3756,12 +3737,6 @@ class ShinkaEvolveRunner:
                         f"Adding program to database for {job.job_id} timed out"
                     ),
                 )
-                await self._record_generation_event(
-                    generation=job.generation,
-                    status="persist_retry_queued",
-                    source_job_id=job.job_id,
-                    details={"reason": "db_timeout", "db_retry_count": job.db_retry_count},
-                )
                 return CompletedJobPersistResult(job=job, success=False)
             except Exception as e:
                 self._queue_failed_db_job(
@@ -3770,12 +3745,6 @@ class ShinkaEvolveRunner:
                     error_message=(
                         f"Failed to add program to database for {job.job_id}: {e}"
                     ),
-                )
-                await self._record_generation_event(
-                    generation=job.generation,
-                    status="persist_retry_queued",
-                    source_job_id=job.job_id,
-                    details={"reason": "db_error", "db_retry_count": job.db_retry_count},
                 )
                 return CompletedJobPersistResult(job=job, success=False)
 
@@ -3790,10 +3759,6 @@ class ShinkaEvolveRunner:
                 postprocess_started_at=postprocess_started_at,
                 postprocess_finished_at=postprocess_finished_at,
             )
-            try:
-                await self._persist_program_metadata_async(program)
-            except Exception as e:
-                logger.warning(f"Metadata persistence error for {job.job_id}: {e}")
             self._record_oversubscription_timing_sample(program.metadata or {})
 
             return CompletedJobPersistResult(
@@ -3815,12 +3780,6 @@ class ShinkaEvolveRunner:
             logger.error(
                 f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
             )
-            await self._record_generation_event(
-                generation=job.generation,
-                status="persist_failed",
-                source_job_id=job.job_id,
-                details={"error": str(e)},
-            )
             return CompletedJobPersistResult(job=job, success=False)
         finally:
             await self._release_evaluation_slot_once(job)
@@ -3832,28 +3791,14 @@ class ShinkaEvolveRunner:
         """Apply slower post-persistence side effects for one completed program."""
         job = persisted_event.job
         program = persisted_event.program
-        apply_started_at = time.time()
-        metadata = dict(program.metadata or {})
-        if metadata.get("postprocess_side_effects_applied"):
-            logger.info(
-                "⏭️  SIDE EFFECTS ALREADY APPLIED: skipping job %s (gen %s)",
-                job.job_id,
-                job.generation,
-            )
-            return
-
-        side_effects_applied = False
+        metadata_persist_needed = False
 
         try:
-            if (
-                not metadata.get("postprocess_db_maintenance_applied")
-                and hasattr(self.async_db, "run_program_maintenance_async")
-            ):
+            if hasattr(self.async_db, "run_program_maintenance_async"):
                 await self.async_db.run_program_maintenance_async(
                     program,
                     verbose=self.verbose,
                 )
-                metadata = dict(program.metadata or {})
 
             system_prompt_id = None
             if job.meta_patch_data:
@@ -3920,6 +3865,7 @@ class ShinkaEvolveRunner:
                                     if program.metadata is None:
                                         program.metadata = {}
                                     program.metadata["meta_cost"] = meta_cost
+                                    metadata_persist_needed = True
                 except Exception as e:
                     logger.warning(f"Meta summarizer error for {job.job_id}: {e}")
                     # Don't fail the whole job for meta summarizer issues
@@ -3951,23 +3897,14 @@ class ShinkaEvolveRunner:
                 logger.warning(f"Best solution update error for {job.job_id}: {e}")
                 # Don't fail the whole job for best solution update issues
 
-            side_effects_applied = True
-
         finally:
-            apply_finished_at = time.time()
-            program.metadata = with_side_effect_timing(
-                program.metadata,
-                apply_started_at=apply_started_at,
-                apply_finished_at=apply_finished_at,
-            )
-            if side_effects_applied:
-                program.metadata["postprocess_side_effects_applied"] = True
-            try:
-                await self._persist_program_metadata_async(program)
-            except Exception as e:
-                logger.warning(
-                    f"Apply-stage metadata persistence error for {job.job_id}: {e}"
-                )
+            if metadata_persist_needed:
+                try:
+                    await self._persist_program_metadata_async(program)
+                except Exception as e:
+                    logger.warning(
+                        f"Apply-stage metadata persistence error for {job.job_id}: {e}"
+                    )
 
         logger.info(
             "✅ JOB COMPLETE: Finished processing %s - program %s added (gen %s)",
@@ -4265,45 +4202,24 @@ class ShinkaEvolveRunner:
     async def _process_completed_jobs_safely(
         self, completed_jobs: List[AsyncRunningJob]
     ):
-        """Persist completed jobs concurrently, then apply slower side effects."""
-        persist_tasks = [
-            asyncio.create_task(
-                self._persist_completed_job(job),
-                name=f"persist_completed_{job.generation}",
-            )
-            for job in completed_jobs
-        ]
-
-        persist_results = await asyncio.gather(*persist_tasks, return_exceptions=True)
+        """Process completed jobs inline, closer to the amd_shinka execution model."""
         successfully_processed: List[AsyncRunningJob] = []
-        persisted_events: List[PersistedProgramEvent] = []
 
-        for job, result in zip(completed_jobs, persist_results):
-            if isinstance(result, Exception):
+        for job in completed_jobs:
+            try:
+                success = await self._process_single_job_safely(job)
+                if success:
+                    successfully_processed.append(job)
+                    if str(job.job_id) in self.submitted_jobs:
+                        del self.submitted_jobs[str(job.job_id)]
+                else:
+                    logger.error(
+                        f"❌ CRITICAL: Failed to process job {job.job_id} (gen {job.generation})"
+                    )
+            except Exception as e:
                 logger.error(
-                    "❌ CRITICAL: Exception processing job %s (gen %s): %s",
-                    job.job_id,
-                    job.generation,
-                    result,
+                    f"❌ CRITICAL: Exception processing job {job.job_id} (gen {job.generation}): {e}"
                 )
-                continue
-
-            if result.success:
-                successfully_processed.append(job)
-                self.submitted_jobs.pop(str(job.job_id), None)
-                if result.persisted_event is not None:
-                    persisted_events.append(result.persisted_event)
-                continue
-
-            logger.error(
-                "❌ CRITICAL: Failed to process job %s (gen %s)",
-                job.job_id,
-                job.generation,
-            )
-
-        await self._update_completed_generations()
-        ordered_events = sorted(persisted_events, key=lambda event: event.job.generation)
-        await self._enqueue_background_side_effects(ordered_events)
 
         logger.info(
             f"✅ Successfully processed {len(successfully_processed)}/{len(completed_jobs)} jobs"
@@ -4327,12 +4243,10 @@ class ShinkaEvolveRunner:
         if not persist_result.success:
             return False
 
-        self.submitted_jobs.pop(str(job.job_id), None)
         if persist_result.persisted_event is None:
             return True
 
-        await self._enqueue_background_side_effects([persist_result.persisted_event])
-        await self._wait_for_background_side_effects()
+        await self._apply_persisted_program_side_effects(persist_result.persisted_event)
         return True
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
@@ -4380,12 +4294,6 @@ class ShinkaEvolveRunner:
                     await self._update_completed_generations()
                     self._record_progress()
                     self.slot_available.set()
-                    await self._record_generation_event(
-                        generation=job.generation,
-                        status="retry_success",
-                        source_job_id=job.job_id,
-                        details={"db_retry_count": job.db_retry_count},
-                    )
                     logger.info(
                         f"✅ RETRY SUCCESS: Job {job.job_id} "
                         f"(gen {job.generation}) "
