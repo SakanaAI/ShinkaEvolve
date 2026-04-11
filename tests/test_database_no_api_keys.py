@@ -153,6 +153,37 @@ def test_async_db_can_fetch_program_by_source_job_id(monkeypatch):
     asyncio.run(_run())
 
 
+def test_async_db_can_record_attempt_events(monkeypatch):
+    """Attempt log writes should work without API credentials."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "attempt_log.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                await async_db.record_attempt_event_async(
+                    generation=7,
+                    stage="proposal",
+                    status="failed",
+                    details={"reason": "test"},
+                )
+                sync_db.cursor.execute(
+                    "SELECT generation, stage, status FROM attempt_log"
+                )
+                rows = [tuple(row) for row in sync_db.cursor.fetchall()]
+                assert rows == [(7, "proposal", "failed")]
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+
 def test_async_db_uses_fresh_writer_database_per_add(monkeypatch):
     """Multi-writer async DB should build a fresh writer DB per add operation."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

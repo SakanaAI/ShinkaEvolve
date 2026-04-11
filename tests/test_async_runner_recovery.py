@@ -657,6 +657,29 @@ def test_get_missing_persisted_generations_reports_budget_gap():
     asyncio.run(_run())
 
 
+def test_get_generations_without_program_due_to_proposal_failure_uses_attempt_log():
+    class _FakeCursor:
+        def __init__(self):
+            self.executed = None
+
+        def execute(self, query, params):
+            self.executed = (query, params)
+
+        def fetchall(self):
+            return [(2,), (5,), (8,)]
+
+    runner = _build_runner(
+        db=SimpleNamespace(cursor=_FakeCursor()),
+        evo_config=SimpleNamespace(num_generations=100),
+    )
+
+    assert runner._get_generations_without_program_due_to_proposal_failure() == [
+        2,
+        5,
+        8,
+    ]
+
+
 def test_submit_evaluation_job_acquires_slot_before_submitting():
     async def _run():
         events = []

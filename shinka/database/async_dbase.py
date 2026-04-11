@@ -861,6 +861,60 @@ class AsyncProgramDatabase:
             logger.error(f"Error in async source_job_id lookup: {e}")
             raise
 
+    async def record_attempt_event_async(
+        self,
+        generation: int,
+        stage: str,
+        status: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append one attempt lifecycle event to the durable SQLite log."""
+        op_id = self._debug_track_start(
+            "record_attempt_event_async",
+            generation=generation,
+            stage=stage,
+            status=status,
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def record_thread_safe():
+                conn = None
+                try:
+                    conn = sqlite3.connect(
+                        self.sync_db.config.db_path,
+                        check_same_thread=False,
+                        timeout=60.0,
+                    )
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                    conn.execute("PRAGMA busy_timeout = 60000;")
+                    payload = None
+                    if details is not None:
+                        import json
+
+                        payload = json.dumps(details, sort_keys=True)
+                    conn.execute(
+                        """
+                        INSERT INTO attempt_log (
+                            generation, stage, status, details, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (generation, stage, status, payload, time.time()),
+                    )
+                    conn.commit()
+                finally:
+                    if conn is not None:
+                        conn.close()
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(self.executor, record_thread_safe)
+            self._debug_track_end(op_id, success=True)
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async attempt event logging: {e}")
+            raise
+
     async def record_generation_event_async(
         self,
         generation: int,

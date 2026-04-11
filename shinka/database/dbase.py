@@ -499,6 +499,24 @@ class ProgramDatabase:
             ON generation_event_log(generation)
             """
         )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attempt_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generation INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_attempt_log_generation
+            ON attempt_log(generation)
+            """
+        )
 
         self.conn.commit()
 
@@ -567,6 +585,30 @@ class ProgramDatabase:
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Error during compute_time timing migration: {e}")
+
+        # Migration 4: Ensure attempt_log exists for proposal-failure accounting.
+        try:
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attempt_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    generation INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    details TEXT,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            self.cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_attempt_log_generation
+                ON attempt_log(generation)
+                """
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error during attempt_log migration: {e}")
 
     @db_retry()
     def _load_metadata_from_db(self):
@@ -661,6 +703,31 @@ class ProgramDatabase:
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (generation, status, source_job_id, payload, time.time()),
+        )
+        self.conn.commit()
+
+    @db_retry()
+    def record_attempt_event(
+        self,
+        generation: int,
+        stage: str,
+        status: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        payload = None
+        if details is not None:
+            payload = json.dumps(clean_nan_values(details), sort_keys=True)
+
+        self.cursor.execute(
+            """
+            INSERT INTO attempt_log (
+                generation, stage, status, details, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (generation, stage, status, payload, time.time()),
         )
         self.conn.commit()
 
@@ -2304,7 +2371,7 @@ class ProgramDatabase:
                 )
             logger.info(log_msg)
 
-    def print_summary(self, console=None) -> None:
+    def print_summary(self, console=None, total_program_target: Optional[int] = None) -> None:
         """Print a summary of the database contents using DatabaseDisplay."""
         if not hasattr(self, "_database_display"):
             self._database_display = DatabaseDisplay(
@@ -2320,7 +2387,10 @@ class ProgramDatabase:
 
         if hasattr(self._database_display, "set_default_console"):
             self._database_display.set_default_console(self.display_console)
-        self._database_display.print_summary(console)
+        self._database_display.print_summary(
+            console,
+            total_program_target=total_program_target,
+        )
 
     def _print_program_summary(self, program) -> None:
         """Print a rich summary of a newly added program using DatabaseDisplay."""

@@ -571,6 +571,33 @@ class ShinkaEvolveRunner:
                 e,
             )
 
+    async def _record_attempt_event(
+        self,
+        generation: int,
+        stage: str,
+        status: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort durable attempt logging outside the programs table."""
+        if not hasattr(self.async_db, "record_attempt_event_async"):
+            return
+
+        try:
+            await self.async_db.record_attempt_event_async(
+                generation=generation,
+                stage=stage,
+                status=status,
+                details=details,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record attempt event %s/%s for gen %s: %s",
+                stage,
+                status,
+                generation,
+                e,
+            )
+
     def _validate_concurrency_settings(
         self,
         max_evaluation_jobs: int,
@@ -2835,10 +2862,24 @@ class ShinkaEvolveRunner:
 
             except Exception as e:
                 logger.error(f"Error submitting job: {e}")
+                await self._record_attempt_event(
+                    generation=generation,
+                    stage="evaluation_submit",
+                    status="failed",
+                    details={"error": str(e)},
+                )
                 return None
 
         logger.warning(
             f"Failed to generate proposal for generation {generation} after all attempts"
+        )
+        await self._record_attempt_event(
+            generation=generation,
+            stage="proposal",
+            status="failed",
+            details={
+                "reason": "LLM failed to generate a valid proposal after all attempts"
+            },
         )
         return None
 
@@ -4899,11 +4940,23 @@ class ShinkaEvolveRunner:
 
         end_time = time.time()
         total_time = end_time - (self.start_time or end_time)
+        missing_generations = (
+            self._get_generations_without_program_due_to_proposal_failure()
+        )
 
         logger.info("=" * 80)
         logger.info("ASYNC EVOLUTION COMPLETED")
         logger.info("=" * 80)
-        logger.info(f"Total generations: {self.completed_generations}")
+        logger.info(f"Target generations: {self.evo_config.num_generations}")
+        logger.info(f"Stored programs: {self.completed_generations}")
+        logger.info(
+            "Generations without program (proposal generation exhausted retries): %s",
+            len(missing_generations),
+        )
+        logger.info(
+            "Generation IDs without program after proposal retries: %s",
+            missing_generations,
+        )
         logger.info(f"Total proposals generated: {self.total_proposals_generated}")
         logger.info(f"Total API cost: ${self.total_api_cost:.4f}")
 
@@ -4941,7 +4994,10 @@ class ShinkaEvolveRunner:
         if self.db:
             logger.info("-" * 40)
             self._log_timing_bottleneck_summary()
-            self.db.print_summary(console=self.console)
+            self.db.print_summary(
+                console=self.console,
+                total_program_target=self.evo_config.num_generations,
+            )
 
     def _log_timing_bottleneck_summary(self) -> None:
         """Print aggregate timing stats to identify queueing bottlenecks."""
@@ -5022,6 +5078,34 @@ class ShinkaEvolveRunner:
                 logger.info("%s: %s", label, top_rows)
         except Exception as e:
             logger.warning(f"Failed to compute timing bottleneck summary: {e}")
+
+    def _get_generations_without_program_due_to_proposal_failure(self) -> List[int]:
+        """Return target-range generation IDs that exhausted proposal retries and produced no program row."""
+        if not self.db or not getattr(self.db, "cursor", None):
+            return []
+
+        try:
+            self.db.cursor.execute(
+                """
+                SELECT DISTINCT attempt_log.generation
+                FROM attempt_log
+                WHERE attempt_log.stage = 'proposal'
+                  AND attempt_log.status = 'failed'
+                  AND attempt_log.generation < ?
+                  AND attempt_log.generation NOT IN (
+                      SELECT DISTINCT generation FROM programs
+                  )
+                ORDER BY attempt_log.generation
+                """,
+                (self.evo_config.num_generations,),
+            )
+            return [int(row[0]) for row in self.db.cursor.fetchall()]
+        except Exception as e:
+            logger.warning(
+                "Failed to load proposal-failure generations without program rows: %s",
+                e,
+            )
+            return []
 
     def _print_metadata_table(self, meta_data: dict, generation: int = None):
         """Display metadata in a formatted rich table."""
