@@ -134,10 +134,13 @@ class _FakeAsyncDB:
         self.seen_source_job_ids = set()
 
     async def add_program_async(self, program, **kwargs):
-        self.programs.append(program)
         source_job_id = (program.metadata or {}).get("source_job_id")
+        if source_job_id is not None and source_job_id in self.seen_source_job_ids:
+            return False
+        self.programs.append(program)
         if source_job_id is not None:
             self.seen_source_job_ids.add(source_job_id)
+        return True
 
     async def has_program_with_source_job_id_async(self, source_job_id):
         return source_job_id in self.seen_source_job_ids
@@ -269,7 +272,7 @@ def test_process_single_job_safely_persists_timing_metadata():
         assert program.metadata["sampling_worker_capacity"] == 2
         assert program.metadata["evaluation_worker_capacity"] == 2
         assert program.metadata["postprocess_worker_capacity"] == 2
-        assert persist_call_count == 0
+        assert persist_call_count == 1
 
     asyncio.run(_run())
 
@@ -391,12 +394,12 @@ def test_process_single_job_safely_flushes_metadata_once_after_side_effects():
         ok = await runner._process_single_job_safely(job)
 
         assert ok is True
-        assert persist_call_count == 0
+        assert persist_call_count == 1
 
     asyncio.run(_run())
 
 
-def test_process_single_job_safely_allows_duplicate_source_job():
+def test_process_single_job_safely_skips_duplicate_source_job():
     async def _run():
         runner = object.__new__(ShinkaEvolveRunner)
         runner.scheduler = _FakeScheduler()
@@ -444,12 +447,12 @@ def test_process_single_job_safely_allows_duplicate_source_job():
 
         assert ok_first is True
         assert ok_second is True
-        assert len(runner.async_db.programs) == 2
+        assert len(runner.async_db.programs) == 1
 
     asyncio.run(_run())
 
 
-def test_process_single_job_safely_persists_duplicate_even_when_existing_row_matches():
+def test_process_single_job_safely_reuses_existing_row_when_duplicate_matches():
     class _FakeMetaSummarizer:
         def __init__(self):
             self.programs = []
@@ -525,7 +528,7 @@ def test_process_single_job_safely_persists_duplicate_even_when_existing_row_mat
         ok = await runner._process_single_job_safely(job)
 
         assert ok is True
-        assert len(runner.async_db.programs) == 2
+        assert len(runner.async_db.programs) == 1
         assert len(runner.meta_summarizer.programs) == 1
 
     asyncio.run(_run())
@@ -610,8 +613,8 @@ def test_process_single_job_safely_ignores_duplicate_marker_on_existing_row():
         ok = await runner._process_single_job_safely(job)
 
         assert ok is True
-        assert len(runner.async_db.programs) == 2
-        assert len(runner.meta_summarizer.programs) == 1
+        assert len(runner.async_db.programs) == 1
+        assert len(runner.meta_summarizer.programs) == 0
 
     asyncio.run(_run())
 

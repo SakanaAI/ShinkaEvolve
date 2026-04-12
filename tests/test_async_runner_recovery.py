@@ -29,11 +29,15 @@ class _RecordingAsyncDB(_FakeAsyncDB):
 class _FakeSlotPool:
     def __init__(self):
         self.released = []
+        self.in_use = 0
 
     async def release(self, worker_id):
         self.released.append(worker_id)
+        if worker_id is not None and self.in_use > 0:
+            self.in_use -= 1
 
     async def acquire(self):
+        self.in_use += 1
         return 0
 
 
@@ -486,7 +490,7 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
     asyncio.run(_run())
 
 
-def test_generate_evolved_proposal_keeps_worker_ids_unset_on_submit(tmp_path):
+def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
     async def _run():
         events = []
         runner = _build_runner(
@@ -541,7 +545,7 @@ def test_generate_evolved_proposal_keeps_worker_ids_unset_on_submit(tmp_path):
         assert result is not None
         assert result.job_id == "job-123"
         assert result.sampling_worker_id == 3
-        assert result.evaluation_worker_id is None
+        assert result.evaluation_worker_id == 0
         assert result.running_eval_jobs_at_submit == 1
         assert events == [f"submit:{exec_path}:{results_dir}"]
 
@@ -777,6 +781,76 @@ def test_submit_evaluation_job_acquires_slot_before_submitting():
         assert job_id == "job-123"
         assert evaluation_worker_id == 7
         assert running_eval_jobs_at_submit == 1
+
+    asyncio.run(_run())
+
+
+def test_generate_evolved_proposal_uses_slot_reservation_helper():
+    async def _run():
+        helper_calls = []
+
+        async def sample_with_fix_mode_async(**kwargs):
+            return SimpleNamespace(id="parent", generation=0), [], [], False
+
+        async def submit_with_slot(exec_fname, results_dir, sampling_worker_id):
+            helper_calls.append((exec_fname, results_dir, sampling_worker_id))
+            return "job-123", 9, 10.0, 10.0, 1
+
+        async def fail_if_called(*args, **kwargs):
+            raise AssertionError("should reserve the slot via helper")
+
+        runner = _build_runner(
+            async_db=SimpleNamespace(
+                sample_with_fix_mode_async=sample_with_fix_mode_async
+            ),
+            scheduler=SimpleNamespace(submit_async_nonblocking=fail_if_called),
+            active_proposal_tasks={"task-1": object()},
+            evo_config=SimpleNamespace(
+                max_novelty_attempts=1,
+                max_patch_resamples=1,
+            ),
+            db_config=SimpleNamespace(
+                num_islands=1,
+                parent_selection_strategy="",
+            ),
+        )
+        runner.novelty_judge = None
+        runner.llm_selection = None
+        runner.total_api_cost = 0.0
+        runner._update_avg_proposal_cost = lambda cost: None
+        runner.slot_available = _FakeEvent()
+        runner.submitted_jobs = {}
+        runner.running_jobs = []
+        runner._submit_evaluation_job_with_slot = submit_with_slot
+
+        async def run_patch_async(*args, **kwargs):
+            return "diff", {"api_costs": 0.0}, True
+
+        async def get_code_embedding_async(exec_fname):
+            return [0.1], 0.0
+
+        runner._run_patch_async = run_patch_async
+        runner._get_code_embedding_async = get_code_embedding_async
+
+        job = await runner._generate_evolved_proposal(
+            generation=4,
+            task_id="task-1",
+            exec_fname="program.py",
+            results_dir="results",
+            meta_recs=None,
+            meta_summary=None,
+            meta_scratch=None,
+            proposal_started_at=time.time() - 1.0,
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+        )
+
+        assert helper_calls == [("program.py", "results", None)]
+        assert job is not None
+        assert job.evaluation_worker_id == 9
+        assert job.running_eval_jobs_at_submit == 1
+        assert runner.running_jobs == [job]
+        assert runner.submitted_jobs == {"job-123": job}
 
     asyncio.run(_run())
 
