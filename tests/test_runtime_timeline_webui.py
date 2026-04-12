@@ -46,6 +46,16 @@ def test_runtime_timeline_dedupes_source_jobs_and_deprioritizes_island_copies():
     assert "if (rowPriority > existingPriority)" in html
 
 
+def test_runtime_timeline_infers_stage_lanes_when_worker_ids_are_missing():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "function assignStageTimelineLaneIds(" in html
+    assert "fallbackLaneKey" in html
+    assert "row.samplingWorkerId || row.samplingLaneId" in html
+    assert "row.evaluationWorkerId || row.evaluationLaneId" in html
+    assert "row.postprocessWorkerId || row.postprocessLaneId" in html
+
+
 def test_throughput_tab_contains_runtime_and_utilization_sections():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 

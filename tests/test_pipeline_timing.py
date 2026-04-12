@@ -265,8 +265,6 @@ def test_process_single_job_safely_persists_timing_metadata():
         assert program.metadata["pipeline_seconds"] >= program.metadata["evaluation_seconds"]
         assert program.metadata["compute_time"] == program.metadata["evaluation_seconds"]
         assert program.metadata["timeline_lane_mode"] == "pool_slots"
-        assert program.metadata["sampling_worker_id"] == 2
-        assert program.metadata["evaluation_worker_id"] == 1
         assert program.metadata["postprocess_worker_id"] == 1
         assert program.metadata["sampling_worker_capacity"] == 2
         assert program.metadata["evaluation_worker_capacity"] == 2

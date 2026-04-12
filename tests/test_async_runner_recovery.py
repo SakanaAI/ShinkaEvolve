@@ -144,6 +144,9 @@ def _build_runner(**overrides):
     runner.max_evaluation_jobs = overrides.get("max_evaluation_jobs", 2)
     runner.max_proposal_jobs = overrides.get("max_proposal_jobs", 1)
     runner.max_db_workers = overrides.get("max_db_workers", 1)
+    runner.total_api_cost = overrides.get("total_api_cost", 0.0)
+    runner.completed_proposal_costs = overrides.get("completed_proposal_costs", [])
+    runner.avg_proposal_cost = overrides.get("avg_proposal_cost", 0.0)
     runner.processing_lock = overrides.get("processing_lock", _FakeLock())
     runner._evaluation_seconds_ewma = overrides.get("evaluation_ewma")
     runner.verbose = overrides.get("verbose", False)
@@ -343,7 +346,7 @@ def test_cleanup_proposal_task_state_releases_generation_and_slot():
 
         assert runner.assigned_generations == set()
         assert runner.active_proposal_tasks == {}
-        assert slot_pool.released == [3]
+        assert slot_pool.released == []
 
     asyncio.run(_run())
 
@@ -426,6 +429,10 @@ def test_generate_evolved_proposal_returns_none_when_all_attempts_fail(tmp_path)
 
 def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
     async def _run():
+        class _FailingSubmitScheduler:
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                raise RuntimeError("submit boom")
+
         runner = _build_runner(
             async_db=SimpleNamespace(
                 sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
@@ -445,21 +452,18 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
                 max_novelty_attempts=1,
                 max_patch_resamples=1,
             ),
-            evaluation_slot_pool=_FakeSlotPool(),
+            scheduler=_FailingSubmitScheduler(),
         )
         runner.llm_selection = None
         runner.novelty_judge = None
         runner._get_code_embedding_async = lambda _path: asyncio.sleep(
             0, result=([0.1], 0.01)
         )
+
         async def _run_patch_async(*args, **kwargs):
             return ("diff", {"api_costs": 0.2, "system_prompt_id": "prompt-1"}, True)
 
-        async def _submit_evaluation_job_with_slot(**kwargs):
-            raise RuntimeError("submit boom")
-
         runner._run_patch_async = _run_patch_async
-        runner._submit_evaluation_job_with_slot = _submit_evaluation_job_with_slot
 
         exec_path = tmp_path / "submit_failed.py"
         exec_path.write_text("print('candidate')\n")
@@ -478,6 +482,68 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
         )
 
         assert result is None
+
+    asyncio.run(_run())
+
+
+def test_generate_evolved_proposal_keeps_worker_ids_unset_on_submit(tmp_path):
+    async def _run():
+        events = []
+        runner = _build_runner(
+            async_db=SimpleNamespace(
+                sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
+                    0,
+                    result=(
+                        SimpleNamespace(id="parent-1", generation=0, combined_score=1.0),
+                        [],
+                        [],
+                        False,
+                    ),
+                )
+            ),
+            db=SimpleNamespace(island_manager=None),
+            evo_config=SimpleNamespace(
+                num_generations=5,
+                max_api_costs=None,
+                max_novelty_attempts=1,
+                max_patch_resamples=1,
+            ),
+            scheduler=_TrackedScheduler(events),
+        )
+        runner.llm_selection = None
+        runner.novelty_judge = None
+        runner._get_code_embedding_async = lambda _path: asyncio.sleep(
+            0, result=([0.1], 0.01)
+        )
+
+        async def _run_patch_async(*args, **kwargs):
+            return ("diff", {"api_costs": 0.2, "system_prompt_id": "prompt-1"}, True)
+
+        runner._run_patch_async = _run_patch_async
+
+        exec_path = tmp_path / "submit_success.py"
+        exec_path.write_text("print('candidate')\n")
+        results_dir = str(tmp_path / "results")
+
+        result = await runner._generate_evolved_proposal(
+            generation=4,
+            task_id="task-1",
+            exec_fname=str(exec_path),
+            results_dir=results_dir,
+            meta_recs=None,
+            meta_summary=None,
+            meta_scratch=None,
+            proposal_started_at=time.time(),
+            sampling_worker_id=3,
+            active_proposals_at_start=1,
+        )
+
+        assert result is not None
+        assert result.job_id == "job-123"
+        assert result.sampling_worker_id == 3
+        assert result.evaluation_worker_id is None
+        assert result.running_eval_jobs_at_submit == 1
+        assert events == [f"submit:{exec_path}:{results_dir}"]
 
     asyncio.run(_run())
 

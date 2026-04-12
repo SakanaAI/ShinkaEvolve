@@ -4454,8 +4454,6 @@ class ShinkaEvolveRunner:
         self.assigned_generations.discard(generation)
         if task_id in self.active_proposal_tasks:
             del self.active_proposal_tasks[task_id]
-        if sampling_worker_id is not None:
-            await self.sampling_slot_pool.release(sampling_worker_id)
 
     async def _release_evaluation_slot_once(self, job: AsyncRunningJob) -> None:
         """Release an evaluation slot at most once per job."""

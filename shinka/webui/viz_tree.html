@@ -15636,6 +15636,62 @@ console.error("[DEBUG] Error in processData:", error);
             return reconciledRows;
         }
 
+        function assignStageTimelineLaneIds(
+            rows,
+            { workerIdKey, startKey, endKey, fallbackLaneKey, capacity }
+        ) {
+            const assignedRows = rows.map(row => ({ ...row }));
+            const validRows = assignedRows
+                .filter(
+                    row => Number.isFinite(row[startKey]) && Number.isFinite(row[endKey])
+                )
+                .sort((a, b) => {
+                    if (a[startKey] !== b[startKey]) {
+                        return a[startKey] - b[startKey];
+                    }
+                    if (a[endKey] !== b[endKey]) {
+                        return a[endKey] - b[endKey];
+                    }
+                    if (a.generation !== b.generation) {
+                        return a.generation - b.generation;
+                    }
+                    return a.pipelineStartedAt - b.pipelineStartedAt;
+                });
+
+            const laneCount = Math.max(0, Math.floor(capacity || 0));
+            const laneEndTimes = Array.from(
+                { length: laneCount },
+                () => Number.NEGATIVE_INFINITY
+            );
+            const laneEpsilon = 1e-6;
+
+            validRows.forEach(row => {
+                const workerId = row[workerIdKey];
+                if (Number.isFinite(workerId) && workerId > 0) {
+                    const laneIndex = Math.floor(workerId) - 1;
+                    while (laneEndTimes.length <= laneIndex) {
+                        laneEndTimes.push(Number.NEGATIVE_INFINITY);
+                    }
+                    laneEndTimes[laneIndex] = row[endKey];
+                    row[fallbackLaneKey] = Math.floor(workerId);
+                    return;
+                }
+
+                let laneIndex = laneEndTimes.findIndex(
+                    laneEndTime => row[startKey] >= laneEndTime - laneEpsilon
+                );
+                if (laneIndex === -1) {
+                    laneIndex = laneEndTimes.length;
+                    laneEndTimes.push(row[endKey]);
+                } else {
+                    laneEndTimes[laneIndex] = row[endKey];
+                }
+                row[fallbackLaneKey] = laneIndex + 1;
+            });
+
+            return assignedRows;
+        }
+
         function getLegacyRuntimeTimelineRows(data) {
             const rows = getBaseRuntimeTimelineRows(data);
             if (rows.length === 0) return { rows: [], laneCount: 0 };
@@ -15692,11 +15748,47 @@ console.error("[DEBUG] Error in processData:", error);
                 rows = reconcileStageWorkerOverlaps(rows, stage);
             });
 
-            const capacities = {
+            let capacities = {
                 sampling: Math.max(0, ...rows.map(row => row.samplingWorkerCapacity || row.samplingWorkerId || 0)),
                 evaluation: Math.max(0, ...rows.map(row => row.evaluationWorkerCapacity || row.evaluationWorkerId || 0)),
                 postprocess: Math.max(0, ...rows.map(row => row.postprocessWorkerCapacity || row.postprocessWorkerId || 0))
             };
+
+            [
+                {
+                    workerIdKey: 'samplingWorkerId',
+                    startKey: 'samplingStartedAt',
+                    endKey: 'samplingFinishedAt',
+                    fallbackLaneKey: 'samplingLaneId',
+                    capacityKey: 'sampling'
+                },
+                {
+                    workerIdKey: 'evaluationWorkerId',
+                    startKey: 'evaluationStartedAt',
+                    endKey: 'evaluationFinishedAt',
+                    fallbackLaneKey: 'evaluationLaneId',
+                    capacityKey: 'evaluation'
+                },
+                {
+                    workerIdKey: 'postprocessWorkerId',
+                    startKey: 'postprocessStartedAt',
+                    endKey: 'postprocessFinishedAt',
+                    fallbackLaneKey: 'postprocessLaneId',
+                    capacityKey: 'postprocess'
+                }
+            ].forEach(stage => {
+                rows = assignStageTimelineLaneIds(rows, {
+                    workerIdKey: stage.workerIdKey,
+                    startKey: stage.startKey,
+                    endKey: stage.endKey,
+                    fallbackLaneKey: stage.fallbackLaneKey,
+                    capacity: capacities[stage.capacityKey]
+                });
+                capacities[stage.capacityKey] = Math.max(
+                    capacities[stage.capacityKey],
+                    ...rows.map(row => row[stage.fallbackLaneKey] || 0)
+                );
+            });
 
             if (capacities.sampling === 0 && capacities.evaluation === 0 && capacities.postprocess === 0) {
                 return null;
@@ -15813,7 +15905,7 @@ console.error("[DEBUG] Error in processData:", error);
                         startKey: 'samplingStartedAt',
                         endKey: 'samplingFinishedAt',
                         durationKey: 'samplingSeconds',
-                        laneLabel: row => row.samplingWorkerId ? `Sampling W${row.samplingWorkerId}` : null
+                        laneLabel: row => (row.samplingWorkerId || row.samplingLaneId) ? `Sampling W${row.samplingWorkerId || row.samplingLaneId}` : null
                     },
                     {
                         key: 'evaluation',
@@ -15822,7 +15914,7 @@ console.error("[DEBUG] Error in processData:", error);
                         startKey: 'evaluationStartedAt',
                         endKey: 'evaluationFinishedAt',
                         durationKey: 'evaluationSeconds',
-                        laneLabel: row => row.evaluationWorkerId ? `Evaluation W${row.evaluationWorkerId}` : null
+                        laneLabel: row => (row.evaluationWorkerId || row.evaluationLaneId) ? `Evaluation W${row.evaluationWorkerId || row.evaluationLaneId}` : null
                     },
                     {
                         key: 'postprocess',
@@ -15831,7 +15923,7 @@ console.error("[DEBUG] Error in processData:", error);
                         startKey: 'postprocessStartedAt',
                         endKey: 'postprocessFinishedAt',
                         durationKey: 'postprocessSeconds',
-                        laneLabel: row => row.postprocessWorkerId ? `Postprocess W${row.postprocessWorkerId}` : null
+                        laneLabel: row => (row.postprocessWorkerId || row.postprocessLaneId) ? `Postprocess W${row.postprocessWorkerId || row.postprocessLaneId}` : null
                     }
                 ];
 
