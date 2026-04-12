@@ -21,6 +21,11 @@ def _build_azure_endpoint() -> str:
     return endpoint + "openai/v1/"
 
 
+def _google_genai_timeout_ms() -> int:
+    """Convert the shared second-based timeout to google-genai milliseconds."""
+    return int(TIMEOUT * 1000)
+
+
 def get_client_llm(
     model_name: str, structured_output: bool = False
 ) -> Tuple[Any, str, str]:
@@ -81,7 +86,7 @@ def get_client_llm(
     elif provider == "google":
         client = genai.Client(
             api_key=os.environ["GEMINI_API_KEY"],
-            http_options=genai.types.HttpOptions(timeout=TIMEOUT),
+            http_options=genai.types.HttpOptions(timeout=_google_genai_timeout_ms()),
         )
         if structured_output:
             client = instructor.from_openai(
@@ -167,7 +172,7 @@ def get_async_client_llm(
     elif provider == "google":
         client = genai.Client(
             api_key=os.environ["GEMINI_API_KEY"],
-            http_options=genai.types.HttpOptions(timeout=TIMEOUT),
+            http_options=genai.types.HttpOptions(timeout=_google_genai_timeout_ms()),
         )
         if structured_output:
             raise ValueError("Gemini does not support structured output.")

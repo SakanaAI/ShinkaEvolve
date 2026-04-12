@@ -5,6 +5,10 @@ from shinka.llm.client import get_async_client_llm, get_client_llm
 from shinka.llm.constants import TIMEOUT
 
 
+def test_google_genai_timeout_is_in_milliseconds():
+    assert llm_client_module._google_genai_timeout_ms() == TIMEOUT * 1000
+
+
 def test_get_client_llm_dynamic_openrouter(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     client, model_name, provider = get_client_llm("openrouter/qwen/qwen3-coder")
@@ -67,7 +71,7 @@ def test_get_client_llm_gemini_sets_timeout(monkeypatch):
     assert provider == "google"
     assert model_name == "gemini-2.5-flash"
     assert captured_kwargs["api_key"] == "test-gemini-key"
-    assert captured_kwargs["http_options"].timeout == TIMEOUT
+    assert captured_kwargs["http_options"].timeout == TIMEOUT * 1000
 
 
 def test_get_async_client_llm_gemini_sets_timeout(monkeypatch):
@@ -85,7 +89,7 @@ def test_get_async_client_llm_gemini_sets_timeout(monkeypatch):
     assert provider == "google"
     assert model_name == "gemini-2.5-flash"
     assert captured_kwargs["api_key"] == "test-gemini-key"
-    assert captured_kwargs["http_options"].timeout == TIMEOUT
+    assert captured_kwargs["http_options"].timeout == TIMEOUT * 1000
 
 
 def test_get_client_llm_local_openai_uses_api_key_env_query_param(monkeypatch):
