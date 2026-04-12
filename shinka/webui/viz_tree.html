@@ -2251,43 +2251,51 @@
 
                 // Initialize the score type radio buttons
                 initializeScoreTypeListeners();
+
+                function activateRightTab(tabId) {
+                    const tabElement = document.querySelector(`.tab[data-tab="${tabId}"]`);
+                    const sectionElement = document.getElementById(tabId);
+                    if (!tabElement || !sectionElement) {
+                        return;
+                    }
+
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    tabElement.classList.add('active');
+
+                    document.querySelectorAll('.content-section').forEach(section => {
+                        section.classList.remove('active');
+                    });
+                    sectionElement.classList.add('active');
+
+                    saveState();
+
+                    if (tabId === 'agent-info' && !window.isResizing) {
+                        console.log("[DEBUG] Switching to Meta Info tab, redrawing charts");
+                        setTimeout(() => {
+                            createCharts(null);
+                        }, 100);
+                    }
+                    if (tabId === 'pareto-front') {
+                        updateParetoView();
+                    }
+                    if (tabId === 'analysis') {
+                        setTimeout(() => {
+                            updateAnalysisTab(window.selectedNodeId || null);
+                        }, 100);
+                    }
+                    if (tabId === 'throughput') {
+                        setTimeout(() => {
+                            updateThroughputTab(window.selectedNodeId || null);
+                        }, 100);
+                    }
+                }
+
+                window.activateRightTab = activateRightTab;
                 
                 // Add tab handling with state persistence
                 document.querySelectorAll('.tab').forEach(tab => {
                     tab.addEventListener('click', function() {
-                        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                        this.classList.add('active');
-                        
-                        const tabId = this.getAttribute('data-tab');
-                        document.querySelectorAll('.content-section').forEach(section => {
-                            section.classList.remove('active');
-                        });
-                        document.getElementById(tabId).classList.add('active');
-                        
-                        // Save state and update URL
-                        saveState();
-                        
-                        // Redraw charts if we're switching to the agent-info tab
-                        if (tabId === 'agent-info' && !window.isResizing) {
-                            console.log("[DEBUG] Switching to Meta Info tab, redrawing charts");
-                            // Small delay to ensure the tab is visible before redrawing charts
-                            setTimeout(() => {
-                                createCharts(null);
-                            }, 100);
-                        }
-                        if (tabId === 'pareto-front') {
-                            updateParetoView();
-                        }
-                        if (tabId === 'analysis') {
-                            setTimeout(() => {
-                                updateAnalysisTab(window.selectedNodeId || null);
-                            }, 100);
-                        }
-                        if (tabId === 'throughput') {
-                            setTimeout(() => {
-                                updateThroughputTab(window.selectedNodeId || null);
-                            }, 100);
-                        }
+                        activateRightTab(this.getAttribute('data-tab'));
                     });
                 });
                 
@@ -4011,11 +4019,13 @@ ${'='.repeat(80)}
                 updateMetaInfoTab(data);
                 updateParetoView();
                 
-                // Restore the right-side tab state instead of hardcoded click
-                if (activeRightTabId && document.querySelector(`.tab[data-tab="${activeRightTabId}"]`)) {
-                    document.querySelector(`.tab[data-tab="${activeRightTabId}"]`).click();
+                // Prefer the URL-selected right tab on initial hydration.
+                const urlRightTabId = new URLSearchParams(window.location.search).get('right_tab');
+                const rightTabIdToActivate = urlRightTabId || activeRightTabId || 'agent-info';
+                if (rightTabIdToActivate && document.querySelector(`.tab[data-tab="${rightTabIdToActivate}"]`)) {
+                    window.activateRightTab?.(rightTabIdToActivate);
                 } else {
-                    document.querySelector('.tab[data-tab="agent-info"]').click();
+                    window.activateRightTab?.('agent-info');
                 }
                 
                 updateScoreHeatbar();
@@ -4083,11 +4093,9 @@ ${'='.repeat(80)}
                         updateAnalysisTab(window.selectedNodeId || null);
                     }, 200);
                 }
-                if (document.getElementById('throughput') && document.getElementById('throughput').classList.contains('active')) {
-                    setTimeout(() => {
-                        updateThroughputTab(window.selectedNodeId || null);
-                    }, 200);
-                }
+                setTimeout(() => {
+                    updateThroughputTab(window.selectedNodeId || null);
+                }, 200);
             } catch (error) {
 console.error("[DEBUG] Error in processData:", error);
             }
@@ -9011,10 +9019,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 selectNodeById(selectedNodeId, true, false); // Don't force right tab switch
                                 // Restore right tab AFTER node selection
                                 if (rightTab) {
-                                    const tabElement = document.querySelector(`.tab[data-tab="${rightTab}"]`);
-                                    if (tabElement) {
-                                        setTimeout(() => tabElement.click(), 100);
-                                    }
+                                    setTimeout(() => window.activateRightTab?.(rightTab), 100);
                                 }
                             }, 500);
                         } else {
@@ -9025,10 +9030,7 @@ console.error("[DEBUG] Error in processData:", error);
                 } else {
                     // No node selected, just restore right tab
                     if (rightTab) {
-                        const tabElement = document.querySelector(`.tab[data-tab="${rightTab}"]`);
-                        if (tabElement) {
-                            setTimeout(() => tabElement.click(), 100);
-                        }
+                        setTimeout(() => window.activateRightTab?.(rightTab), 100);
                     }
                 }
                 
@@ -15932,24 +15934,17 @@ console.error("[DEBUG] Error in processData:", error);
                     const minStartMs = Math.min(...rows.map(row => row.pipelineStartedAt * 1000));
                     const maxEndMs = Math.max(...rows.map(row => row.postprocessFinishedAt * 1000));
                     const minVisibleBarMs = getMinVisibleRuntimeBarMs(maxEndMs - minStartMs);
-                    return {
-                        type: 'bar',
-                        orientation: 'h',
-                        name: stage.label,
-                        y: stageRows.map(row => stage.laneLabel(row)),
-                        x: stageRows.map(row => getDisplayRuntimeBarMs(row[stage.durationKey], minVisibleBarMs)),
-                        base: stageRows.map(row => row[stage.startKey] * 1000),
-                        width: stageRows.map(() => poolBarWidth),
-                        marker: {
-                            color: stageRows.map(row => row.id === selectedNodeId ? stage.color : stage.color),
-                            line: {
-                                color: stageRows.map(row => row.id === selectedNodeId ? '#111827' : '#ffffff'),
-                                width: stageRows.map(row => row.id === selectedNodeId ? 1.5 : 0.5)
-                            }
-                        },
-                        opacity: 0.92,
-                        customdata: stageRows.map(row => ([
-                            stage.laneLabel(row),
+                    const x = [];
+                    const y = [];
+                    const customdata = [];
+
+                    stageRows.forEach(row => {
+                        const startMs = row[stage.startKey] * 1000;
+                        const displayDurationMs = getDisplayRuntimeBarMs(row[stage.durationKey], minVisibleBarMs);
+                        const endMs = startMs + displayDurationMs;
+                        const laneLabel = stage.laneLabel(row);
+                        const details = [
+                            laneLabel,
                             row.generation,
                             row.patchName,
                             row.modelName,
@@ -15959,7 +15954,26 @@ console.error("[DEBUG] Error in processData:", error);
                             row.noveltyAttempt ?? 'N/A',
                             row.resampleAttempt ?? 'N/A',
                             row.patchAttempt ?? 'N/A',
-                        ])),
+                        ];
+
+                        x.push(startMs, endMs, null);
+                        y.push(laneLabel, laneLabel, null);
+                        customdata.push(details, details, null);
+                    });
+
+                    return {
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: stage.label,
+                        x,
+                        y,
+                        line: {
+                            color: stage.color,
+                            width: Math.max(6, Math.round(poolBarWidth * 18))
+                        },
+                        opacity: 0.92,
+                        connectgaps: false,
+                        customdata,
                         hovertemplate:
                             '<b>%{customdata[0]}</b><br>' +
                             'Gen %{customdata[1]}<br>' +
@@ -16516,7 +16530,7 @@ console.error("[DEBUG] Error in processData:", error);
 
         function updateThroughputTab(selectedNodeId = null) {
             const throughputTab = document.getElementById('throughput');
-            if (!throughputTab || !throughputTab.classList.contains('active')) {
+            if (!throughputTab) {
                 return;
             }
 
