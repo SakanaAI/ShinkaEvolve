@@ -53,6 +53,7 @@ from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
     with_pipeline_timing,
+    with_side_effect_timing,
 )
 from shinka.core.prompt_evolver import (
     SystemPromptSampler,
@@ -2772,13 +2773,17 @@ class ShinkaEvolveRunner:
                 meta_patch_data["novelty_explanation"] = novelty_explanation
 
             try:
-                job_id = await self.scheduler.submit_async_nonblocking(
-                    exec_fname, results_dir
+                (
+                    job_id,
+                    evaluation_worker_id,
+                    evaluation_submitted_at,
+                    evaluation_started_at,
+                    running_eval_jobs_at_submit,
+                ) = await self._submit_evaluation_job_with_slot(
+                    exec_fname=exec_fname,
+                    results_dir=results_dir,
+                    sampling_worker_id=sampling_worker_id,
                 )
-                evaluation_submitted_at = time.time()
-                evaluation_started_at = evaluation_submitted_at
-                evaluation_worker_id = None
-                running_eval_jobs_at_submit = len(self.running_jobs) + 1
 
                 # Create running job
                 running_job = AsyncRunningJob(
@@ -2812,24 +2817,6 @@ class ShinkaEvolveRunner:
 
                 # Update average proposal cost for in-flight estimation
                 self._update_avg_proposal_cost(proposal_total_cost)
-
-                while len(self.running_jobs) >= self.max_evaluation_jobs:
-                    if self.verbose:
-                        logger.info(
-                            f"⏳ Waiting for evaluation slot: {len(self.running_jobs)}/{self.max_evaluation_jobs} "
-                            f"jobs running, gen {generation} proposal ready"
-                        )
-                    await asyncio.sleep(0.5)
-
-                    if self.should_stop.is_set():
-                        logger.warning(
-                            f"System shutting down, cancelling job for gen {generation}"
-                        )
-                        try:
-                            await self.scheduler.cancel_job_async(job_id)
-                        except Exception as e:
-                            logger.warning(f"Failed to cancel job during shutdown: {e}")
-                        return None
 
                 # Track job in both running list and submitted registry
                 self.running_jobs.append(running_job)
@@ -3751,7 +3738,7 @@ class ShinkaEvolveRunner:
             )
 
             try:
-                await asyncio.wait_for(
+                added = await asyncio.wait_for(
                     self.async_db.add_program_async(
                         program,
                         parent_id=job.parent_id,
@@ -3766,9 +3753,115 @@ class ShinkaEvolveRunner:
                     ),
                     timeout=90.0,  # 90 second timeout for DB operations
                 )
-                logger.info(
-                    f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
-                )
+                if added:
+                    logger.info(
+                        f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
+                    )
+                else:
+                    existing_program = None
+                    if hasattr(self.async_db, "get_program_by_source_job_id_async"):
+                        existing_program = (
+                            await self.async_db.get_program_by_source_job_id_async(
+                                source_job_id
+                            )
+                        )
+
+                    if existing_program is None:
+                        self._queue_failed_db_job(
+                            job,
+                            log_prefix="⏳ DB STILL IN FLIGHT:",
+                            error_message=(
+                                "Program insert is still in flight for "
+                                f"{job.job_id}; will retry side effects"
+                            ),
+                        )
+                        return CompletedJobPersistResult(job=job, success=False)
+
+                    postprocess_finished_at = time.time()
+                    existing_metadata = existing_program.metadata or {}
+                    existing_program.metadata = with_pipeline_timing(
+                        existing_metadata,
+                        pipeline_started_at=float(
+                            existing_metadata.get(
+                                "pipeline_started_at", job.proposal_started_at
+                            )
+                        ),
+                        sampling_started_at=float(
+                            existing_metadata.get(
+                                "sampling_started_at", job.proposal_started_at
+                            )
+                        ),
+                        sampling_finished_at=float(
+                            existing_metadata.get(
+                                "sampling_finished_at", evaluation_started_at
+                            )
+                        ),
+                        evaluation_started_at=float(
+                            existing_metadata.get(
+                                "evaluation_started_at", evaluation_started_at
+                            )
+                        ),
+                        evaluation_finished_at=float(
+                            existing_metadata.get(
+                                "evaluation_finished_at", evaluation_finished_at
+                            )
+                        ),
+                        postprocess_started_at=float(
+                            existing_metadata.get(
+                                "postprocess_started_at", postprocess_started_at
+                            )
+                        ),
+                        postprocess_finished_at=max(
+                            float(
+                                existing_metadata.get(
+                                    "postprocess_finished_at", postprocess_started_at
+                                )
+                            ),
+                            postprocess_finished_at,
+                        ),
+                    )
+                    self._record_oversubscription_timing_sample(
+                        existing_program.metadata or {}
+                    )
+
+                    if (existing_program.metadata or {}).get(
+                        "postprocess_side_effects_applied"
+                    ):
+                        logger.info(
+                            "⏭️  SKIP DUPLICATE SIDE EFFECTS: Job %s already fully processed",
+                            job.job_id,
+                        )
+                        return CompletedJobPersistResult(job=job, success=True)
+
+                    logger.info(
+                        "♻️  REUSE DUPLICATE ROW: Job %s already persisted as program %s",
+                        job.job_id,
+                        existing_program.id,
+                    )
+                    return CompletedJobPersistResult(
+                        job=job,
+                        success=True,
+                        persisted_event=self._make_persisted_event(
+                            job=job,
+                            program=existing_program,
+                            evaluation_finished_at=float(
+                                (existing_program.metadata or {}).get(
+                                    "evaluation_finished_at", evaluation_finished_at
+                                )
+                            ),
+                            postprocess_started_at=float(
+                                (existing_program.metadata or {}).get(
+                                    "postprocess_started_at", postprocess_started_at
+                                )
+                            ),
+                            postprocess_finished_at=float(
+                                (existing_program.metadata or {}).get(
+                                    "postprocess_finished_at",
+                                    postprocess_finished_at,
+                                )
+                            ),
+                        ),
+                    )
 
             except asyncio.TimeoutError:
                 self._queue_failed_db_job(
@@ -3832,7 +3925,9 @@ class ShinkaEvolveRunner:
         """Apply slower post-persistence side effects for one completed program."""
         job = persisted_event.job
         program = persisted_event.program
+        apply_started_at = time.time()
         metadata_persist_needed = False
+        side_effects_completed = False
 
         try:
             if hasattr(self.async_db, "run_program_maintenance_async"):
@@ -3938,7 +4033,64 @@ class ShinkaEvolveRunner:
                 logger.warning(f"Best solution update error for {job.job_id}: {e}")
                 # Don't fail the whole job for best solution update issues
 
+            side_effects_completed = True
+
         finally:
+            if side_effects_completed:
+                base_metadata = program.metadata or {}
+                program.metadata = with_pipeline_timing(
+                    base_metadata,
+                    pipeline_started_at=float(
+                        base_metadata.get("pipeline_started_at", job.proposal_started_at)
+                    ),
+                    sampling_started_at=float(
+                        base_metadata.get("sampling_started_at", job.proposal_started_at)
+                    ),
+                    sampling_finished_at=float(
+                        base_metadata.get(
+                            "sampling_finished_at",
+                            job.evaluation_started_at
+                            or job.evaluation_submitted_at
+                            or job.proposal_started_at,
+                        )
+                    ),
+                    evaluation_started_at=float(
+                        base_metadata.get(
+                            "evaluation_started_at",
+                            job.evaluation_started_at
+                            or job.evaluation_submitted_at
+                            or job.proposal_started_at,
+                        )
+                    ),
+                    evaluation_finished_at=float(
+                        base_metadata.get(
+                            "evaluation_finished_at",
+                            persisted_event.evaluation_finished_at,
+                        )
+                    ),
+                    postprocess_started_at=float(
+                        base_metadata.get(
+                            "postprocess_started_at",
+                            persisted_event.postprocess_started_at,
+                        )
+                    ),
+                    postprocess_finished_at=max(
+                        float(
+                            base_metadata.get(
+                                "postprocess_finished_at",
+                                persisted_event.postprocess_finished_at,
+                            )
+                        ),
+                        float(persisted_event.postprocess_finished_at),
+                    ),
+                )
+                program.metadata = with_side_effect_timing(
+                    program.metadata,
+                    apply_started_at=apply_started_at,
+                    apply_finished_at=time.time(),
+                )
+                program.metadata["postprocess_side_effects_applied"] = True
+                metadata_persist_needed = True
             if metadata_persist_needed:
                 try:
                     await self._persist_program_metadata_async(program)

@@ -377,7 +377,7 @@ class AsyncProgramDatabase:
         embed_cost: float = 0.0,
         verbose: bool = False,
         defer_maintenance: bool = False,
-    ) -> None:
+    ) -> bool:
         """Async version of adding a program to the database.
 
         Args:
@@ -469,6 +469,7 @@ class AsyncProgramDatabase:
                 self._schedule_embedding_recomputation()
 
             self._debug_track_end(op_id, success=True)
+            return added
 
         except Exception as e:
             self._debug_track_end(op_id, success=False)
@@ -599,6 +600,24 @@ class AsyncProgramDatabase:
                         getattr(self.sync_db, "display_console", None)
                     )
 
+                source_job_id = None
+                source_job_id_registered = False
+                if isinstance(program.metadata, dict):
+                    source_job_id = program.metadata.get("source_job_id")
+                if isinstance(source_job_id, str) and source_job_id:
+                    with self._source_job_id_lock:
+                        if (
+                            source_job_id in self._in_flight_source_job_ids
+                            or thread_db.has_program_with_source_job_id(source_job_id)
+                        ):
+                            logger.info(
+                                "Skipping duplicate persisted job for source_job_id=%s",
+                                source_job_id,
+                            )
+                            return False
+                        self._in_flight_source_job_ids.add(source_job_id)
+                        source_job_id_registered = True
+
                 # Temporarily disable expensive operations
                 original_embedding_method = thread_db._recompute_embeddings_and_clusters
                 thread_db._recompute_embeddings_and_clusters = lambda: None
@@ -612,6 +631,9 @@ class AsyncProgramDatabase:
                     self._merge_runtime_metadata_from_db(thread_db)
                     return True
                 finally:
+                    if source_job_id_registered:
+                        with self._source_job_id_lock:
+                            self._in_flight_source_job_ids.discard(source_job_id)
                     # Restore original methods
                     thread_db._recompute_embeddings_and_clusters = (
                         original_embedding_method
