@@ -40,6 +40,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.search_root = search_root or os.getcwd()
         super().__init__(*args, **kwargs)
 
+    def end_headers(self):
+        """Disable browser caching for local HTML shells to avoid stale embedded JS."""
+        parsed_url = urllib.parse.urlparse(self.path)
+        if parsed_url.path in ("/", "/index.html", "/viz_tree.html", "/compare.html"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        super().end_headers()
+
     def log_message(self, format, *args):
         """Override to provide more detailed logging."""
         print(f"\n[SERVER] {format % args}")
