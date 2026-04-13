@@ -76,6 +76,9 @@ def test_throughput_tab_contains_runtime_and_utilization_sections():
 def test_meta_panel_uses_update_wording_instead_of_generation_wording():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
+    assert "function getCurrentResultsDir()" in html
+    assert '<h3 id="meta-info-title">${metaTitle}</h3>' in html
+    assert "Info: <code>${escapeHtml(resultsDir)}</code>" in html
     assert '<label for="generation-slider">Meta Update:</label>' in html
     assert "Meta analysis for update ${generation} is not available." in html
     assert 'Meta analysis for this update is not available.' in html

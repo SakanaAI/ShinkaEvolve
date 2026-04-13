@@ -5104,11 +5104,26 @@ console.error("[DEBUG] Error in processData:", error);
         let scoreBudgetChartInstance = null;
         let scoreRuntimeChartInstance = null;
         let runtimeChartInstance = null;
+
+        function getCurrentResultsDir() {
+            if (!window.currentDbPath) {
+                return null;
+            }
+
+            const normalizedPath = String(window.currentDbPath).replace(/\\/g, '/');
+            const lastSlash = normalizedPath.lastIndexOf('/');
+            if (lastSlash === -1) {
+                return normalizedPath;
+            }
+            return normalizedPath.slice(0, lastSlash);
+        }
         
         // Initialize the Meta Info tab with default content
         function initializeMetaInfoTab() {
+            const resultsDir = getCurrentResultsDir();
+            const metaTitle = resultsDir ? `Info: <code>${escapeHtml(resultsDir)}</code>` : 'Info';
             document.getElementById("agent-info").innerHTML = `
-                <h3>Meta Information</h3>
+                <h3 id="meta-info-title">${metaTitle}</h3>
                 <p id="meta-placeholder" class="placeholder-text">Loading data... Select a CSV file to visualize metrics.</p>
                 
                 <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px;">
@@ -5216,6 +5231,12 @@ console.error("[DEBUG] Error in processData:", error);
 
             // First, ensure the tab is set up with the correct HTML structure
             initializeMetaInfoTab();
+
+            const metaTitle = document.getElementById('meta-info-title');
+            const resultsDir = getCurrentResultsDir();
+            if (metaTitle) {
+                metaTitle.innerHTML = resultsDir ? `Info: <code>${escapeHtml(resultsDir)}</code>` : 'Info';
+            }
 
             // Ensure metric arrays are initialized for this update cycle
             cumulativeMaxScores = [];
