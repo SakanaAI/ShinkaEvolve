@@ -2003,7 +2003,7 @@
                         <div class="analysis-section full-width">
                             <h3>Generation Runtime Timeline</h3>
                             <div id="throughput-runtime-summary" style="display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: #666; margin: 6px 0 10px 0;"></div>
-                            <div id="throughput-runtime-plot" style="width: 100%; height: 420px; overflow: hidden;"></div>
+                            <div id="throughput-runtime-plot" style="width: 100%; overflow: hidden;"></div>
                         </div>
                         <div class="analysis-section full-width">
                             <h3>Worker Occupancy Over Time</h3>
@@ -15842,6 +15842,28 @@ console.error("[DEBUG] Error in processData:", error);
             };
         }
 
+        const RUNTIME_TIMELINE_ROW_HEIGHT = 34;
+        const RUNTIME_TIMELINE_MIN_HEIGHT = 220;
+        const RUNTIME_TIMELINE_BASE_CHROME = 140;
+        const RUNTIME_TIMELINE_LINE_WIDTH = 12;
+        const RUNTIME_TIMELINE_BAR_WIDTH = 0.72;
+
+        function getRuntimeTimelinePlotHeight(laneCount) {
+            const safeLaneCount = Math.max(0, Math.floor(laneCount || 0));
+            return Math.max(
+                RUNTIME_TIMELINE_MIN_HEIGHT,
+                RUNTIME_TIMELINE_BASE_CHROME + (safeLaneCount * RUNTIME_TIMELINE_ROW_HEIGHT)
+            );
+        }
+
+        function getRuntimeTimelineLineWidth() {
+            return RUNTIME_TIMELINE_LINE_WIDTH;
+        }
+
+        function getRuntimeTimelineBarWidth() {
+            return RUNTIME_TIMELINE_BAR_WIDTH;
+        }
+
         function getRuntimeTimelineLayout({
             minStartMs,
             maxEndMs,
@@ -15910,8 +15932,8 @@ console.error("[DEBUG] Error in processData:", error);
             const poolData = getPoolRuntimeTimelineData(data);
             if (poolData && poolData.rows.length) {
                 const { rows, capacities, laneLabels, peaks } = poolData;
-                const runtimePlotHeight = 420;
-                const poolBarWidth = Math.max(0.12, Math.min(0.75, 3.6 / Math.max(laneLabels.length, 1)));
+                const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneLabels.length);
+                const poolLineWidth = getRuntimeTimelineLineWidth();
                 if (summary) {
                     summary.innerHTML = `
                         <span><strong>Sampling:</strong> peak ${peaks.sampling}/${capacities.sampling || 0}</span>
@@ -15990,7 +16012,7 @@ console.error("[DEBUG] Error in processData:", error);
                         y,
                         line: {
                             color: stage.color,
-                            width: Math.max(6, Math.round(poolBarWidth * 18))
+                            width: poolLineWidth
                         },
                         opacity: 0.92,
                         connectgaps: false,
@@ -16037,8 +16059,8 @@ console.error("[DEBUG] Error in processData:", error);
                 summary.textContent = 'Legacy mode: inferred worker lanes from timestamps only.';
             }
 
-            const runtimePlotHeight = 420;
-            const legacyBarWidth = Math.max(0.12, Math.min(0.75, 3.6 / Math.max(laneCount, 1)));
+            const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneCount);
+            const legacyBarWidth = getRuntimeTimelineBarWidth();
             const stageConfigs = [
                 {
                     key: 'sampling',

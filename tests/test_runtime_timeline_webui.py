@@ -9,6 +9,11 @@ def test_runtime_timeline_layout_reserves_space_for_legend():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
     assert "function getRuntimeTimelineLayout(" in html
+    assert "const RUNTIME_TIMELINE_ROW_HEIGHT = 34;" in html
+    assert "const RUNTIME_TIMELINE_MIN_HEIGHT = 220;" in html
+    assert "const RUNTIME_TIMELINE_BASE_CHROME = 140;" in html
+    assert "function getRuntimeTimelinePlotHeight(laneCount)" in html
+    assert "RUNTIME_TIMELINE_BASE_CHROME + (safeLaneCount * RUNTIME_TIMELINE_ROW_HEIGHT)" in html
     assert "margin: { l: 150, r: 10, t: 60, b: 105 }" in html
     assert "laneCount = null" in html
     assert "layout.yaxis.range = [laneCount - 0.5, -0.5];" in html
@@ -54,6 +59,19 @@ def test_runtime_timeline_infers_stage_lanes_when_worker_ids_are_missing():
     assert "row.samplingWorkerId || row.samplingLaneId" in html
     assert "row.evaluationWorkerId || row.evaluationLaneId" in html
     assert "row.postprocessWorkerId || row.postprocessLaneId" in html
+
+
+def test_runtime_timeline_uses_adaptive_height_and_fixed_lane_thickness():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert 'id="throughput-runtime-plot" style="width: 100%; overflow: hidden;"' in html
+    assert "const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneLabels.length);" in html
+    assert "const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneCount);" in html
+    assert "const poolLineWidth = getRuntimeTimelineLineWidth();" in html
+    assert "const legacyBarWidth = getRuntimeTimelineBarWidth();" in html
+    assert "width: poolLineWidth" in html
+    assert "width: rows.map(() => legacyBarWidth)" in html
+    assert "const runtimePlotHeight = 420;" not in html
 
 
 def test_throughput_tab_contains_runtime_and_utilization_sections():
