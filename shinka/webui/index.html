@@ -191,6 +191,21 @@
             text-align: right;
         }
 
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        th.sortable:hover {
+            background: #f5f7fa;
+        }
+
+        .sort-indicator {
+            margin-left: 6px;
+            color: #999;
+            font-size: 0.8rem;
+        }
+
         tbody tr {
             border-bottom: 1px solid #f0f0f0;
             cursor: pointer;
@@ -507,8 +522,8 @@
                         <th class="checkbox-cell">
                             <input type="checkbox" id="select-all" title="Select all visible" onclick="toggleSelectAll(this)">
                         </th>
-                        <th>Task</th>
-                        <th>Setting</th>
+                        <th class="sortable" onclick="toggleSort('task')">Task<span id="sort-indicator-task" class="sort-indicator"></span></th>
+                        <th class="sortable" onclick="toggleSort('setting')">Setting<span id="sort-indicator-setting" class="sort-indicator"></span></th>
                         <th class="numeric"># P</th>
                         <th class="numeric hide-tablet">✔</th>
                         <th class="numeric"># G</th>
@@ -532,6 +547,8 @@
         let tasksAndResults = {};
         const statsCache = {};
         const pendingStats = new Set();
+        let currentSortKey = 'task';
+        let currentSortDirection = 'asc';
 
         async function loadDatabases() {
             try {
@@ -576,6 +593,52 @@
             });
         }
 
+        function getResultDisplayParts(result) {
+            const nameParts = result.name.split('/');
+            return {
+                taskName: nameParts.length >= 2 ? nameParts[nameParts.length - 2] : result.name,
+                setting: nameParts.length >= 2 ? nameParts[nameParts.length - 1] : '-'
+            };
+        }
+
+        function compareResults(a, b) {
+            const aParts = getResultDisplayParts(a);
+            const bParts = getResultDisplayParts(b);
+
+            let comparison;
+            if (currentSortKey === 'setting') {
+                comparison = aParts.setting.localeCompare(bParts.setting) || aParts.taskName.localeCompare(bParts.taskName);
+            } else {
+                comparison = aParts.taskName.localeCompare(bParts.taskName) || aParts.setting.localeCompare(bParts.setting);
+            }
+
+            return currentSortDirection === 'desc' ? -comparison : comparison;
+        }
+
+        function updateSortIndicators() {
+            const taskIndicator = document.getElementById('sort-indicator-task');
+            const settingIndicator = document.getElementById('sort-indicator-setting');
+
+            if (taskIndicator) {
+                taskIndicator.textContent = currentSortKey === 'task' ? (currentSortDirection === 'asc' ? '▲' : '▼') : '';
+            }
+            if (settingIndicator) {
+                settingIndicator.textContent = currentSortKey === 'setting' ? (currentSortDirection === 'asc' ? '▲' : '▼') : '';
+            }
+        }
+
+        function toggleSort(sortKey) {
+            if (currentSortKey === sortKey) {
+                currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSortKey = sortKey;
+                currentSortDirection = 'asc';
+            }
+
+            renderTable(document.getElementById('search-input').value);
+            setTimeout(() => loadVisibleStats(), 50);
+        }
+
         function renderTable(filter = '') {
             const loadingState = document.getElementById('loading-state');
             const emptyState = document.getElementById('empty-state');
@@ -594,6 +657,7 @@
 
             emptyState.style.display = 'none';
             tableWrapper.style.display = 'block';
+            updateSortIndicators();
 
             tbody.innerHTML = '';
 
@@ -612,8 +676,7 @@
 
                 if (filteredResults.length === 0) return;
 
-                // Sort results alphabetically by name
-                filteredResults.sort((a, b) => a.name.localeCompare(b.name));
+                filteredResults.sort(compareResults);
 
                 // Add task group header
                 const taskId = 'task-' + task.replace(/[^a-zA-Z0-9]/g, '-');
@@ -674,9 +737,7 @@
 
                     // Split result name: remove task prefix, then split into taskName and setting
                     // e.g., "results_coral/batched_2d_motion/cuda" -> taskName="batched_2d_motion", setting="cuda"
-                    const nameParts = result.name.split('/');
-                    const taskName = nameParts.length >= 2 ? nameParts[nameParts.length - 2] : result.name;
-                    const setting = nameParts.length >= 2 ? nameParts[nameParts.length - 1] : '-';
+                    const { taskName, setting } = getResultDisplayParts(result);
 
                     const resultLabel = `${taskName}/${setting}`;
                     row.innerHTML = `
