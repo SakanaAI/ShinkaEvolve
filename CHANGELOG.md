@@ -7,15 +7,20 @@ All notable changes to `shinka-evolve` are documented in this file.
 ### Added
 
 - Added the GitHub Pages documentation website for `shinka-evolve`.
+- Added dashboard sorting controls to the local WebUI so result cards can be reordered by the active setting.
+- Added a `Hide Plot` / `Show Plot` toggle for the WebUI Throughput tab runtime timeline while keeping the plot visible by default.
 
 ### Changed
 
 - Changed `shinka_run` startup output to use a minimal `Shinka CLI` banner while other launch paths keep the full gradient banner.
 - Changed `enable_controlled_oversubscription` to default to `false` across the shared `EvolutionConfig` baseline and packaged Hydra evolution presets.
+- Changed the WebUI meta header to show the active results directory directly in the info panel.
+- Changed the WebUI Throughput tab runtime timeline to scale its height with worker-lane count so each worker keeps a dedicated visible row.
 
 ### Fixed
 
 - Fixed bandit summary tables to preserve readable `local/<model>` and `openrouter/<model>` labels while stripping endpoint and API-key query details from local OpenAI-compatible model labels.
+- Fixed the compare view so negative best scores remain visible instead of being clamped away by the WebUI summary logic.
 - Fixed documentation links and metadata URLs to use the deployed GitHub Pages path capitalization (`/ShinkaEvolve/`).
 - Fixed oversubscription regression coverage and docs so adaptive proposal backlog behavior is now clearly opt-in instead of implied by defaults.
 - Fixed Gemini client timeout handling so the shared second-based timeout is converted to the millisecond unit expected by `google-genai`, avoiding accidental `1.2s` read timeouts on long-running requests.
