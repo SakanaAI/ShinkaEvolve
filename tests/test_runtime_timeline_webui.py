@@ -74,6 +74,20 @@ def test_runtime_timeline_uses_adaptive_height_and_fixed_lane_thickness():
     assert "const runtimePlotHeight = 420;" not in html
 
 
+def test_runtime_timeline_can_be_toggled_visible_by_default():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert 'id="throughput-runtime-toggle"' in html
+    assert 'onclick="toggleThroughputRuntimePlot()"' in html
+    assert 'id="throughput-runtime-plot-wrapper"' in html
+    assert "window.isThroughputRuntimePlotVisible = true;" in html
+    assert "function setThroughputRuntimePlotVisibility(isVisible, rerender = false)" in html
+    assert "function toggleThroughputRuntimePlot()" in html
+    assert "button.textContent = isVisible ? 'Hide Plot' : 'Show Plot';" in html
+    assert "wrapper.style.display = isVisible ? 'block' : 'none';" in html
+    assert "renderRuntimeTimelinePlot(window.treeData, window.selectedNodeId || null, 'throughput-runtime-summary', 'throughput-runtime-plot');" in html
+
+
 def test_throughput_tab_contains_runtime_and_utilization_sections():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 

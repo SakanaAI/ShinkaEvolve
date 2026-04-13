@@ -2001,9 +2001,20 @@
                             <div id="throughput-summary"></div>
                         </div>
                         <div class="analysis-section full-width">
-                            <h3>Generation Runtime Timeline</h3>
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px;">
+                                <h3 style="margin-bottom: 0;">Generation Runtime Timeline</h3>
+                                <button
+                                    id="throughput-runtime-toggle"
+                                    onclick="toggleThroughputRuntimePlot()"
+                                    style="padding: 5px 10px; font-size: 12px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa; cursor: pointer;"
+                                >
+                                    Hide Plot
+                                </button>
+                            </div>
                             <div id="throughput-runtime-summary" style="display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: #666; margin: 6px 0 10px 0;"></div>
-                            <div id="throughput-runtime-plot" style="width: 100%; overflow: hidden;"></div>
+                            <div id="throughput-runtime-plot-wrapper">
+                                <div id="throughput-runtime-plot" style="width: 100%; overflow: hidden;"></div>
+                            </div>
                         </div>
                         <div class="analysis-section full-width">
                             <h3>Worker Occupancy Over Time</h3>
@@ -15842,6 +15853,8 @@ console.error("[DEBUG] Error in processData:", error);
             };
         }
 
+        window.isThroughputRuntimePlotVisible = true;
+
         const RUNTIME_TIMELINE_ROW_HEIGHT = 34;
         const RUNTIME_TIMELINE_MIN_HEIGHT = 220;
         const RUNTIME_TIMELINE_BASE_CHROME = 140;
@@ -15862,6 +15875,30 @@ console.error("[DEBUG] Error in processData:", error);
 
         function getRuntimeTimelineBarWidth() {
             return RUNTIME_TIMELINE_BAR_WIDTH;
+        }
+
+        function setThroughputRuntimePlotVisibility(isVisible, rerender = false) {
+            window.isThroughputRuntimePlotVisible = isVisible;
+            const wrapper = document.getElementById('throughput-runtime-plot-wrapper');
+            const button = document.getElementById('throughput-runtime-toggle');
+            if (wrapper) {
+                wrapper.style.display = isVisible ? 'block' : 'none';
+            }
+            if (button) {
+                button.textContent = isVisible ? 'Hide Plot' : 'Show Plot';
+            }
+            if (
+                isVisible &&
+                rerender &&
+                window.treeData &&
+                window.treeData.length > 0
+            ) {
+                renderRuntimeTimelinePlot(window.treeData, window.selectedNodeId || null, 'throughput-runtime-summary', 'throughput-runtime-plot');
+            }
+        }
+
+        function toggleThroughputRuntimePlot() {
+            setThroughputRuntimePlotVisibility(!window.isThroughputRuntimePlotVisible, window.isThroughputRuntimePlotVisible === false);
         }
 
         function getRuntimeTimelineLayout({
@@ -16600,6 +16637,7 @@ console.error("[DEBUG] Error in processData:", error);
 
             renderThroughputSummary(poolData.rows, poolData.capacities);
             renderRuntimeTimelinePlot(window.treeData, selectedNodeId, 'throughput-runtime-summary', 'throughput-runtime-plot');
+            setThroughputRuntimePlotVisibility(window.isThroughputRuntimePlotVisible);
             renderThroughputOccupancyPlot(poolData.rows, poolData.capacities);
             renderThroughputOccupancyPercentPlot(poolData.rows, poolData.capacities);
             renderThroughputEvalDistributionPlot(poolData.rows, poolData.capacities);
