@@ -3063,6 +3063,23 @@ class ShinkaEvolveRunner:
 
         return artifacts
 
+    def _get_failure_language(self, exec_path: Path) -> str:
+        """Infer the failed proposal language from config or the generated filename."""
+        configured_language = getattr(self.evo_config, "language", None)
+        if configured_language:
+            return configured_language
+
+        ext = exec_path.suffix.lstrip(".").lower()
+        return {
+            "py": "python",
+            "js": "javascript",
+            "ts": "typescript",
+            "cpp": "cpp",
+            "cc": "cpp",
+            "cxx": "cpp",
+            "cu": "cuda",
+        }.get(ext, ext or "python")
+
     async def _write_failure_artifact_async(
         self,
         *,
@@ -3094,6 +3111,7 @@ class ShinkaEvolveRunner:
         payload = {
             "generation": generation,
             "node_kind": "failed_proposal",
+            "language": self._get_failure_language(exec_path),
             "failure_stage": failure_stage,
             "failure_class": failure_class,
             "failure_reason": failure_reason,
@@ -3163,6 +3181,8 @@ class ShinkaEvolveRunner:
             novelty_cost
         )
         self.total_api_cost += terminal_failure_cost
+        if terminal_failure_cost > 0.0:
+            self._update_avg_proposal_cost(terminal_failure_cost)
         failure_class = self._classify_failed_proposal(
             failure_stage=failure_stage,
             failure_reason=failure_reason,
@@ -3193,6 +3213,7 @@ class ShinkaEvolveRunner:
             status="failed",
             details={
                 "node_kind": "failed_proposal",
+                "language": failure_payload.get("language"),
                 "failure_stage": failure_stage,
                 "failure_class": failure_class,
                 "failure_reason": failure_reason,

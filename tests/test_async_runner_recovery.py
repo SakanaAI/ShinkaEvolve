@@ -366,6 +366,7 @@ def test_persist_failed_generation_stores_incorrect_program(tmp_path):
         failure_payload = json.loads((gen_dir / "failure.json").read_text())
         assert failure_payload["generation"] == 3
         assert failure_payload["node_kind"] == "failed_proposal"
+        assert failure_payload["language"] == "python"
         assert failure_payload["failure_stage"] == "proposal_failed"
         assert failure_payload["failure_class"] == "proposal_generation_failed"
         assert failure_payload["failure_reason"] == "LLM failed to generate a valid proposal"
@@ -467,6 +468,7 @@ def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_fa
         assert event["details"]["postprocess_finished_at"] is not None
 
         failure_payload = json.loads((gen_dir / "failure.json").read_text())
+        assert failure_payload["language"] == "python"
         assert failure_payload["failure_stage"] == "proposal"
         assert failure_payload["failure_class"] == "patch_apply_failed"
         assert failure_payload["failure_reason"] == "No changes applied"
@@ -566,6 +568,51 @@ def test_record_terminal_failed_proposal_updates_total_api_cost_once(tmp_path):
 
         assert runner.total_api_cost == 1.34
         assert len(async_db.attempt_events) == 1
+
+    asyncio.run(_run())
+
+
+def test_record_terminal_failed_proposal_updates_avg_proposal_cost(tmp_path):
+    async def _run():
+        async_db = _RecordingAsyncDB()
+        runner = _build_runner(
+            async_db=async_db,
+            total_api_cost=0.5,
+            completed_proposal_costs=[0.3],
+            avg_proposal_cost=0.3,
+        )
+
+        gen_dir = tmp_path / "gen_10"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
+
+        await runner._record_terminal_failed_proposal(
+            generation=10,
+            exec_fname=str(exec_path),
+            proposal_started_at=time.time(),
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+            parent_program=SimpleNamespace(id="parent-10"),
+            archive_programs=[],
+            top_k_programs=[],
+            code_diff=None,
+            meta_patch_data={
+                "api_costs": 0.06,
+                "novelty_attempt": 1,
+                "resample_attempt": 1,
+                "patch_attempt": 1,
+            },
+            code_embedding=None,
+            embed_cost=0.01,
+            novelty_cost=0.02,
+            api_costs=0.06,
+            failure_stage="proposal",
+            failure_reason="Could not extract code from patch string",
+        )
+
+        assert runner.total_api_cost == 0.59
+        assert runner.completed_proposal_costs == [0.3, 0.09]
+        assert runner.avg_proposal_cost == pytest.approx(0.195)
 
     asyncio.run(_run())
 
