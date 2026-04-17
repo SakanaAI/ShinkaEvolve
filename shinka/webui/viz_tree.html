@@ -4230,10 +4230,9 @@ console.error("[DEBUG] Error in processData:", error);
                 const rootNodes = hierarchyData.filter(n => !n.parent_id || !nodeMap.has(n.parent_id));
                 const virtualRootId = '___virtual_root___';
 
-                // Only create virtual root if we have multiple roots AND we don't have a unified root
-                const hasUnifiedRoot = rootNodes.some(n => n.isUnifiedRoot);
-                if (rootNodes.length > 1 && !hasUnifiedRoot) {
-                    hierarchyData.push({ id: virtualRootId, parent_id: '', agent_name: 'VIRTUAL ROOT', isVirtual: true, generation: -1 });
+                // Virtualize any remaining orphan roots, including island-spawned roots.
+                if (rootNodes.length > 1) {
+                    hierarchyData.push({ id: virtualRootId, parent_id: null, agent_name: 'VIRTUAL ROOT', isVirtual: true, generation: -1 });
                     rootNodes.forEach(rn => {
                         rn.parent_id = virtualRootId;
                     });
