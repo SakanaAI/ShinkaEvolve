@@ -194,7 +194,6 @@ def test_asymmetric_ucb_print_summary_preserves_openrouter_prefix():
     assert "openrouter/exampl" in output
 
 
-
 def test_asymmetric_ucb_print_summary_matches_standard_summary_width():
     bandit = AsymmetricUCB(
         arm_names=["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"],
@@ -215,6 +214,24 @@ def test_asymmetric_ucb_print_summary_matches_standard_summary_width():
     output_lines = buffer.getvalue().splitlines()
 
     assert max(len(line) for line in output_lines) == 120
+
+
+def test_asymmetric_ucb_print_summary_omits_div_and_log_mean_columns():
+    bandit = AsymmetricUCB(
+        arm_names=["gpt-4o"],
+        exploration_coef=2.0,
+        epsilon=0.1,
+        auto_decay=0.95,
+    )
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, width=200)
+    bandit.print_summary(console=console)
+    output = buffer.getvalue()
+
+    assert "│ div " not in output
+    assert "log mean" not in output
+
 
 if __name__ == "__main__":
     test_asymmetric_ucb_persistence()
