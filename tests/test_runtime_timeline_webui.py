@@ -105,6 +105,34 @@ def test_throughput_tab_contains_runtime_and_utilization_sections():
     assert "function renderThroughputOccupancyPercentPlot(rows, capacities)" in html
 
 
+def test_throughput_distribution_and_completion_plots_stack_vertically():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert (
+        '<div style="display: grid; grid-template-columns: 1fr; gap: 10px; min-width: 0;">'
+        in html
+    )
+    assert "<h3>Evaluation Occupancy Distribution</h3>" in html
+    assert "<h3>Completed Evaluations per Minute</h3>" in html
+    assert '<div style="min-width: 0; overflow: hidden;">' in html
+    assert (
+        'id="throughput-eval-distribution-plot" style="width: 100%; max-width: 100%; height: 240px; overflow: hidden;"'
+        in html
+    )
+    assert (
+        'id="throughput-completion-rate-plot" style="width: 100%; max-width: 100%; height: 240px; overflow: hidden;"'
+        in html
+    )
+    assert "#throughput-eval-distribution-plot .svg-container," in html
+    assert "#throughput-completion-rate-plot .svg-container {" in html
+    assert "max-width: 100% !important;" in html
+    assert "overflow: hidden !important;" in html
+    assert "height: 240," in html
+    assert "margin: { l: 50, r: 10, t: 30, b: 38 }" in html
+    assert "tickfont: { size: 10 }" in html
+    assert "titlefont: { size: 11 }" in html
+
+
 def test_tab_labels_use_shortened_scratch_and_eval_text():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
@@ -128,6 +156,9 @@ def test_normalized_occupancy_plot_uses_short_util_label():
     assert "name: `${stage.label} Utilization`" not in html
     assert "name: '100% Cap.'" in html
     assert "name: '100% Capacity'" not in html
+    assert (
+        "legend: { orientation: 'h', x: 0.01, y: 1.12, font: { size: 11 } }" in html
+    )
 
 
 def test_meta_panel_uses_update_wording_instead_of_generation_wording():
