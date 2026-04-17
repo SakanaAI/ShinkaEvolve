@@ -16,5 +16,5 @@ evo_config:
     - "gpt-4.1"
   llm_dynamic_selection: null
   embedding_model: "text-embedding-3-small"
-  enable_controlled_oversubscription: true
+  enable_controlled_oversubscription: false
   results_dir: ${output_dir}

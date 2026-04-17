@@ -32,5 +32,5 @@ evo_config:
   meta_rec_interval: 10
   embedding_model: "text-embedding-3-small"
   code_embed_sim_threshold: 0.99
-  enable_controlled_oversubscription: true
+  enable_controlled_oversubscription: false
   results_dir: ${output_dir}

@@ -157,7 +157,7 @@ runner.run()
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
 
-Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydra presets and CLI overrides can replace these values. Concurrency lives on `ShinkaEvolveRunner` via `max_evaluation_jobs`, `max_proposal_jobs`, and `max_db_workers`.
+Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydra presets and CLI overrides can replace these values. Concurrency lives on `ShinkaEvolveRunner` via `max_evaluation_jobs`, `max_proposal_jobs`, and `max_db_workers`; the shared Hydra async launch path currently defaults to `4/6/2` for evaluation/proposal/DB workers.
 
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|

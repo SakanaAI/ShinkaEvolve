@@ -66,7 +66,7 @@ def test_default_launch_config_uses_neutral_shared_defaults():
     assert cfg.evo_config.llm_dynamic_selection_kwargs.cost_aware_coef == 0.5
     assert cfg.evo_config.meta_rec_interval == 10
     assert cfg.evo_config.code_embed_sim_threshold == 0.99
-    assert cfg.evo_config.enable_controlled_oversubscription is True
+    assert cfg.evo_config.enable_controlled_oversubscription is False
     assert cfg.db_config.num_islands == 2
     assert cfg.db_config.archive_size == 40
     assert cfg.db_config.num_archive_inspirations == 1
