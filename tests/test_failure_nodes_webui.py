@@ -30,3 +30,11 @@ def test_webui_tree_styles_failed_proposal_nodes_distinctly():
     assert "if (isFailedProposalNode(d.data)) return '#ffb3b3';" in html
     assert "if (isFailedProposalNode(d.data)) return '#c0392b';" in html
     assert ".style(\"stroke-dasharray\", d => isFailedProposalNode(d.data) ? \"6,3\" : null)" in html
+
+
+def test_webui_tree_resizer_rerenders_graph_instead_of_reloading_data():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "renderGraph(window.treeData, true);" in html
+    assert "window.treeResizeTimeout" in html
+    assert "if (window.isResizing) {" in html

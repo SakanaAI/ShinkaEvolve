@@ -555,6 +555,8 @@
         
         #tree {
             margin-top: 10px;
+            width: 100%;
+            min-width: 0;
         }
         
         #file-list-container {
@@ -1225,6 +1227,7 @@
         .left-content-section.active {
             display: block;
             height: 100%;
+            min-width: 0;
         }
         
         /* Meta-prompt view uses absolute positioning to fill parent when active */
@@ -3268,13 +3271,13 @@ ${'='.repeat(80)}
                 savePreferences();
                 
                 // Update the tree without complete redraw
-                if (window.currentTreeRoot) {
+                if (window.treeData) {
                     // Use requestAnimationFrame for smoother updates
                     if (window.treeUpdateRAF) {
                         cancelAnimationFrame(window.treeUpdateRAF);
                     }
                     window.treeUpdateRAF = requestAnimationFrame(function() {
-                        renderTree(window.currentTreeRoot, true); // true = reuse existing elements
+                        renderGraph(window.treeData, true);
                     });
                 }
             });
@@ -3286,8 +3289,8 @@ ${'='.repeat(80)}
                     divider.classList.remove('dragging');
                     
                     // Final update with reuse to ensure everything is correctly positioned
-                    if (window.currentTreeRoot) {
-                        renderTree(window.currentTreeRoot, true);
+                    if (window.treeData) {
+                        renderGraph(window.treeData, true);
                     }
                     
                     // Delay resetting the resize flag to prevent immediate refreshes
@@ -7730,11 +7733,21 @@ console.error("[DEBUG] Error in processData:", error);
         // Add specific panel resize handling to redraw the tree when panels are resized
         const observer = new ResizeObserver(() => {
             console.log("[DEBUG] Panel resized");
-            const resultSelect = document.getElementById('result-select');
-            
-            if (resultSelect.value) {
-                loadDatabase(resultSelect.value);
+
+            if (window.isResizing) {
+                return;
             }
+
+            if (window.treeResizeTimeout) {
+                clearTimeout(window.treeResizeTimeout);
+            }
+
+            window.treeResizeTimeout = setTimeout(() => {
+                const treeTab = document.querySelector('.left-tab[data-tab="tree-view"]');
+                if (window.treeData && treeTab && treeTab.classList.contains('active')) {
+                    renderGraph(window.treeData, true);
+                }
+            }, 100);
         });
         
         // Observe the tree panel for size changes
