@@ -79,6 +79,77 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             return None
 
+    def _language_from_suffix(self, suffix: str) -> str:
+        ext = suffix.lstrip(".").lower()
+        return {
+            "py": "python",
+            "js": "javascript",
+            "ts": "typescript",
+            "cpp": "cpp",
+            "cc": "cpp",
+            "cxx": "cpp",
+            "cu": "cuda",
+        }.get(ext, ext or "python")
+
+    def _resolve_failed_node_language(
+        self,
+        details: Dict[str, Any],
+        failure_payload: Optional[Dict[str, Any]],
+    ) -> str:
+        for source in (failure_payload or {}, details):
+            language = source.get("language")
+            if language:
+                return str(language)
+
+        generated_code_path = ((failure_payload or {}).get("artifacts", {}) or {}).get(
+            "generated_code_path"
+        )
+        if generated_code_path:
+            return self._language_from_suffix(Path(generated_code_path).suffix)
+
+        failure_json_path = details.get("failure_json_path")
+        if failure_json_path:
+            failure_path = Path(self.search_root) / failure_json_path
+            candidates = sorted(failure_path.parent.glob("main.*"))
+            if candidates:
+                return self._language_from_suffix(candidates[0].suffix)
+
+        return "python"
+
+    def _resolve_failed_node_code_path(
+        self,
+        details: Dict[str, Any],
+        failure_payload: Optional[Dict[str, Any]],
+    ) -> Optional[Path]:
+        generated_code_path = ((failure_payload or {}).get("artifacts", {}) or {}).get(
+            "generated_code_path"
+        )
+        if generated_code_path:
+            code_path = Path(self.search_root) / generated_code_path
+            if code_path.exists():
+                return code_path
+
+        failure_json_path = details.get("failure_json_path")
+        if not failure_json_path:
+            return None
+
+        failure_path = Path(self.search_root) / failure_json_path
+        language = self._resolve_failed_node_language(details, failure_payload)
+        preferred_suffix = {
+            "python": ".py",
+            "javascript": ".js",
+            "typescript": ".ts",
+            "cpp": ".cpp",
+            "cuda": ".cu",
+        }.get(language)
+        if preferred_suffix:
+            preferred_path = failure_path.parent / f"main{preferred_suffix}"
+            if preferred_path.exists():
+                return preferred_path
+
+        candidates = sorted(failure_path.parent.glob("main.*"))
+        return candidates[0] if candidates else None
+
     def _build_failed_node_dict(
         self,
         *,
@@ -93,6 +164,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if failure_payload:
             for key in [
                 "failure_json_path",
+                "language",
                 "generated_code_available",
                 "downstream_eval_submitted",
                 "artifacts",
@@ -106,31 +178,20 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if key in failure_payload:
                     metadata[key] = failure_payload[key]
 
+        language = self._resolve_failed_node_language(details, failure_payload)
         code = None
         if include_code and failure_payload:
-            generated_code_path = (
-                failure_payload.get("artifacts", {}) or {}
-            ).get("generated_code_path")
-            if generated_code_path:
-                code_path = Path(self.search_root) / generated_code_path
-                if code_path.exists():
-                    try:
-                        code = code_path.read_text(encoding="utf-8")
-                    except Exception:
-                        code = None
-            if code is None and failure_json_path:
-                failure_path = Path(self.search_root) / failure_json_path
-                fallback_code_path = failure_path.parent / "main.py"
-                if fallback_code_path.exists():
-                    try:
-                        code = fallback_code_path.read_text(encoding="utf-8")
-                    except Exception:
-                        code = None
+            code_path = self._resolve_failed_node_code_path(details, failure_payload)
+            if code_path is not None:
+                try:
+                    code = code_path.read_text(encoding="utf-8")
+                except Exception:
+                    code = None
 
         return {
             "id": self._make_failed_node_id(generation),
             "code": code,
-            "language": "python",
+            "language": language,
             "parent_id": details.get("parent_id"),
             "archive_inspiration_ids": details.get("archive_inspiration_ids") or [],
             "top_k_inspiration_ids": details.get("top_k_inspiration_ids") or [],
@@ -152,7 +213,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "migration_history": [],
             "metadata": metadata,
             "in_archive": False,
-            "system_prompt_id": details.get("system_prompt_id"),
+            "system_prompt_id": metadata.get("system_prompt_id"),
         }
 
     def _load_failed_proposal_nodes(
