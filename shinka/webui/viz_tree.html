@@ -276,6 +276,23 @@
         .analysis-section.full-width {
             grid-column: span 2;
         }
+
+        #throughput-eval-distribution-plot,
+        #throughput-completion-rate-plot {
+            min-width: 0;
+            max-width: 100%;
+        }
+
+        #throughput-eval-distribution-plot .js-plotly-plot,
+        #throughput-eval-distribution-plot .plot-container,
+        #throughput-eval-distribution-plot .svg-container,
+        #throughput-completion-rate-plot .js-plotly-plot,
+        #throughput-completion-rate-plot .plot-container,
+        #throughput-completion-rate-plot .svg-container {
+            width: 100% !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+        }
         
         /* Highlight Python code tabs */
         #agent-code, #solution-code {
@@ -538,6 +555,8 @@
         
         #tree {
             margin-top: 10px;
+            width: 100%;
+            min-width: 0;
         }
         
         #file-list-container {
@@ -1208,6 +1227,7 @@
         .left-content-section.active {
             display: block;
             height: 100%;
+            min-width: 0;
         }
         
         /* Meta-prompt view uses absolute positioning to fill parent when active */
@@ -1589,6 +1609,7 @@
                                     <th class="sortable" data-sort="rank">R<span class="sort-arrow"></span></th>
                                     <th class="sortable" data-sort="generation">G<span class="sort-arrow"></span></th>
                                     <th class="sortable" data-sort="archive">A<span class="sort-arrow"></span></th>
+                                    <th>Status</th>
                                     <th>Patch Name</th>
                                     <th>Type</th>
                                     <th class="sortable" data-sort="island_idx">I<span class="sort-arrow"></span></th>
@@ -1822,14 +1843,14 @@
             <div id="tabs">
                 <div class="tab active" data-tab="agent-info">Meta</div>
                 <div class="tab" data-tab="pareto-front">Pareto</div>
-                <div class="tab" data-tab="meta-analysis">Scratchpad</div>
+                <div class="tab" data-tab="meta-analysis">Scratch</div>
                 <div class="tab" data-tab="node-details">Node</div>
                 <div class="tab" data-tab="agent-code">Code</div>
                 <div class="tab" data-tab="code-diff">Diff</div>
-                <div class="tab" data-tab="log-output">Evaluation</div>
+                <div class="tab" data-tab="log-output">Eval</div>
                 <div class="tab" data-tab="llm-result">LLM</div>
                 <div class="tab" data-tab="analysis">Analysis</div>
-                <div class="tab" data-tab="throughput">Throughput</div>
+                <div class="tab" data-tab="throughput">Usage</div>
             </div>
             <div id="tab-content">
                 <div id="agent-info" class="content-section active">
@@ -2025,14 +2046,14 @@
                             <div id="throughput-occupancy-percent-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
                         </div>
                         <div class="analysis-section full-width">
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                <div>
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 10px; min-width: 0;">
+                                <div style="min-width: 0; overflow: hidden;">
                                     <h3>Evaluation Occupancy Distribution</h3>
-                                    <div id="throughput-eval-distribution-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                                    <div id="throughput-eval-distribution-plot" style="width: 100%; max-width: 100%; height: 240px; overflow: hidden;"></div>
                                 </div>
-                                <div>
+                                <div style="min-width: 0; overflow: hidden;">
                                     <h3>Completed Evaluations per Minute</h3>
-                                    <div id="throughput-completion-rate-plot" style="width: 100%; height: 320px; overflow: hidden;"></div>
+                                    <div id="throughput-completion-rate-plot" style="width: 100%; max-width: 100%; height: 240px; overflow: hidden;"></div>
                                 </div>
                             </div>
                         </div>
@@ -3250,13 +3271,13 @@ ${'='.repeat(80)}
                 savePreferences();
                 
                 // Update the tree without complete redraw
-                if (window.currentTreeRoot) {
+                if (window.treeData) {
                     // Use requestAnimationFrame for smoother updates
                     if (window.treeUpdateRAF) {
                         cancelAnimationFrame(window.treeUpdateRAF);
                     }
                     window.treeUpdateRAF = requestAnimationFrame(function() {
-                        renderTree(window.currentTreeRoot, true); // true = reuse existing elements
+                        renderGraph(window.treeData, true);
                     });
                 }
             });
@@ -3268,8 +3289,8 @@ ${'='.repeat(80)}
                     divider.classList.remove('dragging');
                     
                     // Final update with reuse to ensure everything is correctly positioned
-                    if (window.currentTreeRoot) {
-                        renderTree(window.currentTreeRoot, true);
+                    if (window.treeData) {
+                        renderGraph(window.treeData, true);
                     }
                     
                     // Delay resetting the resize flag to prevent immediate refreshes
@@ -4297,11 +4318,15 @@ console.error("[DEBUG] Error in processData:", error);
                     console.log("[DEBUG] Sample correct nodes:", correctValidNodes.slice(0, 3).map(d => ({id: d.id.substring(0, 8), correct: d.correct, score: d.combined_score})));
                 }
                 
-                // Fallback to all valid nodes if no correct nodes exist
+                // Fallback to evaluated incorrect nodes before using failed proposals
                 let scoringNodes = correctValidNodes;
                 if (correctValidNodes.length === 0) {
-                    console.warn("[DEBUG] No correct nodes found for scoring, falling back to all valid nodes");
-                    scoringNodes = allValidNodes;
+                    console.warn("[DEBUG] No correct nodes found for scoring, falling back to non-failed valid nodes");
+                    scoringNodes = allValidNodes.filter(d => !isFailedProposalNode(d));
+                    if (scoringNodes.length === 0) {
+                        console.warn("[DEBUG] No evaluated nodes found for scoring, falling back to all valid nodes");
+                        scoringNodes = allValidNodes;
+                    }
                     if (scoringNodes.length === 0) {
                         console.warn("[DEBUG] No valid nodes found for scoring");
                         window.allBestPaths = [];
@@ -4685,6 +4710,9 @@ console.error("[DEBUG] Error in processData:", error);
                                         return '#ff8c00'; // Always orange for single path
                                     }
                                 }
+                                if (isFailedProposalNode(n.data)) {
+                                    return '#c0392b';
+                                }
                                 return "#000"; // Default stroke
                             })
                             .style("stroke-width", n => {
@@ -4734,6 +4762,14 @@ console.error("[DEBUG] Error in processData:", error);
                                 <em>Common origin for all islands</em>
                             `);
                         } else {
+                            if (isFailedProposalNode(d.data)) {
+                                tooltip.html(`
+                                    <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                                    <strong>Status:</strong> Failed Proposal<br>
+                                    <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
+                                    <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
+                                `);
+                            } else {
                             tooltip.html(`
                                 <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
                                 <strong>Score:</strong> ${score}<br>
@@ -4741,6 +4777,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 <strong>Island:</strong> ${islandIdx}<br>
                                 <strong>Model:</strong> ${modelName}
                             `);
+                            }
                         }
                         
                         tooltip.style("left", (event.pageX + 15) + "px")
@@ -4768,6 +4805,7 @@ console.error("[DEBUG] Error in processData:", error);
                     .style("fill", d => {
                         if (d.data.isUnifiedRoot) return '#9b59b6'; // Purple for unified root
                         if (d.data.id === window.bestNodeId) return '#ffd700';
+                        if (isFailedProposalNode(d.data)) return '#ffb3b3';
                         if (!d.data.correct) return '#e74c3c';
                         const score = d.data.combined_score;
                         if (score !== null && !isNaN(score)) {
@@ -4791,6 +4829,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 }
                             }
                         }
+                        if (isFailedProposalNode(d.data)) return '#c0392b';
                         return "#000"; // Default stroke
                     })
                     .style("stroke-width", d => {
@@ -4804,6 +4843,7 @@ console.error("[DEBUG] Error in processData:", error);
                         }
                         return 3; // Default width
                     })
+                    .style("stroke-dasharray", d => isFailedProposalNode(d.data) ? "6,3" : null)
                     .style("filter", d => d.data.id === window.bestNodeId ? "drop-shadow(0px 3px 6px rgba(255, 140, 0, 0.5))" : "drop-shadow(0px 2px 4px rgba(0,0,0,0.2))");
 
                 // Add animated rings for the SINGLE best node
@@ -5743,6 +5783,8 @@ console.error("[DEBUG] Error in processData:", error);
                 analysisMetricsHtml = '<p>No analysis metrics.</p>';
             }
 
+            const failureSummaryHtml = buildFailureSummaryHtml(data);
+
             let gridItemsHtml = `
                     <div class="details-section">
                         <h5>General</h5>
@@ -5753,6 +5795,7 @@ console.error("[DEBUG] Error in processData:", error);
                         <p><strong>Children:</strong> ${data.children_count || 0}</p>
                         <p><strong>Complexity:</strong> ${data.complexity || 'N/A'}</p>
         </div>
+                    ${failureSummaryHtml}
                     <div class="details-section">
                         <h5>Performance Score</h5>
                         <p><strong>Combined Score:</strong> ${formatScore(data.combined_score)}</p>
@@ -6442,6 +6485,43 @@ console.error("[DEBUG] Error in processData:", error);
                 // Return the original value as string if it's not a valid number
                 return String(score);
             }
+        }
+
+        function isFailedProposalNode(program) {
+            return Boolean(
+                program &&
+                program.metadata &&
+                program.metadata.node_kind === 'failed_proposal'
+            );
+        }
+
+        function getFailureStatusLabel(program) {
+            if (isFailedProposalNode(program)) {
+                const failureClass = program.metadata.failure_class || program.metadata.failure_stage || 'failed_proposal';
+                return failureClass.replace(/_/g, ' ');
+            }
+            return program.correct ? 'correct' : 'incorrect';
+        }
+
+        function buildFailureSummaryHtml(data) {
+            if (!isFailedProposalNode(data)) {
+                return '';
+            }
+
+            const failureStage = data.metadata?.failure_stage || 'proposal';
+            const failureClass = data.metadata?.failure_class || 'failed_proposal';
+            const failureReason = data.metadata?.failure_reason || data.text_feedback || 'Failed before downstream evaluation.';
+            const failureJsonPath = data.metadata?.failure_json_path || 'N/A';
+
+            return `
+                <div class="details-section">
+                    <h5>Failure Summary</h5>
+                    <p><strong>Stage:</strong> ${escapeHtml(String(failureStage))}</p>
+                    <p><strong>Class:</strong> ${escapeHtml(String(failureClass))}</p>
+                    <p><strong>Reason:</strong> ${escapeHtml(String(failureReason))}</p>
+                    <p><strong>failure.json:</strong> <span class="metadata-value">${escapeHtml(String(failureJsonPath))}</span></p>
+                </div>
+            `;
         }
         // Create charts for the Meta Info tab
         function createCharts(currentGenId) {
@@ -7653,11 +7733,21 @@ console.error("[DEBUG] Error in processData:", error);
         // Add specific panel resize handling to redraw the tree when panels are resized
         const observer = new ResizeObserver(() => {
             console.log("[DEBUG] Panel resized");
-            const resultSelect = document.getElementById('result-select');
-            
-            if (resultSelect.value) {
-                loadDatabase(resultSelect.value);
+
+            if (window.isResizing) {
+                return;
             }
+
+            if (window.treeResizeTimeout) {
+                clearTimeout(window.treeResizeTimeout);
+            }
+
+            window.treeResizeTimeout = setTimeout(() => {
+                const treeTab = document.querySelector('.left-tab[data-tab="tree-view"]');
+                if (window.treeData && treeTab && treeTab.classList.contains('active')) {
+                    renderGraph(window.treeData, true);
+                }
+            }, 100);
         });
         
         // Observe the tree panel for size changes
@@ -8041,9 +8131,14 @@ console.error("[DEBUG] Error in processData:", error);
             pageData.forEach(prog => {
                 const row = document.createElement("tr");
                 row.setAttribute("data-node-id", prog.id);
+                const isFailedProposal = isFailedProposalNode(prog);
+                const statusLabel = getFailureStatusLabel(prog);
                 
                 // Style incorrect programs differently
-                if (!prog.correct) {
+                if (isFailedProposal) {
+                    row.style.backgroundColor = '#fff1f0';
+                    row.style.color = '#7a1c1c';
+                } else if (!prog.correct) {
                     row.style.backgroundColor = '#fff5f5';
                     row.style.color = '#721c24';
                 }
@@ -8066,6 +8161,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <td>${prog.original_rank}</td>
                     <td>${prog.generation}</td>
                     <td style="text-align: center; color: ${prog.in_archive ? '#28a745' : '#6c757d'}; font-weight: bold;">${archiveStatus}</td>
+                    <td>${escapeHtml(statusLabel)}</td>
                     <td>${patchName}</td>
                     <td>${prog.metadata?.patch_type || 'N/A'}</td>
                     <td>${islandIdx}</td>
@@ -10211,7 +10307,15 @@ console.error("[DEBUG] Error in processData:", error);
                         
                         // Update node styles
                         node.selectAll('path')
-                            .style("stroke", n => ancestorIds.has(n.data.id) ? '#ff8c00' : "#000")
+                            .style("stroke", n => {
+                                if (ancestorIds.has(n.data.id)) {
+                                    return '#ff8c00';
+                                }
+                                if (isFailedProposalNode(n.data)) {
+                                    return '#c0392b';
+                                }
+                                return "#000";
+                            })
                             .style("stroke-width", n => ancestorIds.has(n.data.id) ? 3 : 2)
                             .style("filter", n => n.data.id === window.bestNodeId ? "drop-shadow(0px 2px 4px rgba(255, 140, 0, 0.3))" : "drop-shadow(0px 1px 2px rgba(0,0,0,0.2))");
                         
@@ -10252,14 +10356,23 @@ console.error("[DEBUG] Error in processData:", error);
                     const patchType = d.data.metadata.patch_type || 'N/A';
                     const islandIdx = d.data.island_idx;
                     
-                    tooltip.html(`
-                        <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
-                        <strong>Score:</strong> ${score}<br>
-                        <strong>Type:</strong> ${patchType}<br>
-                        <strong>Island:</strong> ${islandIdx}
-                    `)
-                    .style("left", (event.pageX + 15) + "px")
-                    .style("top", (event.pageY - 10) + "px");
+                    if (isFailedProposalNode(d.data)) {
+                        tooltip.html(`
+                            <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                            <strong>Status:</strong> Failed Proposal<br>
+                            <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
+                            <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
+                        `);
+                    } else {
+                        tooltip.html(`
+                            <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
+                            <strong>Score:</strong> ${score}<br>
+                            <strong>Type:</strong> ${patchType}<br>
+                            <strong>Island:</strong> ${islandIdx}
+                        `);
+                    }
+                    tooltip.style("left", (event.pageX + 15) + "px")
+                        .style("top", (event.pageY - 10) + "px");
                 })
                 .on('mousemove', (event) => {
                     d3.select(".node-tooltip")
@@ -10278,6 +10391,7 @@ console.error("[DEBUG] Error in processData:", error);
                     })
                     .style("fill", d => {
                         if (d.data.id === window.bestNodeId) return '#ffd700';
+                        if (isFailedProposalNode(d.data)) return '#ffb3b3';
                         if (!d.data.correct) return '#e74c3c';
                         const score = d.data.combined_score;
                         if (score !== null && !isNaN(score)) {
@@ -10297,9 +10411,11 @@ console.error("[DEBUG] Error in processData:", error);
                                 return "#000";
                             }
                         }
+                        if (isFailedProposalNode(d.data)) return '#c0392b';
                         return "#000";
                     })
                     .style("stroke-width", d => ancestorIds.has(d.data.id) ? 3 : 2)
+                    .style("stroke-dasharray", d => isFailedProposalNode(d.data) ? "6,3" : null)
                     .style("filter", d => d.data.id === window.bestNodeId ? "drop-shadow(0px 2px 4px rgba(255, 140, 0, 0.3))" : "drop-shadow(0px 1px 2px rgba(0,0,0,0.2))");
 
                 // Add animated rings for the SINGLE best node (island view)
@@ -16434,7 +16550,7 @@ console.error("[DEBUG] Error in processData:", error);
                 traces.push({
                     x: series.x,
                     y: series.y.map(value => (value / stage.capacity) * 100),
-                    name: `${stage.label} Utilization`,
+                    name: `${stage.label} Util.`,
                     type: 'scatter',
                     mode: 'lines',
                     line: { color: stage.color, width: 2 },
@@ -16449,7 +16565,7 @@ console.error("[DEBUG] Error in processData:", error);
             traces.push({
                 x: [minStart * 1000, maxEnd * 1000],
                 y: [100, 100],
-                name: '100% Capacity',
+                name: '100% Cap.',
                 type: 'scatter',
                 mode: 'lines',
                 line: { color: '#6b7280', width: 1, dash: 'dot' },
@@ -16465,7 +16581,7 @@ console.error("[DEBUG] Error in processData:", error);
                 },
                 height: 320,
                 margin: { l: 60, r: 20, t: 50, b: 50 },
-                legend: { orientation: 'h', x: 0.01, y: 1.12 },
+                legend: { orientation: 'h', x: 0.01, y: 1.12, font: { size: 11 } },
                 hovermode: 'x unified',
             }, { responsive: true, displayModeBar: false });
         }
@@ -16494,10 +16610,19 @@ console.error("[DEBUG] Error in processData:", error);
                     color: x.map(count => count === capacities.evaluation ? '#f59e0b' : '#60a5fa'),
                 },
             }], {
-                xaxis: { title: 'Occupied Evaluation Workers' },
-                yaxis: { title: 'Wall-Clock Share (%)', rangemode: 'tozero' },
-                height: 320,
-                margin: { l: 60, r: 20, t: 50, b: 50 },
+                xaxis: {
+                    title: 'Occupied Evaluation Workers',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                yaxis: {
+                    title: 'Wall-Clock Share (%)',
+                    rangemode: 'tozero',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                height: 240,
+                margin: { l: 50, r: 10, t: 30, b: 38 },
             }, { responsive: true, displayModeBar: false });
         }
 
@@ -16525,10 +16650,20 @@ console.error("[DEBUG] Error in processData:", error);
                 marker: { color: '#34d399' },
                 name: 'Evaluations / Minute',
             }], {
-                xaxis: { title: 'Wall Clock Time', type: 'date' },
-                yaxis: { title: 'Completed Evaluations', rangemode: 'tozero' },
-                height: 320,
-                margin: { l: 60, r: 20, t: 50, b: 50 },
+                xaxis: {
+                    title: 'Wall Clock Time',
+                    type: 'date',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                yaxis: {
+                    title: 'Completed Evaluations',
+                    rangemode: 'tozero',
+                    tickfont: { size: 10 },
+                    titlefont: { size: 11 },
+                },
+                height: 240,
+                margin: { l: 50, r: 10, t: 30, b: 38 },
             }, { responsive: true, displayModeBar: false });
         }
 

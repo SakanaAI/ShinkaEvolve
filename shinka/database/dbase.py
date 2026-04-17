@@ -1687,6 +1687,7 @@ class ProgramDatabase:
                 p.embedding_pca_3d,
                 p.embedding_cluster_id,
                 p.language,
+                p.text_feedback,
                 p.top_k_inspiration_ids,
                 p.archive_inspiration_ids,
                 p.migration_history,

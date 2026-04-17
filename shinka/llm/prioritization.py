@@ -681,13 +681,6 @@ class AsymmetricUCB(BanditBase):
         names = self._arm_names or [str(i) for i in range(self._n_arms)]
         post = self.posterior()
         n = self.n.astype(int)
-        mean = self._mean()
-        if self.use_exponential_scaling:
-            mean_disp = mean  # keep in log space
-            mean_label = "log mean"
-        else:
-            mean_disp = mean
-            mean_label = "mean"
         idx = np.arange(self._n_arms)
 
         # exploitation and exploration components
@@ -773,23 +766,21 @@ class AsymmetricUCB(BanditBase):
             box=rich.box.ROUNDED,
             show_header=True,
             header_style="bold cyan",
-            width=150,
+            width=120,
         )
 
         # Add columns
-        table.add_column("arm", style="white", width=16)
-        table.add_column("n", justify="right", style="green")
-        table.add_column("n_cost", justify="right", style="green")
-        table.add_column("div", justify="right", style="yellow")
-        table.add_column(mean_label, justify="right", style="blue")
-        table.add_column("tot_cost", justify="right", style="yellow")
-        table.add_column("mean_cost", justify="right", style="yellow")
-        table.add_column("exploit", justify="right", style="magenta")
-        table.add_column("explore", justify="right", style="cyan")
-        table.add_column("score_raw", justify="right", style="white")
-        table.add_column("score_cost", justify="right", style="white")
-        table.add_column("score", justify="right", style="bold white")
-        table.add_column("post", justify="right", style="bright_green")
+        table.add_column("arm", style="white", width=24)
+        table.add_column("n", justify="right", style="green", width=4)
+        table.add_column("n_cost", justify="right", style="green", width=7)
+        table.add_column("tot_cost", justify="right", style="yellow", width=8)
+        table.add_column("mean_cost", justify="right", style="yellow", width=8)
+        table.add_column("exploit", justify="right", style="magenta", width=8)
+        table.add_column("explore", justify="right", style="cyan", width=8)
+        table.add_column("score_raw", justify="right", style="white", width=8)
+        table.add_column("score_cost", justify="right", style="white", width=6)
+        table.add_column("score", justify="right", style="bold white", width=8)
+        table.add_column("post", justify="right", style="bright_green", width=6)
 
         # Add rows
         for i, name in enumerate(names):
@@ -809,8 +800,6 @@ class AsymmetricUCB(BanditBase):
                 display_name,
                 f"{n[i]:d}",
                 f"{n_costs[i]:d}",
-                f"{self.divs[i]:.3f}",
-                f"{mean_disp[i]:.4f}",
                 f"{tot_cost[i]:.4f}",
                 mean_cost_str,
                 f"{exploitation[i]:.4f}",

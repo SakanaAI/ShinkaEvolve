@@ -1,10 +1,16 @@
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from shinka.core.async_runner import AsyncRunningJob, ShinkaEvolveRunner
+from shinka.core.async_runner import (
+    AsyncRunningJob,
+    CompletedJobPersistResult,
+    PersistedProgramEvent,
+    ShinkaEvolveRunner,
+)
 from shinka.core.runtime_slots import LogicalSlotPool
 
 
@@ -20,10 +26,27 @@ class _RecordingAsyncDB(_FakeAsyncDB):
     def __init__(self):
         super().__init__(total_programs=0)
         self.programs = []
+        self.maintenance_calls = 0
+        self.attempt_events = []
 
     async def add_program_async(self, program, **kwargs):
         self.programs.append((program, kwargs))
         self.total_programs += 1
+
+    async def run_program_maintenance_async(self, program, verbose=False):
+        self.maintenance_calls += 1
+
+    async def record_attempt_event_async(
+        self, generation, stage, status, details=None
+    ):
+        self.attempt_events.append(
+            {
+                "generation": generation,
+                "stage": stage,
+                "status": status,
+                "details": details or {},
+            }
+        )
 
 
 class _FakeSlotPool:
@@ -155,6 +178,10 @@ def _build_runner(**overrides):
     runner._evaluation_seconds_ewma = overrides.get("evaluation_ewma")
     runner.verbose = overrides.get("verbose", False)
     runner.cost_limit_reached = overrides.get("cost_limit_reached", False)
+    runner.lang_ext = overrides.get("lang_ext", "py")
+    runner.llm_selection = overrides.get("llm_selection")
+    runner.meta_summarizer = overrides.get("meta_summarizer")
+    runner.results_dir = overrides.get("results_dir", ".")
     runner.prompt_db = overrides.get("prompt_db")
     runner._prompt_percentile_recompute_task = overrides.get(
         "_prompt_percentile_recompute_task"
@@ -297,7 +324,9 @@ def test_persist_failed_generation_stores_incorrect_program(tmp_path):
         runner._update_completed_generations = _update_completed_generations
         runner._persist_program_metadata_async = _persist_program_metadata_async
 
-        exec_path = tmp_path / "candidate.py"
+        gen_dir = tmp_path / "gen_3"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
         exec_path.write_text("print('failed candidate')\n")
 
         program = await runner._persist_failed_generation(
@@ -324,11 +353,343 @@ def test_persist_failed_generation_stores_incorrect_program(tmp_path):
         assert program.combined_score == 0.0
         assert program.text_feedback == "LLM failed to generate a valid proposal"
         assert program.code == "print('failed candidate')\n"
+        assert program.metadata["node_kind"] == "failed_proposal"
         assert program.metadata["failure_stage"] == "proposal_failed"
+        assert program.metadata["failure_class"] == "proposal_generation_failed"
         assert program.metadata["failure_persisted"] is True
+        assert program.metadata["downstream_eval_submitted"] is False
+        assert program.metadata["failure_json_path"] == str(gen_dir / "failure.json")
         assert runner.completed_generations == 1
         assert slot_event.is_set() is True
         assert len(async_db.programs) == 1
+
+        failure_payload = json.loads((gen_dir / "failure.json").read_text())
+        assert failure_payload["generation"] == 3
+        assert failure_payload["node_kind"] == "failed_proposal"
+        assert failure_payload["language"] == "python"
+        assert failure_payload["failure_stage"] == "proposal_failed"
+        assert failure_payload["failure_class"] == "proposal_generation_failed"
+        assert failure_payload["failure_reason"] == "LLM failed to generate a valid proposal"
+        assert failure_payload["artifacts"]["generated_code_path"] == str(exec_path)
+        assert failure_payload["downstream_eval_submitted"] is False
+
+    asyncio.run(_run())
+
+
+def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_failure(
+    tmp_path,
+):
+    async def _run():
+        async_db = _RecordingAsyncDB()
+        runner = _build_runner(
+            async_db=async_db,
+            postprocess_slot_pool=_FakeSlotPool(),
+            evo_config=SimpleNamespace(
+                max_novelty_attempts=1,
+                max_patch_resamples=1,
+                num_generations=5,
+            ),
+        )
+        runner._record_progress = lambda: None
+        runner.novelty_judge = None
+
+        async def _update_completed_generations():
+            runner.completed_generations = await runner._count_completed_generations_from_db()
+
+        async def _persist_program_metadata_async(_program):
+            return None
+
+        async def _sample_with_fix_mode_async(**_kwargs):
+            return (
+                SimpleNamespace(id="parent-1", generation=1, island_idx=None),
+                [SimpleNamespace(id="archive-1")],
+                [SimpleNamespace(id="topk-1")],
+                False,
+            )
+
+        async def _run_patch_async(*_args, **_kwargs):
+            return (
+                None,
+                {
+                    "api_costs": 0.1,
+                    "patch_type": "diff",
+                    "patch_name": "broken_patch",
+                    "patch_description": "fails before evaluation",
+                    "patch_attempt": 1,
+                    "resample_attempt": 1,
+                    "novelty_attempt": 1,
+                    "last_error_msg": "No changes applied",
+                    "error_attempt": "Max attempts reached without successful patch",
+                },
+                False,
+            )
+
+        runner._update_completed_generations = _update_completed_generations
+        runner._persist_program_metadata_async = _persist_program_metadata_async
+        runner.async_db.sample_with_fix_mode_async = _sample_with_fix_mode_async
+        runner._run_patch_async = _run_patch_async
+
+        gen_dir = tmp_path / "gen_4"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
+
+        result = await runner._generate_evolved_proposal(
+            generation=4,
+            task_id="proposal-4",
+            exec_fname=str(exec_path),
+            results_dir=str(gen_dir / "results"),
+            meta_recs=None,
+            meta_summary=None,
+            meta_scratch=None,
+            proposal_started_at=time.time(),
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+        )
+
+        assert result is None
+        assert runner.total_api_cost == 0.1
+        assert runner.completed_generations == 0
+        assert len(async_db.programs) == 0
+        assert len(async_db.attempt_events) == 1
+        event = async_db.attempt_events[0]
+        assert event["generation"] == 4
+        assert event["stage"] == "proposal"
+        assert event["status"] == "failed"
+        assert event["details"]["node_kind"] == "failed_proposal"
+        assert event["details"]["failure_stage"] == "proposal"
+        assert event["details"]["failure_class"] == "patch_apply_failed"
+        assert event["details"]["failure_reason"] == "No changes applied"
+        assert event["details"]["pipeline_started_at"] is not None
+        assert event["details"]["sampling_started_at"] is not None
+        assert event["details"]["sampling_finished_at"] is not None
+        assert event["details"]["evaluation_started_at"] is not None
+        assert event["details"]["evaluation_finished_at"] is not None
+        assert event["details"]["postprocess_started_at"] is not None
+        assert event["details"]["postprocess_finished_at"] is not None
+
+        failure_payload = json.loads((gen_dir / "failure.json").read_text())
+        assert failure_payload["language"] == "python"
+        assert failure_payload["failure_stage"] == "proposal"
+        assert failure_payload["failure_class"] == "patch_apply_failed"
+        assert failure_payload["failure_reason"] == "No changes applied"
+
+    asyncio.run(_run())
+
+
+def test_persist_failed_generation_skips_maintenance_and_handles_missing_code(tmp_path):
+    async def _run():
+        async_db = _RecordingAsyncDB()
+        runner = _build_runner(
+            async_db=async_db,
+            postprocess_slot_pool=_FakeSlotPool(),
+            evo_config=SimpleNamespace(num_generations=5),
+        )
+        runner._record_progress = lambda: None
+
+        async def _update_completed_generations():
+            runner.completed_generations = await runner._count_completed_generations_from_db()
+
+        async def _persist_program_metadata_async(_program):
+            raise AssertionError("failed proposal persistence should not perform metadata rewrite")
+
+        runner._update_completed_generations = _update_completed_generations
+        runner._persist_program_metadata_async = _persist_program_metadata_async
+
+        gen_dir = tmp_path / "gen_4"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
+
+        program = await runner._persist_failed_generation(
+            generation=4,
+            exec_fname=str(exec_path),
+            proposal_started_at=time.time(),
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+            parent_program=SimpleNamespace(id="parent-1"),
+            archive_programs=[],
+            top_k_programs=[],
+            code_diff=None,
+            meta_patch_data={
+                "api_costs": 0.05,
+                "patch_type": "full",
+                "patch_name": "broken",
+                "error_attempt": "Max attempts reached without successful patch",
+                "last_error_msg": "Could not extract code from patch string",
+            },
+            code_embedding=None,
+            embed_cost=0.0,
+            novelty_cost=0.0,
+            api_costs=0.05,
+            failure_stage="proposal",
+            failure_reason="Could not extract code from patch string",
+        )
+
+        assert program is not None
+        assert program.code == ""
+        assert async_db.maintenance_calls == 0
+        assert program.metadata["postprocess_worker_id"] is None
+        assert program.metadata["failure_json_path"] == str(gen_dir / "failure.json")
+
+    asyncio.run(_run())
+
+
+def test_record_terminal_failed_proposal_updates_total_api_cost_once(tmp_path):
+    async def _run():
+        async_db = _RecordingAsyncDB()
+        runner = _build_runner(async_db=async_db, total_api_cost=1.25)
+
+        gen_dir = tmp_path / "gen_9"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
+
+        await runner._record_terminal_failed_proposal(
+            generation=9,
+            exec_fname=str(exec_path),
+            proposal_started_at=time.time(),
+            sampling_worker_id=None,
+            active_proposals_at_start=2,
+            parent_program=SimpleNamespace(id="parent-9"),
+            archive_programs=[],
+            top_k_programs=[],
+            code_diff=None,
+            meta_patch_data={
+                "api_costs": 0.06,
+                "novelty_attempt": 1,
+                "resample_attempt": 1,
+                "patch_attempt": 1,
+            },
+            code_embedding=None,
+            embed_cost=0.01,
+            novelty_cost=0.02,
+            api_costs=0.06,
+            failure_stage="proposal",
+            failure_reason="Could not extract code from patch string",
+        )
+
+        assert runner.total_api_cost == 1.34
+        assert len(async_db.attempt_events) == 1
+
+    asyncio.run(_run())
+
+
+def test_record_terminal_failed_proposal_updates_avg_proposal_cost(tmp_path):
+    async def _run():
+        async_db = _RecordingAsyncDB()
+        runner = _build_runner(
+            async_db=async_db,
+            total_api_cost=0.5,
+            completed_proposal_costs=[0.3],
+            avg_proposal_cost=0.3,
+        )
+
+        gen_dir = tmp_path / "gen_10"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
+
+        await runner._record_terminal_failed_proposal(
+            generation=10,
+            exec_fname=str(exec_path),
+            proposal_started_at=time.time(),
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+            parent_program=SimpleNamespace(id="parent-10"),
+            archive_programs=[],
+            top_k_programs=[],
+            code_diff=None,
+            meta_patch_data={
+                "api_costs": 0.06,
+                "novelty_attempt": 1,
+                "resample_attempt": 1,
+                "patch_attempt": 1,
+            },
+            code_embedding=None,
+            embed_cost=0.01,
+            novelty_cost=0.02,
+            api_costs=0.06,
+            failure_stage="proposal",
+            failure_reason="Could not extract code from patch string",
+        )
+
+        assert runner.total_api_cost == 0.59
+        assert runner.completed_proposal_costs == [0.3, 0.09]
+        assert runner.avg_proposal_cost == pytest.approx(0.195)
+
+    asyncio.run(_run())
+
+
+def test_maybe_evolve_prompt_updates_total_api_cost():
+    async def _run():
+        runner = _build_runner(
+            total_api_cost=1.0,
+            evo_config=SimpleNamespace(
+                evolve_prompts=True,
+                prompt_evolution_interval=1,
+                prompt_evo_top_k_programs=3,
+                language="python",
+                use_text_feedback=False,
+            ),
+            prompt_db=SimpleNamespace(last_generation=2, add=lambda *args, **kwargs: None),
+        )
+        runner.prompt_evolution_counter = 0
+        runner.prompt_sampler_evo = SimpleNamespace(
+            sample=lambda: SimpleNamespace(id="prompt-parent")
+        )
+        runner.prompt_evolver = SimpleNamespace(
+            evolve=lambda **kwargs: asyncio.sleep(
+                0, result=(SimpleNamespace(id="prompt-new", generation=3), "diff", 0.25)
+            )
+        )
+        runner.async_db.get_top_programs_async = lambda n: asyncio.sleep(0, result=[])
+        runner.meta_summarizer = None
+        runner.prompt_api_cost = 0.0
+        runner.verbose = False
+
+        await runner._maybe_evolve_prompt()
+
+        assert runner.prompt_api_cost == 0.25
+        assert runner.total_api_cost == 1.25
+
+    asyncio.run(_run())
+
+
+def test_process_single_job_safely_applies_side_effects_inline():
+    async def _run():
+        runner = _build_runner()
+        job = AsyncRunningJob(
+            job_id="job-side-effects",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=9,
+        )
+        event = PersistedProgramEvent(
+            job=job,
+            program=SimpleNamespace(id="program-1"),
+            evaluation_finished_at=1.0,
+            postprocess_started_at=2.0,
+            postprocess_finished_at=3.0,
+        )
+        applied = []
+
+        async def persist_completed_job(_job):
+            return CompletedJobPersistResult(job=_job, success=True, persisted_event=event)
+
+        async def enqueue_background_side_effects(_events):
+            raise AssertionError("side effects should not be queued in inline mode")
+
+        async def apply_persisted_program_side_effects(_persisted_event):
+            applied.append(_persisted_event)
+
+        runner._persist_completed_job = persist_completed_job
+        runner._enqueue_background_side_effects = enqueue_background_side_effects
+        runner._apply_persisted_program_side_effects = apply_persisted_program_side_effects
+
+        success = await runner._process_single_job_safely(job)
+
+        assert success is True
+        assert applied == [event]
 
     asyncio.run(_run())
 
