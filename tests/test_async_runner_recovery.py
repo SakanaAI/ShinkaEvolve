@@ -446,6 +446,7 @@ def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_fa
         )
 
         assert result is None
+        assert runner.total_api_cost == 0.1
         assert runner.completed_generations == 0
         assert len(async_db.programs) == 0
         assert len(async_db.attempt_events) == 1
@@ -457,6 +458,13 @@ def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_fa
         assert event["details"]["failure_stage"] == "proposal"
         assert event["details"]["failure_class"] == "patch_apply_failed"
         assert event["details"]["failure_reason"] == "No changes applied"
+        assert event["details"]["pipeline_started_at"] is not None
+        assert event["details"]["sampling_started_at"] is not None
+        assert event["details"]["sampling_finished_at"] is not None
+        assert event["details"]["evaluation_started_at"] is not None
+        assert event["details"]["evaluation_finished_at"] is not None
+        assert event["details"]["postprocess_started_at"] is not None
+        assert event["details"]["postprocess_finished_at"] is not None
 
         failure_payload = json.loads((gen_dir / "failure.json").read_text())
         assert failure_payload["failure_stage"] == "proposal"
@@ -519,6 +527,80 @@ def test_persist_failed_generation_skips_maintenance_and_handles_missing_code(tm
         assert async_db.maintenance_calls == 0
         assert program.metadata["postprocess_worker_id"] is None
         assert program.metadata["failure_json_path"] == str(gen_dir / "failure.json")
+
+    asyncio.run(_run())
+
+
+def test_record_terminal_failed_proposal_updates_total_api_cost_once(tmp_path):
+    async def _run():
+        async_db = _RecordingAsyncDB()
+        runner = _build_runner(async_db=async_db, total_api_cost=1.25)
+
+        gen_dir = tmp_path / "gen_9"
+        gen_dir.mkdir()
+        exec_path = gen_dir / "main.py"
+
+        await runner._record_terminal_failed_proposal(
+            generation=9,
+            exec_fname=str(exec_path),
+            proposal_started_at=time.time(),
+            sampling_worker_id=None,
+            active_proposals_at_start=2,
+            parent_program=SimpleNamespace(id="parent-9"),
+            archive_programs=[],
+            top_k_programs=[],
+            code_diff=None,
+            meta_patch_data={
+                "api_costs": 0.06,
+                "novelty_attempt": 1,
+                "resample_attempt": 1,
+                "patch_attempt": 1,
+            },
+            code_embedding=None,
+            embed_cost=0.01,
+            novelty_cost=0.02,
+            api_costs=0.06,
+            failure_stage="proposal",
+            failure_reason="Could not extract code from patch string",
+        )
+
+        assert runner.total_api_cost == 1.34
+        assert len(async_db.attempt_events) == 1
+
+    asyncio.run(_run())
+
+
+def test_maybe_evolve_prompt_updates_total_api_cost():
+    async def _run():
+        runner = _build_runner(
+            total_api_cost=1.0,
+            evo_config=SimpleNamespace(
+                evolve_prompts=True,
+                prompt_evolution_interval=1,
+                prompt_evo_top_k_programs=3,
+                language="python",
+                use_text_feedback=False,
+            ),
+            prompt_db=SimpleNamespace(last_generation=2, add=lambda *args, **kwargs: None),
+        )
+        runner.prompt_evolution_counter = 0
+        runner.prompt_sampler_evo = SimpleNamespace(
+            sample=lambda: SimpleNamespace(id="prompt-parent")
+        )
+        runner.prompt_evolver = SimpleNamespace(
+            evolve=lambda **kwargs: asyncio.sleep(
+                0, result=(SimpleNamespace(id="prompt-new", generation=3), "diff", 0.25)
+            )
+        )
+        runner.async_db.get_top_programs_async = lambda n: asyncio.sleep(0, result=[])
+        runner.meta_summarizer = None
+        runner.prompt_api_cost = 0.0
+        runner.verbose = False
+
+        await runner._maybe_evolve_prompt()
+
+        assert runner.prompt_api_cost == 0.25
+        assert runner.total_api_cost == 1.25
 
     asyncio.run(_run())
 

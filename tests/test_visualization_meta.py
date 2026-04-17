@@ -155,7 +155,7 @@ def test_handle_get_programs_summary_merges_failed_attempt_nodes(tmp_path):
             7,
             "proposal",
             "failed",
-            '{"node_kind":"failed_proposal","failure_stage":"proposal","failure_class":"patch_apply_failed","failure_reason":"proposal failed","parent_id":"parent-1","failure_json_path":"results/gen_7/failure.json"}',
+            '{"node_kind":"failed_proposal","failure_stage":"proposal","failure_class":"patch_apply_failed","failure_reason":"proposal failed","parent_id":"parent-1","failure_json_path":"results/gen_7/failure.json","pipeline_started_at":100.0,"sampling_started_at":100.0,"sampling_finished_at":105.0,"evaluation_started_at":105.0,"evaluation_finished_at":105.0,"postprocess_started_at":105.0,"postprocess_finished_at":105.0}',
             123.0,
         ),
     )
@@ -176,6 +176,8 @@ def test_handle_get_programs_summary_merges_failed_attempt_nodes(tmp_path):
     assert failed_node["parent_id"] == "parent-1"
     assert failed_node["metadata"]["node_kind"] == "failed_proposal"
     assert failed_node["text_feedback"] == "proposal failed"
+    assert failed_node["metadata"]["sampling_started_at"] == 100.0
+    assert failed_node["metadata"]["postprocess_finished_at"] == 105.0
 
 
 def test_handle_get_program_details_returns_failed_attempt_node(tmp_path):
@@ -230,7 +232,7 @@ def test_handle_get_program_details_returns_failed_attempt_node(tmp_path):
             7,
             "proposal",
             "failed",
-            '{"node_kind":"failed_proposal","failure_stage":"proposal","failure_class":"llm_output_invalid","failure_reason":"proposal failed","failure_json_path":"results/gen_7/failure.json"}',
+            '{"node_kind":"failed_proposal","failure_stage":"proposal","failure_class":"llm_output_invalid","failure_reason":"proposal failed","failure_json_path":"results/gen_7/failure.json","pipeline_started_at":100.0,"sampling_started_at":100.0,"sampling_finished_at":105.0,"evaluation_started_at":105.0,"evaluation_finished_at":105.0,"postprocess_started_at":105.0,"postprocess_finished_at":105.0}',
             123.0,
         ),
     )
@@ -250,6 +252,8 @@ def test_handle_get_program_details_returns_failed_attempt_node(tmp_path):
     assert sent["data"]["id"] == "failed:proposal:7"
     assert sent["data"]["code"] == "print('candidate')\n"
     assert sent["data"]["metadata"]["failure_class"] == "llm_output_invalid"
+    assert sent["data"]["metadata"]["pipeline_started_at"] == 100.0
+    assert sent["data"]["metadata"]["postprocess_finished_at"] == 105.0
 
 
 def test_handle_get_database_stats_uses_best_correct_program(tmp_path):

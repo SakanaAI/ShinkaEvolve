@@ -1024,6 +1024,8 @@ class ShinkaEvolveRunner:
                                 ),
                                 timeout=600.0,  # 10 minute timeout for final meta summary
                             )
+                            if success and final_meta_cost > 0:
+                                self.total_api_cost += final_meta_cost
                             if self.verbose:
                                 if success and final_meta_cost > 0:
                                     logger.info(
@@ -1435,6 +1437,7 @@ class ShinkaEvolveRunner:
             )
 
             self.prompt_api_cost += cost
+            self.total_api_cost += cost
 
             if new_prompt:
                 self.prompt_db.add(new_prompt, verbose=self.verbose)
@@ -3156,6 +3159,10 @@ class ShinkaEvolveRunner:
         failure_reason: str,
     ) -> None:
         """Record one terminal pre-eval failure via attempt_log plus failure.json."""
+        terminal_failure_cost = float(api_costs) + float(embed_cost) + float(
+            novelty_cost
+        )
+        self.total_api_cost += terminal_failure_cost
         failure_class = self._classify_failed_proposal(
             failure_stage=failure_stage,
             failure_reason=failure_reason,
@@ -3179,6 +3186,7 @@ class ShinkaEvolveRunner:
             sampling_worker_id=sampling_worker_id,
             active_proposals_at_start=active_proposals_at_start,
         )
+        terminal_failure_at = time.time()
         await self._record_attempt_event(
             generation=generation,
             stage=failure_stage,
@@ -3207,6 +3215,20 @@ class ShinkaEvolveRunner:
                 "patch_attempt": (meta_patch_data or {}).get("patch_attempt"),
                 "max_similarity": (meta_patch_data or {}).get("max_similarity"),
                 "failure_json_path": failure_json_path,
+                "pipeline_started_at": proposal_started_at,
+                "sampling_started_at": proposal_started_at,
+                "sampling_finished_at": terminal_failure_at,
+                "evaluation_started_at": terminal_failure_at,
+                "evaluation_finished_at": terminal_failure_at,
+                "postprocess_started_at": terminal_failure_at,
+                "postprocess_finished_at": terminal_failure_at,
+                "timeline_lane_mode": "pool_slots",
+                "sampling_worker_id": sampling_worker_id,
+                "evaluation_worker_id": None,
+                "postprocess_worker_id": None,
+                "sampling_worker_capacity": self.max_proposal_jobs,
+                "evaluation_worker_capacity": self.max_evaluation_jobs,
+                "postprocess_worker_capacity": self.max_db_workers,
                 "generated_code_available": failure_payload.get(
                     "generated_code_available", False
                 ),

@@ -21,6 +21,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 - Fixed async run-time regressions from proposal-failure persistence by keeping terminal failed proposals in `attempt_log` plus `failure.json` artifacts instead of inserting them into the main `programs` table during evolution runs.
 - Fixed the local WebUI to render failed proposal nodes from `attempt_log` plus `failure.json` so failure lineage remains visible without storing synthetic failed programs in the main results database.
+- Fixed failed terminal proposal and prompt-evolution cost accounting so the runtime API budget counter now reflects those spend buckets, and added runtime-timeline metadata for failed proposal nodes rendered from `attempt_log`.
 - Fixed bandit summary tables to preserve readable `local/<model>` and `openrouter/<model>` labels while stripping endpoint and API-key query details from local OpenAI-compatible model labels.
 - Fixed the compare view so negative best scores remain visible instead of being clamped away by the WebUI summary logic.
 - Fixed documentation links and metadata URLs to use the deployed GitHub Pages path capitalization (`/ShinkaEvolve/`).
