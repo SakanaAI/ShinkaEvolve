@@ -15,6 +15,8 @@ claude-haiku-4-5-20251001,anthropic,1.0,5.0,,,," True"," 1"," 0"
 us.anthropic.claude-haiku-4-5-20251001-v1:0,bedrock,1.0,5.0,,,," True"," 1"," 0"
 claude-opus-4-5-20251101,anthropic,5.0,25.0,,,,True,1,0
 global.anthropic.claude-opus-4-5-20251101-v1:0,bedrock,5.0,25.0,,,,True,1,0
+claude-opus-4-7,anthropic,5.0,25.0,,,,False,0,0
+anthropic.claude-opus-4-7,bedrock,5.0,25.0,,,,False,0,0
 claude-opus-4-6,anthropic,5.0,25.0,10.0,37.5,200000,True,1,0
 global.anthropic.claude-opus-4-6-v1,bedrock,5.0,25.0,10.0,37.5,200000,True,1,0
 claude-sonnet-4-6,anthropic,3.0,15.0,6.0,22.5,200000,True,1,0
