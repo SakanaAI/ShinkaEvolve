@@ -1589,6 +1589,7 @@
                                     <th class="sortable" data-sort="rank">R<span class="sort-arrow"></span></th>
                                     <th class="sortable" data-sort="generation">G<span class="sort-arrow"></span></th>
                                     <th class="sortable" data-sort="archive">A<span class="sort-arrow"></span></th>
+                                    <th>Status</th>
                                     <th>Patch Name</th>
                                     <th>Type</th>
                                     <th class="sortable" data-sort="island_idx">I<span class="sort-arrow"></span></th>
@@ -4297,11 +4298,15 @@ console.error("[DEBUG] Error in processData:", error);
                     console.log("[DEBUG] Sample correct nodes:", correctValidNodes.slice(0, 3).map(d => ({id: d.id.substring(0, 8), correct: d.correct, score: d.combined_score})));
                 }
                 
-                // Fallback to all valid nodes if no correct nodes exist
+                // Fallback to evaluated incorrect nodes before using failed proposals
                 let scoringNodes = correctValidNodes;
                 if (correctValidNodes.length === 0) {
-                    console.warn("[DEBUG] No correct nodes found for scoring, falling back to all valid nodes");
-                    scoringNodes = allValidNodes;
+                    console.warn("[DEBUG] No correct nodes found for scoring, falling back to non-failed valid nodes");
+                    scoringNodes = allValidNodes.filter(d => !isFailedProposalNode(d));
+                    if (scoringNodes.length === 0) {
+                        console.warn("[DEBUG] No evaluated nodes found for scoring, falling back to all valid nodes");
+                        scoringNodes = allValidNodes;
+                    }
                     if (scoringNodes.length === 0) {
                         console.warn("[DEBUG] No valid nodes found for scoring");
                         window.allBestPaths = [];
@@ -4685,6 +4690,9 @@ console.error("[DEBUG] Error in processData:", error);
                                         return '#ff8c00'; // Always orange for single path
                                     }
                                 }
+                                if (isFailedProposalNode(n.data)) {
+                                    return '#c0392b';
+                                }
                                 return "#000"; // Default stroke
                             })
                             .style("stroke-width", n => {
@@ -4734,6 +4742,14 @@ console.error("[DEBUG] Error in processData:", error);
                                 <em>Common origin for all islands</em>
                             `);
                         } else {
+                            if (isFailedProposalNode(d.data)) {
+                                tooltip.html(`
+                                    <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                                    <strong>Status:</strong> Failed Proposal<br>
+                                    <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
+                                    <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
+                                `);
+                            } else {
                             tooltip.html(`
                                 <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
                                 <strong>Score:</strong> ${score}<br>
@@ -4741,6 +4757,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 <strong>Island:</strong> ${islandIdx}<br>
                                 <strong>Model:</strong> ${modelName}
                             `);
+                            }
                         }
                         
                         tooltip.style("left", (event.pageX + 15) + "px")
@@ -4768,6 +4785,7 @@ console.error("[DEBUG] Error in processData:", error);
                     .style("fill", d => {
                         if (d.data.isUnifiedRoot) return '#9b59b6'; // Purple for unified root
                         if (d.data.id === window.bestNodeId) return '#ffd700';
+                        if (isFailedProposalNode(d.data)) return '#ffb3b3';
                         if (!d.data.correct) return '#e74c3c';
                         const score = d.data.combined_score;
                         if (score !== null && !isNaN(score)) {
@@ -4791,6 +4809,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 }
                             }
                         }
+                        if (isFailedProposalNode(d.data)) return '#c0392b';
                         return "#000"; // Default stroke
                     })
                     .style("stroke-width", d => {
@@ -4804,6 +4823,7 @@ console.error("[DEBUG] Error in processData:", error);
                         }
                         return 3; // Default width
                     })
+                    .style("stroke-dasharray", d => isFailedProposalNode(d.data) ? "6,3" : null)
                     .style("filter", d => d.data.id === window.bestNodeId ? "drop-shadow(0px 3px 6px rgba(255, 140, 0, 0.5))" : "drop-shadow(0px 2px 4px rgba(0,0,0,0.2))");
 
                 // Add animated rings for the SINGLE best node
@@ -5743,6 +5763,8 @@ console.error("[DEBUG] Error in processData:", error);
                 analysisMetricsHtml = '<p>No analysis metrics.</p>';
             }
 
+            const failureSummaryHtml = buildFailureSummaryHtml(data);
+
             let gridItemsHtml = `
                     <div class="details-section">
                         <h5>General</h5>
@@ -5753,6 +5775,7 @@ console.error("[DEBUG] Error in processData:", error);
                         <p><strong>Children:</strong> ${data.children_count || 0}</p>
                         <p><strong>Complexity:</strong> ${data.complexity || 'N/A'}</p>
         </div>
+                    ${failureSummaryHtml}
                     <div class="details-section">
                         <h5>Performance Score</h5>
                         <p><strong>Combined Score:</strong> ${formatScore(data.combined_score)}</p>
@@ -6442,6 +6465,43 @@ console.error("[DEBUG] Error in processData:", error);
                 // Return the original value as string if it's not a valid number
                 return String(score);
             }
+        }
+
+        function isFailedProposalNode(program) {
+            return Boolean(
+                program &&
+                program.metadata &&
+                program.metadata.node_kind === 'failed_proposal'
+            );
+        }
+
+        function getFailureStatusLabel(program) {
+            if (isFailedProposalNode(program)) {
+                const failureClass = program.metadata.failure_class || program.metadata.failure_stage || 'failed_proposal';
+                return failureClass.replace(/_/g, ' ');
+            }
+            return program.correct ? 'correct' : 'incorrect';
+        }
+
+        function buildFailureSummaryHtml(data) {
+            if (!isFailedProposalNode(data)) {
+                return '';
+            }
+
+            const failureStage = data.metadata?.failure_stage || 'proposal';
+            const failureClass = data.metadata?.failure_class || 'failed_proposal';
+            const failureReason = data.metadata?.failure_reason || data.text_feedback || 'Failed before downstream evaluation.';
+            const failureJsonPath = data.metadata?.failure_json_path || 'N/A';
+
+            return `
+                <div class="details-section">
+                    <h5>Failure Summary</h5>
+                    <p><strong>Stage:</strong> ${escapeHtml(String(failureStage))}</p>
+                    <p><strong>Class:</strong> ${escapeHtml(String(failureClass))}</p>
+                    <p><strong>Reason:</strong> ${escapeHtml(String(failureReason))}</p>
+                    <p><strong>failure.json:</strong> <span class="metadata-value">${escapeHtml(String(failureJsonPath))}</span></p>
+                </div>
+            `;
         }
         // Create charts for the Meta Info tab
         function createCharts(currentGenId) {
@@ -8041,9 +8101,14 @@ console.error("[DEBUG] Error in processData:", error);
             pageData.forEach(prog => {
                 const row = document.createElement("tr");
                 row.setAttribute("data-node-id", prog.id);
+                const isFailedProposal = isFailedProposalNode(prog);
+                const statusLabel = getFailureStatusLabel(prog);
                 
                 // Style incorrect programs differently
-                if (!prog.correct) {
+                if (isFailedProposal) {
+                    row.style.backgroundColor = '#fff1f0';
+                    row.style.color = '#7a1c1c';
+                } else if (!prog.correct) {
                     row.style.backgroundColor = '#fff5f5';
                     row.style.color = '#721c24';
                 }
@@ -8066,6 +8131,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <td>${prog.original_rank}</td>
                     <td>${prog.generation}</td>
                     <td style="text-align: center; color: ${prog.in_archive ? '#28a745' : '#6c757d'}; font-weight: bold;">${archiveStatus}</td>
+                    <td>${escapeHtml(statusLabel)}</td>
                     <td>${patchName}</td>
                     <td>${prog.metadata?.patch_type || 'N/A'}</td>
                     <td>${islandIdx}</td>
@@ -10211,7 +10277,15 @@ console.error("[DEBUG] Error in processData:", error);
                         
                         // Update node styles
                         node.selectAll('path')
-                            .style("stroke", n => ancestorIds.has(n.data.id) ? '#ff8c00' : "#000")
+                            .style("stroke", n => {
+                                if (ancestorIds.has(n.data.id)) {
+                                    return '#ff8c00';
+                                }
+                                if (isFailedProposalNode(n.data)) {
+                                    return '#c0392b';
+                                }
+                                return "#000";
+                            })
                             .style("stroke-width", n => ancestorIds.has(n.data.id) ? 3 : 2)
                             .style("filter", n => n.data.id === window.bestNodeId ? "drop-shadow(0px 2px 4px rgba(255, 140, 0, 0.3))" : "drop-shadow(0px 1px 2px rgba(0,0,0,0.2))");
                         
@@ -10252,14 +10326,23 @@ console.error("[DEBUG] Error in processData:", error);
                     const patchType = d.data.metadata.patch_type || 'N/A';
                     const islandIdx = d.data.island_idx;
                     
-                    tooltip.html(`
-                        <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
-                        <strong>Score:</strong> ${score}<br>
-                        <strong>Type:</strong> ${patchType}<br>
-                        <strong>Island:</strong> ${islandIdx}
-                    `)
-                    .style("left", (event.pageX + 15) + "px")
-                    .style("top", (event.pageY - 10) + "px");
+                    if (isFailedProposalNode(d.data)) {
+                        tooltip.html(`
+                            <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                            <strong>Status:</strong> Failed Proposal<br>
+                            <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
+                            <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
+                        `);
+                    } else {
+                        tooltip.html(`
+                            <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
+                            <strong>Score:</strong> ${score}<br>
+                            <strong>Type:</strong> ${patchType}<br>
+                            <strong>Island:</strong> ${islandIdx}
+                        `);
+                    }
+                    tooltip.style("left", (event.pageX + 15) + "px")
+                        .style("top", (event.pageY - 10) + "px");
                 })
                 .on('mousemove', (event) => {
                     d3.select(".node-tooltip")
@@ -10278,6 +10361,7 @@ console.error("[DEBUG] Error in processData:", error);
                     })
                     .style("fill", d => {
                         if (d.data.id === window.bestNodeId) return '#ffd700';
+                        if (isFailedProposalNode(d.data)) return '#ffb3b3';
                         if (!d.data.correct) return '#e74c3c';
                         const score = d.data.combined_score;
                         if (score !== null && !isNaN(score)) {
@@ -10297,9 +10381,11 @@ console.error("[DEBUG] Error in processData:", error);
                                 return "#000";
                             }
                         }
+                        if (isFailedProposalNode(d.data)) return '#c0392b';
                         return "#000";
                     })
                     .style("stroke-width", d => ancestorIds.has(d.data.id) ? 3 : 2)
+                    .style("stroke-dasharray", d => isFailedProposalNode(d.data) ? "6,3" : null)
                     .style("filter", d => d.data.id === window.bestNodeId ? "drop-shadow(0px 2px 4px rgba(255, 140, 0, 0.3))" : "drop-shadow(0px 1px 2px rgba(0,0,0,0.2))");
 
                 // Add animated rings for the SINGLE best node (island view)
