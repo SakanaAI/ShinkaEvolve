@@ -438,7 +438,7 @@
                 // Calculate stats
                 const programs = data.programs || [];
                 const maxGen = programs.reduce((max, p) => Math.max(max, p.generation || 0), 0);
-                const bestScore = programs.reduce((best, p) => Math.max(best, p.combined_score || 0), 0);
+                const bestScore = getBestCorrectScore(programs);
                 const totalCost = programs.reduce((sum, p) => sum + getProgramCost(p), 0);
                 
                 const row = document.createElement('tr');
@@ -447,7 +447,7 @@
                         <span class="color-swatch" style="background: ${color}"></span>
                         <span class="result-label">${escapeHtml(item.label)}</span>
                     </td>
-                    <td class="numeric">${bestScore.toFixed(2)}</td>
+                    <td class="numeric">${bestScore === null ? 'N/A' : bestScore.toFixed(2)}</td>
                     <td class="numeric">${maxGen}</td>
                     <td class="numeric">${programs.length.toLocaleString()}</td>
                     <td class="numeric">${totalCost < 0.01 ? '<0.01' : totalCost.toFixed(2)}</td>
@@ -467,6 +467,17 @@
             // Extract costs from metadata
             const meta = p.metadata || {};
             return (meta.api_costs || 0) + (meta.embed_cost || 0) + (meta.novelty_cost || 0) + (meta.meta_cost || 0);
+        }
+
+        function getBestCorrectScore(programs) {
+            let bestScore = Number.NEGATIVE_INFINITY;
+            programs.forEach(p => {
+                if (!p.correct || p.combined_score === null || p.combined_score === undefined) {
+                    return;
+                }
+                bestScore = Math.max(bestScore, p.combined_score);
+            });
+            return Number.isFinite(bestScore) ? bestScore : null;
         }
 
         function updateChart() {
@@ -503,26 +514,28 @@
                         genData[gen] = { programs: [], scores: [] };
                     }
                     genData[gen].programs.push(p);
-                    if (p.combined_score !== null && p.combined_score !== undefined) {
+                    if (p.correct && p.combined_score !== null && p.combined_score !== undefined) {
                         genData[gen].scores.push(p.combined_score);
                     }
                 });
 
                 const generations = Object.keys(genData).map(Number).sort((a, b) => a - b);
-                let cumulativeBest = 0;
+                let cumulativeBest = Number.NEGATIVE_INFINITY;
                 let cumulativePrograms = 0;
                 let cumulativeCorrect = 0;
                 
                 const pointsGen = generations.map(gen => {
                     const genInfo = genData[gen];
-                    const genBest = genInfo.scores.length > 0 ? Math.max(...genInfo.scores) : 0;
-                    cumulativeBest = Math.max(cumulativeBest, genBest);
+                    const genBest = genInfo.scores.length > 0 ? Math.max(...genInfo.scores) : null;
+                    if (genBest !== null) {
+                        cumulativeBest = Math.max(cumulativeBest, genBest);
+                    }
                     cumulativePrograms += genInfo.programs.length;
                     cumulativeCorrect += genInfo.programs.filter(p => p.correct).length;
                     
                     let value;
                     switch (metric) {
-                        case 'best_score': value = cumulativeBest; break;
+                        case 'best_score': value = Number.isFinite(cumulativeBest) ? cumulativeBest : null; break;
                         case 'program_count': value = cumulativePrograms; break;
                         case 'correct_count': value = cumulativeCorrect; break;
                         default: value = cumulativeBest;
@@ -544,7 +557,7 @@
 
                 // === Chart 2: By Cost ===
                 let runningCost = 0;
-                let runningBest = 0;
+                let runningBest = Number.NEGATIVE_INFINITY;
                 let runningPrograms = 0;
                 let runningCorrect = 0;
                 
@@ -554,13 +567,13 @@
                     runningCost += cost;
                     runningPrograms += 1;
                     if (p.correct) runningCorrect += 1;
-                    if (p.combined_score !== null && p.combined_score !== undefined) {
+                    if (p.correct && p.combined_score !== null && p.combined_score !== undefined) {
                         runningBest = Math.max(runningBest, p.combined_score);
                     }
                     
                     let value;
                     switch (metric) {
-                        case 'best_score': value = runningBest; break;
+                        case 'best_score': value = Number.isFinite(runningBest) ? runningBest : null; break;
                         case 'program_count': value = runningPrograms; break;
                         case 'correct_count': value = runningCorrect; break;
                         default: value = runningBest;
@@ -662,4 +675,3 @@
     </script>
 </body>
 </html>
-

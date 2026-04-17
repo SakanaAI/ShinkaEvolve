@@ -1,15 +1,16 @@
 import backoff
 import logging
 import openai
+from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
 
 logger = logging.getLogger(__name__)
 
-MAX_TRIES = 20
-MAX_VALUE = 20
-MAX_TIME = 600
+MAX_TRIES = BACKOFF_MAX_TRIES
+MAX_VALUE = BACKOFF_MAX_VALUE
+MAX_TIME = BACKOFF_MAX_TIME
 
 
 def backoff_handler(details):

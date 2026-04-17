@@ -2,6 +2,11 @@ import pytest
 
 import shinka.llm.client as llm_client_module
 from shinka.llm.client import get_async_client_llm, get_client_llm
+from shinka.llm.constants import TIMEOUT
+
+
+def test_google_genai_timeout_is_in_milliseconds():
+    assert llm_client_module._google_genai_timeout_ms() == TIMEOUT * 1000
 
 
 def test_get_client_llm_dynamic_openrouter(monkeypatch):
@@ -49,6 +54,42 @@ def test_get_async_client_llm_openai_sets_timeout(monkeypatch):
     assert provider == "openai"
     assert model_name == "gpt-5.4-mini"
     assert captured_kwargs["timeout"] == llm_client_module.TIMEOUT
+
+
+def test_get_client_llm_gemini_sets_timeout(monkeypatch):
+    captured_kwargs = {}
+
+    class _FakeGenAIClient:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setattr(llm_client_module.genai, "Client", _FakeGenAIClient)
+
+    _client, model_name, provider = get_client_llm("gemini-2.5-flash")
+
+    assert provider == "google"
+    assert model_name == "gemini-2.5-flash"
+    assert captured_kwargs["api_key"] == "test-gemini-key"
+    assert captured_kwargs["http_options"].timeout == TIMEOUT * 1000
+
+
+def test_get_async_client_llm_gemini_sets_timeout(monkeypatch):
+    captured_kwargs = {}
+
+    class _FakeGenAIClient:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setattr(llm_client_module.genai, "Client", _FakeGenAIClient)
+
+    _client, model_name, provider = get_async_client_llm("gemini-2.5-flash")
+
+    assert provider == "google"
+    assert model_name == "gemini-2.5-flash"
+    assert captured_kwargs["api_key"] == "test-gemini-key"
+    assert captured_kwargs["http_options"].timeout == TIMEOUT * 1000
 
 
 def test_get_client_llm_local_openai_uses_api_key_env_query_param(monkeypatch):

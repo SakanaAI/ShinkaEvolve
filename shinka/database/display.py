@@ -167,7 +167,11 @@ class DatabaseDisplay:
         )
         _console.print(table)
 
-    def print_summary(self, console: Optional[RichConsole] = None) -> None:
+    def print_summary(
+        self,
+        console: Optional[RichConsole] = None,
+        total_program_target: Optional[int] = None,
+    ) -> None:
         """Print a summary of the database contents to the terminal."""
         if not self.cursor or not self.conn:
             logger.error("Database not connected. Cannot print summary.")
@@ -232,7 +236,12 @@ class DatabaseDisplay:
 
         # Gather data for summary
         total_programs = self.count_programs_func()
-        summary_table.add_row("Total Programs", f"[bold]{total_programs}[/bold]")
+        total_programs_display = f"[bold]{total_programs}[/bold]"
+        if total_program_target is not None:
+            total_programs_display = (
+                f"[bold]{total_programs}[/bold] / {total_program_target}"
+            )
+        summary_table.add_row("Total Programs", total_programs_display)
 
         # Correctness info
         self.cursor.execute("SELECT COUNT(*) FROM programs WHERE correct = 1")

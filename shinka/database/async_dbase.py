@@ -377,7 +377,7 @@ class AsyncProgramDatabase:
         embed_cost: float = 0.0,
         verbose: bool = False,
         defer_maintenance: bool = False,
-    ) -> None:
+    ) -> bool:
         """Async version of adding a program to the database.
 
         Args:
@@ -469,6 +469,7 @@ class AsyncProgramDatabase:
                 self._schedule_embedding_recomputation()
 
             self._debug_track_end(op_id, success=True)
+            return added
 
         except Exception as e:
             self._debug_track_end(op_id, success=False)
@@ -686,6 +687,35 @@ class AsyncProgramDatabase:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self.write_executor, run_maintenance_sync)
 
+    async def update_program_metadata_async(
+        self,
+        program_id: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Persist program metadata on the dedicated writer lane."""
+
+        def update_metadata_sync():
+            thread_db = None
+            try:
+                thread_db = ProgramDatabase(
+                    self.sync_db.config,
+                    embedding_model=self.sync_db.embedding_model,
+                )
+                payload = json.dumps(metadata)
+                thread_db.cursor.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (payload, program_id),
+                )
+                thread_db.conn.commit()
+            finally:
+                if thread_db is not None:
+                    thread_db.close()
+
+        import json
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self.write_executor, update_metadata_sync)
+
     def _schedule_embedding_recomputation(self):
         """Schedule embedding recomputation as a background task."""
         # Cancel any existing recomputation task
@@ -851,6 +881,60 @@ class AsyncProgramDatabase:
         except Exception as e:
             self._debug_track_end(op_id, success=False)
             logger.error(f"Error in async source_job_id lookup: {e}")
+            raise
+
+    async def record_attempt_event_async(
+        self,
+        generation: int,
+        stage: str,
+        status: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append one attempt lifecycle event to the durable SQLite log."""
+        op_id = self._debug_track_start(
+            "record_attempt_event_async",
+            generation=generation,
+            stage=stage,
+            status=status,
+        )
+
+        try:
+            await asyncio.sleep(0)
+
+            def record_thread_safe():
+                conn = None
+                try:
+                    conn = sqlite3.connect(
+                        self.sync_db.config.db_path,
+                        check_same_thread=False,
+                        timeout=60.0,
+                    )
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                    conn.execute("PRAGMA busy_timeout = 60000;")
+                    payload = None
+                    if details is not None:
+                        import json
+
+                        payload = json.dumps(details, sort_keys=True)
+                    conn.execute(
+                        """
+                        INSERT INTO attempt_log (
+                            generation, stage, status, details, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (generation, stage, status, payload, time.time()),
+                    )
+                    conn.commit()
+                finally:
+                    if conn is not None:
+                        conn.close()
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(self.executor, record_thread_safe)
+            self._debug_track_end(op_id, success=True)
+        except Exception as e:
+            self._debug_track_end(op_id, success=False)
+            logger.error(f"Error in async attempt event logging: {e}")
             raise
 
     async def record_generation_event_async(

@@ -51,9 +51,9 @@ def test_default_launch_config_uses_neutral_shared_defaults():
 
     assert cfg.variant_suffix == "_default"
     assert cfg.exp_name == "shinka_circle_packing"
-    assert cfg.max_evaluation_jobs == 2
-    assert cfg.max_proposal_jobs == 1
-    assert cfg.max_db_workers == 4
+    assert cfg.max_evaluation_jobs == 4
+    assert cfg.max_proposal_jobs == 6
+    assert cfg.max_db_workers == 2
     assert cfg.evo_config.num_generations == 50
     assert cfg.evo_config.max_patch_attempts == 1
     assert cfg.evo_config.llm_models == [

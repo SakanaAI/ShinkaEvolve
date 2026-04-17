@@ -157,8 +157,8 @@ All `shinka/configs/evolution/*.yaml` set runner-level concurrency at the top le
 
 ```yaml
 max_evaluation_jobs: 1
-max_proposal_jobs: 1
-max_db_workers: 4
+max_proposal_jobs: 2
+max_db_workers: 2
 
 evo_config:
   patch_types: ["diff", "full"]
@@ -168,15 +168,16 @@ evo_config:
   llm_models: ["gpt-4.1"]
   llm_dynamic_selection: null
   embedding_model: "text-embedding-3-small"
+  enable_controlled_oversubscription: false
   results_dir: ${output_dir}
 ```
 
 #### `shinka/configs/evolution/medium_budget.yaml`
 
 ```yaml
-max_evaluation_jobs: 2
-max_proposal_jobs: 3
-max_db_workers: 4
+max_evaluation_jobs: 4
+max_proposal_jobs: 6
+max_db_workers: 2
 
 evo_config:
   patch_types: ["diff", "full", "cross"]
@@ -212,7 +213,7 @@ evo_config:
 ```yaml
 max_evaluation_jobs: 6
 max_proposal_jobs: 8
-max_db_workers: 4
+max_db_workers: 2
 
 evo_config:
   patch_types: ["diff", "full", "cross"]
@@ -263,7 +264,7 @@ Recommended starting point:
 ```yaml
 max_evaluation_jobs: 5
 max_proposal_jobs: 7
-max_db_workers: 4
+max_db_workers: 2
 
 evo_config:
   enable_controlled_oversubscription: true

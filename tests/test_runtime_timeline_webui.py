@@ -9,6 +9,11 @@ def test_runtime_timeline_layout_reserves_space_for_legend():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
     assert "function getRuntimeTimelineLayout(" in html
+    assert "const RUNTIME_TIMELINE_ROW_HEIGHT = 34;" in html
+    assert "const RUNTIME_TIMELINE_MIN_HEIGHT = 220;" in html
+    assert "const RUNTIME_TIMELINE_BASE_CHROME = 140;" in html
+    assert "function getRuntimeTimelinePlotHeight(laneCount)" in html
+    assert "RUNTIME_TIMELINE_BASE_CHROME + (safeLaneCount * RUNTIME_TIMELINE_ROW_HEIGHT)" in html
     assert "margin: { l: 150, r: 10, t: 60, b: 105 }" in html
     assert "laneCount = null" in html
     assert "layout.yaxis.range = [laneCount - 0.5, -0.5];" in html
@@ -46,6 +51,43 @@ def test_runtime_timeline_dedupes_source_jobs_and_deprioritizes_island_copies():
     assert "if (rowPriority > existingPriority)" in html
 
 
+def test_runtime_timeline_infers_stage_lanes_when_worker_ids_are_missing():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "function assignStageTimelineLaneIds(" in html
+    assert "fallbackLaneKey" in html
+    assert "row.samplingWorkerId || row.samplingLaneId" in html
+    assert "row.evaluationWorkerId || row.evaluationLaneId" in html
+    assert "row.postprocessWorkerId || row.postprocessLaneId" in html
+
+
+def test_runtime_timeline_uses_adaptive_height_and_fixed_lane_thickness():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert 'id="throughput-runtime-plot" style="width: 100%; overflow: hidden;"' in html
+    assert "const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneLabels.length);" in html
+    assert "const runtimePlotHeight = getRuntimeTimelinePlotHeight(laneCount);" in html
+    assert "const poolLineWidth = getRuntimeTimelineLineWidth();" in html
+    assert "const legacyBarWidth = getRuntimeTimelineBarWidth();" in html
+    assert "width: poolLineWidth" in html
+    assert "width: rows.map(() => legacyBarWidth)" in html
+    assert "const runtimePlotHeight = 420;" not in html
+
+
+def test_runtime_timeline_can_be_toggled_visible_by_default():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert 'id="throughput-runtime-toggle"' in html
+    assert 'onclick="toggleThroughputRuntimePlot()"' in html
+    assert 'id="throughput-runtime-plot-wrapper"' in html
+    assert "window.isThroughputRuntimePlotVisible = true;" in html
+    assert "function setThroughputRuntimePlotVisibility(isVisible, rerender = false)" in html
+    assert "function toggleThroughputRuntimePlot()" in html
+    assert "button.textContent = isVisible ? 'Hide Plot' : 'Show Plot';" in html
+    assert "wrapper.style.display = isVisible ? 'block' : 'none';" in html
+    assert "renderRuntimeTimelinePlot(window.treeData, window.selectedNodeId || null, 'throughput-runtime-summary', 'throughput-runtime-plot');" in html
+
+
 def test_throughput_tab_contains_runtime_and_utilization_sections():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
@@ -66,6 +108,9 @@ def test_throughput_tab_contains_runtime_and_utilization_sections():
 def test_meta_panel_uses_update_wording_instead_of_generation_wording():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
+    assert "function getCurrentResultsDir()" in html
+    assert '<h3 id="meta-info-title">${metaTitle}</h3>' in html
+    assert "Info: <code>${escapeHtml(resultsDir)}</code>" in html
     assert '<label for="generation-slider">Meta Update:</label>' in html
     assert "Meta analysis for update ${generation} is not available." in html
     assert 'Meta analysis for this update is not available.' in html
