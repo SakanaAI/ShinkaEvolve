@@ -9,6 +9,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Added the GitHub Pages documentation website for `shinka-evolve`.
 - Added dashboard sorting controls to the local WebUI so result cards can be reordered by the active setting.
 - Added a `Hide Plot` / `Show Plot` toggle for the WebUI Throughput tab runtime timeline while keeping the plot visible by default.
+- Added Claude Opus 4.7 pricing entries for the Anthropic API and Amazon Bedrock (`anthropic.claude-opus-4-7`) in the LLM pricing catalog.
 
 ### Changed
 
