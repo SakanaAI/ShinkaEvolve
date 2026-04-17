@@ -194,6 +194,28 @@ def test_asymmetric_ucb_print_summary_preserves_openrouter_prefix():
     assert "openrouter/exampl" in output
 
 
+
+def test_asymmetric_ucb_print_summary_matches_standard_summary_width():
+    bandit = AsymmetricUCB(
+        arm_names=["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"],
+        exploration_coef=2.0,
+        epsilon=0.1,
+        auto_decay=0.95,
+    )
+
+    bandit.set_baseline_score(0.5)
+    bandit.update_submitted("gpt-4o")
+    bandit.update("gpt-4o", reward=0.8, baseline=0.5)
+    bandit.update_submitted("gpt-4o-mini")
+    bandit.update("gpt-4o-mini", reward=0.6, baseline=0.5)
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, width=200)
+    bandit.print_summary(console=console)
+    output_lines = buffer.getvalue().splitlines()
+
+    assert max(len(line) for line in output_lines) == 120
+
 if __name__ == "__main__":
     test_asymmetric_ucb_persistence()
     test_thompson_sampler_persistence()
