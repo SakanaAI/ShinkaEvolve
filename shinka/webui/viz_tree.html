@@ -4143,6 +4143,30 @@ console.error("[DEBUG] Error in processData:", error);
             const maxTs = Math.max(...data.map(d => d.timestamp || 0));
             return `${count}-${maxGen}-${maxTs}`;
         }
+
+        function normalizeTreeRoots(nodes) {
+            const hierarchyData = JSON.parse(JSON.stringify(nodes));
+            const nodeMap = new Map(nodes.map(node => [node.id, node]));
+            const rootNodes = hierarchyData.filter(node => !node.parent_id || !nodeMap.has(node.parent_id));
+
+            if (rootNodes.length <= 1) {
+                return hierarchyData;
+            }
+
+            const virtualRootId = '___virtual_root___';
+            hierarchyData.push({
+                id: virtualRootId,
+                parent_id: null,
+                agent_name: 'VIRTUAL ROOT',
+                isVirtual: true,
+                generation: -1,
+            });
+            rootNodes.forEach(rootNode => {
+                rootNode.parent_id = virtualRootId;
+            });
+
+            return hierarchyData;
+        }
         
         function renderGraph(data, forceRender = false) {
             console.log("[DEBUG] Starting graph rendering with D3 tree layout");
@@ -4224,19 +4248,7 @@ console.error("[DEBUG] Error in processData:", error);
                 }
                 
                 const nodes = processedData.map(d => ({...d, agent_name: d.metadata.patch_name || d.agent_name || "unnamed_agent"}));
-                const nodeMap = new Map(nodes.map(node => [node.id, node]));
-
-                let hierarchyData = JSON.parse(JSON.stringify(nodes));
-                const rootNodes = hierarchyData.filter(n => !n.parent_id || !nodeMap.has(n.parent_id));
-                const virtualRootId = '___virtual_root___';
-
-                // Virtualize any remaining orphan roots, including island-spawned roots.
-                if (rootNodes.length > 1) {
-                    hierarchyData.push({ id: virtualRootId, parent_id: null, agent_name: 'VIRTUAL ROOT', isVirtual: true, generation: -1 });
-                    rootNodes.forEach(rn => {
-                        rn.parent_id = virtualRootId;
-                    });
-                }
+                const hierarchyData = normalizeTreeRoots(nodes);
                 
                 const root = d3.stratify()
                     .id(d => d.id)
