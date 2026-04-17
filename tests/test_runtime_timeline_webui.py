@@ -105,6 +105,31 @@ def test_throughput_tab_contains_runtime_and_utilization_sections():
     assert "function renderThroughputOccupancyPercentPlot(rows, capacities)" in html
 
 
+def test_tab_labels_use_shortened_scratch_and_eval_text():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert '<div class="tab" data-tab="meta-analysis">Scratch</div>' in html
+    assert '<div class="tab" data-tab="log-output">Eval</div>' in html
+    assert '<div class="tab" data-tab="meta-analysis">Scratchpad</div>' not in html
+    assert '<div class="tab" data-tab="log-output">Evaluation</div>' not in html
+
+
+def test_throughput_tab_uses_usage_label():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert '<div class="tab" data-tab="throughput">Usage</div>' in html
+    assert '<div class="tab" data-tab="throughput">Throughput</div>' not in html
+
+
+def test_normalized_occupancy_plot_uses_short_util_label():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "name: `${stage.label} Util.`" in html
+    assert "name: `${stage.label} Utilization`" not in html
+    assert "name: '100% Cap.'" in html
+    assert "name: '100% Capacity'" not in html
+
+
 def test_meta_panel_uses_update_wording_instead_of_generation_wording():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 

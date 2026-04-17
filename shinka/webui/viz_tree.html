@@ -1823,14 +1823,14 @@
             <div id="tabs">
                 <div class="tab active" data-tab="agent-info">Meta</div>
                 <div class="tab" data-tab="pareto-front">Pareto</div>
-                <div class="tab" data-tab="meta-analysis">Scratchpad</div>
+                <div class="tab" data-tab="meta-analysis">Scratch</div>
                 <div class="tab" data-tab="node-details">Node</div>
                 <div class="tab" data-tab="agent-code">Code</div>
                 <div class="tab" data-tab="code-diff">Diff</div>
-                <div class="tab" data-tab="log-output">Evaluation</div>
+                <div class="tab" data-tab="log-output">Eval</div>
                 <div class="tab" data-tab="llm-result">LLM</div>
                 <div class="tab" data-tab="analysis">Analysis</div>
-                <div class="tab" data-tab="throughput">Throughput</div>
+                <div class="tab" data-tab="throughput">Usage</div>
             </div>
             <div id="tab-content">
                 <div id="agent-info" class="content-section active">
@@ -16520,7 +16520,7 @@ console.error("[DEBUG] Error in processData:", error);
                 traces.push({
                     x: series.x,
                     y: series.y.map(value => (value / stage.capacity) * 100),
-                    name: `${stage.label} Utilization`,
+                    name: `${stage.label} Util.`,
                     type: 'scatter',
                     mode: 'lines',
                     line: { color: stage.color, width: 2 },
@@ -16535,7 +16535,7 @@ console.error("[DEBUG] Error in processData:", error);
             traces.push({
                 x: [minStart * 1000, maxEnd * 1000],
                 y: [100, 100],
-                name: '100% Capacity',
+                name: '100% Cap.',
                 type: 'scatter',
                 mode: 'lines',
                 line: { color: '#6b7280', width: 1, dash: 'dot' },
