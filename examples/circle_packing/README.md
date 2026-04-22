@@ -15,9 +15,9 @@ Compact Shinka task: pack `n=26` circles in a unit square, maximize sum of radii
 
 | Config | Intended Use | Core Shape |
 |---|---|---|
-| `shinka_small.yaml` | default dev run | async `2/2/2` workers, `100` generations, `$0.5` budget, `1` island, prompt evolution enabled |
-| `shinka_medium.yaml` | moderate parallel run | async `5/7/4` workers, adaptive proposal oversubscription, `100` generations, `$2.5` budget |
-| `shinka_long.yaml` | long/high-throughput run | async `20/26/8` workers, adaptive proposal oversubscription, `100` generations, `$5.0` budget |
+| `shinka_small.yaml` | default dev run | async `5/5/4` workers, `200` generations, `$5` budget, `1` island, prompt evolution enabled |
+| `shinka_medium.yaml` | moderate parallel run | async `10/10/4` workers, adaptive proposal oversubscription, `200` generations, `$5` budget |
+| `shinka_large.yaml` | high-throughput run | async `20/26/8` workers, adaptive proposal oversubscription, `200` generations, `$5` budget |
 
 Notes:
 

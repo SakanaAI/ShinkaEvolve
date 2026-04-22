@@ -1,14 +1,14 @@
 # Number of evaluation jobs to run in parallel.
-max_evaluation_jobs: 5
+max_evaluation_jobs: 10
 # Number of proposal-generation jobs to run in parallel.
-max_proposal_jobs: 7
+max_proposal_jobs: 10
 # Number of database worker jobs handling archive/selection updates.
 max_db_workers: 4
 
 # Database/search-state settings for island evolution and archiving.
 db_config:
   # Number of independent evolutionary islands.
-  num_islands: 1
+  num_islands: 2
   # Maximum number of individuals stored in the archive.
   archive_size: 40
   # Fraction of top performers treated as elites.
@@ -62,9 +62,9 @@ evo_config:
     - 0.3
     - 0.1
   # Total number of generations to run.
-  num_generations: 50
+  num_generations: 200
   # Max API spend budget for this run (USD).
-  max_api_costs: 2.5
+  max_api_costs: 20.0
   # Retries for resampling patch format/content before giving up.
   max_patch_resamples: 3
   # Retries for patch application/generation attempts.
@@ -77,9 +77,10 @@ evo_config:
   language: python
   # Candidate LLMs used for proposal generation.
   llm_models:
+    - "gpt-5.4"
+    - "gemini-3.1-pro-preview"
     - "gemini-3-flash-preview"
     - "gpt-5.4-mini"
-    - "gpt-5.4-nano"
   # Shared generation kwargs for main proposal LLM calls.
   llm_kwargs:
     # Candidate temperatures to sample for generation diversity.
@@ -91,10 +92,11 @@ evo_config:
     reasoning_efforts:
         - low
         - medium
+        - high
     # Maximum output tokens per main LLM response.
     max_tokens: 32768
   # Enable bounded adaptive proposal oversubscription.
-  enable_controlled_oversubscription: true
+  enable_controlled_oversubscription: false
   # Proposal-target controller mode.
   proposal_target_mode: adaptive
   # Minimum completed timing samples before adaptive targeting kicks in.
@@ -109,7 +111,7 @@ evo_config:
   proposal_target_ewma_alpha: 0.3
 
   # Interval (in generations) for meta-recommendation updates.
-  meta_rec_interval: 5
+  meta_rec_interval: null # 10
   # LLMs used for meta-analysis/recommendation steps.
   meta_llm_models:
     - gpt-5.4-mini
@@ -128,7 +130,7 @@ evo_config:
 
   # LLMs used for novelty checking/judgment.
   novelty_llm_models:
-    - gpt-5.4-nano
+    - gpt-5.4-mini
   # Generation kwargs for novelty LLM calls.
   novelty_llm_kwargs:
     # Temperatures used for novelty calls.
@@ -144,12 +146,12 @@ evo_config:
     # Exploration strength in UCB-style model selection.
     exploration_coef: 1.0
     # Cost-penalty weight in model-selection scoring.
-    cost_aware_coef: 0.7
+    cost_aware_coef: 0.5
   # Directory where run outputs, logs, and artifacts are written.
   results_dir: results/results_circle_async_medium
 
   # Whether prompt variants are evolved during the run.
-  evolve_prompts: True
+  evolve_prompts: False
   # Interval (in generations) between prompt-evolution steps.
   prompt_evolution_interval: 5
   # Allowed patch formats when mutating prompts.
