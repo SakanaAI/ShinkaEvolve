@@ -80,7 +80,7 @@ For source installs and a full first-run walkthrough, see
 
 ---
 
-## Two Entry Paths
+## Three Entry Paths
 
 ### Hydra Launcher
 
@@ -107,7 +107,32 @@ shinka_run \
   --set db.num_islands=2
 ```
 
+### Minimal Python API
+
+Direct runner construction when you want programmatic control:
+
+```python
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
+from shinka.database import DatabaseConfig
+from shinka.launch import LocalJobConfig
+
+runner = ShinkaEvolveRunner(
+    evo_config=EvolutionConfig(
+        init_program_path="examples/circle_packing/initial.py",
+        num_generations=20,
+    ),
+    db_config=DatabaseConfig(),
+    job_config=LocalJobConfig(
+        eval_program_path="examples/circle_packing/evaluate.py",
+    ),
+    max_evaluation_jobs=1,
+    max_proposal_jobs=1,
+)
+runner.run()
+```
+
 The CLI split and precedence rules are documented in [CLI Usage](cli_usage.md).
+For a fuller API walkthrough, see [Getting Started](getting_started.md).
 
 ---
 
@@ -120,4 +145,3 @@ The CLI split and precedence rules are documented in [CLI Usage](cli_usage.md).
 | [Configuration](configuration.md) | Runtime dataclasses, presets, override grammar |
 | [API Reference](reference/index.md) | Curated reference for runtime modules |
 | [Examples](examples.md) | Runnable tasks and recommended entry points |
-

@@ -127,6 +127,7 @@ Oversubscription never increases evaluation concurrency.
 `max_evaluation_jobs` still caps concurrent evals.
 These settings only control how many proposal/sampling jobs Shinka is willing
 to keep in flight ahead of those eval workers.
+
 | Key | What it controls | When to raise it | When to lower it |
 |-----|------------------|------------------|------------------|
 | `enable_controlled_oversubscription` | Master on/off switch. If `false`, proposal target stays at `max_evaluation_jobs`. Default is `false`. | Turn it on if proposals are slower than evals and workers go idle waiting for new candidates. | Leave it off for predictable sync-like behavior or easier debugging. |

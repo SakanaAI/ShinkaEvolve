@@ -1,4 +1,4 @@
-# Agentic Usage Guide
+# Usage Guide
 
 This guide shows how to run Shinka with coding agents using the project skills:
 

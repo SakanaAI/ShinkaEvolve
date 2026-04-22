@@ -88,14 +88,14 @@ nav:
   - Home: index.md
   - Getting Started: getting_started.md
   - Core Concepts:
-      - Overview: core_concepts.md
       - UCB1 Bandit LLM Selection: bandit_selection.md
+      - Async Evolution: async_evolution.md
+  - Usage:
+      - Agentic Usage: agentic_usage.md
       - CLI Usage: cli_usage.md
       - Configuration: configuration.md
-      - Async Evolution: async_evolution.md
       - Local Models: support_local_models.md
   - WebUI: webui.md
-  - Agentic Usage: agentic_usage.md
   - API Reference:
       - Overview: reference/index.md
       - Core Runtime: reference/core_api.md

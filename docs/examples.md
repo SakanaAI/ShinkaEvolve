@@ -11,7 +11,7 @@ Recommended first example.
 
 | | |
 |-|-|
-| **Path** | `examples/circle_packing` |
+| **Path** | [`examples/circle_packing`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing) |
 | **Language** | Python |
 | **Focus** | Async evolution, config profiles, result notebooks |
 
@@ -31,7 +31,7 @@ Best reference for budgeted async runs and notebook inspection after evolution.
 
 | | |
 |-|-|
-| **Path** | `examples/game_2048` |
+| **Path** | [`examples/game_2048`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) |
 | **Language** | Python |
 | **Focus** | Policy optimization in a game environment |
 
@@ -44,7 +44,7 @@ control-oriented problem shape.
 
 | | |
 |-|-|
-| **Path** | `examples/julia_prime_counting` |
+| **Path** | [`examples/julia_prime_counting`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) |
 | **Language** | Julia candidate + Python evaluator |
 | **Focus** | Cross-language evolution, strict correctness scoring |
 
@@ -62,7 +62,7 @@ harness in Python.
 
 | | |
 |-|-|
-| **Path** | `examples/novelty_generator` |
+| **Path** | [`examples/novelty_generator`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) |
 | **Language** | Python |
 | **Focus** | Novelty-oriented generation, nontraditional evaluation |
 
@@ -73,7 +73,7 @@ evaluation metrics.
 
 ## Tutorial Notebook
 
-`examples/shinka_tutorial.ipynb` — exploratory, notebook-centered introduction
+[`examples/shinka_tutorial.ipynb`](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb) — exploratory, notebook-centered introduction
 before moving into full CLI or API workflows.
 
 ---

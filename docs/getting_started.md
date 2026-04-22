@@ -93,7 +93,7 @@ Install bundled Shinka skills for Claude Code or Codex:
 npx skills add SakanaAI/ShinkaEvolve --skill '*' -g -a claude-code -a codex -y
 ```
 
-See [Agentic Usage Guide](agentic_usage.md) for per-skill walkthroughs.
+See [Usage Guide](agentic_usage.md) for per-skill walkthroughs.
 
 ### Advanced uv features
 

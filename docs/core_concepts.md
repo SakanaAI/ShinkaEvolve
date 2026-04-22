@@ -51,6 +51,20 @@ See [Configuration](configuration.md) for field-level reference.
 
 ---
 
+## Model Selection
+
+When `EvolutionConfig.llm_models` contains multiple mutation models, Shinka can
+shift sampling probability across them with dynamic bandit selection.
+
+- Reward-side utility from observed candidate improvements
+- Exploration bonus for under-sampled models
+- Optional cost-aware blending to prefer cheaper models when quality is close
+
+Use the interactive [UCB1 Bandit LLM Selection](bandit_selection.md)
+to see how `cost_aware_coef` changes the selection posterior over time.
+
+---
+
 ## Archives and Islands
 
 The database stores both the current population and derived state used to guide
