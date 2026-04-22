@@ -47,5 +47,9 @@ def build_google_genai_client(timeout_ms: int | None = None) -> genai.Client:
 
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("GEMINI_API_KEY is required for Gemini API mode.")
+        raise ValueError(
+            "Set GEMINI_API_KEY for Gemini API mode, or set "
+            "GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_CLOUD_PROJECT, and "
+            "GOOGLE_CLOUD_LOCATION for Vertex AI mode."
+        )
     return genai.Client(api_key=api_key, **kwargs)
