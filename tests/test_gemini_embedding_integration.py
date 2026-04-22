@@ -47,19 +47,23 @@ def test_new_gemini_embedding_model_is_registered():
 
 def test_get_client_embed_resolves_new_model_to_google(monkeypatch):
     captured = {}
+    fake_client = object()
 
-    class FakeGenAIClient:
-        def __init__(self, api_key=None):
-            captured["api_key"] = api_key
+    def _fake_build_google_genai_client(**kwargs):
+        captured.update(kwargs)
+        return fake_client
 
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(embed_client.genai, "Client", FakeGenAIClient)
+    monkeypatch.setattr(
+        embed_client,
+        "build_google_genai_client",
+        _fake_build_google_genai_client,
+    )
 
     client, model_name = embed_client.get_client_embed(MODEL_NAME)
 
-    assert isinstance(client, FakeGenAIClient)
+    assert client is fake_client
     assert model_name == MODEL_NAME
-    assert captured["api_key"] == "test-key"
+    assert captured == {"timeout_ms": embed_client.TIMEOUT * 1000}
 
 
 def test_sync_google_embedding_uses_token_count_for_cost(monkeypatch):
