@@ -88,7 +88,7 @@ def test_readme_documents_package_install():
 def test_changelog_tracks_current_package_version():
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert shinka.__version__ == "0.0.4"
+    assert shinka.__version__ == "0.0.5"
     assert "# Changelog" in changelog
     assert f"## {shinka.__version__} -" in changelog
 
