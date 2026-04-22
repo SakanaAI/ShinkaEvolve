@@ -3,8 +3,8 @@ import os
 import anthropic
 import openai
 import instructor
-from google import genai
 from shinka.env import load_shinka_dotenv
+from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
 from shinka.local_openai_config import resolve_local_openai_api_key
 from .constants import TIMEOUT
 from .providers.model_resolver import resolve_model_backend
@@ -19,13 +19,6 @@ def _build_azure_endpoint() -> str:
     if not endpoint.endswith("/"):
         endpoint += "/"
     return endpoint + "openai/v1/"
-
-
-def _google_genai_timeout_ms() -> int:
-    """Convert the shared second-based timeout to google-genai milliseconds."""
-    return int(TIMEOUT * 1000)
-
-
 def get_client_llm(
     model_name: str, structured_output: bool = False
 ) -> Tuple[Any, str, str]:
@@ -84,10 +77,7 @@ def get_client_llm(
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
     elif provider == "google":
-        client = genai.Client(
-            api_key=os.environ["GEMINI_API_KEY"],
-            http_options=genai.types.HttpOptions(timeout=_google_genai_timeout_ms()),
-        )
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
         if structured_output:
             client = instructor.from_openai(
                 client,
@@ -170,10 +160,7 @@ def get_async_client_llm(
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
     elif provider == "google":
-        client = genai.Client(
-            api_key=os.environ["GEMINI_API_KEY"],
-            http_options=genai.types.HttpOptions(timeout=_google_genai_timeout_ms()),
-        )
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
         if structured_output:
             raise ValueError("Gemini does not support structured output.")
     elif provider == "openrouter":
