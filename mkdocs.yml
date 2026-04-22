@@ -76,16 +76,20 @@ markdown_extensions:
 extra_css:
   - assets/stylesheets/extra.css
   - assets/stylesheets/async_throughput_demo.css
+  - assets/stylesheets/bandit_selection.css
 
 extra_javascript:
   - assets/javascripts/async_throughput_demo_core.js
   - assets/javascripts/async_throughput_demo.js
+  - assets/javascripts/bandit_selection_core.js
+  - assets/javascripts/bandit_selection.js
 
 nav:
   - Home: index.md
   - Getting Started: getting_started.md
   - Core Concepts:
       - Overview: core_concepts.md
+      - UCB1 Bandit LLM Selection: bandit_selection.md
       - CLI Usage: cli_usage.md
       - Configuration: configuration.md
       - Async Evolution: async_evolution.md
