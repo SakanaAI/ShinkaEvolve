@@ -15,6 +15,7 @@ from shinka.embed.providers.pricing import (
     get_models_by_provider as get_embedding_models_by_provider,
 )
 from shinka.env import load_shinka_dotenv
+from shinka.google_genai import google_genai_auth_mode
 from shinka.llm.providers.pricing import get_all_providers, get_models_by_provider
 
 PROVIDER_ENV_REQUIREMENTS: dict[str, tuple[str, ...]] = {
@@ -25,6 +26,11 @@ PROVIDER_ENV_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "google": ("GEMINI_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
     "openrouter": ("OPENROUTER_API_KEY",),
+    "vertexai": (
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ),
 }
 
 
@@ -54,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "  azure: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT + AZURE_API_VERSION\n"
         "  bedrock: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION_NAME\n"
         "  deepseek: DEEPSEEK_API_KEY\n"
-        "  google: GEMINI_API_KEY\n"
+        "  google: GEMINI_API_KEY or GOOGLE_GENAI_USE_VERTEXAI + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION\n"
         "  openai: OPENAI_API_KEY\n"
         "  openrouter: OPENROUTER_API_KEY\n\n"
         "Security:\n"
@@ -85,8 +91,14 @@ def _env_var_status(env_var_names: tuple[str, ...]) -> dict[str, bool]:
     }
 
 
+def provider_env_requirements(provider: str) -> tuple[str, ...] | None:
+    if provider == "google" and google_genai_auth_mode() == "vertexai":
+        return PROVIDER_ENV_REQUIREMENTS["vertexai"]
+    return PROVIDER_ENV_REQUIREMENTS.get(provider)
+
+
 def _build_provider_entry(provider: str) -> dict[str, Any] | None:
-    env_var_names = PROVIDER_ENV_REQUIREMENTS.get(provider)
+    env_var_names = provider_env_requirements(provider)
     if env_var_names is None:
         return None
 

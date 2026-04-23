@@ -2,10 +2,10 @@ from dataclasses import dataclass
 import os
 from typing import Any, Optional, Tuple
 
-from google import genai
 import openai
 
 from shinka.env import load_shinka_dotenv
+from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
 from shinka.local_openai_config import (
     parse_local_openai_model,
     resolve_local_openai_api_key,
@@ -91,7 +91,7 @@ def get_client_embed(model_name: str) -> Tuple[Any, str]:
             timeout=TIMEOUT,
         )
     elif provider == "google":
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
     elif provider == "openrouter":
         client = openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
@@ -125,7 +125,7 @@ def get_async_client_embed(model_name: str) -> Tuple[Any, str]:
         )
     elif provider == "google":
         # Gemini doesn't have async client yet, will use thread pool in embedding.py
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
     elif provider == "openrouter":
         client = openai.AsyncOpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],

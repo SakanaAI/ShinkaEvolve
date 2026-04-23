@@ -1,12 +1,13 @@
 import pytest
 
 import shinka.llm.client as llm_client_module
+from shinka.google_genai import _google_genai_timeout_ms
 from shinka.llm.client import get_async_client_llm, get_client_llm
 from shinka.llm.constants import TIMEOUT
 
 
 def test_google_genai_timeout_is_in_milliseconds():
-    assert llm_client_module._google_genai_timeout_ms() == TIMEOUT * 1000
+    assert _google_genai_timeout_ms(TIMEOUT) == TIMEOUT * 1000
 
 
 def test_get_client_llm_dynamic_openrouter(monkeypatch):
@@ -58,38 +59,46 @@ def test_get_async_client_llm_openai_sets_timeout(monkeypatch):
 
 def test_get_client_llm_gemini_sets_timeout(monkeypatch):
     captured_kwargs = {}
+    fake_client = object()
 
-    class _FakeGenAIClient:
-        def __init__(self, **kwargs):
-            captured_kwargs.update(kwargs)
+    def _fake_build_google_genai_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return fake_client
 
-    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
-    monkeypatch.setattr(llm_client_module.genai, "Client", _FakeGenAIClient)
+    monkeypatch.setattr(
+        llm_client_module,
+        "build_google_genai_client",
+        _fake_build_google_genai_client,
+    )
 
-    _client, model_name, provider = get_client_llm("gemini-2.5-flash")
+    client, model_name, provider = get_client_llm("gemini-2.5-flash")
 
+    assert client is fake_client
     assert provider == "google"
     assert model_name == "gemini-2.5-flash"
-    assert captured_kwargs["api_key"] == "test-gemini-key"
-    assert captured_kwargs["http_options"].timeout == TIMEOUT * 1000
+    assert captured_kwargs == {"timeout_ms": TIMEOUT * 1000}
 
 
 def test_get_async_client_llm_gemini_sets_timeout(monkeypatch):
     captured_kwargs = {}
+    fake_client = object()
 
-    class _FakeGenAIClient:
-        def __init__(self, **kwargs):
-            captured_kwargs.update(kwargs)
+    def _fake_build_google_genai_client(**kwargs):
+        captured_kwargs.update(kwargs)
+        return fake_client
 
-    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
-    monkeypatch.setattr(llm_client_module.genai, "Client", _FakeGenAIClient)
+    monkeypatch.setattr(
+        llm_client_module,
+        "build_google_genai_client",
+        _fake_build_google_genai_client,
+    )
 
-    _client, model_name, provider = get_async_client_llm("gemini-2.5-flash")
+    client, model_name, provider = get_async_client_llm("gemini-2.5-flash")
 
+    assert client is fake_client
     assert provider == "google"
     assert model_name == "gemini-2.5-flash"
-    assert captured_kwargs["api_key"] == "test-gemini-key"
-    assert captured_kwargs["http_options"].timeout == TIMEOUT * 1000
+    assert captured_kwargs == {"timeout_ms": TIMEOUT * 1000}
 
 
 def test_get_client_llm_local_openai_uses_api_key_env_query_param(monkeypatch):
