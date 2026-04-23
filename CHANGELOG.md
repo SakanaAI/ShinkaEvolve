@@ -2,6 +2,16 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## 0.0.6 - TBD
+
+### Added
+
+- Added Vertex AI authentication support for Gemini LLM and embedding clients in PR #125. Thanks @wu375.
+
+### Fixed
+
+- Fixed the WebUI embedding similarity heatmap so hydrated programs with empty embeddings no longer leave the tab stuck on `Loading full embedding data...`, and stale cached full-program data is refetched after summary updates.
+
 ## 0.0.5 - 2026-04-22
 
 ### Added
@@ -11,7 +21,6 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Added dashboard sorting controls to the local WebUI so result cards can be reordered by the active setting.
 - Added a `Hide Plot` / `Show Plot` toggle for the WebUI Throughput tab runtime timeline while keeping the plot visible by default.
 - Added Claude Opus 4.7 pricing entries for the Anthropic API and Amazon Bedrock (`anthropic.claude-opus-4-7`) in the LLM pricing catalog.
-- Added Vertex AI authentication support for Gemini LLM and embedding clients. Thanks @wu375.
 
 ### Changed
 
