@@ -1,0 +1,32 @@
+# Continuous run: 1000 generations with fixed results_dir so it can be resumed.
+# Resume: re-run run_evo.py — Shinka detects the existing DB and picks up.
+max_evaluation_jobs: 2
+max_proposal_jobs: 2
+max_db_workers: 4
+
+evo_config:
+  num_generations: 1000
+  init_program_path: "initial.py"
+  results_dir: "results/lean_math_continuous"
+  language: "python"
+  llm_models:
+    - "claude-sonnet-4-6"
+  patch_types: ["diff", "full", "cross"]
+  patch_type_probs: [0.6, 0.3, 0.1]
+  max_patch_resamples: 3
+  max_patch_attempts: 3
+  embedding_model: null
+  meta_rec_interval: 10
+  meta_max_recommendations: 5
+
+db_config:
+  num_islands: 2
+  archive_size: 40
+  num_archive_inspirations: 3
+  num_top_k_inspirations: 2
+  parent_selection_strategy: "weighted"
+  migration_interval: 10
+  migration_rate: 0.1
+  island_elitism: true
+  enable_dynamic_islands: true
+  stagnation_threshold: 50
