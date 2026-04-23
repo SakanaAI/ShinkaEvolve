@@ -8406,7 +8406,15 @@ console.error("[DEBUG] Error in processData:", error);
             return filteredData;
         }
 
-        function datasetHasCompleteEmbeddings(data) {
+        function embeddingFieldIsHydrated(program) {
+            return (
+                program &&
+                Object.prototype.hasOwnProperty.call(program, 'embedding') &&
+                Array.isArray(program.embedding)
+            );
+        }
+
+        function datasetHasHydratedEmbeddingFields(data) {
             const filteredData = filterEmbeddingHeatmapData(data);
             const programsNeedingEmbeddings = filteredData.filter(
                 d => d && d.id && !String(d.id).includes('___virtual_root')
@@ -8417,7 +8425,7 @@ console.error("[DEBUG] Error in processData:", error);
             }
 
             return programsNeedingEmbeddings.every(
-                d => d.embedding && Array.isArray(d.embedding) && d.embedding.length > 0
+                program => embeddingFieldIsHydrated(program)
             );
         }
 
@@ -8451,7 +8459,7 @@ console.error("[DEBUG] Error in processData:", error);
                 );
             }
 
-            if (!datasetHasCompleteEmbeddings(filteredData)) {
+            if (!datasetHasHydratedEmbeddingFields(filteredData)) {
                 d3.select("#embeddings-heatmap")
                     .append("div")
                     .style("text-align", "center")
@@ -9217,12 +9225,33 @@ console.error("[DEBUG] Error in processData:", error);
             return merged;
         }
 
+        function fullProgramDataCoversEmbeddingHydration(existingData, fullData) {
+            const baseData = filterEmbeddingHeatmapData(Array.isArray(existingData) ? existingData : []);
+            const fullPrograms = Array.isArray(fullData) ? fullData : [];
+            const fullDataMap = new Map(fullPrograms.map(program => [program.id, program]));
+            const programsNeedingEmbeddings = baseData.filter(
+                program => program && program.id && !String(program.id).includes('___virtual_root')
+            );
+
+            if (programsNeedingEmbeddings.length === 0) {
+                return false;
+            }
+
+            return programsNeedingEmbeddings.every(program => {
+                if (embeddingFieldIsHydrated(program)) {
+                    return true;
+                }
+
+                return embeddingFieldIsHydrated(fullDataMap.get(program.id));
+            });
+        }
+
         function refreshEmbeddingsHeatmap() {
             if (!window.treeData || window.treeData.length === 0) {
                 return;
             }
 
-            if (datasetHasCompleteEmbeddings(window.treeData)) {
+            if (datasetHasHydratedEmbeddingFields(window.treeData)) {
                 createEmbeddingsHeatmap(window.treeData);
                 return;
             }
@@ -9243,30 +9272,35 @@ console.error("[DEBUG] Error in processData:", error);
             }
             
             const existingHeatmap = heatmapContainer.querySelector('svg');
-            if (existingHeatmap && datasetHasCompleteEmbeddings(window.treeData)) {
+            if (existingHeatmap && datasetHasHydratedEmbeddingFields(window.treeData)) {
                 console.log("[DEBUG] Embeddings heatmap already exists");
                 return;
             }
             
             // If we have data but no heatmap, create it
             if (window.treeData && window.treeData.length > 0) {
-                if (datasetHasCompleteEmbeddings(window.treeData)) {
+                if (datasetHasHydratedEmbeddingFields(window.treeData)) {
                     console.log("[DEBUG] Creating embeddings heatmap with existing data");
                     createEmbeddingsHeatmap(window.treeData);
                 } else if (window.currentDbPath) {
                     window.fullProgramDataByDb = window.fullProgramDataByDb || {};
+                    const cachedFullData = window.fullProgramDataByDb[window.currentDbPath];
 
-                    if (window.fullProgramDataByDb[window.currentDbPath]) {
+                    if (cachedFullData && fullProgramDataCoversEmbeddingHydration(window.treeData, cachedFullData)) {
                         window.treeData = mergeFullProgramData(
                             window.treeData,
-                            window.fullProgramDataByDb[window.currentDbPath]
+                            cachedFullData
                         );
                         window.rawDbData = mergeFullProgramData(
                             window.rawDbData,
-                            window.fullProgramDataByDb[window.currentDbPath]
+                            cachedFullData
                         );
                         createEmbeddingsHeatmap(window.treeData);
                         return;
+                    }
+
+                    if (cachedFullData) {
+                        console.log("[DEBUG] Cached full embedding data is stale, refetching");
                     }
 
                     if (window.loadingFullEmbeddings) {
