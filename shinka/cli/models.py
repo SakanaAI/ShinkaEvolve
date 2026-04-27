@@ -5,33 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from typing import Any
 
-from shinka.embed.providers.pricing import (
-    get_all_providers as get_all_embedding_providers,
-)
-from shinka.embed.providers.pricing import (
-    get_models_by_provider as get_embedding_models_by_provider,
-)
 from shinka.env import load_shinka_dotenv
-from shinka.google_genai import google_genai_auth_mode
-from shinka.llm.providers.pricing import get_all_providers, get_models_by_provider
-
-PROVIDER_ENV_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "anthropic": ("ANTHROPIC_API_KEY",),
-    "azure": ("AZURE_OPENAI_API_KEY", "AZURE_API_ENDPOINT", "AZURE_API_VERSION"),
-    "bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION_NAME"),
-    "deepseek": ("DEEPSEEK_API_KEY",),
-    "google": ("GEMINI_API_KEY",),
-    "openai": ("OPENAI_API_KEY",),
-    "openrouter": ("OPENROUTER_API_KEY",),
-    "vertexai": (
-        "GOOGLE_GENAI_USE_VERTEXAI",
-        "GOOGLE_CLOUD_PROJECT",
-        "GOOGLE_CLOUD_LOCATION",
-    ),
-}
+from shinka.model_availability import (
+    build_model_availability_payload,
+    build_provider_availability_entry,
+    env_var_status,
+    provider_env_requirements as get_provider_env_requirements,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -85,64 +67,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _env_var_status(env_var_names: tuple[str, ...]) -> dict[str, bool]:
-    return {
-        env_var_name: bool(os.getenv(env_var_name, "").strip())
-        for env_var_name in sorted(env_var_names)
-    }
+    return env_var_status(env_var_names)
 
 
 def provider_env_requirements(provider: str) -> tuple[str, ...] | None:
-    if provider == "google" and google_genai_auth_mode() == "vertexai":
-        return PROVIDER_ENV_REQUIREMENTS["vertexai"]
-    return PROVIDER_ENV_REQUIREMENTS.get(provider)
+    return get_provider_env_requirements(provider)
 
 
 def _build_provider_entry(provider: str) -> dict[str, Any] | None:
-    env_var_names = provider_env_requirements(provider)
-    if env_var_names is None:
-        return None
-
-    env_vars = _env_var_status(env_var_names)
-    if not all(env_vars.values()):
-        return None
-
-    llm_models = sorted(get_models_by_provider(provider))
-    embedding_models = sorted(get_embedding_models_by_provider(provider))
-    if not llm_models and not embedding_models:
-        return None
-
-    return {
-        "provider": provider,
-        "env_vars": env_vars,
-        "llm_models": llm_models,
-        "embedding_models": embedding_models,
-    }
+    return build_provider_availability_entry(provider)
 
 
 def _build_payload() -> dict[str, Any]:
-    all_providers = sorted(
-        set(get_all_providers()) | set(get_all_embedding_providers())
-    )
-    available_providers = [
-        provider_entry
-        for provider in all_providers
-        if (provider_entry := _build_provider_entry(provider)) is not None
-    ]
-    llm_models = sorted(
-        model
-        for provider_entry in available_providers
-        for model in provider_entry["llm_models"]
-    )
-    embedding_models = sorted(
-        model
-        for provider_entry in available_providers
-        for model in provider_entry["embedding_models"]
-    )
-    return {
-        "available_providers": available_providers,
-        "embedding": embedding_models,
-        "llm": llm_models,
-    }
+    return build_model_availability_payload()
 
 
 def main(argv: list[str] | None = None) -> int:
