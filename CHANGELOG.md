@@ -7,6 +7,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 ### Added
 
 - Added Vertex AI authentication support for Gemini LLM and embedding clients in PR #125. Thanks @wu375.
+- Added async-runner validation for configured LLM and embedding model environment access before run artifacts are created in PR #127. Thanks @RobertTLange.
 
 ### Fixed
 

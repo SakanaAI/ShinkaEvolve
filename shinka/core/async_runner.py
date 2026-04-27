@@ -15,7 +15,7 @@ import psutil
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Set, Tuple, Union
+from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
 from dataclasses import dataclass, field
 from rich.console import Console
 from rich.table import Table
@@ -61,6 +61,7 @@ from shinka.core.prompt_evolver import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
+from shinka.model_availability import validate_model_env_access
 from shinka.utils import get_language_extension, parse_time_to_seconds
 from shinka.utils.languages import get_evolve_comment_prefix
 
@@ -175,6 +176,39 @@ class CompletedJobPersistResult:
     persisted_event: Optional[PersistedProgramEvent] = None
 
 
+def _dedupe_model_names(model_names: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for model_name in model_names:
+        if model_name in seen:
+            continue
+        seen.add(model_name)
+        deduped.append(model_name)
+    return deduped
+
+
+def _validate_evo_config_model_env_access(evo_config: EvolutionConfig) -> None:
+    llm_models = list(evo_config.llm_models)
+
+    if evo_config.meta_rec_interval and evo_config.meta_llm_models:
+        llm_models.extend(evo_config.meta_llm_models)
+
+    if evo_config.novelty_llm_models:
+        llm_models.extend(evo_config.novelty_llm_models)
+
+    if evo_config.evolve_prompts and evo_config.prompt_llm_models:
+        llm_models.extend(evo_config.prompt_llm_models)
+
+    embedding_models = (
+        [evo_config.embedding_model] if evo_config.embedding_model else []
+    )
+
+    validate_model_env_access(
+        llm_models=_dedupe_model_names(llm_models),
+        embedding_models=_dedupe_model_names(embedding_models),
+    )
+
+
 class ShinkaEvolveRunner:
     """Fully async evolution runner with concurrent proposal generation."""
 
@@ -210,6 +244,8 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
+        _validate_evo_config_model_env_access(evo_config)
+
         self.verbose = verbose
         # Setup results directory first
         if evo_config.results_dir is None:
