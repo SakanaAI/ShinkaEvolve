@@ -13,6 +13,21 @@ MAX_TRIES = BACKOFF_MAX_TRIES
 MAX_VALUE = BACKOFF_MAX_VALUE
 MAX_TIME = BACKOFF_MAX_TIME
 
+NON_RETRYABLE_GEMINI_ERROR_MARKERS = (
+    "your default credentials were not found",
+    "could not automatically determine credentials",
+    "application default credentials",
+    "google_cloud_project is required",
+    "google_cloud_location is required",
+    "gemini_api_key",
+    "api key not valid",
+    "invalid api key",
+    "api_key_invalid",
+    "unauthenticated",
+    "permission denied",
+    "permission_denied",
+)
+
 
 def build_gemini_thinking_config(thinking_budget: int):
     """Build Gemini ThinkingConfig across SDK versions.
@@ -84,6 +99,18 @@ def backoff_handler(details):
         )
 
 
+def is_non_retryable_gemini_error(exc: Exception) -> bool:
+    """Return True for Gemini auth/config errors that retries cannot fix."""
+    error_text = str(exc).lower()
+    return any(marker in error_text for marker in NON_RETRYABLE_GEMINI_ERROR_MARKERS)
+
+
+def giveup_handler(details):
+    exc = details.get("exception")
+    if exc:
+        logger.error(f"Gemini - Non-retryable error: {exc}")
+
+
 def gemini_build_contents(msg_history, msg):
     """Build structured contents from message history and current message.
 
@@ -148,6 +175,8 @@ def gemini_extract_thoughts_and_content(response):
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
+    on_giveup=giveup_handler,
+    giveup=is_non_retryable_gemini_error,
 )
 def query_gemini(
     client,
@@ -224,6 +253,8 @@ def query_gemini(
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
+    on_giveup=giveup_handler,
+    giveup=is_non_retryable_gemini_error,
 )
 async def query_gemini_async(
     client,
