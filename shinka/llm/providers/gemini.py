@@ -84,10 +84,16 @@ def backoff_handler(details):
         )
 
 
-def gemini_build_contents(msg_history, msg):
+def gemini_build_contents(msg_history, msg, images=None):
     """Build structured contents from message history and current message.
 
-    Based on: https://ai.google.dev/gemini-api/docs/text-generation
+    If ``images`` is a non-empty list of image payload dicts, the images are
+    added before the final user text prompt on the final user message
+    (image bytes are not stored in ``msg_history``; only the text turn is).
+
+    Based on:
+    - https://ai.google.dev/gemini-api/docs/text-generation
+    - https://ai.google.dev/gemini-api/docs/image-understanding#tips-best-practices
     """
     contents = []
     # Add message history in structured format
@@ -99,8 +105,18 @@ def gemini_build_contents(msg_history, msg):
         gemini_role = "model" if role == "assistant" else role
 
         contents.append({"role": gemini_role, "parts": [{"text": content}]})
-    # Add current user message
-    contents.append({"role": "user", "parts": [{"text": msg}]})
+    # Add current user message (optional images first, then text prompt).
+    parts: list = []
+    if images:
+        for img in images:
+            part_kwargs = {"data": img["data"], "mime_type": img["mime_type"]}
+            if img.get("resolution"):
+                part_kwargs["media_resolution"] = getattr(
+                    types.MediaResolution, img["resolution"]
+                )
+            parts.append(types.Part.from_bytes(**part_kwargs))
+    parts.append({"text": msg})
+    contents.append({"role": "user", "parts": parts})
     return contents
 
 
@@ -167,7 +183,8 @@ def query_gemini(
         raise ValueError("Gemini does not support structured output.")
 
     # Build structured contents
-    contents = gemini_build_contents(msg_history, msg)
+    images = kwargs.pop("images", None)
+    contents = gemini_build_contents(msg_history, msg, images=images)
 
     # Extract kwargs for generation config
     temperature = kwargs.get("temperature", 0.8)
@@ -242,8 +259,9 @@ async def query_gemini_async(
     if output_model is not None:
         raise ValueError("Gemini does not support structured output.")
 
-    # Build structured contents
-    contents = gemini_build_contents(msg_history, msg)
+    # Build structured contents (with optional image parts on the final turn)
+    images = kwargs.pop("images", None)
+    contents = gemini_build_contents(msg_history, msg, images=images)
 
     # Extract kwargs for generation config
     temperature = kwargs.get("temperature", 0.8)
