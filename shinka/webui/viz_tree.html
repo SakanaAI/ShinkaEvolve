@@ -11152,9 +11152,9 @@ console.error("[DEBUG] Error in processData:", error);
             console.log("[DEBUG] FORCING HTML structure recreation");
             container.html(`
                 <h4 style="margin: 0 0 20px 0; text-align: center;">Number of Programs Proposed by Each Model</h4>
-                <div id="model-program-counts-chart" style="width: 100%; height: 300px; margin-bottom: 30px;"></div>
+                <div id="model-program-counts-chart" style="width: 100%; height: 340px; margin-bottom: 30px;"></div>
                 <h4 style="margin: 0 0 20px 0; text-align: center;">Model Posterior Probabilities Over Generations</h4>
-                <div id="model-posteriors-chart" style="width: 100%; height: 300px;"></div>
+                <div id="model-posteriors-chart" style="width: 100%; height: 340px;"></div>
                 <div id="model-posteriors-summary" style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
                     <h5 style="margin: 0 0 10px 0;">Summary Statistics</h5>
                     <div id="model-posteriors-stats"></div>
@@ -11385,15 +11385,16 @@ console.error("[DEBUG] Error in processData:", error);
             container.select("#model-posteriors-chart").html("");
 
             // Set up dimensions with more horizontal space (reduced top margin since legend moved to counts chart)
-            const margin = {top: 0, right: 20, bottom: 40, left: 60};
+            const margin = {top: 20, right: 20, bottom: 40, left: 60};
+            const chartHeight = 340;
             const width = 800 - margin.left - margin.right;
-            const height = 300 - margin.top - margin.bottom;
+            const height = chartHeight - margin.top - margin.bottom;
 
             // Create SVG
             const svg = container.select("#model-posteriors-chart")
                 .append("svg")
                 .attr("width", width + margin.left + margin.right)
-                .attr("height", height + margin.top + margin.bottom);
+                .attr("height", chartHeight);
 
             const g = svg.append("g")
                 .attr("transform", `translate(${margin.left},${margin.top})`);
@@ -11464,6 +11465,17 @@ console.error("[DEBUG] Error in processData:", error);
                         .attr("stroke", colorScale(model))
                         .attr("stroke-width", 2)
                         .attr("d", line);
+
+                    g.append("g")
+                        .selectAll(".posterior-point")
+                        .data(data)
+                        .enter()
+                        .append("circle")
+                        .attr("class", "posterior-point")
+                        .attr("cx", d => xScale(d.generation))
+                        .attr("cy", d => yScale(d.posterior))
+                        .attr("r", 4)
+                        .attr("fill", colorScale(model));
                 }
             });
 
@@ -11564,10 +11576,10 @@ console.error("[DEBUG] Error in processData:", error);
             const countsSvg = container.select("#model-program-counts-chart")
                 .append("svg")
                 .attr("width", width + margin.left + margin.right)
-                .attr("height", height + margin.top + margin.bottom);
+                .attr("height", chartHeight);
 
             // Use smaller top margin for counts chart to reduce space between title and plot
-            const countsTopMargin = 30; // Reduced from 70
+            const countsTopMargin = 40;
             const countsG = countsSvg.append("g")
                 .attr("transform", `translate(${margin.left},${countsTopMargin})`);
 
@@ -11581,8 +11593,7 @@ console.error("[DEBUG] Error in processData:", error);
                 d3.max(modelData, d => d.cumulativeCount)
             );
             
-            // Adjust height for the smaller top margin
-            const countsHeight = height + (margin.top - countsTopMargin); // Add back the space we saved
+            const countsHeight = chartHeight - countsTopMargin - margin.bottom;
             const countsYScale = d3.scaleLinear()
                 .domain([0, maxCumulativeCount])
                 .range([countsHeight, 0]);
@@ -11725,6 +11736,17 @@ console.error("[DEBUG] Error in processData:", error);
                     .attr("stroke", colorScale(model))
                     .attr("stroke-width", 2)
                     .attr("d", cumulativeLine);
+
+                countsG.append("g")
+                    .selectAll(".cumulative-count-point")
+                    .data(validData)
+                    .enter()
+                    .append("circle")
+                    .attr("class", "cumulative-count-point")
+                    .attr("cx", d => countsXScale(d.generation))
+                    .attr("cy", d => countsYScale(d.cumulativeCount))
+                    .attr("r", 4)
+                    .attr("fill", colorScale(model));
                 
                 console.log(`[DEBUG] Path created for ${model.split('/').pop()}, path element:`, path.node());
             });

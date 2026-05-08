@@ -116,3 +116,16 @@ def test_normalize_tree_roots_leaves_single_root_trees_unchanged():
     normalized = _run_normalize_tree_roots(nodes)
 
     assert normalized == nodes
+
+
+def test_model_posteriors_charts_leave_space_for_top_y_axis_tick():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert 'id="model-program-counts-chart" style="width: 100%; height: 340px;' in html
+    assert 'id="model-posteriors-chart" style="width: 100%; height: 340px;' in html
+    assert "const margin = {top: 20, right: 20, bottom: 40, left: 60};" in html
+    assert "const chartHeight = 340;" in html
+    assert "const countsTopMargin = 40;" in html
+    assert "const countsHeight = chartHeight - countsTopMargin - margin.bottom;" in html
+    assert 'selectAll(".posterior-point")' in html
+    assert 'selectAll(".cumulative-count-point")' in html

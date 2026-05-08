@@ -7,6 +7,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 ### Fixed
 
 - Fixed the WebUI dashboard so runs that have completed only the initial generation remain visible instead of being filtered out as empty results.
+- Fixed the WebUI Ensembling tab so single-model Headless runs render visible data points and keep the top y-axis tick labels in view.
 
 ## 0.0.6 - 2026-05-03
 
