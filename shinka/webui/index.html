@@ -710,8 +710,8 @@
                 filteredResults.forEach(result => {
                     const cached = statsCache[result.path];
                     
-                    // Skip if we know this has <= 1 programs
-                    if (cached && cached.program_count <= 1) {
+                    // Skip only empty databases; initial generation runs have one program.
+                    if (cached && cached.program_count <= 0) {
                         return;
                     }
 
@@ -827,8 +827,8 @@
         }
 
         function updateRowStats(row, stats) {
-            // Hide rows with 1 or fewer programs
-            if (stats.program_count <= 1) {
+            // Hide empty databases, but keep initial generation runs visible.
+            if (stats.program_count <= 0) {
                 row.style.display = 'none';
                 row.dataset.hidden = 'true';
                 updateTaskGroupHeaders();

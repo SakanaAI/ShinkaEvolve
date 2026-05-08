@@ -2,6 +2,12 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## TBD
+
+### Fixed
+
+- Fixed the WebUI dashboard so runs that have completed only the initial generation remain visible instead of being filtered out as empty results.
+
 ## 0.0.6 - 2026-05-03
 
 ### Added
