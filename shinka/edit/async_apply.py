@@ -10,6 +10,10 @@ from pathlib import Path
 from .apply_diff import apply_diff_patch
 from .apply_full import apply_full_patch
 from shinka.utils.languages import normalize_language
+from shinka.utils.wolfram import (
+    build_wolframscript_argv,
+    escape_wolfram_string,
+)
 
 try:
     import aiofiles
@@ -171,6 +175,14 @@ async def validate_code_async(
                 code_path,
                 timeout=timeout,
             )
+        elif language == "wolfram":
+            # Parse-only via Hold prevents evaluation; non-Hold result indicates a parse error.
+            check_code = (
+                f'If[Head[ToExpression[Import["{escape_wolfram_string(code_path)}", '
+                '"Text"], InputForm, Hold]] === Hold, Print["OK"], Exit[1]]'
+            )
+            argv = build_wolframscript_argv(["-code", check_code])
+            return await _run_validation_subprocess(*argv, timeout=timeout)
         else:
             # For other languages, just check if file exists and is readable
             try:

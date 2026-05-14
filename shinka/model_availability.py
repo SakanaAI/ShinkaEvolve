@@ -15,7 +15,7 @@ from shinka.google_genai import google_genai_auth_mode
 from shinka.llm.providers.model_resolver import resolve_model_backend
 from shinka.llm.providers.pricing import get_all_providers, get_models_by_provider
 from shinka.llm.providers.headless import check_headless_available
-
+from shinka.utils.wolfram import check_wolframscript_available
 
 PROVIDER_ENV_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
@@ -165,6 +165,20 @@ def validate_model_env_access(
             models = ", ".join(headless_models)
             raise ValueError(
                 f"Requested headless model(s) are unavailable: {models}. {exc}"
+            ) from exc
+
+    wolfram_models = [
+        model_name
+        for model_name in llm_models
+        if resolve_model_backend(model_name).provider == "wolfram_llm"
+    ]
+    if wolfram_models:
+        try:
+            check_wolframscript_available()
+        except ValueError as exc:
+            models = ", ".join(wolfram_models)
+            raise ValueError(
+                f"Requested wolfram-llm model(s) are unavailable: {models}. {exc}"
             ) from exc
 
     issues = find_model_env_access_issues(

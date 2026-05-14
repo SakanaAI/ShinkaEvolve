@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, Union
 from .apply_diff import write_git_diff, _mutable_ranges, EVOLVE_START, EVOLVE_END
+from .marker_validation import validate_evolve_markers
 from shinka.llm import extract_between
 from shinka.utils.languages import get_code_fence_languages, get_language_extension
 import logging
@@ -268,6 +269,16 @@ def apply_full_patch(
     except Exception as e:
         error_message = f"Error applying full patch: {str(e)}"
         return original, 0, None, error_message, None, None
+
+    # Validate marker placement in the assembled candidate. Block-comment
+    # languages (Wolfram, Markdown) can silently fail when both markers end
+    # up inside a single comment, hiding the body from the evaluator. The
+    # fix-mode loop surfaces the returned error back to the LLM.
+    marker_err = validate_evolve_markers(updated_content, language)
+    if marker_err is not None:
+        if verbose:
+            logger.info(f"Rejecting full patch: {marker_err}")
+        return original, 0, None, marker_err, None, None
 
     # If successful, proceed to write files if patch_dir is specified
     if patch_dir is not None:

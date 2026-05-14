@@ -5,6 +5,7 @@ import logging
 from typing import Union, Optional, List, Tuple
 
 from shinka.utils.languages import get_language_extension
+from .marker_validation import validate_evolve_markers
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +143,13 @@ def _clean_evolve_markers(text: str) -> str:
         r"^\s*//\s*EVOLVE-BLOCK-START\s*$",  # C/C++/CUDA style
         r"^\s*!\s*EVOLVE-BLOCK-START\s*$",  # Fortran style
         r"^\s*<!--\s*EVOLVE-BLOCK-START\s*-->\s*$",  # HTML/Markdown style
+        r"^\s*\(\*\s*EVOLVE-BLOCK-START\s*\*\)\s*$",  # Wolfram style
         r"^\s*EVOLVE-BLOCK-START\s*$",  # Plain text
         r"^\s*#\s*EVOLVE-BLOCK-END\s*$",  # Python style
         r"^\s*//\s*EVOLVE-BLOCK-END\s*$",  # C/C++/CUDA
         r"^\s*!\s*EVOLVE-BLOCK-END\s*$",  # Fortran style
         r"^\s*<!--\s*EVOLVE-BLOCK-END\s*-->\s*$",  # HTML/Markdown style
+        r"^\s*\(\*\s*EVOLVE-BLOCK-END\s*\*\)\s*$",  # Wolfram style
         r"^\s*EVOLVE-BLOCK-END\s*$",  # Plain text
     ]
 
@@ -739,6 +742,17 @@ def apply_diff_patch(
         error_message = str(e)
         # Return original content, 0 applied, no output path, error msg
         return updated_content, 0, None, error_message, None, None
+
+    # Validate the assembled file's EVOLVE-BLOCK markers. This is normally a
+    # no-op for diff patches because the markers come from the original seed
+    # and the SEARCH/REPLACE blocks operate strictly inside them — but a
+    # malformed patch that injects bad comment delimiters around the markers
+    # would otherwise reach the evaluator silently. See marker_validation.py.
+    marker_err = validate_evolve_markers(updated_content, language)
+    if marker_err is not None:
+        if verbose:
+            logger.info(f"Rejecting diff patch: {marker_err}")
+        return original, 0, None, marker_err, None, None
 
     suffix = f".{get_language_extension(language)}"
 
