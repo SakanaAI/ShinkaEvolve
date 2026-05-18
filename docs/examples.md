@@ -94,6 +94,25 @@ speedup over a deoptimized seed.
 
 ---
 
+## Wolfram Simplify
+
+| | |
+|-|-|
+| **Path** | [`examples/wolfram_simplify`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_simplify) |
+| **Language** | Wolfram Language candidate + Python evaluator |
+| **Focus** | Expression-level simplification scored by LeafCount |
+
+```bash
+cd examples/wolfram_simplify
+python evaluate.py --program_path initial.wl --results_dir results/manual_eval
+```
+
+Use this when candidates are scored by the static `LeafCount` of the
+parsed-and-held EVOLVE-BLOCK contents, with behavioral equivalence
+checked on cached numeric inputs.
+
+---
+
 ## Novelty Generator
 
 | | |
@@ -122,5 +141,6 @@ before moving into full CLI or API workflows.
 | Cross-language evolution | Julia Prime Counting |
 | Compiled numerical stencil | Fortran Heat Diffusion |
 | Program optimization | Wolfram GCD Sum |
+| Expression simplification | Wolfram Simplify |
 | Game / control optimization | Game 2048 |
 | Creative / open-ended | Novelty Generator |
