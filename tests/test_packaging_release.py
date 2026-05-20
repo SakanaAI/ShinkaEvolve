@@ -68,7 +68,6 @@ def test_project_metadata_targets_pypi_release():
             "favicon.png",
             "embed/providers/*.csv",
             "llm/providers/*.csv",
-            "llm/providers/*.wl",
             "webui/*.html",
             "webui/*.png",
             "webui/*.jpg",
@@ -97,18 +96,6 @@ def test_changelog_tracks_current_package_version():
 def test_packaged_hydra_configs_live_inside_package():
     config_path = Path(shinka.__file__).resolve().parent / "configs" / "config.yaml"
     assert config_path.exists()
-
-
-def test_wolfram_llm_bridge_is_packaged():
-    """The .wl bridge script must ship as package data — pip-installed users
-    rely on shinka.llm.providers locating it next to wolfram_llm.py."""
-    from importlib.resources import files
-
-    resource = files("shinka.llm.providers").joinpath("wolfram_llm_bridge.wl")
-    assert resource.is_file()
-    text = resource.read_text(encoding="utf-8")
-    assert "ServiceConnect" in text
-    assert "ServiceExecute" in text
 
 
 def test_packaged_hydra_configs_are_importable():

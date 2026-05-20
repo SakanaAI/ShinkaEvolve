@@ -101,12 +101,6 @@ def get_client_llm(
         )
     elif provider == "headless":
         client = None
-    elif provider == "wolfram_llm":
-        # Subprocess-per-call via wolframscript; stateless, no client object.
-        # The bridge needs the full wolfram-llm/<Service>/<Model> name to pick
-        # the service; api_model_name is the bare <Model> for pricing lookups.
-        client = None
-        api_model_name = resolved.original_model_name
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
@@ -189,9 +183,6 @@ def get_async_client_llm(
         )
     elif provider == "headless":
         client = None
-    elif provider == "wolfram_llm":
-        client = None
-        api_model_name = resolved.original_model_name
     else:
         raise ValueError(f"Model {model_name} not supported.")
 

@@ -4,7 +4,6 @@ from .deepseek import query_deepseek, query_deepseek_async
 from .gemini import query_gemini, query_gemini_async
 from .headless import query_headless, query_headless_async
 from .local_openai import query_local_openai, query_local_openai_async
-from .wolfram_llm import query_wolfram_llm, query_wolfram_llm_async
 from .result import QueryResult
 
 __all__ = [
@@ -14,13 +13,11 @@ __all__ = [
     "query_gemini",
     "query_headless",
     "query_local_openai",
-    "query_wolfram_llm",
     "query_anthropic_async",
     "query_openai_async",
     "query_deepseek_async",
     "query_gemini_async",
     "query_headless_async",
     "query_local_openai_async",
-    "query_wolfram_llm_async",
     "QueryResult",
 ]

@@ -6,7 +6,6 @@ from .pricing import get_provider
 
 _OPENROUTER_PREFIX = "openrouter/"
 _HEADLESS_PREFIX = "headless/"
-_WOLFRAM_LLM_PREFIX = "wolfram-llm/"
 
 
 @dataclass(frozen=True)
@@ -31,25 +30,6 @@ def resolve_model_backend(model_name: str) -> ResolvedModel:
             original_model_name=model_name,
             api_model_name=api_model_name,
             provider="headless",
-            base_url=None,
-        )
-
-    if model_name.startswith(_WOLFRAM_LLM_PREFIX):
-        rest = model_name[len(_WOLFRAM_LLM_PREFIX):]
-        if "/" not in rest or not rest.split("/", 1)[0] or not rest.split("/", 1)[1]:
-            raise ValueError(
-                "Wolfram LLM model name must be 'wolfram-llm/<Service>/<Model>'; "
-                f"got {model_name!r}."
-            )
-        # api_model_name is the bare <Model> so pricing.csv lookups
-        # (is_reasoning_model, has_fixed_temperature, calculate_cost via the
-        # provider) resolve the same as for any direct-API model. The provider
-        # parses the full wolfram-llm/<Service>/<Model> off original_model_name
-        # to pick the service; client.py routes the original name through.
-        return ResolvedModel(
-            original_model_name=model_name,
-            api_model_name=rest.split("/", 1)[1],
-            provider="wolfram_llm",
             base_url=None,
         )
 

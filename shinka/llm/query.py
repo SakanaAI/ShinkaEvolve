@@ -8,14 +8,12 @@ from .providers import (
     query_gemini,
     query_headless,
     query_local_openai,
-    query_wolfram_llm,
     query_anthropic_async,
     query_openai_async,
     query_deepseek_async,
     query_gemini_async,
     query_headless_async,
     query_local_openai_async,
-    query_wolfram_llm_async,
     QueryResult,
 )
 import logging
@@ -48,8 +46,6 @@ def query(
         query_fn = query_local_openai
     elif provider == "headless":
         query_fn = query_headless
-    elif provider == "wolfram_llm":
-        query_fn = query_wolfram_llm
     else:
         raise ValueError(f"Model {model_name} not supported.")
     result = query_fn(
@@ -90,8 +86,6 @@ async def query_async(
         query_fn = query_local_openai_async
     elif provider == "headless":
         query_fn = query_headless_async
-    elif provider == "wolfram_llm":
-        query_fn = query_wolfram_llm_async
     else:
         raise ValueError(f"Model {model_name} not supported.")
     result = await query_fn(

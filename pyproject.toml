@@ -73,7 +73,6 @@ shinka = [
     "favicon.png",
     "embed/providers/*.csv",
     "llm/providers/*.csv",
-    "llm/providers/*.wl",
     "webui/*.html",
     "webui/*.png",
     "webui/*.jpg",
