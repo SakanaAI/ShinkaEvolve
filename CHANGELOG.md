@@ -6,6 +6,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added Gemini 3.5 Flash pricing to the Google LLM pricing catalog.
 - Added Wolfram Language as a first-class evolution target: registry entries (`wolfram`, `wl`, `wls`, `mathematica`), code-fence and EVOLVE-BLOCK marker support, and end-to-end coverage in `apply_diff` / `apply_full`.
 - Added EVOLVE-BLOCK marker validation in `shinka.edit.marker_validation`, catching the LLM failure mode where a block-comment-language marker is emitted without its closing delimiter (Wolfram, Markdown), which would silently trap the candidate body inside a comment.
 - Added the `examples/wolfram_gcd_sum` task: deoptimized seed for `S(N) = sum_{i,j in 1..N} GCD(i,j)`. The evaluator calibrates the baseline on every run by timing the seed through the same `RepeatedTiming` harness as the candidate, and the Wolfram-side timeout is configurable via `WOLFRAM_GCD_MAX_SECONDS`.
