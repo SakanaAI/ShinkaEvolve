@@ -50,6 +50,18 @@ def test_claude_opus_4_7_keeps_standard_pricing_across_context_window(
     }
 
 
+def test_gemini_3_5_flash_pricing_is_registered():
+    resolved = resolve_model_backend("gemini-3.5-flash")
+    assert resolved.provider == "google"
+    assert resolved.api_model_name == "gemini-3.5-flash"
+
+    prices = get_model_prices("gemini-3.5-flash")
+    assert prices == {
+        "input_price": 1.5 / 1_000_000,
+        "output_price": 9.0 / 1_000_000,
+    }
+
+
 def test_resolve_openrouter_dynamic_model():
     resolved = resolve_model_backend("openrouter/qwen/qwen3-coder")
     assert resolved.provider == "openrouter"
