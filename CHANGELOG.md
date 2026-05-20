@@ -4,6 +4,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ## TBD
 
+### Added
+
+- Added Gemini 3.5 Flash pricing to the Google LLM pricing catalog.
+
 ### Fixed
 
 - Fixed the WebUI dashboard so runs that have completed only the initial generation remain visible instead of being filtered out as empty results.
