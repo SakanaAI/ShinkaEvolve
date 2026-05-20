@@ -44,9 +44,8 @@ The evaluator optimizes `combined_score`:
   available on `PATH` (or set `WOLFRAMSCRIPT_BIN` to its absolute path).
 - Python environment with `shinka` installed.
 - Credentials for whichever LLM provider `run_evo.py` is configured to use.
-  The default is `wolfram-llm/GoogleGemini/gemini-2.5-flash-lite`, which
-  reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) from the environment and
-  routes through `wolframscript`'s service framework.
+  The default is `gemini-2.5-flash-lite`, which reads `GEMINI_API_KEY`
+  (or `GOOGLE_API_KEY`) from the environment.
 
 ## Run
 

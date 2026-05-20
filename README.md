@@ -105,7 +105,6 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | ∑ [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize a Julia solver for prime-count queries. | `LocalJobConfig` |
 | 🔥 [Fortran Heat Diffusion](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/fortran_heat_diffusion) | Optimize a compiled Fortran stencil solver. | `LocalJobConfig` |
 | 🧮 [Wolfram GCD Sum](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_gcd_sum) | Optimize a Wolfram Language GCD-sum solver. | `LocalJobConfig` |
-| 🌿 [Wolfram Simplify](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_simplify) | Simplify a suite of Wolfram expressions by LeafCount, preserving behavior. | `LocalJobConfig` |
 | ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 | ∿ [Sine Approx Headless](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/sine_approx_headless) | Evolve a bounded sine approximation using Headless subscription-backed mutation calls. | `LocalJobConfig` |
 
