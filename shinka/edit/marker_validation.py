@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from shinka.utils.languages import (
-    get_block_comment_delims,
     get_evolve_marker_examples,
     get_evolve_marker_patterns,
     has_block_comments,
@@ -15,16 +14,20 @@ def validate_evolve_markers(text: str, language: str) -> str | None:
     """Return ``None`` if the candidate's EVOLVE-BLOCK markers are well-formed
     for the given language, else a human-readable error description.
 
-    Two layers of checks:
+    The check is deliberately scoped to the marker lines themselves — it
+    never parses or balances arbitrary comments elsewhere in the file, so a
+    candidate that happens to contain block-comment delimiters in unrelated
+    code (e.g. a Wolfram string literal containing ``(*``) is not affected.
 
     1.  **Always** — both markers must be present somewhere in the file.
         Missing markers mean the candidate cannot be re-evolved later.
 
     2.  **Block-comment languages only** (Wolfram, Markdown) — every line
         containing a marker must match the strict canonical form
-        (e.g. ``(* EVOLVE-BLOCK-START *)``), AND the file's block-comment
-        delimiters must be globally balanced. This is the layer that
-        catches the LLM-emits-marker-inside-unclosed-comment failure mode.
+        (e.g. ``(* EVOLVE-BLOCK-START *)``). Because that form requires the
+        comment to open *and close* on the marker line, it directly catches
+        the LLM failure mode where a marker is emitted without its closing
+        delimiter, leaving the candidate body trapped inside a comment.
 
     Line-comment languages (everything that is not block-comment) need
     only the existence check: ``# EVOLVE-BLOCK-END`` is still a valid line
@@ -75,10 +78,6 @@ def validate_evolve_markers(text: str, language: str) -> str | None:
                     )
                 )
 
-        balance_err = _check_comment_balance(text, canonical)
-        if balance_err is not None:
-            errors.append(balance_err)
-
     if errors:
         header = f"EVOLVE-BLOCK marker validation failed for language {canonical!r}:"
         return "\n".join([header, *errors])
@@ -95,35 +94,3 @@ def _marker_error(
         f"be fully wrapped in {language} comment delimiters; nothing else "
         f"on the line)."
     )
-
-
-def _check_comment_balance(text: str, language: str) -> str | None:
-    """For block-comment languages, walk the file character-by-character
-    tracking comment depth. A non-zero final depth means at least one
-    open delimiter was never closed — typically the source of the LLM bug
-    where ``(* EVOLVE-BLOCK-START`` is emitted without its closing ``*)``,
-    leaving the entire body inside a comment.
-    """
-    open_d, close_d = get_block_comment_delims(language)
-
-    depth = 0
-    i = 0
-    n = len(text)
-    while i < n:
-        if text.startswith(open_d, i):
-            depth += 1
-            i += len(open_d)
-        elif depth > 0 and text.startswith(close_d, i):
-            depth -= 1
-            i += len(close_d)
-        else:
-            i += 1
-
-    if depth > 0:
-        return (
-            f"Unbalanced {language} block comments: {depth} unclosed "
-            f"{open_d!r} delimiter(s) remain at end of file. The "
-            f"EVOLVE-BLOCK markers may be trapped inside a comment block, "
-            f"which would silently disable the candidate code."
-        )
-    return None

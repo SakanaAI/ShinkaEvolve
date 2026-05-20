@@ -81,23 +81,10 @@ def test_wolfram_markers_inside_single_comment_block():
     )
     err = validate_evolve_markers(code, "wolfram")
     assert err is not None
-    # Should flag both per-line shape and the unbalanced-comment check.
+    # Neither marker line matches its strict canonical form: the START line
+    # never closes its comment, the END line never opens one.
     assert "EVOLVE-BLOCK-START" in err
     assert "EVOLVE-BLOCK-END" in err
-
-
-def test_wolfram_unclosed_comment_in_body():
-    """Body has an unclosed (* without matching *), even though markers
-    are individually well-formed. Catches subtler smuggling."""
-    code = (
-        "(* EVOLVE-BLOCK-START *)\n"
-        "(* opening a comment that is never closed\n"
-        "f[n_] := n (n + 1) / 2\n"
-        "(* EVOLVE-BLOCK-END *)\n"
-    )
-    err = validate_evolve_markers(code, "wolfram")
-    assert err is not None
-    assert "Unbalanced" in err
 
 
 def test_wolfram_missing_close_on_start_marker():
@@ -124,9 +111,10 @@ def test_wolfram_extra_text_on_marker_line():
     assert err is not None
 
 
-def test_wolfram_balanced_inner_comments_ok():
-    """Body comments that are properly closed should not trip the
-    balance check."""
+def test_wolfram_inner_comments_not_inspected():
+    """Validation is scoped to the marker lines: ordinary Wolfram comments
+    in the body — including nested ones — are never inspected, so a
+    well-formed candidate passes regardless of what comments it contains."""
     code = (
         "(* EVOLVE-BLOCK-START *)\n"
         "(* this is a normal Wolfram comment *)\n"
@@ -137,21 +125,16 @@ def test_wolfram_balanced_inner_comments_ok():
     assert validate_evolve_markers(code, "wolfram") is None
 
 
-# ---------------------------------------------------------------------------
-# Markdown-specific (also block-comment language)
-# ---------------------------------------------------------------------------
-
-
-def test_markdown_unclosed_comment():
+def test_wolfram_block_comment_delim_in_string_not_rejected():
+    """A candidate whose body contains a block-comment delimiter inside an
+    unrelated string literal must NOT be rejected. The validator only
+    inspects the marker lines, never balances comments across the file."""
     code = (
-        "<!-- EVOLVE-BLOCK-START -->\n"
-        "<!-- this html comment never closes\n"
-        "content\n"
-        "<!-- EVOLVE-BLOCK-END -->\n"
+        "(* EVOLVE-BLOCK-START *)\n"
+        'f[] := "a literal containing (* which is not a comment";\n'
+        "(* EVOLVE-BLOCK-END *)\n"
     )
-    err = validate_evolve_markers(code, "markdown")
-    assert err is not None
-    assert "Unbalanced" in err
+    assert validate_evolve_markers(code, "wolfram") is None
 
 
 # ---------------------------------------------------------------------------
