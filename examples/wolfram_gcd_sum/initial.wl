@@ -47,6 +47,14 @@ maxSeconds = If[StringQ[maxSecondsRaw] && StringLength[maxSecondsRaw] > 0,
 ];
 If[!NumericQ[maxSeconds] || maxSeconds <= 0, maxSeconds = 30.0];
 
+(* One discarded warm-up evaluation. The first call to solve[] in a fresh
+   kernel pays lazy-loading and first-evaluation cost for the builtins it
+   touches that later calls do not. Running it once here, untimed, lets the
+   RepeatedTiming below measure steady-state execution rather than reporting
+   a single cold run. Bounded by maxSeconds so a runaway candidate cannot
+   hang the warm-up. *)
+TimeConstrained[solve[], maxSeconds];
+
 (* RepeatedTiming auto-repeats solve[] and returns the average per-call
    time, which is far more stable than a single AbsoluteTiming sample. *)
 {wallTime, result} = TimeConstrained[
