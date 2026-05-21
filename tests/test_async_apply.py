@@ -209,3 +209,52 @@ def test_validate_code_async_json_delegates_to_helper(
     assert error == "bad json"
     assert recorded["args"] == ("jsonschema", str(tmp_path / "candidate.json"))
     assert recorded["timeout"] == 13
+
+
+def test_validate_code_async_wolfram_uses_wolframscript_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Wolfram path must route through the shared wolframscript helpers
+    so it honors WOLFRAMSCRIPT_BIN and the WSL bash-c wrap, and must
+    escape the candidate path before embedding it in a Wolfram string."""
+    recorded: dict[str, object] = {}
+
+    async def fake_helper(*args: str, timeout: int) -> tuple[bool, str | None]:
+        recorded["args"] = args
+        recorded["timeout"] = timeout
+        return True, None
+
+    monkeypatch.setattr(async_apply, "_run_validation_subprocess", fake_helper)
+    monkeypatch.setattr(
+        "shinka.utils.wolfram.shutil.which",
+        lambda _bin: "/opt/Wolfram/wolframscript",
+    )
+    monkeypatch.setattr("shinka.utils.wolfram.is_wsl", lambda: False)
+
+    # A code_path containing a backslash and a quote must be escaped, not
+    # passed raw into the f-string.
+    candidate = tmp_path / 'odd"name\\file.wl'
+    candidate.write_text(
+        "(* EVOLVE-BLOCK-START *)\n(* EVOLVE-BLOCK-END *)", encoding="utf-8"
+    )
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(
+            str(candidate),
+            language="wolfram",
+            timeout=17,
+        )
+    )
+
+    assert is_valid is True
+    assert error is None
+    args = recorded["args"]
+    assert isinstance(args, tuple)
+    assert args[0] == "/opt/Wolfram/wolframscript"
+    assert "-code" in args
+    code_arg = args[args.index("-code") + 1]
+    # Backslash and quote both escaped — no raw " or unescaped \ from the path.
+    assert '\\"' in code_arg
+    assert "\\\\" in code_arg
+    assert recorded["timeout"] == 17
