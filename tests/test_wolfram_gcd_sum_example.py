@@ -109,3 +109,34 @@ def test_wolfram_evaluator_rejects_wrong_answer(monkeypatch, tmp_path):
     metrics = json.loads((results_dir / "metrics.json").read_text(encoding="utf-8"))
     assert correct["correct"] is False
     assert metrics["combined_score"] == -1.0
+
+
+def test_wolfram_evaluator_records_empty_output_as_failure(monkeypatch, tmp_path):
+    evaluator = _load_evaluator()
+
+    def fake_run(args, **kwargs):
+        out_path = Path(args[-1])
+        program = args[2]
+        if program.endswith("initial.wl"):
+            out_path.write_text(
+                json.dumps({"result": "336784", "time_ms": 100.0, "n": 300}),
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(evaluator.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "shinka.utils.wolfram.shutil.which",
+        lambda _bin: "/usr/bin/wolframscript",
+    )
+
+    results_dir = tmp_path / "results"
+    evaluator.main(str(tmp_path / "candidate.wl"), str(results_dir))
+
+    correct = json.loads((results_dir / "correct.json").read_text(encoding="utf-8"))
+    metrics = json.loads((results_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert correct == {"correct": False, "error": "empty output file"}
+    assert metrics["combined_score"] == -1.0
+    assert metrics["public"]["error"] == "empty output file"

@@ -39,9 +39,26 @@ def _run_once(program_path):
             return {
                 "error": f"rc={proc.returncode} stderr={proc.stderr.strip()[-300:]}"
             }
-        if not Path(out_path).exists():
+        output_file = Path(out_path)
+        if not output_file.exists():
             return {"error": "no output file"}
-        return json.loads(Path(out_path).read_text(encoding="utf-8"))
+        output_text = output_file.read_text(encoding="utf-8")
+        if not output_text.strip():
+            return {"error": "empty output file"}
+        try:
+            payload = json.loads(output_text)
+        except json.JSONDecodeError as e:
+            return {"error": f"invalid JSON output: {e.msg}"}
+        if not isinstance(payload, dict):
+            return {"error": "output JSON must be an object"}
+        for key in ("result", "time_ms"):
+            if key not in payload:
+                return {"error": f"output JSON missing {key!r}"}
+        try:
+            payload["time_ms"] = float(payload["time_ms"])
+        except (TypeError, ValueError):
+            return {"error": "output JSON field 'time_ms' must be numeric"}
+        return payload
     finally:
         Path(out_path).unlink(missing_ok=True)
 
@@ -55,7 +72,10 @@ def _calibrate_baseline():
     invocation, which keeps it correct during an evolution run where every
     generation has its own results directory.
     """
-    return float(_run_once(str(SEED_PROGRAM))["time_ms"])
+    baseline = _run_once(str(SEED_PROGRAM))
+    if "error" in baseline:
+        raise RuntimeError(f"baseline calibration failed: {baseline['error']}")
+    return float(baseline["time_ms"])
 
 
 def main(program_path, results_dir):
@@ -84,6 +104,8 @@ def main(program_path, results_dir):
                 runs.append(r)
         except subprocess.TimeoutExpired:
             error = f"subprocess timeout (>{PER_RUN_TIMEOUT_S}s)"
+        except RuntimeError as e:
+            error = str(e)
 
         if runs and not error:
             results_set = {r["result"] for r in runs}
