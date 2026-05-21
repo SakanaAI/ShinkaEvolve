@@ -3,7 +3,11 @@ from typing import Optional, Union
 from .apply_diff import write_git_diff, _mutable_ranges, EVOLVE_START, EVOLVE_END
 from .marker_validation import validate_evolve_markers
 from shinka.llm import extract_between
-from shinka.utils.languages import get_code_fence_languages, get_language_extension
+from shinka.utils.languages import (
+    get_code_fence_languages,
+    get_language_extension,
+    has_block_comments,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -93,6 +97,11 @@ def apply_full_patch(
         patch_has_none = not patch_has_start and not patch_has_end
 
         if patch_has_both:
+            if has_block_comments(language):
+                marker_err = validate_evolve_markers(patch_code, language)
+                if marker_err is not None:
+                    return original, 0, None, marker_err, None, None
+
             # Patch contains both EVOLVE-BLOCK markers, extract from them
             patch_mutable_ranges = _mutable_ranges(patch_code)
             # Patch contains EVOLVE-BLOCK markers, extract from them

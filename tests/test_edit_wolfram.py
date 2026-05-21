@@ -71,6 +71,34 @@ f[n_Integer] := Fibonacci[n]
     assert (patch_dir / "rewrite.txt").exists()
 
 
+def test_apply_full_patch_supports_wolfram_without_markers(tmp_path):
+    original_content = """(* EVOLVE-BLOCK-START *)
+f[n_Integer] := n
+(* EVOLVE-BLOCK-END *)
+"""
+
+    patch_content = """```wl
+f[n_Integer] := n + 1
+```"""
+
+    result = apply_full_patch(
+        patch_str=patch_content,
+        original_str=original_content,
+        patch_dir=tmp_path / "wolfram_full_without_markers",
+        language="wolfram",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, _, _ = result
+
+    assert error is None
+    assert num_applied == 1
+    assert updated_content == """(* EVOLVE-BLOCK-START *)
+f[n_Integer] := n + 1
+(* EVOLVE-BLOCK-END *)
+"""
+    assert output_path == tmp_path / "wolfram_full_without_markers" / "main.wl"
+
+
 def test_apply_full_patch_supports_mathematica_fence(tmp_path):
     original_content = """(* EVOLVE-BLOCK-START *)
 f[n_Integer] := n
