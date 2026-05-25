@@ -58,6 +58,24 @@ harness in Python.
 
 ---
 
+## Go Collatz Steps
+
+| | |
+|-|-|
+| **Path** | [`examples/go_collatz_steps`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/go_collatz_steps) |
+| **Language** | Go candidate + Python evaluator |
+| **Focus** | Cross-language evolution, strict correctness scoring |
+
+```bash
+cd examples/go_collatz_steps
+python evaluate.py --program_path initial.go --results_dir results/manual_eval
+```
+
+Use this for a compact compiled-language task where Go candidates compute
+Collatz stopping times and `evaluate.py` owns `go run` validation and scoring.
+
+---
+
 ## Fortran Heat Diffusion
 
 | | |

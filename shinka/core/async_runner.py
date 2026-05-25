@@ -3148,6 +3148,7 @@ class ShinkaEvolveRunner:
             "cc": "cpp",
             "cxx": "cpp",
             "cu": "cuda",
+            "go": "go",
             "f90": "fortran",
             "f95": "fortran",
             "f03": "fortran",

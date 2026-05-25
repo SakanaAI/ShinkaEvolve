@@ -211,6 +211,25 @@ def test_validate_code_async_json_delegates_to_helper(
     assert recorded["timeout"] == 13
 
 
+def test_validate_code_async_go_uses_read_only_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def fail_helper(*args: str, timeout: int) -> tuple[bool, str | None]:
+        raise AssertionError(f"unexpected compiler validation: {args}")
+
+    monkeypatch.setattr(async_apply, "_run_validation_subprocess", fail_helper)
+    candidate = tmp_path / "candidate.go"
+    candidate.write_text("package main\nfunc main() {}\n", encoding="utf-8")
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(str(candidate), language="go", timeout=19)
+    )
+
+    assert is_valid is True
+    assert error is None
+
+
 def test_validate_code_async_wolfram_uses_wolframscript_helpers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
