@@ -106,7 +106,10 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | 🔥 [Fortran Heat Diffusion](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/fortran_heat_diffusion) | Optimize a compiled Fortran stencil solver. | `LocalJobConfig` |
 | 🧮 [Wolfram GCD Sum](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_gcd_sum) | Optimize a Wolfram Language GCD-sum solver. | `LocalJobConfig` |
 | ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
+| 🏃 [Go Collatz Steps](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/go_collatz_steps) | Optimize a Go solver for Collatz stopping times. | `LocalJobConfig` |
 | ∿ [Sine Approx Headless](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/sine_approx_headless) | Evolve a bounded sine approximation using Headless subscription-backed mutation calls. | `LocalJobConfig` |
+| ⚡ [VerilogEval](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/verilog_eval) | Evolve Verilog RTL modules against HDLBits testbenches. Requires `iverilog`. | `LocalJobConfig` |
+| 🔧 [CVDP Benchmark](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/cvdp) | Evolve Verilog designs against NVIDIA's CVDP CocoTB testbenches. Requires Docker. | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
