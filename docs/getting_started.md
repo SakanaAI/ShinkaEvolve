@@ -339,6 +339,7 @@ internal analysis and debugging only.
 | [Circle Packing](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/circle_packing) | 26 circles in unit square; maximize sum of radii | Geometric optimization |
 | [2048](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/game_2048) | Evolve a policy to play 2048 | Game-playing / heuristic optimization |
 | [Julia Prime Counting](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/julia_prime_counting) | Optimize Julia prime-count queries | Algorithmic optimization |
+| [Go Collatz Steps](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/go_collatz_steps) | Optimize Go Collatz stopping-time queries | Algorithmic optimization |
 | [Fortran Heat Diffusion](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/fortran_heat_diffusion) | Optimize a compiled Fortran stencil solver | Numerical computing |
 | [Wolfram GCD Sum](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_gcd_sum) | Optimize a Wolfram Language GCD-sum solver | Symbolic / numerical optimization |
 | [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Diverse outputs scored by LLM-as-a-judge | Open-ended exploration |
