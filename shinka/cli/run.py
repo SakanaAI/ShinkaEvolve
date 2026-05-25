@@ -17,6 +17,7 @@ from shinka.cli.run_config import load_optional_yaml_config
 SUPPORTED_INITIAL_EXTENSIONS: dict[str, str] = {
     ".py": "python",
     ".jl": "julia",
+    ".go": "go",
     ".rs": "rust",
     ".swift": "swift",
     ".cpp": "cpp",
@@ -32,6 +33,7 @@ SUPPORTED_INITIAL_EXTENSIONS: dict[str, str] = {
 
 INITIAL_EXTENSION_PRIORITY: list[str] = [
     ".py",
+    ".go",
     ".jl",
     ".rs",
     ".cpp",

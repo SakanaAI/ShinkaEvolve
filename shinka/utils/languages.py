@@ -8,6 +8,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "cxx": "cpp",
     "cc": "cpp",
     "cu": "cuda",
+    "golang": "go",
     "md": "markdown",
     "f90": "fortran",
     "f95": "fortran",
@@ -21,6 +22,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 _LANGUAGE_EXTENSIONS: dict[str, str] = {
     "cuda": "cu",
     "cpp": "cpp",
+    "go": "go",
     "python": "py",
     "rust": "rs",
     "swift": "swift",
@@ -35,6 +37,7 @@ _LANGUAGE_EXTENSIONS: dict[str, str] = {
 _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
     "cuda": "//",
     "cpp": "//",
+    "go": "//",
     "python": "#",
     "rust": "//",
     "swift": "//",
@@ -49,6 +52,7 @@ _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
 _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
     "cuda": ("cuda", "cu"),
     "cpp": ("cpp", "c++", "cc", "cxx"),
+    "go": ("go", "golang"),
     "python": ("python", "py"),
     "rust": ("rust", "rs"),
     "swift": ("swift",),
@@ -124,6 +128,10 @@ _EVOLVE_MARKER_PATTERNS: dict[str, tuple[re.Pattern, re.Pattern]] = {
         re.compile(r"^\s*//\s*EVOLVE-BLOCK-START\s*$"),
         re.compile(r"^\s*//\s*EVOLVE-BLOCK-END\s*$"),
     ),
+    "go": (
+        re.compile(r"^\s*//\s*EVOLVE-BLOCK-START\s*$"),
+        re.compile(r"^\s*//\s*EVOLVE-BLOCK-END\s*$"),
+    ),
     "cuda": (
         re.compile(r"^\s*//\s*EVOLVE-BLOCK-START\s*$"),
         re.compile(r"^\s*//\s*EVOLVE-BLOCK-END\s*$"),
@@ -162,6 +170,7 @@ _EVOLVE_MARKER_EXAMPLES: dict[str, tuple[str, str]] = {
     "python": ("# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-END"),
     "julia": ("# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-END"),
     "cpp": ("// EVOLVE-BLOCK-START", "// EVOLVE-BLOCK-END"),
+    "go": ("// EVOLVE-BLOCK-START", "// EVOLVE-BLOCK-END"),
     "cuda": ("// EVOLVE-BLOCK-START", "// EVOLVE-BLOCK-END"),
     "rust": ("// EVOLVE-BLOCK-START", "// EVOLVE-BLOCK-END"),
     "swift": ("// EVOLVE-BLOCK-START", "// EVOLVE-BLOCK-END"),

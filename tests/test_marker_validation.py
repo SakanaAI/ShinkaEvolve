@@ -18,6 +18,7 @@ WELL_FORMED = {
     "swift": "// EVOLVE-BLOCK-START\nfunc f() {}\n// EVOLVE-BLOCK-END",
     "json": '// EVOLVE-BLOCK-START\n{"a": 1}\n// EVOLVE-BLOCK-END',
     "json5": "// EVOLVE-BLOCK-START\n{a: 1}\n// EVOLVE-BLOCK-END",
+    "go": "// EVOLVE-BLOCK-START\nfunc f() {}\n// EVOLVE-BLOCK-END",
     "fortran": "! EVOLVE-BLOCK-START\ninteger :: x\n! EVOLVE-BLOCK-END",
     "markdown": "<!-- EVOLVE-BLOCK-START -->\nhello\n<!-- EVOLVE-BLOCK-END -->",
     "wolfram": "(* EVOLVE-BLOCK-START *)\nf[n_] := n\n(* EVOLVE-BLOCK-END *)",
@@ -43,6 +44,10 @@ def test_wolfram_aliases(alias):
 @pytest.mark.parametrize("alias", ["c++", "cxx", "cc"])
 def test_cpp_aliases(alias):
     assert validate_evolve_markers(WELL_FORMED["cpp"], alias) is None
+
+
+def test_go_aliases():
+    assert validate_evolve_markers(WELL_FORMED["go"], "golang") is None
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +166,11 @@ def test_python_trailing_marker_is_ok():
 def test_cpp_trailing_marker_is_ok():
     code = "// EVOLVE-BLOCK-START\n" "int x = 1;// EVOLVE-BLOCK-END\n"
     assert validate_evolve_markers(code, "cpp") is None
+
+
+def test_go_trailing_marker_is_ok():
+    code = "// EVOLVE-BLOCK-START\n" "var x = 1 // EVOLVE-BLOCK-END\n"
+    assert validate_evolve_markers(code, "go") is None
 
 
 def test_fortran_trailing_marker_is_ok():
