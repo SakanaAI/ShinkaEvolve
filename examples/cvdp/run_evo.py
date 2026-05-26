@@ -25,6 +25,9 @@ evo_conf = EvolutionConfig(
     init_program_path="initial.sv",
     language="verilog",
     num_generations=30,
+    llm_models=["azure-gpt-4-1-mini"],
+    llm_kwargs=dict(temperatures=[0.3, 0.7], max_tokens=4096),
+    embedding_model=None,
     task_sys_msg=(
         "You are an expert digital design engineer specializing in Verilog/SystemVerilog RTL. "
         "You are evolving a hardware module to pass a CocoTB testbench. "

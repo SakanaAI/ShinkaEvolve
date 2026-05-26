@@ -128,8 +128,9 @@ def main():
         help="Generations per problem (default: 30)",
     )
     parser.add_argument(
-        "--models", nargs="*", default=["azure-gpt-4o-mini"],
-        help="LLM models to use (default: azure-gpt-4o-mini)",
+        "--models", nargs="*",
+        default=["azure-gpt-4-1-mini", "azure-gpt-5-codex", "azure-deepseek-v4-flash"],
+        help="LLM models to use (default: gpt-4.1-mini + gpt-5-codex + deepseek-v4-flash)",
     )
     parser.add_argument(
         "--results-dir", type=str, default="results_all",

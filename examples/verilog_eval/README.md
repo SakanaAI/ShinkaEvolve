@@ -19,20 +19,25 @@ The evaluator:
 
 ## Requirements
 
-- **iverilog v12** — `apt install iverilog` (Ubuntu) or build from
-  [source](https://github.com/steveicarus/iverilog) (checkout `v12-branch`)
-- Clone [verilog-eval](https://github.com/NVlabs/verilog-eval) next to
-  ShinkaEvolve, or set `VERILOG_EVAL_DIR`
+- **iverilog v11+** — `apt install iverilog` (Ubuntu) or build from
+  [source](https://github.com/steveicarus/iverilog)
+- **Python 3.10+** with `requests`, `pandas`, `pyarrow` (for dataset download)
+- Azure OpenAI or OpenAI API key configured
 
 ## Quick Start
 
 ```bash
-# Default problem: 32-bit Galois LFSR
+# 1. Download the 156-problem dataset from HuggingFace
+python download_dataset.py
+
+# 2. Run a single problem (default: LFSR32)
 python run_evo.py
 
-# Pick a different problem
+# 3. Run all 156 problems with multi-model evolution
+python run_all.py --generations 30 --workers 4
+
+# Pick a different default problem
 VERILOG_PROBLEM=Prob144_conwaylife python run_evo.py
-VERILOG_PROBLEM=Prob140_fsm_hdlc python run_evo.py
 
 # Test the evaluator directly
 python evaluate.py --program_path initial.sv --results_dir results
