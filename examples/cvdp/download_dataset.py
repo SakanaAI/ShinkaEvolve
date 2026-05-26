@@ -13,8 +13,6 @@ Usage:
 import argparse
 import json
 import sys
-import tempfile
-import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,43 +23,31 @@ except ImportError:
     sys.exit(1)
 
 
-DATASET_URL = "https://huggingface.co/datasets/nvidia/cvdp-benchmark-dataset/resolve/main/cvdp_nonagentic_code_generation_no_commercial.zip"
+DATASET_BASE = (
+    "https://huggingface.co/datasets/nvidia/cvdp-benchmark-dataset"
+    "/resolve/main"
+)
+DATASET_VERSION = "v1.1.0"
 
 
-def download_and_extract_dataset() -> List[Dict[str, Any]]:
-    """Download CVDP dataset zip from HuggingFace, extract and load JSONL."""
-    print(f"Downloading dataset from {DATASET_URL}...")
-    
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        zip_path = tmp.name
-    
-    try:
-        response = requests.get(DATASET_URL, stream=True)
-        response.raise_for_status()
-        
-        with open(zip_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        # Extract JSONL from zip
-        problems = []
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for name in zf.namelist():
-                if name.endswith(".jsonl"):
-                    with zf.open(name) as f:
-                        for line_bytes in f:
-                            line = line_bytes.decode("utf-8").strip()
-                            if line:
-                                problems.append(json.loads(line))
-        
-        if not problems:
-            raise RuntimeError("No JSONL data found in downloaded zip")
-        
-        print(f"Loaded {len(problems)} problems")
-        return problems
-        
-    finally:
-        Path(zip_path).unlink(missing_ok=True)
+def download_dataset(commercial: bool = False) -> List[Dict[str, Any]]:
+    """Download CVDP dataset JSONL from HuggingFace."""
+    license_tag = "commercial" if commercial else "no_commercial"
+    filename = f"cvdp_{DATASET_VERSION}_nonagentic_code_generation_{license_tag}.jsonl"
+    url = f"{DATASET_BASE}/{filename}"
+
+    print(f"Downloading {filename}...")
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+
+    problems = []
+    for line in response.iter_lines(decode_unicode=True):
+        line = line.strip()
+        if line:
+            problems.append(json.loads(line))
+
+    print(f"Loaded {len(problems)} problems")
+    return problems
 
 
 def main():
@@ -82,7 +68,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        all_problems = download_and_extract_dataset()
+        all_problems = download_dataset()
     except Exception as e:
         print(f"Failed to download dataset: {e}")
         sys.exit(1)
