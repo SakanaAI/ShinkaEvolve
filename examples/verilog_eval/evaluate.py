@@ -9,10 +9,17 @@ Called by ShinkaEvolve as:
     python evaluate.py --program_path <candidate.sv> --results_dir <dir>
 
 Environment variables:
-    VERILOG_EVAL_DIR   Path to the verilog-eval dataset directory
+    VERILOG_EVAL_FILE  Path to JSONL file with VerilogEval problems
+                       (default: problems/verilog_eval.jsonl)
+    VERILOG_EVAL_DIR   Path to the verilog-eval dataset directory (legacy)
                        (default: ../../../verilog-eval/dataset_spec-to-rtl)
     VERILOG_PROBLEM    Problem ID like "Prob082_lfsr32" (default: Prob082_lfsr32)
     VERILOG_TIMEOUT    Simulation timeout in seconds (default: 60)
+
+Problem resolution order:
+    1. VERILOG_EVAL_FILE (JSONL with embedded testbenches + references)
+    2. VERILOG_EVAL_DIR (external dataset directory with _test.sv/_ref.sv files)
+    3. Auto-discover verilog-eval repo in standard locations
 """
 
 import argparse
@@ -23,10 +30,32 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
-def _find_dataset_dir() -> Path:
+def _load_problems_jsonl(jsonl_path: Path) -> List[Dict]:
+    problems = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                problems.append(json.loads(line))
+    return problems
+
+
+def _find_problem(problems: List[Dict], problem_id: Optional[str]) -> Dict:
+    if not problem_id:
+        return problems[0]
+    for p in problems:
+        if p["problem_id"] == problem_id:
+            return p
+    available = [p["problem_id"] for p in problems[:10]]
+    raise ValueError(
+        f"Problem '{problem_id}' not found. Available: {available}..."
+    )
+
+
+def _find_dataset_dir() -> Optional[Path]:
     env_dir = os.environ.get("VERILOG_EVAL_DIR")
     if env_dir:
         return Path(env_dir)
@@ -38,10 +67,7 @@ def _find_dataset_dir() -> Path:
     for p in candidates:
         if p.exists():
             return p.resolve()
-    raise FileNotFoundError(
-        "Cannot find verilog-eval dataset. Set VERILOG_EVAL_DIR or clone "
-        "https://github.com/NVlabs/verilog-eval next to ShinkaEvolve."
-    )
+    return None
 
 
 def _get_problem_files(dataset_dir: Path, problem_id: str) -> Tuple[Path, Path]:
@@ -94,17 +120,27 @@ def evaluate_verilog(
     program_path: str,
     results_dir: str,
     problem_id: str,
-    dataset_dir: Path,
+    dataset_dir: Optional[Path] = None,
+    problem_data: Optional[Dict] = None,
     timeout_seconds: int = 60,
 ) -> Dict[str, Any]:
     """Run one VerilogEval problem evaluation.
 
+    Provide either dataset_dir (external files) or problem_data (inline from JSONL).
     Returns metrics dict with combined_score in [0, 100].
     """
-    test_file, ref_file = _get_problem_files(dataset_dir, problem_id)
-
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
+
+        if problem_data:
+            test_file = tmpdir_path / f"{problem_id}_test.sv"
+            ref_file = tmpdir_path / f"{problem_id}_ref.sv"
+            test_file.write_text(problem_data["test"], encoding="utf-8")
+            ref_file.write_text(problem_data["ref"], encoding="utf-8")
+        elif dataset_dir:
+            test_file, ref_file = _get_problem_files(dataset_dir, problem_id)
+        else:
+            raise ValueError("Either dataset_dir or problem_data must be provided")
 
         # --- 1. Compile ---
         sim_vvp = tmpdir_path / "sim.vvp"
@@ -248,15 +284,42 @@ def main(program_path: str, results_dir: str):
 
     problem_id = os.environ.get("VERILOG_PROBLEM", "Prob082_lfsr32")
     timeout = int(os.environ.get("VERILOG_TIMEOUT", "60"))
+    eval_file = os.environ.get("VERILOG_EVAL_FILE", "")
 
-    try:
+    problem_data = None
+    dataset_dir = None
+
+    # Resolution order: JSONL file → external directory
+    if eval_file:
+        eval_path = Path(eval_file)
+        if not eval_path.is_absolute():
+            eval_path = Path(__file__).resolve().parent / eval_path
+    else:
+        eval_path = Path(__file__).resolve().parent / "problems" / "verilog_eval.jsonl"
+
+    if eval_path.exists():
+        try:
+            problems = _load_problems_jsonl(eval_path)
+            problem = _find_problem(problems, problem_id)
+            problem_data = problem
+            problem_id = problem["problem_id"]
+        except (ValueError, KeyError) as e:
+            metrics = {"combined_score": 0.0, "public": {}, "private": {}}
+            _save_results(results_dir, metrics, False, str(e))
+            return
+    else:
         dataset_dir = _find_dataset_dir()
-    except FileNotFoundError as e:
-        metrics = {"combined_score": 0.0, "public": {}, "private": {}}
-        correct = False
-        error = str(e)
-        _save_results(results_dir, metrics, correct, error)
-        return
+        if dataset_dir is None:
+            metrics = {"combined_score": 0.0, "public": {}, "private": {}}
+            error = (
+                "Cannot find VerilogEval problems. Either:\n"
+                "  1. Run: python download_dataset.py (creates problems/verilog_eval.jsonl)\n"
+                "  2. Set VERILOG_EVAL_FILE to a JSONL file path\n"
+                "  3. Set VERILOG_EVAL_DIR to verilog-eval dataset directory\n"
+                "  4. Clone https://github.com/NVlabs/verilog-eval next to ShinkaEvolve"
+            )
+            _save_results(results_dir, metrics, False, error)
+            return
 
     try:
         metrics = evaluate_verilog(
@@ -264,19 +327,16 @@ def main(program_path: str, results_dir: str):
             results_dir=results_dir,
             problem_id=problem_id,
             dataset_dir=dataset_dir,
+            problem_data=problem_data,
             timeout_seconds=timeout,
         )
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         metrics = {"combined_score": 0.0, "public": {}, "private": {}}
-        correct = False
-        error = str(e)
-        _save_results(results_dir, metrics, correct, error)
+        _save_results(results_dir, metrics, False, str(e))
         return
     except Exception as e:
         metrics = {"combined_score": 0.0, "public": {}, "private": {}}
-        correct = False
-        error = str(e)
-        _save_results(results_dir, metrics, correct, error)
+        _save_results(results_dir, metrics, False, str(e))
         return
 
     correct = metrics.get("combined_score", 0.0) == 100.0
