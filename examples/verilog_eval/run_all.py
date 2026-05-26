@@ -111,25 +111,29 @@ def run_single_problem(
         "PYTHONIOENCODING": "utf-8",
     }
 
+    this_dir = str(Path(__file__).resolve().parent)
+    repo_root = str(Path(__file__).resolve().parent.parent.parent)
+
     script = f"""
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath("{Path(__file__).resolve()}")))))
+sys.path.insert(0, r"{repo_root}")
 
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
-os.chdir(os.path.dirname(os.path.abspath("{Path(__file__).resolve()}")))
+os.chdir(r"{this_dir}")
 
 job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 db_conf = DatabaseConfig(num_islands=1, archive_size=10)
 evo_conf = EvolutionConfig(
-    init_program_path="{results_base}/{problem_id}/initial.sv",
+    init_program_path=r"{results_base}/{problem_id}/initial.sv",
     language="verilog",
     num_generations={generations},
     llm_models={models},
     llm_kwargs=dict(temperatures=[0.3, 0.7], max_tokens=4096),
     embedding_model=None,
+    results_dir=r"{results_base}/{problem_id}/evo_results",
     task_sys_msg=(
         "You are an expert digital design engineer specializing in Verilog/SystemVerilog RTL. "
         "You are implementing a module called TopModule to pass a testbench. "
@@ -143,7 +147,6 @@ runner = ShinkaEvolveRunner(
     db_config=db_conf,
     max_evaluation_jobs=2,
     max_proposal_jobs=2,
-    results_dir="{results_base}/{problem_id}/evo_results",
 )
 runner.run()
 """
