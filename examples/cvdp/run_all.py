@@ -1,6 +1,7 @@
 """Run ShinkaEvolve on all CVDP benchmark problems.
 
-Iterates over every problem in the JSONL dataset and launches a ShinkaEvolve
+Iterates over every problem in the JSONL dataset, generates a per-problem
+initial seed with the correct module name and spec, and launches a ShinkaEvolve
 evolution run for each.
 
 Usage:
@@ -35,12 +36,54 @@ def load_problems(jsonl_path: Path) -> list[dict]:
     return problems
 
 
+def _extract_module_name(problem: dict) -> str:
+    env_content = problem["harness"]["files"].get("src/.env", "")
+    for line in env_content.splitlines():
+        if line.strip().startswith("TOPLEVEL") and "LANG" not in line:
+            parts = line.split("=", 1)
+            if len(parts) == 2:
+                return parts[1].strip()
+    return "design"
+
+
+def generate_seed(problem: dict, output_dir: Path) -> Path:
+    """Generate initial.sv for a CVDP problem from its spec."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    seed_path = output_dir / "initial.sv"
+
+    module_name = _extract_module_name(problem)
+    spec = problem["input"]["prompt"]
+
+    spec_lines = "\n".join(f"// {line}" for line in spec.splitlines())
+
+    content = (
+        f"// Problem: {problem['id']}\n"
+        f"// Module: {module_name}\n"
+        f"//\n"
+        f"// === SPECIFICATION ===\n"
+        f"{spec_lines}\n"
+        f"// === END SPECIFICATION ===\n"
+        f"\n"
+        f"// EVOLVE-BLOCK-START\n"
+        f"module {module_name}(\n"
+        f"  // TODO: add ports per specification above\n"
+        f");\n"
+        f"  // TODO: implement per specification\n"
+        f"endmodule\n"
+        f"// EVOLVE-BLOCK-END\n"
+    )
+    seed_path.write_text(content, encoding="utf-8")
+    return seed_path
+
+
 def run_single_problem(
     problem_id: str,
     jsonl_path: str,
     generations: int,
     models: list[str],
     results_base: str,
+    seed_path: str,
+    task_msg_path: str,
 ) -> dict:
     """Run evolution for a single CVDP problem in a subprocess."""
     env = {
@@ -57,30 +100,26 @@ def run_single_problem(
 import sys, os
 sys.path.insert(0, r"{repo_root}")
 
+from pathlib import Path
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 
 os.chdir(r"{this_dir}")
 
+task_msg = Path(r"{task_msg_path}").read_text(encoding="utf-8")
+
 job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 db_conf = DatabaseConfig(num_islands=1, archive_size=10)
 evo_conf = EvolutionConfig(
-    init_program_path="initial.sv",
+    init_program_path=r"{seed_path}",
     language="verilog",
     num_generations={generations},
     llm_models={models},
     llm_kwargs=dict(temperatures=[0.3, 0.7], max_tokens=4096),
     embedding_model=None,
     results_dir=r"{results_base}/{problem_id}/evo_results",
-    task_sys_msg=(
-        "You are an expert digital design engineer specializing in Verilog/SystemVerilog RTL. "
-        "You are evolving a hardware module to pass a CocoTB testbench. "
-        "Improve the candidate module while preserving the module name and port interface exactly. "
-        "Use synthesizable constructs only. Avoid latches. "
-        "Use non-blocking assignments (<=) in clocked always blocks. "
-        "Preserve EVOLVE-BLOCK markers."
-    ),
+    task_sys_msg=task_msg,
 )
 runner = ShinkaEvolveRunner(
     evo_config=evo_conf,
@@ -129,8 +168,8 @@ def main():
     )
     parser.add_argument(
         "--models", nargs="*",
-        default=["azure-gpt-4-1-mini", "azure-gpt-5-codex", "azure-deepseek-v4-flash"],
-        help="LLM models to use (default: gpt-4.1-mini + gpt-5-codex + deepseek-v4-flash)",
+        default=["azure-gpt-4-1-mini", "azure-gpt-5-4-mini", "azure-deepseek-v4-flash"],
+        help="LLM models to use (default: gpt-4.1-mini + gpt-5-4-mini + deepseek-v4-flash)",
     )
     parser.add_argument(
         "--results-dir", type=str, default="results_all",
@@ -160,9 +199,39 @@ def main():
     if not results_base.is_absolute():
         results_base = Path(__file__).resolve().parent / results_base
 
+    seeds_dir = results_base / "_seeds"
+    seeds_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"Running {len(problems)} problems x {args.generations} generations")
     print(f"Workers: {args.workers}, Models: {args.models}")
     print(f"Results: {results_base}")
+    print("Generating per-problem seeds...")
+
+    problem_seeds = {}
+    problem_msg_paths = {}
+    for problem in problems:
+        pid = problem["id"]
+        problem_dir = seeds_dir / pid
+        seed_path = generate_seed(problem, problem_dir)
+        problem_seeds[pid] = str(seed_path)
+
+        spec = problem["input"]["prompt"]
+        module_name = _extract_module_name(problem)
+        task_msg = (
+            "You are an expert digital design engineer specializing in Verilog/SystemVerilog RTL. "
+            "You are evolving a hardware module to pass a CocoTB testbench. "
+            f"The target module name is '{module_name}'. "
+            "You MUST implement the correct module name and port interface as specified below. "
+            "Use synthesizable constructs only. Avoid latches. "
+            "Use non-blocking assignments (<=) in clocked always blocks. "
+            "Preserve EVOLVE-BLOCK markers.\n\n"
+            f"=== MODULE SPECIFICATION ===\n{spec}\n=== END SPECIFICATION ==="
+        )
+        msg_path = problem_dir / "task_msg.txt"
+        msg_path.write_text(task_msg, encoding="utf-8")
+        problem_msg_paths[pid] = str(msg_path)
+
+    print(f"Generated {len(problem_seeds)} seeds")
     print()
 
     completed = 0
@@ -172,15 +241,18 @@ def main():
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {}
         for problem in problems:
+            pid = problem["id"]
             future = pool.submit(
                 run_single_problem,
-                problem["id"],
+                pid,
                 str(eval_path),
                 args.generations,
                 args.models,
                 str(results_base),
+                problem_seeds[pid],
+                problem_msg_paths[pid],
             )
-            futures[future] = problem["id"]
+            futures[future] = pid
 
         for future in as_completed(futures):
             pid = futures[future]
