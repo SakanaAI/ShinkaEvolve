@@ -182,11 +182,17 @@ def evaluate_cvdp(
                 "text_feedback": "No docker-compose.yml in problem harness.",
             }
 
+        svc_result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "config", "--services"],
+            capture_output=True, text=True, timeout=10, cwd=str(workspace),
+        )
+        service_name = svc_result.stdout.strip().splitlines()[0] if svc_result.stdout.strip() else "direct"
+
         run_cmd = [
             "docker", "compose",
             "-f", str(compose_file),
             "-p", project_name,
-            "run", "--rm", "direct",
+            "run", "--rm", service_name,
         ]
 
         start = time.perf_counter()
