@@ -27,9 +27,11 @@ def test_resolve_new_openai_pricing_models(model_name: str):
     [
         ("claude-opus-4-7", "anthropic"),
         ("anthropic.claude-opus-4-7", "bedrock"),
+        ("claude-opus-4-8", "anthropic"),
+        ("us.anthropic.claude-opus-4-8", "bedrock"),
     ],
 )
-def test_resolve_new_claude_opus_4_7_models(model_name: str, provider: str):
+def test_resolve_new_claude_opus_models(model_name: str, provider: str):
     resolved = resolve_model_backend(model_name)
     assert resolved.provider == provider
     assert resolved.api_model_name == model_name
@@ -38,9 +40,14 @@ def test_resolve_new_claude_opus_4_7_models(model_name: str, provider: str):
 
 @pytest.mark.parametrize(
     "model_name",
-    ["claude-opus-4-7", "anthropic.claude-opus-4-7"],
+    [
+        "claude-opus-4-7",
+        "anthropic.claude-opus-4-7",
+        "claude-opus-4-8",
+        "us.anthropic.claude-opus-4-8",
+    ],
 )
-def test_claude_opus_4_7_keeps_standard_pricing_across_context_window(
+def test_claude_opus_keeps_standard_pricing_across_context_window(
     model_name: str,
 ):
     prices = get_model_prices(model_name, input_tokens=300_000)
