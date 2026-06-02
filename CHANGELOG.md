@@ -4,6 +4,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ## TBD
 
+## 0.0.7 - 2026-06-02
+
 ### Added
 
 - Added Gemini 3.5 Flash pricing to the Google LLM pricing catalog.
