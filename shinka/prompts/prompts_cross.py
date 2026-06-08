@@ -10,7 +10,7 @@ You are given multiple code scripts implementing the same algorithm.
 You are tasked with generating a new code snippet that combines these code scripts in a way that is more efficient. 
 I.e. perform crossover between the code scripts.
 Provide the complete new program code.
-You MUST repond using a short summary name, description and the full code:
+You MUST respond using a short summary name, description, and the full code:
 
 <NAME>
 A shortened name summarizing the code you are proposing. Lowercase, no spaces, underscores allowed.

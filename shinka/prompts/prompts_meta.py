@@ -85,7 +85,7 @@ META_STEP2_USER_MSG = (
     "Reference specific program names, scores, and implementation details. "
     "Build upon previous insights with concrete evidence from the new evaluations. "
     "IMPORTANT: Make sure that the best results are not ignored and are "
-    "prominently featured in your analysis."
+    "prominently featured in your analysis. "
     "Do not make recommendations for the next steps. ONLY PERFORM THE "
     "ANALYSIS."
 )
@@ -115,7 +115,7 @@ META_STEP3_USER_MSG = (
     "5. **Best-program informed**: Consider what makes the current best program successful\n\n"
     "Format as a numbered list:\n\n"
     "1. [Specific recommendation based on successful patterns]\n"
-    "2. [Another recommendation focusing on different aspect]\n"
+    "2. [Another recommendation focusing on a different aspect]\n"
     "...\n\n"
     "**CRITICAL: Prioritize recommendations that build upon or extend the successful "
     "patterns from the current best program. Consider both incremental improvements "
