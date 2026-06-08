@@ -175,6 +175,15 @@ async def validate_code_async(
                 code_path,
                 timeout=timeout,
             )
+        elif language == "verilog":
+            return await _run_validation_subprocess(
+                "iverilog",
+                "-t",
+                "null",
+                "-g2012",
+                code_path,
+                timeout=timeout,
+            )
         elif language == "wolfram":
             # Parse-only via Hold prevents evaluation; non-Hold result indicates a parse error.
             check_code = (

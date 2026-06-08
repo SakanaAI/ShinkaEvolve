@@ -17,6 +17,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "wl": "wolfram",
     "wls": "wolfram",
     "mathematica": "wolfram",
+    "sv": "verilog",
+    "sverilog": "verilog",
+    "systemverilog": "verilog",
 }
 
 _LANGUAGE_EXTENSIONS: dict[str, str] = {
@@ -32,6 +35,7 @@ _LANGUAGE_EXTENSIONS: dict[str, str] = {
     "markdown": "md",
     "fortran": "f90",
     "wolfram": "wl",
+    "verilog": "sv",
 }
 
 _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
@@ -47,6 +51,7 @@ _EVOLVE_COMMENT_PREFIXES: dict[str, str] = {
     "markdown": "<!--",
     "fortran": "!",
     "wolfram": "(*",
+    "verilog": "//",
 }
 
 _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
@@ -62,6 +67,7 @@ _LANGUAGE_FENCE_TAGS: dict[str, tuple[str, ...]] = {
     "markdown": ("markdown", "md"),
     "fortran": ("fortran", "f90", "f95", "f03", "f08"),
     "wolfram": ("wolfram", "mathematica", "wl", "wls"),
+    "verilog": ("verilog", "systemverilog", "sv"),
 }
 
 
@@ -164,6 +170,10 @@ _EVOLVE_MARKER_PATTERNS: dict[str, tuple[re.Pattern, re.Pattern]] = {
         re.compile(r"^\s*\(\*\s*EVOLVE-BLOCK-START\s*\*\)\s*$"),
         re.compile(r"^\s*\(\*\s*EVOLVE-BLOCK-END\s*\*\)\s*$"),
     ),
+    "verilog": (
+        re.compile(r"^\s*//\s*EVOLVE-BLOCK-START\s*$"),
+        re.compile(r"^\s*//\s*EVOLVE-BLOCK-END\s*$"),
+    ),
 }
 
 _EVOLVE_MARKER_EXAMPLES: dict[str, tuple[str, str]] = {
@@ -179,6 +189,7 @@ _EVOLVE_MARKER_EXAMPLES: dict[str, tuple[str, str]] = {
     "fortran": ("! EVOLVE-BLOCK-START", "! EVOLVE-BLOCK-END"),
     "markdown": ("<!-- EVOLVE-BLOCK-START -->", "<!-- EVOLVE-BLOCK-END -->"),
     "wolfram": ("(* EVOLVE-BLOCK-START *)", "(* EVOLVE-BLOCK-END *)"),
+    "verilog": ("// EVOLVE-BLOCK-START", "// EVOLVE-BLOCK-END"),
 }
 
 # Languages whose comments span multiple lines. For these, marker validation
