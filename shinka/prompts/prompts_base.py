@@ -46,12 +46,12 @@ def construct_eval_history_msg(
     inspiration programs."""
     if correct:
         inspiration_str = (
-            "Here are the performance metrics of a set of prioviously "
+            "Here are the performance metrics of a set of previously "
             "implemented programs:\n\n"
         )
     else:
         inspiration_str = (
-            "Here are the error output of a set of prioviously "
+            "Here is the error output of a set of previously "
             "implemented but incorrect programs:\n\n"
         )
 
