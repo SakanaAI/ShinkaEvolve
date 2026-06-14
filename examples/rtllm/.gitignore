@@ -1,0 +1,10 @@
+# Generated locally from a RTLLM clone (do not commit RTLLM's files)
+problems/*.jsonl
+problems/.ppa_ref_cache.json
+seeds/
+# Evolution outputs and scratch
+results/
+results_*/
+*.log
+_smoke/
+_t/
