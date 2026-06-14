@@ -120,6 +120,7 @@ evo_conf = EvolutionConfig(
     embedding_model=None,
     results_dir=r"{results_base}/{problem_id}/evo_results",
     task_sys_msg=task_msg,
+    use_text_feedback=True,
 )
 runner = ShinkaEvolveRunner(
     evo_config=evo_conf,
@@ -136,6 +137,8 @@ runner.run()
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=7200,
         cwd=str(Path(__file__).resolve().parent),
     )

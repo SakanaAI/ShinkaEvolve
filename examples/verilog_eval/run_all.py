@@ -134,6 +134,7 @@ evo_conf = EvolutionConfig(
     llm_kwargs=dict(temperatures=[0.3, 0.7], max_tokens=4096),
     embedding_model=None,
     results_dir=r"{results_base}/{problem_id}/evo_results",
+    use_text_feedback=True,
     task_sys_msg=(
         "You are an expert digital design engineer specializing in Verilog/SystemVerilog RTL. "
         "You are implementing a module called TopModule to pass a testbench. "
@@ -156,6 +157,8 @@ runner.run()
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=3600,
         cwd=str(Path(__file__).resolve().parent),
     )

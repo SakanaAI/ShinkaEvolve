@@ -1,7 +1,5 @@
 """Unit tests for CVDP evaluator components (no Docker required)."""
 
-import json
-import re
 from pathlib import Path
 import pytest
 
@@ -16,6 +14,7 @@ try:
         _extract_rtl_path,
         _parse_pytest_output,
         _classify_error,
+        _safe_workspace_path,
     )
 except ImportError:
     # For test environment, we might need to adjust sys.path
@@ -28,6 +27,7 @@ except ImportError:
         _extract_rtl_path,
         _parse_pytest_output,
         _classify_error,
+        _safe_workspace_path,
     )
 
 
@@ -176,6 +176,26 @@ def test_classify_error():
     
     # Case insensitive
     assert _classify_error("SYNTAX ERROR") == "syntax_error"
+
+
+def test_safe_workspace_path_allows_relative(tmp_path):
+    """Relative harness paths resolve inside the workspace."""
+    assert _safe_workspace_path(tmp_path, "src/.env") == (tmp_path / "src/.env").resolve()
+    assert _safe_workspace_path(tmp_path, "rtl/design.sv") == (tmp_path / "rtl/design.sv").resolve()
+    # A bare filename (no parent dir) is allowed.
+    assert _safe_workspace_path(tmp_path, "design.sv") == (tmp_path / "design.sv").resolve()
+
+
+def test_safe_workspace_path_rejects_escapes(tmp_path):
+    """Absolute paths and parent traversal are rejected, not silently escaped."""
+    # Parent traversal escaping the workspace.
+    with pytest.raises(ValueError):
+        _safe_workspace_path(tmp_path, "../escape.sv")
+    with pytest.raises(ValueError):
+        _safe_workspace_path(tmp_path, "src/../../escape.sv")
+    # Absolute paths (POSIX and Windows style) are refused outright.
+    with pytest.raises(ValueError):
+        _safe_workspace_path(tmp_path, "/etc/passwd")
 
 
 @pytest.mark.requires_docker

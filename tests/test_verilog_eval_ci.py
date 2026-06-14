@@ -1,7 +1,6 @@
 """CI-friendly tests for VerilogEval evaluator (requires iverilog but no Docker)."""
 
 import subprocess
-import sys
 from pathlib import Path
 import pytest
 

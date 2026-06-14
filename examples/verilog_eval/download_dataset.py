@@ -34,7 +34,7 @@ def download_dataset() -> list[dict]:
         print("Install pandas: pip install pandas pyarrow")
         sys.exit(1)
 
-    print(f"Downloading VerilogEval v2 dataset...")
+    print("Downloading VerilogEval v2 dataset...")
     response = requests.get(DATASET_URL)
     response.raise_for_status()
 
@@ -80,7 +80,7 @@ def main():
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     print(f"Wrote {len(problems)} problems to {out_path}")
-    print(f"\nExample problem IDs:")
+    print("\nExample problem IDs:")
     for p in problems[:10]:
         print(f"  {p['problem_id']}")
     print(f"  ... ({len(problems)} total)")

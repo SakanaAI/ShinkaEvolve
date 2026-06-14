@@ -33,6 +33,27 @@ from typing import Any, Dict, List, Optional, Tuple
 OSS_SIM_IMAGE_DEFAULT = "nvidia/cvdp-sim:v1.0.0"
 
 
+def _safe_workspace_path(workspace: Path, rel_path: str) -> Path:
+    """Resolve ``rel_path`` strictly inside ``workspace``.
+
+    The CVDP harness paths (``harness.files`` keys and ``VERILOG_SOURCES``)
+    come from the problem JSONL. An absolute path or one containing ``..``
+    could otherwise write outside the temp workspace before the harness'
+    docker-compose runs. Reject anything that does not stay inside.
+    """
+    rel = Path(rel_path)
+    if rel.is_absolute() or rel.drive or rel.anchor:
+        raise ValueError(f"Refusing absolute harness path: {rel_path!r}")
+
+    workspace_resolved = workspace.resolve()
+    candidate = (workspace_resolved / rel).resolve()
+    if candidate != workspace_resolved and workspace_resolved not in candidate.parents:
+        raise ValueError(
+            f"Harness path escapes workspace: {rel_path!r} -> {candidate}"
+        )
+    return candidate
+
+
 def _load_problems(jsonl_path: Path) -> List[Dict]:
     problems = []
     with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -84,7 +105,7 @@ def _prepare_workspace(
     workspace = Path(tempfile.mkdtemp(prefix="cvdp_eval_"))
 
     for rel_path, content in problem["harness"]["files"].items():
-        file_path = workspace / rel_path
+        file_path = _safe_workspace_path(workspace, rel_path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
 
@@ -112,8 +133,8 @@ def _prepare_workspace(
 
     rtl_source = _extract_rtl_path(problem)
     rtl_rel = rtl_source.replace("/code/", "")
-    rtl_dir = workspace / Path(rtl_rel).parent
-    rtl_dir.mkdir(parents=True, exist_ok=True)
+    dest = _safe_workspace_path(workspace, rtl_rel)
+    dest.parent.mkdir(parents=True, exist_ok=True)
 
     candidate_text = Path(candidate_path).read_text(encoding="utf-8")
     lines = candidate_text.splitlines(keepends=True)
@@ -122,7 +143,6 @@ def _prepare_workspace(
         if "EVOLVE-BLOCK-START" not in line and "EVOLVE-BLOCK-END" not in line
     )
 
-    dest = workspace / rtl_rel
     dest.write_text(clean, encoding="utf-8")
 
     return workspace
@@ -186,39 +206,60 @@ def evaluate_cvdp(
             ["docker", "compose", "-f", str(compose_file), "config", "--services"],
             capture_output=True, text=True, timeout=10, cwd=str(workspace),
         )
-        service_name = svc_result.stdout.strip().splitlines()[0] if svc_result.stdout.strip() else "direct"
-
-        run_cmd = [
-            "docker", "compose",
-            "-f", str(compose_file),
-            "-p", project_name,
-            "run", "--rm", service_name,
-        ]
+        services = [s for s in svc_result.stdout.strip().splitlines() if s.strip()]
+        if not services:
+            services = ["direct"]
 
         start = time.perf_counter()
-        try:
-            result = subprocess.run(
-                run_cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                cwd=str(workspace),
-            )
-        except subprocess.TimeoutExpired:
-            return {
-                "combined_score": 0.0,
-                "public": {
-                    "stage": "simulate",
-                    "error_class": "timeout",
-                    "elapsed": timeout_seconds,
-                },
-                "private": {},
-                "text_feedback": f"Docker evaluation timed out after {timeout_seconds}s.",
-            }
+        full_output = ""
+        all_passed = 0
+        all_failed = 0
+        service_errors = []
+
+        for service_name in services:
+            run_cmd = [
+                "docker", "compose",
+                "-f", str(compose_file),
+                "-p", project_name,
+                "run", "--rm", service_name,
+            ]
+
+            try:
+                result = subprocess.run(
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    cwd=str(workspace),
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "combined_score": 0.0,
+                    "public": {
+                        "stage": "simulate",
+                        "error_class": "timeout",
+                        "elapsed": timeout_seconds,
+                        "failed_service": service_name,
+                    },
+                    "private": {},
+                    "text_feedback": f"Service '{service_name}' timed out after {timeout_seconds}s.",
+                }
+
+            svc_output = result.stdout + "\n" + result.stderr
+            full_output += f"\n=== Service: {service_name} ===\n{svc_output}"
+
+            svc_passed, svc_failed = _parse_pytest_output(svc_output)
+            if svc_passed + svc_failed > 0:
+                all_passed += svc_passed
+                all_failed += svc_failed
+            elif result.returncode != 0:
+                service_errors.append(service_name)
+                all_failed += 1
+
         elapsed = time.perf_counter() - start
 
-        full_output = result.stdout + "\n" + result.stderr
-        passed, failed = _parse_pytest_output(full_output)
+        passed = all_passed
+        failed = all_failed + len(service_errors)
         total = passed + failed
 
         if total == 0:
