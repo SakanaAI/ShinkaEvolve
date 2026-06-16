@@ -16,7 +16,9 @@ def _build_azure_endpoint() -> str:
     endpoint = os.getenv("AZURE_API_ENDPOINT")
     if not endpoint:
         raise ValueError("AZURE_API_ENDPOINT is required for Azure OpenAI models.")
-    return endpoint.rstrip("/")
+    if not endpoint.endswith("/"):
+        endpoint += "/"
+    return endpoint + "openai/v1/"
 
 
 def get_client_llm(

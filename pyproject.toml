@@ -100,5 +100,4 @@ addopts = "--strict-markers"
 markers = [
     "integration: live external/provider integration coverage",
     "requires_secrets: tests that need CI secrets or private credentials",
-    "requires_docker: tests that need Docker and heavy environment",
 ]
