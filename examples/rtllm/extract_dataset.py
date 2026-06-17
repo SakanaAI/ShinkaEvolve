@@ -2,7 +2,7 @@
 
 Reads a local clone of RTLLM v2.0 (https://github.com/hkust-zhiyao/RTLLM) and
 emits, for each selected design:
-  - problems/rtllm_proto.jsonl : {design, spec, testbench, reference, top names}
+  - problems/rtllm.jsonl      : {design, spec, testbench, reference, top names}
   - seeds/<design>/initial.sv  : the RTLLM reference renamed to the design's
                                  bare module name, wrapped in EVOLVE-BLOCK markers
                                  (a correct seed that scores exactly 100).
@@ -29,6 +29,38 @@ DEFAULT_DESIGNS = {
 
 def _declared_modules(src: str) -> list[str]:
     return re.findall(r"^\s*module\s+([A-Za-z0-9_]+)", src, re.M)
+
+
+def _tb_instantiates(tb: str, name: str) -> bool:
+    """True if the testbench instantiates a module named `name` (with/without params)."""
+    return re.search(r"\b" + re.escape(name) + r"\s*(?:#\s*\(|\w+\s*\()", tb) is not None
+
+
+def _seed_top(name: str, ref_mod: str, tb: str) -> str:
+    """The module name the testbench expects -- the only reliable source.
+
+    Folder names can be misspelled ("substractor") and reference roots can differ
+    from the design name ("verified_adder_64bit" for adder_pipe_64bit), so pick the
+    first candidate the testbench actually instantiates.
+    """
+    strip = ref_mod[len("verified_"):] if ref_mod.startswith("verified_") else ref_mod
+    for cand in (name, strip, ref_mod):
+        if _tb_instantiates(tb, cand):
+            return cand
+    return strip
+
+
+# Auxiliary data files a testbench may $readmemh/$readmemb (kept self-contained).
+_AUX_SUFFIXES = (".txt", ".mem", ".hex", ".dat", ".bin", ".vh")
+
+
+def _aux_files(design_dir: Path) -> dict:
+    aux = {}
+    for f in design_dir.iterdir():
+        if (f.is_file() and f.suffix.lower() in _AUX_SUFFIXES
+                and f.name != "design_description.txt"):
+            aux[f.name] = f.read_text(encoding="utf-8", errors="replace")
+    return aux
 
 
 def _root_module(src: str) -> str:
@@ -58,7 +90,7 @@ def main():
                     help="path to a local RTLLM v2.0 clone")
     ap.add_argument("--designs", nargs="*", default=list(DEFAULT_DESIGNS),
                     help="design names to extract (default: the prototype set)")
-    ap.add_argument("--out", default="problems/rtllm_proto.jsonl")
+    ap.add_argument("--out", default="problems/rtllm.jsonl")
     args = ap.parse_args()
 
     here = Path(__file__).resolve().parent
@@ -81,13 +113,20 @@ def main():
         ref = ref_files[0].read_text(encoding="utf-8", errors="replace")
         ref_mod = _root_module(ref)
         tb_mod = _declared_modules(tb)[0]
+        # Name the seed exactly what the testbench instantiates (robust to misspelled
+        # folders and reference roots that differ from the design name).
+        top = _seed_top(name, ref_mod, tb)
         rows.append({
-            "design_name": name, "category": rel.split("/")[0], "top_module": name,
+            "design_name": name, "category": rel.split("/")[0], "top_module": top,
             "ref_module": ref_mod, "tb_module": tb_mod,
+            # The evaluator computes the actual equivalence verdict at runtime; this is
+            # only a hint for downstream tooling.
+            "verification": "formal",
             "description": desc, "testbench": tb, "reference": ref,
+            "aux_files": _aux_files(d),
         })
-        # seed: rename the reference's root module to the bare design name
-        body = ref.replace(ref_mod, name)
+        # seed: rename the reference's root module to the bare (tb-instantiated) name
+        body = ref.replace(ref_mod, top)
         seed = f"// EVOLVE-BLOCK-START\n{body.rstrip()}\n// EVOLVE-BLOCK-END\n"
         sd = here / "seeds" / name
         sd.mkdir(parents=True, exist_ok=True)

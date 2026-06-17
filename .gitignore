@@ -198,9 +198,3 @@ cython_debug/
 
 # Local browser automation state
 .playwright-cli/
-
-# PR verification notes and planning/survey docs (kept locally, not committed)
-VERIFICATION.md
-docs/cvdp_integration_plan.md
-docs/verilog_benchmarks_survey.md
-docs/verilog_eval_benchmark.md

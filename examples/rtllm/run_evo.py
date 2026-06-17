@@ -1,53 +1,109 @@
-"""Quick-start: evolve a single RTLLM design for PPA (defaults to adder_8bit).
+"""Evolve one RTLLM design for PPA under a fixed spec.
 
-    python run_evo.py                       # adder_8bit, 30 generations
-    RTLLM_DESIGN=multi_8bit python run_evo.py
+Mirrors the other ShinkaEvolve examples (circle_packing, etc.): a YAML config holds
+db_config + evo_config, and task_sys_msg is set here. Out of the box this evolves the
+bundled adder_8bit design (committed initial.sv + example.jsonl, from RTLLM v2.0 under
+MIT). To run any other RTLLM design, extract it from a clone (see extract_dataset.py)
+and select it via RTLLM_DESIGN / RTLLM_PROBLEM_FILE.
 
-Requires problems/rtllm_proto.jsonl + seeds/ (run extract_dataset.py first),
-iverilog, yosys (native or hdlc/yosys docker), and a provider key in repo .env.
+    python run_evo.py                                                  # bundled adder_8bit
+    RTLLM_DESIGN=adder_32bit RTLLM_PROBLEM_FILE=problems/rtllm.jsonl python run_evo.py
 """
 
+import argparse
+import json
 import os
-import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))          # force THIS fork (has Verilog support)
-load_dotenv(REPO_ROOT / ".env", override=True)
+from shinka.core import ShinkaEvolveRunner, EvolutionConfig
+from shinka.database import DatabaseConfig
+from shinka.launch import LocalJobConfig
 
-from shinka.core import ShinkaEvolveRunner, EvolutionConfig  # noqa: E402
-from shinka.database import DatabaseConfig  # noqa: E402
-from shinka.launch import LocalJobConfig  # noqa: E402
+HERE = Path(__file__).resolve().parent
 
-DESIGN = os.environ.get("RTLLM_DESIGN", "adder_8bit")
-os.environ.setdefault("RTLLM_PROBLEM_FILE", "problems/rtllm_proto.jsonl")
-
-job_conf = LocalJobConfig(eval_program_path="evaluate.py")
-db_conf = DatabaseConfig(num_islands=1, archive_size=12)
-evo_conf = EvolutionConfig(
-    init_program_path=str(Path(__file__).resolve().parent / "seeds" / DESIGN / "initial.sv"),
-    language="verilog",
-    num_generations=30,
-    llm_models=["openrouter/anthropic/claude-sonnet-4.5"],
-    llm_kwargs=dict(temperatures=[0.3, 0.7], max_tokens=6144),
-    embedding_model=None,
-    results_dir=f"results/{DESIGN}",
-    use_text_feedback=True,
-    task_sys_msg=(
-        "You are an expert digital design engineer optimizing Verilog RTL for area "
-        "and timing. The function is fixed and checked by FORMAL EQUIVALENCE against "
-        "a golden reference (identical for ALL inputs, not just a testbench). Minimize "
-        "post-synthesis AIG area (cell count) and logic depth. Explore stronger "
-        "microarchitectures (parallel-prefix adders, Booth/Wallace multipliers). Keep "
-        "the module name and ports unchanged; synthesizable Verilog only; preserve "
-        "EVOLVE-BLOCK markers."
-    ),
+TASK_SYS_MSG = (
+    "You are an expert digital design engineer optimizing Verilog RTL for physical "
+    "quality (area and timing). The module's FUNCTION is fixed and checked by formal "
+    "equivalence / the RTLLM testbench: your design must be correct for the specified "
+    "function. Subject to that, minimize post-synthesis area (um^2) and logic depth. "
+    "Explore stronger microarchitectures (carry-lookahead / parallel-prefix adders such "
+    "as Kogge-Stone or Brent-Kung; Booth encoding and Wallace/Dadda trees for "
+    "multipliers; balanced reduction trees). Keep the module name and port interface "
+    "unchanged. Use synthesizable Verilog only. Preserve the EVOLVE-BLOCK markers.\n\n"
+    "CRITICAL — CYCLE-ACCURATE EQUIVALENCE. Your design must produce identical outputs "
+    "to the reference for EVERY possible input SEQUENCE, on EVERY clock cycle — not "
+    "merely pass the finite testbench. The following are INVALID even if they pass the "
+    "testbench, and will be rejected by formal re-verification:\n"
+    "  - removing flip-flops / registers or any sequential state the reference keeps;\n"
+    "  - changing the latency or the cycle on which any output becomes valid;\n"
+    "  - converting a registered output to combinational (or vice-versa);\n"
+    "  - relying on an input being held constant across cycles when the reference does "
+    "not require it (e.g. dropping an input latch).\n"
+    "Optimize the LOGIC, not the timing contract: better arithmetic structures, smaller "
+    "state encodings, right-sized counters, and provably-equivalent transforms (e.g. an "
+    "explicit FSM rewritten as an equivalent shift-register + comparator, or a shift-add "
+    "loop replaced by a single behavioral operator) are encouraged. Preserve the exact "
+    "clocked I/O behavior of the reference."
 )
 
-runner = ShinkaEvolveRunner(
-    evo_config=evo_conf, job_config=job_conf, db_config=db_conf,
-    max_evaluation_jobs=2, max_proposal_jobs=2,
-)
-runner.run()
+
+def design_spec(design: str, problem_file: str) -> str:
+    """The design's FIXED-function spec, anti-anchored so the model is free to pick
+    any microarchitecture (RTLLM's description suggests only the naive one)."""
+    for line in open(HERE / problem_file, encoding="utf-8"):
+        p = json.loads(line)
+        if p["design_name"] == design:
+            return (
+                "\n\n--- TARGET MODULE (fixed function) ---\n"
+                + p.get("description", "").strip()
+                + "\n\nIMPORTANT: the FUNCTION above is fixed and verified, but the "
+                "suggested implementation is only ONE option. Use ANY correct, "
+                "synthesizable microarchitecture that is smaller / faster / lower-power "
+                "(parallel-prefix adders, Booth/Wallace multipliers, balanced trees) -- "
+                "do not feel bound to the approach described."
+            )
+    return ""
+
+
+def main(config_path: str):
+    with open(HERE / config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    design = os.environ.get("RTLLM_DESIGN", "adder_8bit")
+    problem_file = os.environ.get("RTLLM_PROBLEM_FILE", "example.jsonl")
+    # Propagate the selection to the evaluate.py subprocess (LocalJobConfig spawns it
+    # with this process's environment).
+    os.environ["RTLLM_DESIGN"] = design
+    os.environ["RTLLM_PROBLEM_FILE"] = problem_file
+
+    # Seed: a design extracted from an RTLLM clone (seeds/<design>/initial.sv) if present,
+    # else the bundled committed seed (initial.sv, adder_8bit).
+    seed = HERE / "seeds" / design / "initial.sv"
+    if not seed.exists():
+        seed = HERE / "initial.sv"
+
+    config["evo_config"]["task_sys_msg"] = TASK_SYS_MSG + design_spec(design, problem_file)
+    config["evo_config"]["init_program_path"] = str(seed)
+    config["evo_config"]["results_dir"] = str(HERE / "results" / design / "evo_results")
+
+    evo_config = EvolutionConfig(**config["evo_config"])
+    db_config = DatabaseConfig(**config["db_config"])
+    job_config = LocalJobConfig(eval_program_path="evaluate.py")
+
+    runner = ShinkaEvolveRunner(
+        evo_config=evo_config,
+        job_config=job_config,
+        db_config=db_config,
+        max_evaluation_jobs=config.get("max_evaluation_jobs", 2),
+        max_proposal_jobs=config.get("max_proposal_jobs", 2),
+    )
+    runner.run()
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("config_path", nargs="?", default="shinka.yaml",
+                    help="YAML config with db_config + evo_config (default: shinka.yaml)")
+    main(ap.parse_args().config_path)
