@@ -94,10 +94,25 @@ def _wrap_seed(body: str) -> str:
     port to win on a testbench that never exercises the dropped bits -- e.g. narrowing a
     RAM address bus -- which is not a valid optimisation.)
     """
-    m = re.search(r"\bmodule\b[^;]*?\)\s*;", body)
-    if not m:  # non-ANSI or unparsable header: fall back to whole-module (still synthesises)
+    # Mask comments (keeping length so offsets stay aligned) so a ';' or ')' inside a
+    # header comment doesn't fool the matcher.
+    def _mask(s):
+        s = re.sub(r"/\*.*?\*/", lambda mm: " " * len(mm.group()), s, flags=re.S)
+        return re.sub(r"//[^\n]*", lambda mm: " " * len(mm.group()), s)
+    masked = _mask(body)
+    m = re.search(r"\bmodule\b[^;]*?\)\s*;", masked)
+    if not m:  # unparsable header: fall back to whole-module (still synthesises)
         return f"// EVOLVE-BLOCK-START\n{body.rstrip()}\n// EVOLVE-BLOCK-END\n"
-    header, rest = body[:m.end()], body[m.end():].strip()
+    end = m.end()
+    # Non-ANSI style declares port directions/widths AFTER the name list
+    # (module X(a,b); input [7:0] a; ...). Freeze those too, so widths are immutable.
+    lines, mlines = body[end:].splitlines(keepends=True), masked[end:].splitlines(keepends=True)
+    i = 0
+    while i < len(lines) and (not mlines[i].strip()
+                              or re.match(r"(input|output|inout)\b", mlines[i].lstrip())):
+        i += 1
+    header = body[:end].rstrip() + ("\n" + "".join(lines[:i]).rstrip() if i else "")
+    rest = "".join(lines[i:]).strip()
     return f"{header.rstrip()}\n// EVOLVE-BLOCK-START\n{rest}\n// EVOLVE-BLOCK-END\n"
 
 
