@@ -1,33 +1,29 @@
 """
 ShinkaEvolve evaluator for RTLLM (v2.0) PPA-speedup problems.
 
-Optimizes a Verilog design for area/delay under a FIXED functional spec
-(the RTLLM design_description), mirroring RTLLM's flow with open-source tools:
+Optimizes a Verilog design for area / logic-depth / power under a FIXED functional
+spec (the RTLLM design_description), using an all-open-source flow:
 
-    correctness  : Icarus Verilog compile + RTLLM testbench   (mirror of Synopsys VCS)
-    equivalence  : Yosys SAT formal combinational equivalence  (reward-hack-proof gate,
-                   the open analog of Synopsys Formality used by RTL-OPT)
-    PPA          : Yosys synthesis mapped to the Nangate45 standard-cell liberty;
-                   area = real chip area (um^2), delay = critical-path logic depth
-                   (open analog of Synopsys Design Compiler area/WNS; absolute numbers
-                   differ by tool, so we compare evolved-vs-reference on the same flow)
+    correctness  : Icarus Verilog compile + RTLLM testbench
+    equivalence  : Yosys SAT formal combinational equivalence, so a candidate cannot
+                   win by overfitting the finite testbench
+    PPA          : Yosys synthesis to the Nangate45 standard cells (area um^2 + logic
+                   depth) + OpenSTA power. Absolute numbers are tool-dependent, so the
+                   evolved and reference designs are compared on the identical flow.
 
-Fitness (p_speedup, kernel_bench-style but under fixed spec):
-    score = 0                              if syntax/equivalence fails
-    score = 100 * sqrt( area_ref/area_cand * depth_ref/depth_cand )   otherwise
+Fitness:
+    score = 0                                                  if syntax/equivalence fails
+    score = 100 * geomean(area_ref/area_cand, depth_ref/depth_cand, power_ref/power_cand)
     => the RTLLM human reference scores exactly 100; beating it scores > 100.
-
-The candidate must be logically EQUIVALENT to the reference (not merely pass the
-finite testbench), which closes the testbench-overfitting reward-hacking hole.
 
 Called by ShinkaEvolve as:
     python evaluate.py --program_path <candidate.v> --results_dir <dir>
 
 Environment variables:
-    RTLLM_PROBLEM_FILE  JSONL with embedded spec/testbench/reference
-                        (default: problems/rtllm_proto.jsonl)
+    RTLLM_PROBLEM_FILE  JSONL with embedded spec/testbench/reference (default: example.jsonl)
     RTLLM_DESIGN        design_name, e.g. "adder_8bit" (default: first in file)
     RTLLM_TIMEOUT       per-tool timeout seconds (default: 60)
+    RTLLM_POWER         set "0" to skip OpenSTA power (score falls back to area x depth)
     RTLLM_YOSYS_IMAGE   docker image for yosys (default: hdlc/yosys:latest)
 """
 
@@ -245,7 +241,7 @@ def _classify_compile_error(stderr: str) -> str:
 # --------------------------------------------------------------------------- #
 # Reference PPA cache (reference is constant per design; compute once).
 # --------------------------------------------------------------------------- #
-def _ref_cache_path(problem: Dict) -> Path:
+def _ref_cache_path() -> Path:
     return Path(__file__).resolve().parent / "problems" / ".ppa_ref_cache.json"
 
 
@@ -253,7 +249,7 @@ def _reference_ppa(problem: Dict, timeout: int) -> Optional[Tuple[float, int, Op
     """Return (area_um2, depth, power_uw) for the golden reference (cached)."""
     key = problem["design_name"]
     ref_hash = hashlib.sha1(problem["reference"].encode("utf-8")).hexdigest()[:12]
-    cache_file = _ref_cache_path(problem)
+    cache_file = _ref_cache_path()
     try:
         cache = json.loads(cache_file.read_text(encoding="utf-8"))
     except Exception:
@@ -393,31 +389,15 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
         delay_ratio = d_r / d_c if d_c else 0.0
         power_ratio = (p_r / p_c) if (p_r and p_c) else None
 
-        # How to combine the per-axis improvement ratios into one number:
-        #   RTLLM_SCORE_MEAN="geo"   -> geometric mean  (product^(1/n)); the standard
-        #       for combining ratios/speedups (SPEC etc.); scale-invariant, one bad
-        #       axis (ratio<1) is fully felt, any 0 -> 0.
-        #   RTLLM_SCORE_MEAN="arith" -> arithmetic mean of the ratios; a big win on one
-        #       axis can mask a loss on another (more forgiving, less principled).
-        def _combine(ratios):
-            rs = [r for r in ratios if r]
-            if not rs:
-                return 0.0
-            if os.environ.get("RTLLM_SCORE_MEAN", "geo") == "arith":
-                return sum(rs) / len(rs)
-            prod = 1.0
-            for r in rs:
-                prod *= r
-            return prod ** (1.0 / len(rs))
-
-        # Two speedups, both recorded; ShinkaEvolve optimizes ONE scalar (combined_score):
-        #   ppa2 = area x delay (power decoupled)
-        #   ppa3 = area x delay x power  (matches RTLLM's full PPA)
-        speedup_ppa2 = _combine([area_ratio, delay_ratio])
-        speedup_ppa3 = _combine([area_ratio, delay_ratio, power_ratio]) if power_ratio else None
-        # RTLLM_SCORE_AXES: "3" -> power counts (default), "2" -> area x delay only
-        axes = os.environ.get("RTLLM_SCORE_AXES", "3")
-        speedup = speedup_ppa3 if (axes == "3" and speedup_ppa3) else speedup_ppa2
+        # combined_score = 100 x geometric mean of the per-axis improvement ratios
+        # (area, logic-depth, and power when OpenSTA produced a reading). Geomean is
+        # the standard way to combine ratios/speedups: scale-invariant, one bad axis
+        # (ratio < 1) is fully felt, any 0 -> 0. 100 = the reference; > 100 beats it.
+        ratios = [r for r in (area_ratio, delay_ratio, power_ratio) if r]
+        prod = 1.0
+        for r in ratios:
+            prod *= r
+        speedup = prod ** (1.0 / len(ratios)) if ratios else 0.0
         score = 100.0 * speedup
 
         verdict = "beats" if score > 100.0 else ("matches" if score == 100.0 else "below")
@@ -435,14 +415,11 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
             "combined_score": score,
             "public": {
                 "stage": "pass", "tb_pass": tb_pass, "verification": verification,
-                "equivalent": verification == "formal", "score_axes": axes,
-                "score_mean": os.environ.get("RTLLM_SCORE_MEAN", "geo"),
+                "equivalent": verification == "formal",
                 "area": a_c, "depth": d_c, "power_uw": p_c,
                 "ref_area": a_r, "ref_depth": d_r, "ref_power_uw": p_r,
                 "area_ratio": area_ratio, "delay_ratio": delay_ratio,
-                "power_ratio": power_ratio,
-                "speedup": speedup, "speedup_ppa2": speedup_ppa2,
-                "speedup_ppa3": speedup_ppa3 if power_ratio else None,
+                "power_ratio": power_ratio, "speedup": speedup,
             },
             "private": {},
             "text_feedback": feedback,
@@ -458,7 +435,7 @@ def _save_results(results_dir: str, metrics: dict, correct: bool, error: str):
 
 def main(program_path: str, results_dir: str):
     os.makedirs(results_dir, exist_ok=True)
-    problem_file = os.environ.get("RTLLM_PROBLEM_FILE", "problems/rtllm_proto.jsonl")
+    problem_file = os.environ.get("RTLLM_PROBLEM_FILE", "example.jsonl")
     design = os.environ.get("RTLLM_DESIGN", "")
     timeout = int(os.environ.get("RTLLM_TIMEOUT", "60"))
 
