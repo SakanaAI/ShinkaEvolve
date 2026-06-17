@@ -84,6 +84,23 @@ def _discover(rtllm_root: Path) -> dict[str, str]:
     return found
 
 
+def _wrap_seed(body: str) -> str:
+    """Wrap the reference in EVOLVE-BLOCK markers, FREEZING the module's interface.
+
+    RTLLM pins the module name + all I/O signals (name and width) as part of the spec,
+    so the port declaration must stay fixed: evolution may only change the implementation,
+    never the interface. We place the top module's ``module NAME( ...ports... );`` header
+    OUTSIDE the editable block; only the body evolves. (Without this the model can shrink a
+    port to win on a testbench that never exercises the dropped bits -- e.g. narrowing a
+    RAM address bus -- which is not a valid optimisation.)
+    """
+    m = re.search(r"\bmodule\b[^;]*?\)\s*;", body)
+    if not m:  # non-ANSI or unparsable header: fall back to whole-module (still synthesises)
+        return f"// EVOLVE-BLOCK-START\n{body.rstrip()}\n// EVOLVE-BLOCK-END\n"
+    header, rest = body[:m.end()], body[m.end():].strip()
+    return f"{header.rstrip()}\n// EVOLVE-BLOCK-START\n{rest}\n// EVOLVE-BLOCK-END\n"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Extract RTLLM designs into a Shinka JSONL")
     ap.add_argument("--rtllm-root", required=True, type=Path,
@@ -127,7 +144,7 @@ def main():
         })
         # seed: rename the reference's root module to the bare (tb-instantiated) name
         body = ref.replace(ref_mod, top)
-        seed = f"// EVOLVE-BLOCK-START\n{body.rstrip()}\n// EVOLVE-BLOCK-END\n"
+        seed = _wrap_seed(body)
         sd = here / "seeds" / name
         sd.mkdir(parents=True, exist_ok=True)
         (sd / "initial.sv").write_text(seed, encoding="utf-8")

@@ -1,11 +1,10 @@
-// EVOLVE-BLOCK-START
 module adder_8bit(
     input [7:0] a, b, 
     input cin, 
     output [7:0] sum, 
     output cout);
-    
-    wire [8:0] c;
+// EVOLVE-BLOCK-START
+wire [8:0] c;
 
     full_adder FA0 (.a(a[0]), .b(b[0]), .cin(cin), .sum(sum[0]), .cout(c[0]));
     full_adder FA1 (.a(a[1]), .b(b[1]), .cin(c[0]), .sum(sum[1]), .cout(c[1]));
