@@ -15,8 +15,8 @@ scores **> 100**.
 This example is **self-contained**: it ships one design from the
 [RTLLM v2.0](https://github.com/hkust-zhiyao/RTLLM) benchmark — `adder_8bit` (a ripple-carry
 adder) — as `initial.sv` + `example.jsonl`, so `python run_evo.py` works out of the box.
-Evolution typically discovers a parallel-prefix structure (Kogge-Stone / Brent-Kung) that is
-**formally proven equivalent** to the reference with a ~2× shorter critical path.
+Running it, evolution can replace the ripple-carry chain with a parallel-prefix structure
+(Kogge-Stone / Brent-Kung) — a shorter carry path, held to formal equivalence with the reference.
 
 ## How each metric is measured (all open-source — no commercial EDA licences)
 
@@ -58,7 +58,7 @@ python evaluate.py --program_path initial.sv --results_dir /tmp/out
 
 ## Run any other RTLLM design
 
-The other 49 designs aren't vendored (keep RTLLM's tree as the source of truth). Clone RTLLM
+The other RTLLM designs aren't vendored (keep RTLLM's tree as the source of truth). Clone RTLLM
 and extract the one(s) you want into a local `problems/*.jsonl` + `seeds/<design>/`:
 
 ```bash
@@ -73,8 +73,8 @@ RTLLM_DESIGN=adder_32bit RTLLM_PROBLEM_FILE=problems/rtllm.jsonl python run_evo.
 |---|---|---|
 | `RTLLM_DESIGN` | `adder_8bit` | which design to evolve |
 | `RTLLM_PROBLEM_FILE` | `example.jsonl` | the problem set (the bundled single design) |
-| `RTLLM_SCORE_AXES` | `3` | `2` = area·depth, `3` = area·depth·power |
 | `RTLLM_TIMEOUT` | `60` | per-tool timeout (s) |
+| `RTLLM_POWER` | `1` | set `0` to skip OpenSTA power (score falls back to area·depth) |
 | `RTLLM_YOSYS_IMAGE` / `RTLLM_OPENSTA_IMAGE` | `hdlc/yosys:latest` / `opensta:local` | docker images if no native tool |
 
 ## Tooling note (honest substitution)

@@ -25,7 +25,7 @@ db_config:
 evo_config:
   patch_types: [diff, full, cross]
   patch_type_probs: [0.6, 0.3, 0.1]
-  num_generations: 30         # raise for a stronger result (the 143.9 adder win used ~50)
+  num_generations: 30         # raise for a stronger result
   max_api_costs: 3.0          # hard USD budget cap for this run
   max_patch_resamples: 3
   max_patch_attempts: 1

@@ -81,24 +81,13 @@ def _strip_markers(text: str) -> str:
 # --------------------------------------------------------------------------- #
 # Yosys invocation (native if present, else the hdlc/yosys docker image).
 # --------------------------------------------------------------------------- #
-def _yosys_argv(workdir: Path, script: str, timeout: Optional[int] = None,
-                name: Optional[str] = None) -> List[str]:
-    if shutil.which("yosys"):
-        return ["yosys", "-p", script]
+def _yosys_argv(workdir: Path, script: str, timeout: int, name: str) -> List[str]:
+    """Docker yosys argv (used when there is no native yosys). The container
+    self-terminates so a stuck SAT solve can't outlive the Python timeout."""
     image = os.environ.get("RTLLM_YOSYS_IMAGE", "hdlc/yosys:latest")
     wd = str(workdir).replace("\\", "/")
-    cmd = ["docker", "run", "--rm"]
-    if name:
-        cmd += ["--name", name]
-    cmd += ["-v", f"{wd}:/work", "-w", "/work", image]
-    if timeout:
-        # self-terminate INSIDE the container: a stuck SAT solve (e.g. divider/
-        # multiplier equivalence) must not outlive the Python-side timeout and
-        # orphan a CPU-pinning container.
-        cmd += ["bash", "-c", f"timeout {int(timeout)} yosys -p {shlex.quote(script)}"]
-    else:
-        cmd += ["yosys", "-p", script]
-    return cmd
+    return ["docker", "run", "--rm", "--name", name, "-v", f"{wd}:/work", "-w", "/work",
+            image, "bash", "-c", f"timeout {int(timeout)} yosys -p {shlex.quote(script)}"]
 
 
 def _run_yosys(workdir: Path, script: str, timeout: int) -> Tuple[int, str]:
@@ -175,31 +164,9 @@ def _measure_power(workdir: Path, vfile: str, top: str, timeout: int) -> Optiona
         return None
 
 
-_EQUIV_FLOW = (
-    "read_verilog -sv ref.v; hierarchy -top {ref}; proc; memory; opt_clean; flatten; "
-    "rename {ref} gold; design -stash gold; "
-    "read_verilog -sv cand.v; hierarchy -top {top}; proc; memory; opt_clean; flatten; "
-    "rename {top} gate; design -stash gate; "
-    "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
-    "equiv_make gold gate equiv; hierarchy -top equiv; "
-    "equiv_simple; equiv_induct; equiv_status -assert"
-)
-
-
-def _check_equivalence(workdir: Path, top: str, ref: str, timeout: int) -> Tuple[bool, str]:
-    try:
-        rc, out = _run_yosys(workdir, _EQUIV_FLOW.format(top=top, ref=ref), timeout)
-    except subprocess.TimeoutExpired:
-        return False, "timeout"
-    proven = rc == 0 and "Equivalence successfully proven" in out
-    return proven, out
-
-
-# Bounded I/O equivalence: build an output-comparing miter and SAT-check that outputs
-# match for n cycles from reset. Unlike equiv_induct this ignores the internal state
-# ENCODING, so it accepts behaviorally-equivalent state-restructurings (FSM->shift-reg,
-# resized counters) while still catching genuine behavioral change. async2sync converts
-# $adff so the SAT solver can import the flip-flops.
+# Bounded I/O equivalence: build an output-comparing miter and SAT-check that the
+# outputs match for n cycles from reset. This compares behaviour, not state encoding,
+# so it accepts equivalent restructurings while still catching real behavioural change.
 _BOUNDED_FLOW = (
     "read_verilog -sv ref.v; hierarchy -top {ref}; proc; memory; flatten; "
     "rename {ref} gold; design -stash gold; "
@@ -278,11 +245,10 @@ def _reference_ppa(problem: Dict, timeout: int) -> Optional[Tuple[float, int, Op
 
 def _run_testbench(wd: Path, candidate_file: str, tb_module: str,
                    timeout: int) -> Tuple[bool, str, int]:
-    """Mirror RTLLM's flow: iverilog compile candidate+testbench, run, grep banner.
+    """Compile candidate + testbench with iverilog, run, and read the pass/fail banner.
 
-    Returns (passed, stage_or_error, failures). Recorded for the science even
-    though the *gate* is formal equivalence, so we can measure how often a design
-    passes the finite testbench but is not actually equivalent.
+    Returns (passed, stage_or_error, failures). The testbench is the cheap first
+    filter; equivalence to the reference is the actual correctness gate.
     """
     sim = wd / "sim.vvp"
     comp = subprocess.run(
@@ -333,14 +299,10 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
                                  f"module '{top}' and its port interface unchanged.",
             }
 
-        # --- Gate 2: correctness (UNIFORM for every design) ---
-        # 1) testbench is the cheap first filter; failing it = wrong, rejected.
-        # 2) every testbench-passing candidate is then checked for cycle-accurate
-        #    equivalence to the reference via a bounded I/O miter:
-        #       DIVERGES  -> testbench-overfit, REJECTED in-loop (the reward-hack guard)
-        #       EQUIV_IO  -> behaviorally equivalent, accepted ("formal" verdict)
-        #       timeout   -> SAT-hard (div/mul/deep-seq): fall back to the testbench
-        #                    verdict, recorded honestly as "testbench".
+        # Correctness: the testbench is the cheap first filter; every passing
+        # candidate is then checked for cycle-accurate equivalence to the reference
+        # with a bounded I/O miter (DIVERGES -> reject, EQUIV_IO -> accept,
+        # timeout on a hard SAT -> fall back to the testbench verdict).
         if not tb_pass:
             return {
                 "combined_score": 0.0,
@@ -350,20 +312,18 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
                 "text_feedback": "Fails the testbench: wrong on at least one of the "
                                  "checked input vectors. Keep the specified function.",
             }
-        bnd_cycles = int(os.environ.get("RTLLM_BOUNDED_CYCLES", "16"))
-        bnd_timeout = int(os.environ.get("RTLLM_BOUNDED_TIMEOUT", "20"))
-        bnd, bnd_out = _bounded_io_equiv(wd, top, ref_mod, bnd_cycles, bnd_timeout)
+        # Bounded I/O equivalence: compare outputs for 16 cycles from reset, 20s SAT budget.
+        bnd, bnd_out = _bounded_io_equiv(wd, top, ref_mod, 16, 20)
         if bnd == "DIVERGES":
             return {
                 "combined_score": 0.0,
                 "public": {"stage": "equivalence", "tb_pass": True,
                            "verification": "formal", "equivalent": False},
                 "private": {"equiv_tail": bnd_out[-1500:]},
-                "text_feedback": "Passes the finite testbench but is NOT cycle-accurate "
-                                 "equivalent to the reference (testbench-overfit): it differs "
-                                 "on some input sequence. It must match the reference on every "
-                                 "output, every cycle, for ALL inputs -- do not change timing, "
-                                 "remove registers, or rely on inputs being held constant.",
+                "text_feedback": "Passes the testbench but is not equivalent to the "
+                                 "reference: it differs on some input sequence. Match the "
+                                 "reference on every output, every cycle; do not change "
+                                 "timing or remove registers.",
             }
         verification = "formal" if bnd == "EQUIV_IO" else "testbench"
 
@@ -389,10 +349,8 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
         delay_ratio = d_r / d_c if d_c else 0.0
         power_ratio = (p_r / p_c) if (p_r and p_c) else None
 
-        # combined_score = 100 x geometric mean of the per-axis improvement ratios
-        # (area, logic-depth, and power when OpenSTA produced a reading). Geomean is
-        # the standard way to combine ratios/speedups: scale-invariant, one bad axis
-        # (ratio < 1) is fully felt, any 0 -> 0. 100 = the reference; > 100 beats it.
+        # combined_score = 100 x geomean of the per-axis improvement ratios (area,
+        # logic-depth, and power when OpenSTA produced a reading). 100 = reference.
         ratios = [r for r in (area_ratio, delay_ratio, power_ratio) if r]
         prod = 1.0
         for r in ratios:

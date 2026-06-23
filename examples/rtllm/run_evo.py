@@ -53,19 +53,16 @@ TASK_SYS_MSG = (
 
 
 def design_spec(design: str, problem_file: str) -> str:
-    """The design's FIXED-function spec, anti-anchored so the model is free to pick
-    any microarchitecture (RTLLM's description suggests only the naive one)."""
+    """The design's fixed-function spec (the RTLLM description), with a note that the
+    suggested implementation is only one option."""
     for line in open(HERE / problem_file, encoding="utf-8"):
         p = json.loads(line)
         if p["design_name"] == design:
             return (
                 "\n\n--- TARGET MODULE (fixed function) ---\n"
                 + p.get("description", "").strip()
-                + "\n\nIMPORTANT: the FUNCTION above is fixed and verified, but the "
-                "suggested implementation is only ONE option. Use ANY correct, "
-                "synthesizable microarchitecture that is smaller / faster / lower-power "
-                "(parallel-prefix adders, Booth/Wallace multipliers, balanced trees) -- "
-                "do not feel bound to the approach described."
+                + "\n\nThe function above is fixed, but the implementation it suggests is "
+                "only one option: use any correct, synthesizable microarchitecture."
             )
     return ""
 
