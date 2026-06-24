@@ -136,6 +136,7 @@ echo "Launching Docker container…"
 {load_command}
 
 docker run --rm \\
+    -e SHINKA_EVAL_VERBOSE={shinka_eval_verbose} \\
     {docker_flags} \\
     {image} {cmd}
 
@@ -164,6 +165,7 @@ echo "Job running on $(hostname) under Slurm job $SLURM_JOB_ID"
 # Activate Python environment when configured
 {activation_commands}
 
+export SHINKA_EVAL_VERBOSE={shinka_eval_verbose}
 {cmd}
 
 exit $?
@@ -182,6 +184,7 @@ def submit_docker(
     image: str,
     image_tar_path: Optional[str] = None,
     verbose: bool = False,
+    eval_verbose: bool = True,
     local: bool = False,
     **sbatch_kwargs,
 ):
@@ -198,6 +201,7 @@ def submit_docker(
             image=image,
             image_tar_path=image_tar_path,
             verbose=verbose,
+            eval_verbose=eval_verbose,
             **sbatch_kwargs,
         )
     job_name = f"docker-{uuid.uuid4().hex[:6]}"
@@ -252,6 +256,7 @@ fi
         image=image,
         cmd=" ".join(cmd),
         load_command=load_command,
+        shinka_eval_verbose="1" if eval_verbose else "0",
     )
 
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch") as f:
@@ -280,6 +285,7 @@ def submit_conda(
     activate_script: Optional[str] = None,
     modules: Optional[list[str]] = None,
     verbose: bool = False,
+    eval_verbose: bool = True,
     local: bool = False,
     **sbatch_kwargs,
 ):
@@ -296,6 +302,7 @@ def submit_conda(
             activate_script=activate_script,
             modules=modules,
             verbose=verbose,
+            eval_verbose=eval_verbose,
             **sbatch_kwargs,
         )
     job_name = f"conda-{uuid.uuid4().hex[:6]}"
@@ -329,6 +336,7 @@ def submit_conda(
         activation_commands=activation_commands,
         module_load_commands=module_load_commands,
         cmd=" ".join(cmd),
+        shinka_eval_verbose="1" if eval_verbose else "0",
     )
 
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch") as f:
@@ -404,6 +412,7 @@ def submit_local_docker(
     image: str,
     image_tar_path: Optional[str] = None,
     verbose: bool = False,
+    eval_verbose: bool = True,
     **kwargs,
 ) -> str:
     """Submit a job to run locally in a Docker container."""
@@ -412,12 +421,14 @@ def submit_local_docker(
     os.makedirs(log_dir_path, exist_ok=True)
     image_name = get_local_image(image)
     image_file = f"{image.replace('/', '_').replace(':', '_')}.tar"
+    eval_verbose_value = "1" if eval_verbose else "0"
     # build bash command with logging
     full = (
         f"if [ -f '{DOCKER_CACHE_DIR}/{image_file}' ]; then "
         f"docker load < '{DOCKER_CACHE_DIR}/{image_file}'; "
         f"else docker pull {image_name}; fi; "
-        f"docker run --rm {docker_flags} {image_name} "
+        f"docker run --rm -e SHINKA_EVAL_VERBOSE={eval_verbose_value} "
+        f"{docker_flags} {image_name} "
         f"{' '.join(cmd)} >> {log_dir}/job_log.out "
         f"2>> {log_dir}/job_log.err"
     )
@@ -439,6 +450,7 @@ def submit_local_conda(
     activate_script: Optional[str] = None,
     modules: Optional[list[str]] = None,
     verbose: bool = False,
+    eval_verbose: bool = True,
     **kwargs,
 ) -> str:
     """Submit local conda job."""
@@ -458,6 +470,7 @@ def submit_local_conda(
             "module --quiet purge",
             loads,
             activation_commands,
+            f"export SHINKA_EVAL_VERBOSE={'1' if eval_verbose else '0'}",
             f"{' '.join(cmd)} >> {log_dir}/job_log.out 2>> {log_dir}/job_log.err",
         ]
         if segment

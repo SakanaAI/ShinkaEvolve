@@ -36,6 +36,7 @@ class JobConfig:
 
     eval_program_path: Optional[str] = "evaluate.py"
     extra_cmd_args: Dict[str, Any] = field(default_factory=dict)
+    eval_verbose: bool = True  
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation"""
@@ -180,26 +181,32 @@ class JobScheduler:
         if self.job_type != "local" or not isinstance(self.config, LocalJobConfig):
             return None
 
-        numeric_threads = self.config.numeric_threads_per_job
-        if numeric_threads is None:
-            return None
-
-        normalized_threads = max(1, int(numeric_threads))
-        thread_value = str(normalized_threads)
-        return {
-            "OMP_NUM_THREADS": thread_value,
-            "OMP_THREAD_LIMIT": thread_value,
-            "OMP_DYNAMIC": "FALSE",
-            "OMP_WAIT_POLICY": "PASSIVE",
-            "OPENBLAS_NUM_THREADS": thread_value,
-            "MKL_NUM_THREADS": thread_value,
-            "MKL_DYNAMIC": "FALSE",
-            "NUMEXPR_NUM_THREADS": thread_value,
-            "NUMEXPR_MAX_THREADS": thread_value,
-            "VECLIB_MAXIMUM_THREADS": thread_value,
-            "BLIS_NUM_THREADS": thread_value,
-            "GOTO_NUM_THREADS": thread_value,
+        overrides: Dict[str, str] = {
+            "SHINKA_EVAL_VERBOSE": "1" if self.config.eval_verbose else "0",
         }
+
+        numeric_threads = self.config.numeric_threads_per_job
+        if numeric_threads is not None:
+            normalized_threads = max(1, int(numeric_threads))
+            thread_value = str(normalized_threads)
+            overrides.update(
+                {
+                    "OMP_NUM_THREADS": thread_value,
+                    "OMP_THREAD_LIMIT": thread_value,
+                    "OMP_DYNAMIC": "FALSE",
+                    "OMP_WAIT_POLICY": "PASSIVE",
+                    "OPENBLAS_NUM_THREADS": thread_value,
+                    "MKL_NUM_THREADS": thread_value,
+                    "MKL_DYNAMIC": "FALSE",
+                    "NUMEXPR_NUM_THREADS": thread_value,
+                    "NUMEXPR_MAX_THREADS": thread_value,
+                    "VECLIB_MAXIMUM_THREADS": thread_value,
+                    "BLIS_NUM_THREADS": thread_value,
+                    "GOTO_NUM_THREADS": thread_value,
+                }
+            )
+
+        return overrides
 
     def run(
         self, exec_fname_t: str, results_dir_t: str
@@ -230,6 +237,7 @@ class JobScheduler:
                 self.config.image,
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
+                eval_verbose=self.config.eval_verbose,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -245,6 +253,7 @@ class JobScheduler:
                 self.config.activate_script,
                 self.config.modules,
                 verbose=self.verbose,
+                eval_verbose=self.config.eval_verbose,
             )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
@@ -290,6 +299,7 @@ class JobScheduler:
                 self.config.image,
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
+                eval_verbose=self.config.eval_verbose,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -305,6 +315,7 @@ class JobScheduler:
                 self.config.activate_script,
                 self.config.modules,
                 verbose=self.verbose,
+                eval_verbose=self.config.eval_verbose,
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 

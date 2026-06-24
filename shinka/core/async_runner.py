@@ -62,7 +62,11 @@ from shinka.core.prompt_evolver import (
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
-from shinka.utils import get_language_extension, parse_time_to_seconds
+from shinka.utils import (
+    get_language_extension,
+    parse_time_to_seconds,
+    truncate_log_tail,
+)
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
@@ -1564,7 +1568,10 @@ class ShinkaEvolveRunner:
             public_metrics = metrics_val.get("public", {})
             private_metrics = metrics_val.get("private", {})
             text_feedback = metrics_val.get("text_feedback", "")
-            stdout_log = results.get("stdout_log", "")
+            stdout_log = truncate_log_tail(
+                results.get("stdout_log", ""),
+                self.db_config.max_stdout_log_chars,
+            )
             stderr_log = results.get("stderr_log", "")
 
             # Build base metadata
@@ -4053,7 +4060,10 @@ class ShinkaEvolveRunner:
                 public_metrics = metrics_val.get("public", {})
                 private_metrics = metrics_val.get("private", {})
                 text_feedback = metrics_val.get("text_feedback", "")
-                stdout_log = results.get("stdout_log", "")
+                stdout_log = truncate_log_tail(
+                    results.get("stdout_log", ""),
+                    self.db_config.max_stdout_log_chars,
+                )
                 stderr_log = results.get("stderr_log", "")
 
                 logger.info(
