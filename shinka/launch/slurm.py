@@ -7,10 +7,24 @@ import time
 import uuid
 import threading
 from shinka.utils import load_results
-from typing import Optional
+from typing import Optional, Dict
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _render_env_exports(eval_env: Optional[Dict[str, str]]) -> str:
+    """Render an env dict as newline-joined ``export K=V`` lines for a script."""
+    if not eval_env:
+        return ""
+    return "\n".join(f"export {k}={v}" for k, v in eval_env.items())
+
+
+def _render_env_docker_flags(eval_env: Optional[Dict[str, str]]) -> str:
+    """Render an env dict as space-joined ``-e K=V`` flags for ``docker run``."""
+    if not eval_env:
+        return ""
+    return " ".join(f"-e {k}={v}" for k, v in eval_env.items())
 
 
 # Configuration for Docker image caching
@@ -136,6 +150,7 @@ echo "Launching Docker container…"
 {load_command}
 
 docker run --rm \\
+    {eval_env_docker_flags} \\
     {docker_flags} \\
     {image} {cmd}
 
@@ -164,6 +179,7 @@ echo "Job running on $(hostname) under Slurm job $SLURM_JOB_ID"
 # Activate Python environment when configured
 {activation_commands}
 
+{eval_env_exports}
 {cmd}
 
 exit $?
@@ -182,6 +198,7 @@ def submit_docker(
     image: str,
     image_tar_path: Optional[str] = None,
     verbose: bool = False,
+    eval_env: Optional[Dict[str, str]] = None,
     local: bool = False,
     **sbatch_kwargs,
 ):
@@ -198,6 +215,7 @@ def submit_docker(
             image=image,
             image_tar_path=image_tar_path,
             verbose=verbose,
+            eval_env=eval_env,
             **sbatch_kwargs,
         )
     job_name = f"docker-{uuid.uuid4().hex[:6]}"
@@ -252,6 +270,7 @@ fi
         image=image,
         cmd=" ".join(cmd),
         load_command=load_command,
+        eval_env_docker_flags=_render_env_docker_flags(eval_env),
     )
 
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch") as f:
@@ -280,6 +299,7 @@ def submit_conda(
     activate_script: Optional[str] = None,
     modules: Optional[list[str]] = None,
     verbose: bool = False,
+    eval_env: Optional[Dict[str, str]] = None,
     local: bool = False,
     **sbatch_kwargs,
 ):
@@ -296,6 +316,7 @@ def submit_conda(
             activate_script=activate_script,
             modules=modules,
             verbose=verbose,
+            eval_env=eval_env,
             **sbatch_kwargs,
         )
     job_name = f"conda-{uuid.uuid4().hex[:6]}"
@@ -329,6 +350,7 @@ def submit_conda(
         activation_commands=activation_commands,
         module_load_commands=module_load_commands,
         cmd=" ".join(cmd),
+        eval_env_exports=_render_env_exports(eval_env),
     )
 
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch") as f:
@@ -404,6 +426,7 @@ def submit_local_docker(
     image: str,
     image_tar_path: Optional[str] = None,
     verbose: bool = False,
+    eval_env: Optional[Dict[str, str]] = None,
     **kwargs,
 ) -> str:
     """Submit a job to run locally in a Docker container."""
@@ -412,12 +435,14 @@ def submit_local_docker(
     os.makedirs(log_dir_path, exist_ok=True)
     image_name = get_local_image(image)
     image_file = f"{image.replace('/', '_').replace(':', '_')}.tar"
+    docker_env_flags = _render_env_docker_flags(eval_env)
     # build bash command with logging
     full = (
         f"if [ -f '{DOCKER_CACHE_DIR}/{image_file}' ]; then "
         f"docker load < '{DOCKER_CACHE_DIR}/{image_file}'; "
         f"else docker pull {image_name}; fi; "
-        f"docker run --rm {docker_flags} {image_name} "
+        f"docker run --rm {docker_env_flags} "
+        f"{docker_flags} {image_name} "
         f"{' '.join(cmd)} >> {log_dir}/job_log.out "
         f"2>> {log_dir}/job_log.err"
     )
@@ -439,6 +464,7 @@ def submit_local_conda(
     activate_script: Optional[str] = None,
     modules: Optional[list[str]] = None,
     verbose: bool = False,
+    eval_env: Optional[Dict[str, str]] = None,
     **kwargs,
 ) -> str:
     """Submit local conda job."""
@@ -452,12 +478,14 @@ def submit_local_conda(
         activate_script=activate_script,
         separator="; ",
     )
+    env_exports = "; ".join(f"export {k}={v}" for k, v in (eval_env or {}).items())
     full_cmd = "; ".join(
         segment
         for segment in [
             "module --quiet purge",
             loads,
             activation_commands,
+            env_exports,
             f"{' '.join(cmd)} >> {log_dir}/job_log.out 2>> {log_dir}/job_log.err",
         ]
         if segment

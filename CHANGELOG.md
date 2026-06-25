@@ -4,6 +4,19 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ## TBD
 
+### Added
+
+- Added controls to reduce evaluation stdout bloat: `JobConfig.eval_verbose` suppresses framework evaluation progress output, and `DatabaseConfig.max_stdout_log_chars` can persist only the tail of `stdout_log` metadata while keeping full logs on disk. Thanks @marcopirazzini.
+- Added SLURM support for `numeric_threads_per_job`, applying numeric-library thread caps consistently across local and SLURM evaluation jobs. Thanks @marcopirazzini.
+
+### Changed
+
+- Removed the automatic Claude Code Review pull-request workflow.
+
+### Fixed
+
+- Fixed quiet evaluation mode so `run_shinka_eval(..., verbose=False)` also suppresses result-save framework stdout while preserving the default verbose behavior.
+
 ## 0.0.7 - 2026-06-02
 
 ### Added
