@@ -84,6 +84,7 @@ def save_json_results(
     metrics: Dict[str, Any],
     correct: bool,
     error: Optional[str] = None,
+    verbose: bool = True,
 ) -> None:
     """Saves metrics and correctness status to JSON files."""
     os.makedirs(results_dir, exist_ok=True)
@@ -92,12 +93,14 @@ def save_json_results(
     correct_file = os.path.join(results_dir, "correct.json")
     with open(correct_file, "w") as f:
         json.dump(correct_payload, f, indent=4)
-    print(f"Correctness and error status saved to {correct_file}")
+    if verbose:
+        print(f"Correctness and error status saved to {correct_file}")
 
     metrics_file = os.path.join(results_dir, "metrics.json")
     with open(metrics_file, "w") as f:
         json.dump(metrics, f, indent=4)
-    print(f"Metrics saved to {metrics_file}")
+    if verbose:
+        print(f"Metrics saved to {metrics_file}")
 
 
 def run_shinka_eval(
@@ -494,5 +497,11 @@ def run_shinka_eval(
             except Exception as e:
                 print(f"Error generating plots: {e}")
 
-    save_json_results(results_dir, metrics, overall_correct_flag, first_error_message)
+    save_json_results(
+        results_dir,
+        metrics,
+        overall_correct_flag,
+        first_error_message,
+        verbose=verbose,
+    )
     return metrics, overall_correct_flag, first_error_message
