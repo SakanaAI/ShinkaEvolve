@@ -33,7 +33,11 @@ def _extract_response_text(response) -> str:
 
     output = _sequence(_field(response, "output"))
     for item in output:
+        if _field(item, "type") != "message":
+            continue
         for content in _sequence(_field(item, "content")):
+            if _field(content, "type") != "output_text":
+                continue
             text = _field(content, "text")
             if isinstance(text, str) and text.strip():
                 return text

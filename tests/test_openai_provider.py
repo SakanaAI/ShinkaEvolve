@@ -65,7 +65,7 @@ class _FakeOpenAIClient:
 
 
 def _content(text: str):
-    return SimpleNamespace(text=text)
+    return SimpleNamespace(type="output_text", text=text)
 
 
 def _response(*, output=None, output_text=None, status="completed"):
@@ -126,7 +126,7 @@ def test_query_openai_scans_later_output_items_for_text():
         output=[
             {"type": "reasoning", "summary": [{"text": "first"}]},
             {"type": "tool_call", "content": []},
-            {"type": "message", "content": [{"text": "789"}]},
+            {"type": "message", "content": [{"type": "output_text", "text": "789"}]},
         ]
     )
 
@@ -166,6 +166,31 @@ def test_query_openai_raises_clear_error_when_response_has_no_text():
         status="incomplete",
     )
     response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
+
+    with pytest.raises(ValueError, match="OpenAI response contained no text output"):
+        query_openai(
+            _FakeOpenAIClient(response),
+            "gpt-5-mini",
+            "problem",
+            "system",
+            [],
+            None,
+            max_output_tokens=8192,
+        )
+
+
+def test_query_openai_does_not_treat_reasoning_text_as_output():
+    response = _response(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                content=[
+                    SimpleNamespace(type="reasoning_text", text="internal reasoning")
+                ],
+            )
+        ],
+        status="incomplete",
+    )
 
     with pytest.raises(ValueError, match="OpenAI response contained no text output"):
         query_openai(
