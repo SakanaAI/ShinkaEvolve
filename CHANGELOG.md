@@ -15,6 +15,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google API hosts and prefer IPv4 when needed.
+- Fixed LLM pricing boolean metadata normalization so reasoning-model flags handle whitespace and mixed CSV value types.
+- Fixed OpenAI Responses parsing to find assistant text by content type while ignoring reasoning/tool text when no message output exists.
 - Fixed quiet evaluation mode so `run_shinka_eval(..., verbose=False)` also suppresses result-save framework stdout while preserving the default verbose behavior.
 
 ## 0.0.7 - 2026-06-02
