@@ -7,6 +7,7 @@
 import pandas as pd
 from pathlib import Path
 from typing import Optional, Tuple
+from pandas.api.types import is_object_dtype, is_string_dtype
 
 # Load pricing data from CSV
 _pricing_csv_path = Path(__file__).parent / "pricing.csv"
@@ -20,8 +21,8 @@ def _load_pricing_dataframe() -> pd.DataFrame:
 
     # Strip whitespace from string columns only
     for col in df.columns:
-        if df[col].dtype == "object":  # Only strip string columns
-            df[col] = df[col].str.strip()
+        if is_object_dtype(df[col]) or is_string_dtype(df[col]):
+            df[col] = df[col].astype("string").str.strip()
 
     # Strip column names
     df.columns = df.columns.str.strip()
@@ -51,19 +52,21 @@ def _load_pricing_dataframe() -> pd.DataFrame:
     df["input_price_tier2"] = df["input_price_tier2"] / M
     df["output_price_tier2"] = df["output_price_tier2"] / M
 
-    # Convert is_reasoning to boolean
-    df["is_reasoning"] = df["is_reasoning"] == "True"
-
-    # Convert think_temp_fixed to boolean (handle both string "1" and int 1)
-    df["think_temp_fixed"] = df["think_temp_fixed"].astype(str) == "1"
-
-    # Convert requires_reasoning to boolean (handle both string "1" and int 1)
-    df["requires_reasoning"] = df["requires_reasoning"].astype(str) == "1"
+    # Convert boolean metadata. The CSV historically contains mixed values such
+    # as True, " True", 1, and " 1".
+    df["is_reasoning"] = _truthy_column(df["is_reasoning"])
+    df["think_temp_fixed"] = _truthy_column(df["think_temp_fixed"])
+    df["requires_reasoning"] = _truthy_column(df["requires_reasoning"])
 
     # Set index to model_name for fast lookups
     df = df.set_index("model_name")
 
     return df
+
+
+def _truthy_column(series: pd.Series) -> pd.Series:
+    normalized = series.astype("string").str.strip().str.lower()
+    return normalized.isin({"1", "true", "yes", "y"})
 
 
 # Load pricing dataframe
