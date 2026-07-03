@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
-
-from shinka.llm import BanditBase
+from typing import Any, List, Optional, Union
 from shinka.defaults import (
     DEFAULT_TASK_SYS_MSG,
     default_llm_dynamic_selection_kwargs,
@@ -18,6 +16,19 @@ FOLDER_PREFIX = "gen"
 
 @dataclass
 class EvolutionConfig:
+    # Repo-backed evolution settings.
+    seed_repo_path: Optional[str] = None
+    worktree_root: Optional[str] = None
+    base_ref: str = "HEAD"
+    mutable_paths: List[str] = field(default_factory=list)
+    immutable_paths: List[str] = field(default_factory=list)
+    ignore_paths: List[str] = field(default_factory=lambda: [".git", ".shinka"])
+    summary_filename: str = ".shinka/individual.md"
+    summary_max_chars: int = 12000
+
+    # Headless coding-agent model used for repo-backed evolution.
+    agent_model: Optional[str] = None
+
     task_sys_msg: Optional[str] = DEFAULT_TASK_SYS_MSG
     patch_types: List[str] = field(default_factory=default_patch_types)
     patch_type_probs: List[float] = field(default_factory=default_patch_type_probs)
@@ -27,7 +38,7 @@ class EvolutionConfig:
     job_type: str = "local"
     language: str = "python"
     llm_models: List[str] = field(default_factory=default_llm_models)
-    llm_dynamic_selection: Optional[Union[str, BanditBase]] = "ucb"
+    llm_dynamic_selection: Optional[Union[str, Any]] = "ucb"
     llm_dynamic_selection_kwargs: dict = field(
         default_factory=default_llm_dynamic_selection_kwargs
     )
@@ -38,7 +49,6 @@ class EvolutionConfig:
     meta_max_recommendations: int = 5
     sample_single_meta_rec: bool = True
     embedding_model: Optional[str] = "text-embedding-3-small"
-    init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
     max_novelty_attempts: int = 3
     code_embed_sim_threshold: float = 0.99
@@ -67,5 +77,5 @@ class EvolutionConfig:
     prompt_llm_kwargs: dict = field(default_factory=lambda: {})
     prompt_ucb_exploration_constant: float = 1.0
     prompt_epsilon: float = 0.1
-    prompt_evo_top_k_programs: int = 3
+    prompt_evo_top_k_repos: int = 3
     prompt_percentile_recompute_interval: int = 20

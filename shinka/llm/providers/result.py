@@ -4,10 +4,8 @@ from typing import Dict, List, Optional
 class QueryResult:
     def __init__(
         self,
-        content: str,
         msg: str,
         system_msg: str,
-        new_msg_history: List[Dict],
         model_name: str,
         kwargs: Dict,
         input_tokens: int,
@@ -21,10 +19,8 @@ class QueryResult:
         num_tool_calls: int = 0,
         num_total_queries: int = 1,
     ):
-        self.content = content
         self.msg = msg
         self.system_msg = system_msg
-        self.new_msg_history = new_msg_history
         self.model_name = model_name
         self.kwargs = kwargs
         self.input_tokens = input_tokens
@@ -40,10 +36,8 @@ class QueryResult:
 
     def to_dict(self):
         return {
-            "content": self.content,
             "msg": self.msg,
             "system_msg": self.system_msg,
-            "new_msg_history": self.new_msg_history,
             "model_name": self.model_name,
             "kwargs": self.kwargs,
             "input_tokens": self.input_tokens,
@@ -76,8 +70,6 @@ class QueryResult:
             lines.append("Thought:")
             lines.append(self.thought)
             lines.append("-" * 80)
-        lines.append("Content:")
-        lines.append(self.content)
         if self.model_posteriors:
             lines.append("-" * 80)
             lines.append("Model Posteriors:")

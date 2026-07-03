@@ -649,7 +649,7 @@ def test_maybe_evolve_prompt_updates_total_api_cost():
                 0, result=(SimpleNamespace(id="prompt-new", generation=3), "diff", 0.25)
             )
         )
-        runner.async_db.get_top_programs_async = lambda n: asyncio.sleep(0, result=[])
+        runner.async_db.get_top_repos_async = lambda n: asyncio.sleep(0, result=[])
         runner.meta_summarizer = None
         runner.prompt_api_cost = 0.0
         runner.verbose = False
@@ -676,7 +676,7 @@ def test_process_single_job_safely_applies_side_effects_inline():
         )
         event = PersistedProgramEvent(
             job=job,
-            program=SimpleNamespace(id="program-1"),
+            repo=SimpleNamespace(id="program-1"),
             evaluation_finished_at=1.0,
             postprocess_started_at=2.0,
             postprocess_finished_at=3.0,

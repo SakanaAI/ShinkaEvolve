@@ -25,7 +25,7 @@ import webbrowser
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
-from shinka.database import DatabaseConfig, ProgramDatabase
+from shinka.database import DatabaseConfig, RepoDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
 
 # We'll use a simple text-to-PDF approach instead of complex dependencies
@@ -278,7 +278,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/get_programs" and "db_path" in query:
             db_path = query["db_path"][0]
-            return self.handle_get_programs(db_path)
+            return self.handle_get_repos(db_path)
 
         if path == "/get_programs_summary" and "db_path" in query:
             db_path = query["db_path"][0]
@@ -425,7 +425,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Convert db_path to the actual file path (now a no-op since path is not modified)."""
         return db_path
 
-    def handle_get_programs(self, db_path: str):
+    def handle_get_repos(self, db_path: str):
         """Fetch all programs from a given database file."""
         print(f"[SERVER] Fetching programs from DB: {db_path}")
 
@@ -457,7 +457,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db = None
             try:
                 config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                db = RepoDatabase(config, read_only=True)
 
                 # Set WAL mode compatible settings for read-only connections
                 # Longer busy_timeout for concurrent access during evolution
@@ -468,7 +468,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     except sqlite3.OperationalError:
                         pass
 
-                programs = db.get_all_programs()
+                programs = db.get_all_repos()
 
                 # Convert Program objects to dicts for JSON
                 programs_dict = [p.to_dict() for p in programs]
@@ -551,7 +551,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db = None
             try:
                 config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                db = RepoDatabase(config, read_only=True)
 
                 if db.cursor:
                     db.cursor.execute("PRAGMA busy_timeout = 30000;")
@@ -621,7 +621,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db = None
             try:
                 config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                db = RepoDatabase(config, read_only=True)
 
                 if db.cursor:
                     db.cursor.execute("PRAGMA busy_timeout = 30000;")
@@ -720,7 +720,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db = None
             try:
                 config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                db = RepoDatabase(config, read_only=True)
 
                 if db.cursor:
                     db.cursor.execute("PRAGMA busy_timeout = 30000;")
@@ -1191,7 +1191,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 ELSE 0 END, 0
                             )
                         ) as total_cost
-                    FROM programs
+                    FROM repos
                 """)
                 row = cursor.fetchone()
 
@@ -1201,7 +1201,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     cursor.execute(
                         """
                         SELECT MIN(generation) as best_gen
-                        FROM programs
+                        FROM repos
                         WHERE correct = 1
                           AND combined_score = ?
                     """,

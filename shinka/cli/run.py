@@ -338,46 +338,19 @@ def _parse_overrides(
     return parsed
 
 
-def _detect_initial_program(task_dir: Path) -> Path:
-    candidates = sorted(task_dir.glob("initial.*"))
-    if not candidates:
-        raise FileNotFoundError(f"No initial.<ext> found in task dir: {task_dir}")
-    sorted_candidates = sorted(
-        candidates,
-        key=lambda path: (
-            INITIAL_EXTENSION_PRIORITY.index(path.suffix)
-            if path.suffix in INITIAL_EXTENSION_PRIORITY
-            else len(INITIAL_EXTENSION_PRIORITY),
-            path.name,
-        ),
-    )
-    return sorted_candidates[0]
-
-
-def _infer_language(initial_program_path: Path) -> str:
-    suffix = initial_program_path.suffix.lower()
-    if suffix not in SUPPORTED_INITIAL_EXTENSIONS:
-        supported = ", ".join(sorted(SUPPORTED_INITIAL_EXTENSIONS.keys()))
-        raise ValueError(
-            f"Unsupported initial program extension '{suffix}' for "
-            f"{initial_program_path}. Supported: {supported}"
-        )
-    return SUPPORTED_INITIAL_EXTENSIONS[suffix]
-
-
 def _build_default_evo_values(
     *,
     language: str,
-    init_program_path: Path,
+    seed_repo_path: Path,
     results_dir: Path,
     num_generations: int,
 ) -> Dict[str, Any]:
     return asdict(
         EvolutionConfig(
+            seed_repo_path=str(seed_repo_path),
             num_generations=num_generations,
             job_type="local",
             language=language,
-            init_program_path=str(init_program_path),
             results_dir=str(results_dir),
         )
     )
@@ -391,7 +364,7 @@ def _build_default_job_values(evaluate_path: Path) -> Dict[str, Any]:
     return asdict(LocalJobConfig(eval_program_path=str(evaluate_path)))
 
 
-def _validate_task_dir(task_dir: Path) -> tuple[Path, Path]:
+def _validate_task_dir(task_dir: Path) -> Path:
     if not task_dir.exists():
         raise FileNotFoundError(f"Task dir does not exist: {task_dir}")
     if not task_dir.is_dir():
@@ -399,8 +372,7 @@ def _validate_task_dir(task_dir: Path) -> tuple[Path, Path]:
     evaluate_path = task_dir / "evaluate.py"
     if not evaluate_path.exists():
         raise FileNotFoundError(f"Missing evaluate.py in task dir: {task_dir}")
-    initial_path = _detect_initial_program(task_dir)
-    return evaluate_path, initial_path
+    return evaluate_path
 
 
 def _build_runner(
@@ -409,7 +381,6 @@ def _build_runner(
     evo_config: EvolutionConfig,
     db_config: DatabaseConfig,
     job_config: LocalJobConfig,
-    init_program_str: str,
     evaluate_str: str,
 ) -> ShinkaEvolveRunner:
     runner_kwargs: Dict[str, Any] = {
@@ -419,7 +390,6 @@ def _build_runner(
         "banner_style": "minimal",
         "verbose": args.verbose,
         "debug": args.debug,
-        "init_program_str": init_program_str,
         "evaluate_str": evaluate_str,
     }
     if args.max_evaluation_jobs is not None:
@@ -439,8 +409,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     results_dir = args.results_dir.resolve()
 
     try:
-        evaluate_path, initial_path = _validate_task_dir(task_dir)
-        language = _infer_language(initial_path)
+        evaluate_path = _validate_task_dir(task_dir)
         allowed_types = _field_types()
         file_overrides, runner_config = load_optional_yaml_config(
             task_dir=task_dir,
@@ -450,8 +419,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         parsed_overrides = _parse_overrides(args.overrides, allowed_types)
 
         evo_values = _build_default_evo_values(
-            language=language,
-            init_program_path=initial_path,
             results_dir=results_dir,
             num_generations=args.num_generations,
         )
@@ -483,7 +450,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         db_config = DatabaseConfig(**db_values)
         job_config = LocalJobConfig(**job_values)
 
-        init_program_str = initial_path.read_text(encoding="utf-8")
         evaluate_str = evaluate_path.read_text(encoding="utf-8")
 
         runner = _build_runner(
@@ -491,7 +457,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             evo_config=evo_config,
             db_config=db_config,
             job_config=job_config,
-            init_program_str=init_program_str,
             evaluate_str=evaluate_str,
         )
     except Exception as exc:  # noqa: BLE001

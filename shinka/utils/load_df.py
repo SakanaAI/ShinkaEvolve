@@ -47,7 +47,7 @@ def load_programs_to_df(
         conn = sqlite3.connect(str(db_file))
         cursor = conn.cursor()
 
-        cursor.execute("SELECT * FROM programs")  # Fetch all columns
+        cursor.execute("SELECT * FROM repos")  # Fetch all columns
         all_program_rows = cursor.fetchall()
 
         if not all_program_rows:

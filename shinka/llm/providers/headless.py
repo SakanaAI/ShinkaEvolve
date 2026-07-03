@@ -142,14 +142,24 @@ def _write_prompt_file(
     msg_history: list[dict],
 ) -> Path:
     resolved_work_dir = Path(work_dir or os.getcwd()).absolute()
-    prompt_dir = resolved_work_dir / "headless_prompts"
+    prompt_dir = resolved_work_dir / ".shinka"
     prompt_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path = prompt_dir / f"prompt_{uuid.uuid4().hex}.md"
+    prompt_path = prompt_dir / f"headless_prompt_{uuid.uuid4().hex[:8]}.md"
     prompt_path.write_text(
         _render_prompt(msg=msg, system_msg=system_msg, msg_history=msg_history),
         encoding="utf-8",
     )
     return prompt_path
+
+
+def _headless_log_paths(*, work_dir: Path) -> tuple[Path, Path]:
+    shinka_dir = work_dir / ".shinka"
+    shinka_dir.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex
+    return (
+        shinka_dir / f"headless_{run_id}.stdout.log",
+        shinka_dir / f"headless_{run_id}.stderr.log",
+    )
 
 
 def _build_headless_command(
@@ -167,7 +177,7 @@ def _build_headless_command(
         "--work-dir",
         resolved_work_dir,
         "--allow",
-        "read-only",
+        "yolo",
         "--usage",
     ]
     if model.agent_model:
@@ -205,29 +215,38 @@ def _run_headless_command_sync(
     *,
     model: HeadlessModel,
     command: list[str],
+    stdout_path: Path,
+    stderr_path: Path,
 ) -> subprocess.CompletedProcess:
     attempts = _CLAUDE_TRANSIENT_RETRIES + 1
     for attempt in range(attempts):
-        if _uses_shell_invocation(model):
-            completed = subprocess.run(
-                shlex.join(command),
-                capture_output=True,
-                text=True,
-                timeout=headless_timeout(),
-                check=False,
-                shell=True,
-                executable="/bin/sh",
-                env=_subprocess_env(model),
-            )
-        else:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=headless_timeout(),
-                check=False,
-                env=_subprocess_env(model),
-            )
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+            "w", encoding="utf-8"
+        ) as stderr_file:
+            if _uses_shell_invocation(model):
+                completed = subprocess.run(
+                    shlex.join(command),
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    timeout=headless_timeout(),
+                    check=False,
+                    shell=True,
+                    executable="/bin/sh",
+                    env=_subprocess_env(model),
+                )
+            else:
+                completed = subprocess.run(
+                    command,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    timeout=headless_timeout(),
+                    check=False,
+                    env=_subprocess_env(model),
+                )
+        completed.stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+        completed.stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
 
         if not _is_transient_claude_credit_error(model=model, completed=completed):
             return completed
@@ -240,38 +259,46 @@ async def _run_headless_command_async(
     *,
     model: HeadlessModel,
     command: list[str],
+    stdout_path: Path,
+    stderr_path: Path,
 ):
     attempts = _CLAUDE_TRANSIENT_RETRIES + 1
     for attempt in range(attempts):
-        if _uses_shell_invocation(model):
-            process = await asyncio.create_subprocess_shell(
-                shlex.join(command),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                executable="/bin/sh",
-                env=_subprocess_env(model),
-            )
-        else:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=_subprocess_env(model),
-            )
+        stdout_file = stdout_path.open("w", encoding="utf-8")
+        stderr_file = stderr_path.open("w", encoding="utf-8")
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=headless_timeout(),
-            )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
-            raise
+            if _uses_shell_invocation(model):
+                process = await asyncio.create_subprocess_shell(
+                    shlex.join(command),
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    executable="/bin/sh",
+                    env=_subprocess_env(model),
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    env=_subprocess_env(model),
+                )
+            try:
+                await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=headless_timeout(),
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+                raise
+        finally:
+            stdout_file.close()
+            stderr_file.close()
         completed = subprocess.CompletedProcess(
             args=command,
             returncode=process.returncode,
-            stdout=stdout.decode("utf-8", errors="replace"),
-            stderr=stderr.decode("utf-8", errors="replace"),
+            stdout=stdout_path.read_text(encoding="utf-8", errors="replace"),
+            stderr=stderr_path.read_text(encoding="utf-8", errors="replace"),
         )
         if not _is_transient_claude_credit_error(model=model, completed=completed):
             return completed
@@ -326,25 +353,28 @@ def _numeric_values(value: Any) -> list[float]:
     return []
 
 
-def _parse_stdout(stdout: str) -> tuple[str, dict[str, Any]]:
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("Headless stdout was empty.")
-
+def _worktree_completion_content(work_dir: Path) -> str:
+    status_text = ""
     try:
-        payload = json.loads(lines[-1])
-    except json.JSONDecodeError as exc:
-        raise ValueError("Headless stdout did not end with usage JSON.") from exc
+        completed = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            status_text = completed.stdout.strip()
+    except FileNotFoundError:
+        status_text = ""
 
-    usage = payload.get("usage") if isinstance(payload, dict) else None
-    if not isinstance(usage, dict):
-        raise ValueError("Headless usage JSON must contain a top-level usage object.")
-
-    content = "\n".join(lines[:-1]).strip()
-    if not content:
-        raise ValueError("Headless assistant content was empty.")
-
-    return content, usage
+    if status_text:
+        return (
+            "Headless agent completed and modified the worktree directly.\n\n"
+            "Git status:\n"
+            f"{status_text}"
+        )
+    return "Headless agent completed. Inspect the worktree for generated changes."
 
 
 def _query_result(
@@ -358,11 +388,6 @@ def _query_result(
     kwargs: dict[str, Any],
     model_posteriors: dict[str, float] | None,
 ) -> QueryResult:
-    new_msg_history = [
-        *msg_history,
-        {"role": "user", "content": msg},
-        {"role": "assistant", "content": content},
-    ]
     nested_cost = usage.get("cost") if isinstance(usage.get("cost"), dict) else {}
     input_cost = _usage_float(usage, "input_cost", "prompt_cost")
     if input_cost == 0.0:
@@ -375,10 +400,8 @@ def _query_result(
         cost = input_cost + output_cost
 
     return QueryResult(
-        content=content,
         msg=msg,
         system_msg=system_msg,
-        new_msg_history=new_msg_history,
         model_name=model,
         kwargs=kwargs,
         input_tokens=_usage_int(usage, "input_tokens", "prompt_tokens", "inputTokens"),
@@ -414,8 +437,9 @@ def query_headless(
 
     headless_work_dir = kwargs.pop("headless_work_dir", None)
     parsed_model = parse_headless_model(model)
+    resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
     prompt_path = _write_prompt_file(
-        work_dir=headless_work_dir,
+        work_dir=str(resolved_work_dir),
         msg=msg,
         system_msg=system_msg,
         msg_history=msg_history,
@@ -423,14 +447,17 @@ def query_headless(
     command = _build_headless_command(
         model=parsed_model,
         prompt_path=prompt_path,
-        work_dir=headless_work_dir,
+        work_dir=str(resolved_work_dir),
     )
+    stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
     try:
         with _thread_cli_lock():
             completed = _run_headless_command_sync(
                 model=parsed_model,
                 command=command,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
             )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(
@@ -441,15 +468,18 @@ def query_headless(
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"Headless query failed: {detail}")
 
-    content, usage = _parse_stdout(completed.stdout)
+    content = _worktree_completion_content(resolved_work_dir)
     result_kwargs = {
         **kwargs,
         "model_name": model,
+        "headless_work_dir": str(resolved_work_dir),
         "headless_prompt_path": str(prompt_path),
+        "headless_stdout_path": str(stdout_path),
+        "headless_stderr_path": str(stderr_path),
     }
     return _query_result(
         content=content,
-        usage=usage,
+        usage={},
         model=model,
         msg=msg,
         system_msg=system_msg,
@@ -474,8 +504,9 @@ async def query_headless_async(
 
     headless_work_dir = kwargs.pop("headless_work_dir", None)
     parsed_model = parse_headless_model(model)
+    resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
     prompt_path = _write_prompt_file(
-        work_dir=headless_work_dir,
+        work_dir=str(resolved_work_dir),
         msg=msg,
         system_msg=system_msg,
         msg_history=msg_history,
@@ -483,8 +514,9 @@ async def query_headless_async(
     command = _build_headless_command(
         model=parsed_model,
         prompt_path=prompt_path,
-        work_dir=headless_work_dir,
+        work_dir=str(resolved_work_dir),
     )
+    stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
     await _acquire_cli_lock_async()
     try:
@@ -492,6 +524,8 @@ async def query_headless_async(
             completed = await _run_headless_command_async(
                 model=parsed_model,
                 command=command,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
             )
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
@@ -504,19 +538,22 @@ async def query_headless_async(
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"Headless query failed: {detail}")
 
-    content, usage = _parse_stdout(completed.stdout)
+    content = _worktree_completion_content(resolved_work_dir)
     result_kwargs = {
         **kwargs,
         "model_name": model,
+        "headless_work_dir": str(resolved_work_dir),
         "headless_prompt_path": str(prompt_path),
+        "headless_stdout_path": str(stdout_path),
+        "headless_stderr_path": str(stderr_path),
     }
     return _query_result(
         content=content,
-        usage=usage,
+        usage=usage, # TODO: get usage from headless
         model=model,
         msg=msg,
         system_msg=system_msg,
         msg_history=msg_history,
         kwargs=result_kwargs,
-        model_posteriors=model_posteriors,
+        model_posteriors=model_posteriors, 
     )

@@ -16,11 +16,13 @@ class DummyNoveltyLLM:
     def __init__(self, responses=None, raise_on_query=None):
         self.responses = list(responses or [])
         self.raise_on_query = raise_on_query
+        self.messages = []
 
     def get_kwargs(self):
         return {}
 
     def query(self, msg, system_msg, llm_kwargs):
+        self.messages.append(msg)
         if self.raise_on_query is not None:
             raise self.raise_on_query
         if not self.responses:
@@ -62,13 +64,14 @@ class DummyDatabase:
         return self.most_similar_program
 
 
-def make_program(program_id="prog-1", island_idx=0):
+def make_program(program_id="prog-1", island_idx=0, repo_summary=None):
     return Program(
         id=program_id,
         code="def solve():\n    return 1\n",
         language="python",
         generation=1,
         island_idx=island_idx,
+        repo_summary=repo_summary,
     )
 
 
@@ -150,14 +153,23 @@ def test_assess_novelty_accepts_high_similarity_when_llm_marks_novel(tmp_path):
         max_novelty_attempts=3,
     )
 
-    most_similar_program = make_program(program_id="existing")
+    existing_summary = "# Individual Summary\n\nExisting approach summary"
+    most_similar_program = make_program(
+        program_id="existing", repo_summary=existing_summary
+    )
     database = DummyDatabase(
         similarity_sequences=[[0.99]],
         most_similar_program=most_similar_program,
     )
     parent_program = make_program(program_id="parent")
 
-    exec_file = tmp_path / "candidate.py"
+    repo_dir = tmp_path / "candidate_repo"
+    summary_dir = repo_dir / ".shinka"
+    summary_dir.mkdir(parents=True)
+    proposed_summary = "# Individual Summary\n\nProposed approach summary"
+    (summary_dir / "individual.md").write_text(proposed_summary, encoding="utf-8")
+
+    exec_file = repo_dir / "candidate.py"
     exec_file.write_text("def candidate():\n    return 42\n", encoding="utf-8")
 
     accepted, metadata = judge.assess_novelty_with_rejection_sampling(
@@ -171,6 +183,10 @@ def test_assess_novelty_accepts_high_similarity_when_llm_marks_novel(tmp_path):
     assert metadata["novelty_checks_performed"] == 1
     assert metadata["novelty_total_cost"] == pytest.approx(0.12)
     assert metadata["novelty_explanation"].startswith("NOVEL")
+    assert proposed_summary in novelty_llm.messages[0]
+    assert existing_summary in novelty_llm.messages[0]
+    assert "def candidate():" not in novelty_llm.messages[0]
+    assert "def solve():" not in novelty_llm.messages[0]
 
 
 def test_check_llm_novelty_handles_empty_response_and_exception():
@@ -180,7 +196,7 @@ def test_check_llm_novelty_handles_empty_response_and_exception():
     empty_judge = NoveltyJudge(novelty_llm_client=empty_llm)
 
     is_novel, explanation, cost = empty_judge.check_llm_novelty(
-        proposed_code="def x():\n    return 0\n",
+        proposed_summary="# Individual Summary\n\nCandidate summary",
         most_similar_program=similar_program,
     )
 
@@ -192,7 +208,7 @@ def test_check_llm_novelty_handles_empty_response_and_exception():
     failing_judge = NoveltyJudge(novelty_llm_client=failing_llm)
 
     is_novel, explanation, cost = failing_judge.check_llm_novelty(
-        proposed_code="def x():\n    return 0\n",
+        proposed_summary="# Individual Summary\n\nCandidate summary",
         most_similar_program=similar_program,
     )
 

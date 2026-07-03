@@ -138,19 +138,19 @@ class AsyncNoveltyJudge:
 
                 if most_similar_program:
                     try:
-                        # Read the current proposed code
+                        # Read the persisted repo summary for the proposed individual.
                         loop = asyncio.get_event_loop()
-                        proposed_code = await loop.run_in_executor(
-                            None, self._read_code_file, exec_fname
+                        proposed_summary = await loop.run_in_executor(
+                            None, self.sync_judge.load_proposed_novelty_text, exec_fname
                         )
 
-                        if proposed_code:
+                        if proposed_summary:
                             (
                                 is_novel,
                                 explanation,
                                 cost,
                             ) = await self._check_llm_novelty_async(
-                                proposed_code, most_similar_program
+                                proposed_summary, most_similar_program
                             )
                             should_reject = not is_novel
                             novelty_cost = cost
@@ -158,7 +158,7 @@ class AsyncNoveltyJudge:
                             novelty_metadata["novelty_total_cost"] = cost
                             novelty_metadata["novelty_explanation"] = explanation
                     except Exception as e:
-                        logger.warning(f"Error reading code for novelty check: {e}")
+                        logger.warning(f"Error reading repo summary for novelty check: {e}")
                         should_reject = True  # Default to rejection on error
 
             if should_reject:
@@ -185,13 +185,13 @@ class AsyncNoveltyJudge:
             return True, {"novelty_checks_performed": 0, "novelty_total_cost": 0.0}
 
     async def _check_llm_novelty_async(
-        self, proposed_code: str, most_similar_program: Program
+        self, proposed_summary: str, most_similar_program: Program
     ) -> Tuple[bool, str, float]:
         """
         Async version of LLM novelty check matching sync runner logic.
 
         Args:
-            proposed_code: The newly generated code
+            proposed_summary: The newly generated individual repo summary
             most_similar_program: The most similar existing program
 
         Returns:
@@ -202,12 +202,10 @@ class AsyncNoveltyJudge:
             return True, "No novelty LLM configured", 0.0
 
         # Import novelty prompts (same as sync version)
-        from ..prompts import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG
+        from ..prompts import NOVELTY_SYSTEM_MSG
 
-        user_msg = NOVELTY_USER_MSG.format(
-            language=self.sync_judge.language,
-            existing_code=most_similar_program.code,
-            proposed_code=proposed_code,
+        user_msg = self.sync_judge.build_novelty_user_message(
+            proposed_summary, most_similar_program
         )
 
         try:
@@ -266,15 +264,6 @@ class AsyncNoveltyJudge:
         except Exception as e:
             logger.warning(f"Single novelty check failed: {e}")
             return True, 0.0, f"Error: {str(e)}"
-
-    def _read_code_file(self, exec_fname: str) -> Optional[str]:
-        """Read code file content."""
-        try:
-            with open(exec_fname, "r") as f:
-                return f.read()
-        except Exception as e:
-            logger.warning(f"Failed to read code file {exec_fname}: {e}")
-            return None
 
     def log_novelty_skip_message(self, reason: str):
         """Log novelty skip message."""

@@ -76,6 +76,7 @@ def submit(
     cmd: list[str],
     verbose: bool = False,
     env_overrides: Optional[Dict[str, str]] = None,
+    cwd: Optional[str] = None,
 ):
     """
     Submits a command for local execution with real-time logging.
@@ -110,6 +111,7 @@ def submit(
         bufsize=1,  # Line buffered
         universal_newlines=True,
         env=env,
+        cwd=cwd,
     )
 
     # Open log files for writing with line buffering
@@ -139,6 +141,8 @@ def submit(
     if verbose:
         logger.info(f"Submitted local process with PID: {process.pid}")
         logger.info(f"Launched local command: {' '.join(cmd)}")
+        if cwd:
+            logger.info(f"Local command cwd: {cwd}")
     return wrapped_process
 
 

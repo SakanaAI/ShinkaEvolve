@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database import DatabaseConfig, Program, RepoDatabase
 
 
 # Allow running this file directly with `python tests/test_async_complexity_1000.py`
@@ -50,16 +50,16 @@ def build_program(prefix: str, idx: int) -> Program:
 
 
 async def _run_single_additions_with_complexity() -> float:
-    from shinka.database.async_dbase import AsyncProgramDatabase
+    from shinka.database.async_dbase import AsyncRepoDatabase
     from shinka.database import async_dbase as async_dbase_module
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "async_single.db"
-        sync_db = ProgramDatabase(
+        sync_db = RepoDatabase(
             config=DatabaseConfig(db_path=str(db_path), num_islands=1),
             embedding_model="",
         )
-        async_db = AsyncProgramDatabase(
+        async_db = AsyncRepoDatabase(
             sync_db=sync_db,
             embedding_recompute_interval=EMBEDDING_RECOMPUTE_INTERVAL,
         )
@@ -70,7 +70,7 @@ async def _run_single_additions_with_complexity() -> float:
         try:
             start_time = time.time()
             for i in range(NUM_PROGRAMS):
-                await async_db.add_program_async(program=build_program("single", i))
+                await async_db.add_repo_async(program=build_program("single", i))
             total_time = time.time() - start_time
 
             sample_program = sync_db.get(f"single-{NUM_PROGRAMS // 2:04d}")
@@ -85,16 +85,16 @@ async def _run_single_additions_with_complexity() -> float:
 
 
 async def _run_concurrent_additions_with_complexity() -> float:
-    from shinka.database.async_dbase import AsyncProgramDatabase
+    from shinka.database.async_dbase import AsyncRepoDatabase
     from shinka.database import async_dbase as async_dbase_module
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "async_concurrent.db"
-        sync_db = ProgramDatabase(
+        sync_db = RepoDatabase(
             config=DatabaseConfig(db_path=str(db_path), num_islands=1),
             embedding_model="",
         )
-        async_db = AsyncProgramDatabase(
+        async_db = AsyncRepoDatabase(
             sync_db=sync_db,
             embedding_recompute_interval=EMBEDDING_RECOMPUTE_INTERVAL,
         )
@@ -108,7 +108,7 @@ async def _run_concurrent_additions_with_complexity() -> float:
             async def add_batch(start_idx: int, count: int):
                 for i in range(count):
                     idx = start_idx + i
-                    await async_db.add_program_async(program=build_program("conc", idx))
+                    await async_db.add_repo_async(program=build_program("conc", idx))
                     await asyncio.sleep(0.0005)
 
             chunk = NUM_PROGRAMS // 4

@@ -286,13 +286,13 @@ async def copy_file_async(src_path: str, dst_path: str) -> bool:
         return False
 
 
-async def get_code_embedding_async(
-    exec_fname: str, embedding_client, max_chars: int = 10000
+async def get_text_embedding_async(
+    text: str, embedding_client, max_chars: int = 10000
 ) -> Tuple[Optional[list], float]:
     """Async code embedding generation.
 
     Args:
-        exec_fname: Path to code file
+        text: Text to embed
         embedding_client: Embedding client instance
         max_chars: Maximum characters to embed
 
@@ -300,29 +300,24 @@ async def get_code_embedding_async(
         Tuple of (embedding_vector, cost)
     """
     try:
-        # Read code file asynchronously
-        code_content = await read_file_async(exec_fname)
-        if not code_content:
-            return None, 0.0
-
         # Truncate if too long
-        if len(code_content) > max_chars:
-            code_content = code_content[:max_chars]
+        if len(text) > max_chars:
+            text = text[:max_chars]
 
         # Generate embedding in thread pool
         loop = asyncio.get_event_loop()
 
         if hasattr(embedding_client, "embed_async"):
             # Use async embedding if available
-            embedding, cost = await embedding_client.embed_async(code_content)
+            embedding, cost = await embedding_client.embed_async(text)
         else:
             # Fall back to sync embedding in thread pool
             embedding, cost = await loop.run_in_executor(
-                None, embedding_client.get_embedding, code_content
+                None, embedding_client.get_embedding, text
             )
 
         return embedding, cost
 
     except Exception as e:
-        logger.error(f"Error generating code embedding for {exec_fname}: {e}")
+        logger.error(f"Error generating text embedding for {text}: {e}")
         return None, 0.0

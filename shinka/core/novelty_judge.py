@@ -6,10 +6,11 @@ from shinka.llm import LLMClient
 from shinka.prompts import NOVELTY_SYSTEM_MSG, NOVELTY_USER_MSG
 
 logger = logging.getLogger(__name__)
+DEFAULT_SUMMARY_FILENAME = ".shinka/individual.md"
 
 
 class NoveltyJudge:
-    """Handles novelty assessment for generated code using LLM-based comparison."""
+    """Handles novelty assessment using persisted individual repo summaries."""
 
     def __init__(
         self,
@@ -17,11 +18,69 @@ class NoveltyJudge:
         language: str = "python",
         similarity_threshold: float = 1.0,
         max_novelty_attempts: int = 3,
+        summary_filename: str = DEFAULT_SUMMARY_FILENAME,
     ):
         self.novelty_llm_client = novelty_llm_client
         self.language = language
         self.similarity_threshold = similarity_threshold
         self.max_novelty_attempts = max_novelty_attempts
+        self.summary_filename = summary_filename
+
+    def _format_summary_for_prompt(self, label: str, summary_text: str) -> str:
+        text = summary_text.strip() or "No repository summary recorded."
+        return f"{label} repository summary:\n\n{text}"
+
+    def _summary_candidates(self, exec_path: Path) -> List[Path]:
+        if exec_path.is_file() and exec_path.as_posix().endswith(self.summary_filename):
+            return [exec_path]
+
+        search_root = exec_path if exec_path.is_dir() else exec_path.parent
+        return [root / self.summary_filename for root in [search_root, *search_root.parents]]
+
+    def load_proposed_novelty_text(self, exec_fname: str) -> str:
+        exec_path = Path(exec_fname)
+
+        for candidate in self._summary_candidates(exec_path):
+            if candidate.is_file():
+                summary_text = candidate.read_text(encoding="utf-8").strip()
+                if summary_text:
+                    return summary_text
+
+        if exec_path.is_file():
+            logger.warning(
+                "No repo summary found for %s; falling back to file contents for novelty check.",
+                exec_fname,
+            )
+            return exec_path.read_text(encoding="utf-8")
+
+        raise FileNotFoundError(
+            f"Could not locate repo summary {self.summary_filename!r} for {exec_fname!r}"
+        )
+
+    def get_existing_novelty_text(self, most_similar_program: Program) -> str:
+        repo_summary = (
+            most_similar_program.repo_summary
+            or (most_similar_program.metadata or {}).get("repo_summary")
+            or ""
+        ).strip()
+        if repo_summary:
+            return repo_summary
+
+        logger.warning(
+            "Most similar program %s is missing repo_summary; falling back to raw code.",
+            most_similar_program.id,
+        )
+        return most_similar_program.code
+
+    def build_novelty_user_message(
+        self, proposed_summary: str, most_similar_program: Program
+    ) -> str:
+        existing_summary = self.get_existing_novelty_text(most_similar_program)
+        return NOVELTY_USER_MSG.format(
+            language="markdown",
+            existing_code=self._format_summary_for_prompt("Existing", existing_summary),
+            proposed_code=self._format_summary_for_prompt("Proposed", proposed_summary),
+        )
 
     def should_check_novelty(
         self,
@@ -68,7 +127,7 @@ class NoveltyJudge:
         Perform novelty assessment with rejection sampling.
 
         Args:
-            exec_fname: Path to the executable file containing the code
+            exec_fname: Path to the individual repo summary or worktree
             code_embedding: Embedding vector of the proposed code
             parent_program: Parent program for island-based similarity
             database: Database instance for similarity computation
@@ -127,10 +186,9 @@ class NoveltyJudge:
 
                 if most_similar_program:
                     try:
-                        # Read the current proposed code
-                        proposed_code = Path(exec_fname).read_text(encoding="utf-8")
+                        proposed_summary = self.load_proposed_novelty_text(exec_fname)
                         is_novel, explanation, cost = self.check_llm_novelty(
-                            proposed_code, most_similar_program
+                            proposed_summary, most_similar_program
                         )
                         should_reject = not is_novel
                         novelty_cost = cost
@@ -138,7 +196,7 @@ class NoveltyJudge:
                         novelty_metadata["novelty_total_cost"] += cost
                         novelty_metadata["novelty_explanation"] = explanation
                     except Exception as e:
-                        logger.warning(f"Error reading code for novelty check: {e}")
+                        logger.warning(f"Error reading repo summary for novelty check: {e}")
                         should_reject = True  # Default to rejection on error
 
             if should_reject:
@@ -172,14 +230,14 @@ class NoveltyJudge:
         return False, novelty_metadata
 
     def check_llm_novelty(
-        self, proposed_code: str, most_similar_program: Program
+        self, proposed_summary: str, most_similar_program: Program
     ) -> Tuple[bool, str, float]:
         """
-        Use LLM to judge if the proposed code is meaningfully different from
+        Use LLM to judge if the proposed summary is meaningfully different from
         the most similar program.
 
         Args:
-            proposed_code: The newly generated code
+            proposed_summary: The newly generated individual repo summary
             most_similar_program: The most similar existing program
 
         Returns:
@@ -189,10 +247,8 @@ class NoveltyJudge:
             logger.debug("Novelty LLM not configured, skipping novelty check")
             return True, "No novelty LLM configured", 0.0
 
-        user_msg = NOVELTY_USER_MSG.format(
-            language=self.language,
-            existing_code=most_similar_program.code,
-            proposed_code=proposed_code,
+        user_msg = self.build_novelty_user_message(
+            proposed_summary, most_similar_program
         )
 
         try:

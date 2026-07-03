@@ -5,9 +5,14 @@ import random
 import sqlite3
 from abc import ABC, abstractmethod
 from typing import Any, List
-import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _np():
+    import numpy as np
+
+    return np
 
 
 class IslandSampler(ABC):
@@ -50,7 +55,7 @@ class IslandSampler(ABC):
         placeholders = ",".join("?" * len(island_indices))
         query = f"""
             SELECT island_idx, COUNT(*) as count
-            FROM programs
+            FROM repos
             WHERE island_idx IN ({placeholders}) AND correct = 1
             GROUP BY island_idx
         """
@@ -77,7 +82,7 @@ class IslandSampler(ABC):
         placeholders = ",".join("?" * len(island_indices))
         query = f"""
             SELECT island_idx, MAX(combined_score) as best_fitness
-            FROM programs
+            FROM repos
             WHERE island_idx IN ({placeholders}) AND correct = 1
             GROUP BY island_idx
         """
@@ -142,16 +147,16 @@ class ProportionalIslandSampler(IslandSampler):
         fitness_dict = self._get_island_best_fitness(initialized_islands)
 
         # Extract fitness values in the same order as initialized_islands
-        fitness_values = np.array(
+        fitness_values = _np().array(
             [fitness_dict.get(island_idx, 0.0) for island_idx in initialized_islands]
         )
 
         # Apply Boltzmann distribution: exp(fitness / temperature)
-        exp_values = np.exp(fitness_values / self.temperature)
-        probabilities = exp_values / np.sum(exp_values)
+        exp_values = _np().exp(fitness_values / self.temperature)
+        probabilities = exp_values / _np().sum(exp_values)
 
         # Sample according to probabilities
-        sampled_idx = np.random.choice(len(initialized_islands), p=probabilities)
+        sampled_idx = _np().random.choice(len(initialized_islands), p=probabilities)
         sampled_island = initialized_islands[sampled_idx]
 
         logger.debug(
@@ -197,15 +202,15 @@ class WeightedIslandSampler(IslandSampler):
             weights.append(weight)
 
         # Normalize to probabilities
-        weights = np.array(weights)
-        if np.sum(weights) == 0:
+        weights = _np().array(weights)
+        if _np().sum(weights) == 0:
             # Fallback to uniform if all weights are zero
-            probabilities = np.ones(len(weights)) / len(weights)
+            probabilities = _np().ones(len(weights)) / len(weights)
         else:
-            probabilities = weights / np.sum(weights)
+            probabilities = weights / _np().sum(weights)
 
         # Sample according to probabilities
-        sampled_idx = np.random.choice(len(initialized_islands), p=probabilities)
+        sampled_idx = _np().random.choice(len(initialized_islands), p=probabilities)
         sampled_island = initialized_islands[sampled_idx]
 
         logger.debug(

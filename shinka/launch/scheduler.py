@@ -36,6 +36,7 @@ class JobConfig:
 
     eval_program_path: Optional[str] = "evaluate.py"
     extra_cmd_args: Dict[str, Any] = field(default_factory=dict)
+    repo_eval_cwd: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation"""
@@ -122,7 +123,12 @@ class JobScheduler:
                 f"Must be 'local', 'slurm_docker', 'slurm_conda', or 'slurm_env'"
             )
 
-    def _build_command(self, exec_fname_t: str, results_dir_t: str) -> List[str]:
+    def _build_command(
+        self,
+        exec_fname_t: str,
+        results_dir_t: str,
+        repo_path_t: Optional[str] = None,
+    ) -> List[str]:
         python_executable = "python"
         if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
             if not (
@@ -135,20 +141,24 @@ class JobScheduler:
 
         if self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
+            input_flag = "--repo_path" if repo_path_t else "--program_path"
+            input_path = repo_path_t or exec_fname_t
             python_cmd = [
                 "python",
                 f"/workspace/{self.config.eval_program_path}",
-                "--program_path",
-                f"/workspace/{exec_fname_t}",
+                input_flag,
+                f"/workspace/{input_path}",
                 "--results_dir",
                 results_dir_t,
             ]
         else:
+            input_flag = "--repo_path" if repo_path_t else "--program_path"
+            input_path = repo_path_t or exec_fname_t
             python_cmd = [
                 python_executable,
                 f"{self.config.eval_program_path}",
-                "--program_path",
-                f"{exec_fname_t}",
+                input_flag,
+                f"{input_path}",
                 "--results_dir",
                 results_dir_t,
             ]
@@ -202,10 +212,10 @@ class JobScheduler:
         }
 
     def run(
-        self, exec_fname_t: str, results_dir_t: str
+        self, exec_fname_t: str, results_dir_t: str, repo_path_t: Optional[str] = None
     ) -> Tuple[Dict[str, Any], float]:
         job_id: Union[str, ProcessWithLogging]
-        cmd = self._build_command(exec_fname_t, results_dir_t)
+        cmd = self._build_command(exec_fname_t, results_dir_t, repo_path_t=repo_path_t)
         start_time = time.time()
 
         if self.job_type == "local":
@@ -215,6 +225,11 @@ class JobScheduler:
                 cmd,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
+                cwd=(
+                    repo_path_t
+                    if repo_path_t and getattr(self.config, "repo_eval_cwd", True)
+                    else None
+                ),
             )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
@@ -264,10 +279,10 @@ class JobScheduler:
         return results, rtime
 
     def submit_async(
-        self, exec_fname_t: str, results_dir_t: str
+        self, exec_fname_t: str, results_dir_t: str, repo_path_t: Optional[str] = None
     ) -> Union[str, ProcessWithLogging]:
         """Submit a job asynchronously and return the job ID or process."""
-        cmd = self._build_command(exec_fname_t, results_dir_t)
+        cmd = self._build_command(exec_fname_t, results_dir_t, repo_path_t=repo_path_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
             return submit_local(
@@ -275,6 +290,11 @@ class JobScheduler:
                 cmd,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
+                cwd=(
+                    repo_path_t
+                    if repo_path_t and getattr(self.config, "repo_eval_cwd", True)
+                    else None
+                ),
             )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
@@ -382,13 +402,16 @@ class JobScheduler:
         return None
 
     async def submit_async_nonblocking(
-        self, exec_fname_t: str, results_dir_t: str
+        self,
+        exec_fname_t: str,
+        results_dir_t: str,
+        repo_path_t: Optional[str] = None,
     ) -> Union[str, ProcessWithLogging]:
         """Submit a job asynchronously without blocking the event loop."""
         loop = asyncio.get_event_loop()
 
         return await loop.run_in_executor(
-            self.executor, self.submit_async, exec_fname_t, results_dir_t
+            self.executor, self.submit_async, exec_fname_t, results_dir_t, repo_path_t
         )
 
     async def check_job_status_async(self, job) -> bool:

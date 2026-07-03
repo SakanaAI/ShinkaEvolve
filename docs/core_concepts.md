@@ -1,8 +1,8 @@
 # Core Concepts
 
-ShinkaEvolve works best when the task boundary is explicit: one initial program,
-one evaluator, one results directory, and a search loop that mutates code while
-preserving correctness.
+ShinkaEvolve works best when the task boundary is explicit: either one initial
+program or one seed repository, one evaluator, one results directory, and a
+search loop that mutates code while preserving correctness.
 
 ---
 
@@ -19,6 +19,12 @@ At minimum, the evaluator surfaces a `combined_score` and whether the candidate
 is functionally correct. This creates a stable interface for both the Hydra
 launcher and the task-directory CLI.
 
+Repo-backed evolution uses the same evaluator result contract, but the candidate
+is a worktree rather than a single source file. Evaluators receive `--repo_path`
+and may run with the candidate repo as their working directory. In repo mode,
+the coding agent decides which cheap validation or smoke checks are worth
+running before Shinka hands the candidate to the authoritative evaluator.
+
 ---
 
 ## Evolution Loop
@@ -26,7 +32,8 @@ launcher and the task-directory CLI.
 Each generation follows the same loop:
 
 1. Sample a parent or inspiration context from the database and archive
-2. Ask one or more LLMs to propose a patch or full candidate program
+2. Ask one or more LLMs to propose a patch or, in repo mode, invoke a coding
+   agent inside an isolated worktree
 3. Validate and materialize the candidate
 4. Run the evaluator and collect metrics
 5. Persist the result into the program database
@@ -34,6 +41,12 @@ Each generation follows the same loop:
 
 The async runner overlaps proposal generation and evaluation to keep worker
 slots busy when LLM sampling is slower than the evaluator.
+
+In repo mode, each candidate also writes `.shinka/individual.md`. This strict
+summary is the dense representation of the individual: it captures parent
+lineage, the essence of the diff, changed files, validation performed, risks,
+and minimal snippets. Shinka stores and embeds this summary instead of embedding
+entire repositories.
 
 ---
 

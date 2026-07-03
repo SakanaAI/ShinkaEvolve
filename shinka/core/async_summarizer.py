@@ -336,9 +336,9 @@ class AsyncMetaSummarizer:
                     import json
 
                     def update_metadata():
-                        from shinka.database import ProgramDatabase
+                        from shinka.database import RepoDatabase
 
-                        thread_db = ProgramDatabase(db_config)
+                        thread_db = RepoDatabase(db_config)
                         try:
                             if best_program.metadata is None:
                                 best_program.metadata = {}
@@ -353,7 +353,7 @@ class AsyncMetaSummarizer:
 
                             metadata_json = json.dumps(best_program.metadata)
                             thread_db.cursor.execute(
-                                ("UPDATE programs SET metadata = ? WHERE id = ?"),
+                                ("UPDATE repos SET metadata = ? WHERE id = ?"),
                                 (metadata_json, best_program.id),
                             )
                             thread_db.conn.commit()
@@ -423,7 +423,7 @@ class AsyncMetaSummarizer:
             f.write(content)
 
     # Delegate read-only methods to sync summarizer
-    def add_evaluated_program(self, program: Program) -> None:
+    def add_evaluated_repo(self, program: Program) -> None:
         """Add newly evaluated program to the tracking list."""
         return self.sync_summarizer.add_evaluated_program(program)
 

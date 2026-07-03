@@ -3,9 +3,14 @@ import logging
 import sqlite3
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Any, Tuple
-import numpy as np  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _np():
+    import numpy as np
+
+    return np
 
 
 def sample_with_powerlaw(items: list, alpha: float = 1.0) -> int:
@@ -32,14 +37,14 @@ def sample_with_powerlaw(items: list, alpha: float = 1.0) -> int:
         raise ValueError("Empty items list for power-law sampling")
 
     # Probabilities based on rank (index + 1)
-    probs = np.array([(i + 1) ** (-alpha) for i in range(len(items))])
-    if np.sum(probs) == 0:  # Avoid div by zero if all probs are zero
+    probs = _np().array([(i + 1) ** (-alpha) for i in range(len(items))])
+    if _np().sum(probs) == 0:  # Avoid div by zero if all probs are zero
         # Fallback to uniform if power law results in all zero probabilities
-        probs = np.ones(len(items))
+        probs = _np().ones(len(items))
 
     probs = probs / probs.sum()  # Normalize
     logger.info(f"Power law probs: {probs.tolist()}")
-    return np.random.choice(len(items), p=probs)
+    return _np().random.choice(len(items), p=probs)
 
 
 def stable_sigmoid(x: float) -> float:
@@ -59,10 +64,10 @@ def stable_sigmoid(x: float) -> float:
         Sigmoid value between 0 and 1
     """
     if x >= 0:
-        exp_neg_x = np.exp(-x)
+        exp_neg_x = _np().exp(-x)
         return 1.0 / (1.0 + exp_neg_x)
     else:
-        exp_x = np.exp(x)
+        exp_x = _np().exp(x)
         return exp_x / (1.0 + exp_x)
 
 
@@ -75,14 +80,14 @@ class ParentSamplingStrategy(ABC):
         conn: sqlite3.Connection,
         config: Any,
         get_program_func: Callable[[str], Any],
-        best_program_id: Optional[str] = None,
+        best_repo_id: Optional[str] = None,
         island_idx: Optional[int] = None,
     ):
         self.cursor = cursor
         self.conn = conn
         self.config = config
         self.get_program = get_program_func
-        self.best_program_id = best_program_id
+        self.best_repo_id = best_repo_id
         self.island_idx = island_idx
 
     @abstractmethod
@@ -90,10 +95,10 @@ class ParentSamplingStrategy(ABC):
         """Sample and return a parent program."""
         pass
 
-    def _get_island_idx(self, program_id: str) -> Optional[int]:
+    def _get_island_idx(self, repo_id: str) -> Optional[int]:
         """Get the island index for a given program ID."""
         self.cursor.execute(
-            "SELECT island_idx FROM programs WHERE id = ?", (program_id,)
+            "SELECT island_idx FROM repos WHERE id = ?", (repo_id,)
         )
         row = self.cursor.fetchone()
         return row["island_idx"] if row else None
@@ -109,23 +114,23 @@ class PowerLawSamplingStrategy(ParentSamplingStrategy):
         # Try to sample from archive first, with fallbacks if empty
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT a.program_id FROM archive a
-                   JOIN programs p ON a.program_id = p.id
+                """SELECT a.repo_id FROM archive a
+                   JOIN repos p ON a.repo_id = p.id
                    WHERE p.island_idx = ?""",
                 (self.island_idx,),
             )
         else:
-            self.cursor.execute("SELECT program_id FROM archive")
+            self.cursor.execute("SELECT repo_id FROM archive")
 
         archived_rows = self.cursor.fetchall()
 
         # Try to sample from archive first
         if archived_rows:
-            archived_program_ids = [row["program_id"] for row in archived_rows]
+            archived_repo_ids = [row["repo_id"] for row in archived_rows]
 
             # Fetch Program objects
             archived_programs = []
-            for prog_id in archived_program_ids:
+            for prog_id in archived_repo_ids:
                 prog = self.get_program(prog_id)
                 if prog:
                     archived_programs.append(prog)
@@ -160,23 +165,23 @@ class PowerLawSamplingStrategy(ParentSamplingStrategy):
 
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT p.id FROM programs p
+                """SELECT p.id FROM repos p
                    WHERE p.correct = 1 AND p.island_idx = ?
                    ORDER BY p.combined_score DESC""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT p.id FROM programs p
+                """SELECT p.id FROM repos p
                    WHERE p.correct = 1
                    ORDER BY p.combined_score DESC"""
             )
 
         correct_rows = self.cursor.fetchall()
         if correct_rows:
-            correct_program_ids = [row["id"] for row in correct_rows]
+            correct_repo_ids = [row["id"] for row in correct_rows]
             correct_programs = []
-            for prog_id in correct_program_ids:
+            for prog_id in correct_repo_ids:
                 prog = self.get_program(prog_id)
                 if prog:
                     correct_programs.append(prog)
@@ -195,27 +200,27 @@ class PowerLawSamplingStrategy(ParentSamplingStrategy):
                 return selected_prog
 
         # Final fallback: best program or random correct
-        if self.best_program_id:
-            best_prog = self.get_program(self.best_program_id)
+        if self.best_repo_id:
+            best_prog = self.get_program(self.best_repo_id)
             if (
                 best_prog
                 and best_prog.correct
                 and (self.island_idx is None or best_prog.island_idx == self.island_idx)
             ):
-                logger.info(f"Power law: Using best program {self.best_program_id}")
+                logger.info(f"Power law: Using best program {self.best_repo_id}")
                 return best_prog
 
         # Last resort: any correct program
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 1 AND island_idx = ?
                    ORDER BY RANDOM() LIMIT 1""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT id FROM programs WHERE correct = 1
+                """SELECT id FROM repos WHERE correct = 1
                    ORDER BY RANDOM() LIMIT 1"""
             )
         row = self.cursor.fetchone()
@@ -243,8 +248,8 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
             self.cursor.execute(
                 """
                 SELECT p.*
-                FROM programs p
-                JOIN archive a ON p.id = a.program_id
+                FROM repos p
+                JOIN archive a ON p.id = a.repo_id
                 WHERE p.correct = 1 AND p.island_idx = ?
                 """,
                 (self.island_idx,),
@@ -253,8 +258,8 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
             self.cursor.execute(
                 """
                 SELECT p.*
-                FROM programs p
-                JOIN archive a ON p.id = a.program_id
+                FROM repos p
+                JOIN archive a ON p.id = a.repo_id
                 WHERE p.correct = 1
                 """
             )
@@ -267,25 +272,25 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
                 f"Falling back to best/random correct program."
             )
             # Fallback to best program
-            if self.best_program_id:
-                best_prog = self.get_program(self.best_program_id)
+            if self.best_repo_id:
+                best_prog = self.get_program(self.best_repo_id)
                 if best_prog and (
                     self.island_idx is None or best_prog.island_idx == self.island_idx
                 ):
-                    logger.info(f"Weighted: Using best program {self.best_program_id}")
+                    logger.info(f"Weighted: Using best program {self.best_repo_id}")
                     return best_prog
 
             # Fallback to random correct program
             if self.island_idx is not None:
                 self.cursor.execute(
-                    """SELECT id FROM programs
+                    """SELECT id FROM repos
                        WHERE correct = 1 AND island_idx = ?
                        ORDER BY RANDOM() LIMIT 1""",
                     (self.island_idx,),
                 )
             else:
                 self.cursor.execute(
-                    """SELECT id FROM programs WHERE correct = 1
+                    """SELECT id FROM repos WHERE correct = 1
                        ORDER BY RANDOM() LIMIT 1"""
                 )
             row = self.cursor.fetchone()
@@ -366,12 +371,12 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
 
         # Calculate baseline performance (alpha_0) as the median
         scores = [p.combined_score or 0.0 for p in eligible_programs]
-        alpha_0 = np.median(scores) if scores else 0.0
+        alpha_0 = _np().median(scores) if scores else 0.0
 
         # Calculate scale-robust normalization factor
         # Use median absolute deviation (MAD) for robust scaling
         score_deviations = [abs(score - alpha_0) for score in scores]
-        mad = np.median(score_deviations) if score_deviations else 1.0
+        mad = _np().median(score_deviations) if score_deviations else 1.0
         # Avoid division by zero - use a small epsilon if MAD is zero
         scale_factor = max(mad, 1e-6)
 
@@ -414,13 +419,13 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
             num_eligible = len(eligible_programs)
             probabilities = [1.0 / num_eligible] * num_eligible
         logger.info(
-            f"Island {self.island_idx} => Probabilities: {np.array(probabilities).tolist()}"
+            f"Island {self.island_idx} => Probabilities: {_np().array(probabilities).tolist()}"
         )
         logger.info(
             f"Island {self.island_idx} => Scores: {[p.combined_score for p in eligible_programs]}"
         )
         # Sample one parent based on probabilities
-        selected_parent = np.random.choice(eligible_programs, p=probabilities)
+        selected_parent = _np().random.choice(eligible_programs, p=probabilities)
 
         logger.info(
             f"Sampled parent {selected_parent.id} "
@@ -442,7 +447,7 @@ class BeamSearchSamplingStrategy(ParentSamplingStrategy):
         conn: sqlite3.Connection,
         config: Any,
         get_program_func: Callable[[str], Any],
-        best_program_id: Optional[str] = None,
+        best_repo_id: Optional[str] = None,
         island_idx: Optional[int] = None,
         beam_search_parent_id: Optional[str] = None,
         last_iteration: int = 0,
@@ -450,7 +455,7 @@ class BeamSearchSamplingStrategy(ParentSamplingStrategy):
         get_best_program_func: Optional[Callable[[], Any]] = None,
     ):
         super().__init__(
-            cursor, conn, config, get_program_func, best_program_id, island_idx
+            cursor, conn, config, get_program_func, best_repo_id, island_idx
         )
         self.beam_search_parent_id = beam_search_parent_id
         self.last_iteration = last_iteration
@@ -492,7 +497,7 @@ class BeamSearchSamplingStrategy(ParentSamplingStrategy):
             if parent:
                 # Check if we should continue with this parent based on num_beams
                 self.cursor.execute(
-                    "SELECT COUNT(*) FROM programs WHERE parent_id = ?",
+                    "SELECT COUNT(*) FROM repos WHERE parent_id = ?",
                     (self.beam_search_parent_id,),
                 )
                 children_count = (self.cursor.fetchone() or [0])[0]
@@ -520,12 +525,12 @@ class BeamSearchSamplingStrategy(ParentSamplingStrategy):
                             return best_program
 
         # Fallback to best program
-        if self.best_program_id:
-            return self.get_program(self.best_program_id)
+        if self.best_repo_id:
+            return self.get_program(self.best_repo_id)
 
         # Final fallback
         self.cursor.execute(
-            "SELECT id FROM programs WHERE correct = 1 ORDER BY RANDOM() LIMIT 1"
+            "SELECT id FROM repos WHERE correct = 1 ORDER BY RANDOM() LIMIT 1"
         )
         row = self.cursor.fetchone()
         return self.get_program(row["id"]) if row else None
@@ -538,14 +543,14 @@ class BestOfNSamplingStrategy(ParentSamplingStrategy):
         # Find the initial program (generation 0) in the specified island or globally
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE generation = 0 AND island_idx = ? AND correct = 1
                    ORDER BY id LIMIT 1""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE generation = 0 AND correct = 1
                    ORDER BY id LIMIT 1"""
             )
@@ -569,14 +574,14 @@ class BestOfNSamplingStrategy(ParentSamplingStrategy):
         )
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 1 AND island_idx = ?
                    ORDER BY generation ASC, id ASC LIMIT 1""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 1
                    ORDER BY generation ASC, id ASC LIMIT 1"""
             )
@@ -606,14 +611,14 @@ class SequentialSamplingStrategy(ParentSamplingStrategy):
         # in the specified island or globally
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 1 AND island_idx = ?
                    ORDER BY generation DESC, id DESC LIMIT 1""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 1
                    ORDER BY generation DESC, id DESC LIMIT 1"""
             )
@@ -638,14 +643,14 @@ class SequentialSamplingStrategy(ParentSamplingStrategy):
         )
         if self.island_idx is not None:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE island_idx = ?
                    ORDER BY generation DESC, id DESC LIMIT 1""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    ORDER BY generation DESC, id DESC LIMIT 1"""
             )
 
@@ -675,7 +680,7 @@ class CombinedParentSelector:
         conn: sqlite3.Connection,
         config: Any,
         get_program_func: Callable[[str], Any],
-        best_program_id: Optional[str] = None,
+        best_repo_id: Optional[str] = None,
         beam_search_parent_id: Optional[str] = None,
         last_iteration: int = 0,
         update_metadata_func: Optional[Callable[[str, Optional[str]], None]] = None,
@@ -685,21 +690,21 @@ class CombinedParentSelector:
         self.conn = conn
         self.config = config
         self.get_program = get_program_func
-        self.best_program_id = best_program_id
+        self.best_repo_id = best_repo_id
         self.beam_search_parent_id = beam_search_parent_id
         self.last_iteration = last_iteration
         self.update_metadata = update_metadata_func
         self.get_best_program_func = get_best_program_func
 
-    def has_correct_programs(self, island_idx: Optional[int] = None) -> bool:
+    def has_correct_repos(self, island_idx: Optional[int] = None) -> bool:
         """Check if there are any correct programs in the database."""
         if island_idx is not None:
             self.cursor.execute(
-                "SELECT COUNT(*) FROM programs WHERE correct = 1 AND island_idx = ?",
+                "SELECT COUNT(*) FROM repos WHERE correct = 1 AND island_idx = ?",
                 (island_idx,),
             )
         else:
-            self.cursor.execute("SELECT COUNT(*) FROM programs WHERE correct = 1")
+            self.cursor.execute("SELECT COUNT(*) FROM repos WHERE correct = 1")
         count = self.cursor.fetchone()[0]
         return count > 0
 
@@ -718,20 +723,20 @@ class CombinedParentSelector:
         # Get all incorrect programs and randomly sample one
         if island_idx is not None:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 0 AND island_idx = ?""",
                 (island_idx,),
             )
         else:
             self.cursor.execute(
-                """SELECT id FROM programs
+                """SELECT id FROM repos
                    WHERE correct = 0"""
             )
 
         rows = self.cursor.fetchall()
         if rows:
             # Randomly sample one incorrect program
-            selected_row = rows[np.random.randint(len(rows))]
+            selected_row = rows[_np().random.randint(len(rows))]
             prog = self.get_program(selected_row["id"])
             if prog:
                 logger.info(
@@ -756,7 +761,7 @@ class CombinedParentSelector:
             - needs_fix: True if no correct programs exist and fix mode should be used
         """
         # First check if there are any correct programs
-        if not self.has_correct_programs(island_idx):
+        if not self.has_correct_repos(island_idx):
             logger.warning(
                 f"No correct programs found (island {island_idx}). Entering FIX mode."
             )
@@ -780,7 +785,7 @@ class CombinedParentSelector:
                 self.conn,
                 self.config,
                 self.get_program,
-                self.best_program_id,
+                self.best_repo_id,
                 island_idx,
             )
         elif strategy_name == "weighted":
@@ -789,7 +794,7 @@ class CombinedParentSelector:
                 self.conn,
                 self.config,
                 self.get_program,
-                self.best_program_id,
+                self.best_repo_id,
                 island_idx,
             )
         elif strategy_name == "beam_search":
@@ -798,7 +803,7 @@ class CombinedParentSelector:
                 conn=self.conn,
                 config=self.config,
                 get_program_func=self.get_program,
-                best_program_id=self.best_program_id,
+                best_repo_id=self.best_repo_id,
                 island_idx=island_idx,
                 beam_search_parent_id=self.beam_search_parent_id,
                 last_iteration=self.last_iteration,
@@ -811,7 +816,7 @@ class CombinedParentSelector:
                 self.conn,
                 self.config,
                 self.get_program,
-                self.best_program_id,
+                self.best_repo_id,
                 island_idx,
             )
         elif strategy_name == "sequential":
@@ -820,7 +825,7 @@ class CombinedParentSelector:
                 self.conn,
                 self.config,
                 self.get_program,
-                self.best_program_id,
+                self.best_repo_id,
                 island_idx,
             )
         else:
@@ -831,8 +836,8 @@ class CombinedParentSelector:
         # Fallback to best program if sampling failed
         if not parent:
             # Try best program first
-            if self.best_program_id:
-                parent = self.get_program(self.best_program_id)
+            if self.best_repo_id:
+                parent = self.get_program(self.best_repo_id)
                 if (
                     parent
                     and parent.correct
@@ -843,14 +848,14 @@ class CombinedParentSelector:
             # Final fallback: random correct program
             if island_idx is not None:
                 self.cursor.execute(
-                    """SELECT id FROM programs 
+                    """SELECT id FROM repos 
                        WHERE correct = 1 AND island_idx = ?
                        ORDER BY RANDOM() LIMIT 1""",
                     (island_idx,),
                 )
             else:
                 self.cursor.execute(
-                    """SELECT id FROM programs 
+                    """SELECT id FROM repos 
                        ORDER BY RANDOM() LIMIT 1"""
                 )
             row = self.cursor.fetchone()

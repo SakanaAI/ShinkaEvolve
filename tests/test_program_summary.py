@@ -1,13 +1,13 @@
 import tempfile
 from pathlib import Path
 
-from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database import DatabaseConfig, Program, RepoDatabase
 
 
 def test_program_summary_excludes_full_embeddings_but_keeps_pca_fields():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "summary.db"
-        db = ProgramDatabase(
+        db = RepoDatabase(
             config=DatabaseConfig(db_path=str(db_path), num_islands=1),
             embedding_model="",
             read_only=False,
@@ -42,7 +42,7 @@ def test_program_summary_excludes_full_embeddings_but_keeps_pca_fields():
 def test_program_summary_includes_text_feedback_for_lightweight_details():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "summary.db"
-        db = ProgramDatabase(
+        db = RepoDatabase(
             config=DatabaseConfig(db_path=str(db_path), num_islands=1),
             embedding_model="",
             read_only=False,

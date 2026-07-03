@@ -540,7 +540,6 @@ class AsyncLLMClient:
         self,
         msg: str,
         system_msg: str,
-        msg_history: List[Dict] = [],
         llm_kwargs: Optional[Dict] = None,
         model_sample_probs: Optional[List[float]] = None,
         model_posterior: Optional[List[float]] = None,
@@ -550,7 +549,6 @@ class AsyncLLMClient:
         Args:
             msg (str): The message to query the LLM with.
             system_msg (str): The system message to query the LLM with.
-            msg_history (List[Dict], optional): Message history. Defaults to [].
             llm_kwargs (Dict, optional): Additional LLM parameters.
                 Defaults to {}.
             model_sample_probs (Optional[List[float]]): Sampling probabilities for each model.
@@ -604,7 +602,6 @@ class AsyncLLMClient:
                 result = await query_async(
                     msg=msg,
                     system_msg=system_msg,
-                    msg_history=msg_history,
                     output_model=self.output_model,
                     model_posteriors=model_posteriors,
                     **llm_kwargs,
@@ -624,7 +621,6 @@ class AsyncLLMClient:
         idx: int,
         msg: str,
         system_msg: str,
-        msg_history: List[Dict] = [],
         kwargs: Dict = {},
         total_samples: int = 1,
     ) -> tuple[int, Optional[QueryResult]]:
@@ -639,7 +635,6 @@ class AsyncLLMClient:
                 result = await query_async(
                     msg=msg,
                     system_msg=system_msg,
-                    msg_history=msg_history,
                     output_model=self.output_model,
                     **kwargs,
                 )
@@ -657,7 +652,6 @@ class AsyncLLMClient:
         idx: int,
         msg: str,
         system_msg: str,
-        msg_history: List[Dict] = [],
         model_sample_probs: Optional[List[float]] = None,
         total_samples: int = 1,
     ) -> tuple[int, Optional[QueryResult]]:

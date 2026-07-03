@@ -36,23 +36,13 @@ def _make_fake_headless(tmp_path: Path) -> Path:
                 "",
                 "prompt_path = Path(sys.argv[sys.argv.index('--prompt-file') + 1])",
                 "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
+                "allow_mode = sys.argv[sys.argv.index('--allow') + 1]",
                 "assert prompt_path.exists(), prompt_path",
+                "assert prompt_path.parent == work_dir / '.shinka', prompt_path",
                 "assert work_dir.exists(), work_dir",
-                "print('<NAME>')",
-                "print('raise_score')",
-                "print('</NAME>')",
-                "print('<DESCRIPTION>')",
-                "print('Deterministic fake headless mutation.')",
-                "print('</DESCRIPTION>')",
-                "print('<CODE>')",
-                "print('```python')",
-                "print('# EVOLVE-BLOCK-START')",
-                "print('def score():')",
-                "print('    return 1.0')",
-                "print('# EVOLVE-BLOCK-END')",
-                "print('```')",
-                "print('</CODE>')",
-                "print(json.dumps({'usage': {'input_tokens': 11, 'output_tokens': 13, 'thinking_tokens': 0, 'cost': 0.0}}))",
+                "assert allow_mode == 'yolo', allow_mode",
+                "(work_dir / 'generated.txt').write_text('mutated by headless\\n')",
+                "print('fake headless completed')",
             ]
         ),
         encoding="utf-8",
@@ -157,7 +147,7 @@ def test_headless_kwargs_skip_api_only_parameters():
     assert kwargs == {"model_name": "headless/codex@gpt-5.5?effort=high"}
 
 
-def test_query_headless_invokes_command_and_parses_usage(tmp_path, monkeypatch):
+def test_query_headless_invokes_command_and_mutates_worktree(tmp_path, monkeypatch):
     fake_headless = _make_fake_headless(tmp_path)
     monkeypatch.setenv("SHINKA_HEADLESS_COMMAND", _fake_headless_command(fake_headless))
     monkeypatch.setenv("SHINKA_HEADLESS_TIMEOUT", "10")
@@ -174,11 +164,14 @@ def test_query_headless_invokes_command_and_parses_usage(tmp_path, monkeypatch):
         headless_work_dir=str(work_dir),
     )
 
-    assert "raise_score" in result.content
+    assert "Headless agent completed" in result.content
     assert result.model_name == "headless/codex@test-model?effort=low"
-    assert result.input_tokens == 11
-    assert result.output_tokens == 13
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+    assert (work_dir / "generated.txt").read_text(encoding="utf-8") == "mutated by headless\n"
+    assert result.kwargs["headless_work_dir"] == str(work_dir)
     assert Path(result.kwargs["headless_prompt_path"]).exists()
+    assert Path(result.kwargs["headless_stdout_path"]).exists()
 
 
 def test_query_headless_invokes_claude_through_shell(tmp_path, monkeypatch):
@@ -196,12 +189,12 @@ def test_query_headless_invokes_claude_through_shell(tmp_path, monkeypatch):
         headless_work_dir=str(tmp_path),
     )
 
-    assert "raise_score" in result.content
+    assert "Headless agent completed" in result.content
     assert result.model_name == "headless/claude"
 
 
-def test_query_headless_accepts_nested_cost_usage(tmp_path, monkeypatch):
-    script = tmp_path / "nested_cost_headless.py"
+def test_query_headless_logs_stdout_without_parsing_usage(tmp_path, monkeypatch):
+    script = tmp_path / "stdout_headless.py"
     script.write_text(
         "\n".join(
             [
@@ -210,8 +203,9 @@ def test_query_headless_accepts_nested_cost_usage(tmp_path, monkeypatch):
                 "from pathlib import Path",
                 "if '--check' in sys.argv:",
                 "    raise SystemExit(0)",
+                "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
                 "Path(sys.argv[sys.argv.index('--prompt-file') + 1]).exists() or sys.exit(2)",
-                "print('content')",
+                "(work_dir / 'generated.txt').write_text('mutated')",
                 "print(json.dumps({'usage': {'inputTokens': 1, 'outputTokens': 2, 'reasoningOutputTokens': 3, 'cost': {'input': 0.01, 'output': 0.02, 'total': 0.03}}}))",
             ]
         ),
@@ -229,12 +223,14 @@ def test_query_headless_accepts_nested_cost_usage(tmp_path, monkeypatch):
         headless_work_dir=str(tmp_path),
     )
 
-    assert result.cost == pytest.approx(0.03)
-    assert result.input_cost == pytest.approx(0.01)
-    assert result.output_cost == pytest.approx(0.02)
-    assert result.input_tokens == 1
-    assert result.output_tokens == 2
-    assert result.thinking_tokens == 3
+    assert result.cost == pytest.approx(0.0)
+    assert result.input_cost == pytest.approx(0.0)
+    assert result.output_cost == pytest.approx(0.0)
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+    assert result.thinking_tokens == 0
+    stdout_path = Path(result.kwargs["headless_stdout_path"])
+    assert '"usage"' in stdout_path.read_text(encoding="utf-8")
 
 
 def test_query_headless_serializes_claude_async_calls(tmp_path, monkeypatch):
