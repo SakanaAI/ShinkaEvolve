@@ -167,7 +167,16 @@ def sample_model_kwargs(
                 "budget_tokens": thinking_tokens,
             }
 
-    # 4.d) SET: max_tokens for all other models
+    # 4.d) SET: max_tokens and thinking mode for DeepSeek reasoning models
+    elif provider == "deepseek" and is_reasoning_model(api_model_name):
+        kwargs_dict["max_tokens"] = random.choice(max_tokens)
+        if r_effort == "disabled":
+            kwargs_dict["extra_body"] = {"thinking": {"type": "disabled"}}
+        else:
+            kwargs_dict["reasoning_effort"] = "max" if r_effort == "max" else "high"
+            kwargs_dict["extra_body"] = {"thinking": {"type": "enabled"}}
+
+    # 4.e) SET: max_tokens for all other models
     else:
         # Non-reasoning models or other providers
         if provider in ("anthropic", "bedrock", "deepseek", "local_openai"):

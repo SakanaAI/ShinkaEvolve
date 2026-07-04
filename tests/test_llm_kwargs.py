@@ -44,3 +44,50 @@ def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs():
     assert kwargs["temperature"] == 1.0
     assert kwargs["max_output_tokens"] == 8192
     assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
+
+
+def test_deepseek_v4_reasoning_kwargs_enable_thinking_mode():
+    assert is_reasoning_model("deepseek-v4-pro")
+
+    kwargs = sample_model_kwargs(
+        model_names=["deepseek-v4-pro"],
+        temperatures=[0.0],
+        max_tokens=[64000],
+        reasoning_efforts=["high"],
+    )
+
+    assert kwargs == {
+        "model_name": "deepseek-v4-pro",
+        "temperature": 0.0,
+        "max_tokens": 64000,
+        "reasoning_effort": "high",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+
+def test_deepseek_v4_max_reasoning_maps_to_deepseek_max_effort():
+    kwargs = sample_model_kwargs(
+        model_names=["deepseek-v4-flash"],
+        temperatures=[0.0],
+        max_tokens=[4096],
+        reasoning_efforts=["max"],
+    )
+
+    assert kwargs["reasoning_effort"] == "max"
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+def test_deepseek_v4_disabled_reasoning_disables_thinking_mode():
+    kwargs = sample_model_kwargs(
+        model_names=["deepseek-v4-flash"],
+        temperatures=[0.2],
+        max_tokens=[4096],
+        reasoning_efforts=["disabled"],
+    )
+
+    assert kwargs == {
+        "model_name": "deepseek-v4-flash",
+        "temperature": 0.2,
+        "max_tokens": 4096,
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
