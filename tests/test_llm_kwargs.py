@@ -91,3 +91,17 @@ def test_deepseek_v4_disabled_reasoning_disables_thinking_mode():
         "max_tokens": 4096,
         "extra_body": {"thinking": {"type": "disabled"}},
     }
+
+
+def test_claude_opus_4_8_bedrock_kwargs_omit_deprecated_temperature():
+    kwargs = sample_model_kwargs(
+        model_names=["us.anthropic.claude-opus-4-8"],
+        temperatures=[0.0],
+        max_tokens=[64000],
+        reasoning_efforts=["high"],
+    )
+
+    assert kwargs == {
+        "model_name": "us.anthropic.claude-opus-4-8",
+        "max_tokens": 64000,
+    }

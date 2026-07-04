@@ -18,6 +18,11 @@ THINKING_TOKENS = {
     "max": 16384,
 }
 
+NO_TEMPERATURE_MODELS = {
+    "claude-opus-4-8",
+    "us.anthropic.claude-opus-4-8",
+}
+
 
 def sample_batch_kwargs(
     num_samples: int,
@@ -113,7 +118,7 @@ def sample_model_kwargs(
         r_effort = "low"
 
     # 3. SAMPLE: temperature with possible reasoning restrictions
-    include_temperature = not (
+    include_temperature = api_model_name not in NO_TEMPERATURE_MODELS and not (
         provider in ("openai", "azure_openai") and is_reasoning_model(api_model_name)
     )
     if include_temperature and has_fixed_temperature(api_model_name) and (
