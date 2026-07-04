@@ -113,11 +113,14 @@ def sample_model_kwargs(
         r_effort = "low"
 
     # 3. SAMPLE: temperature with possible reasoning restrictions
-    if has_fixed_temperature(api_model_name) and (
+    include_temperature = not (
+        provider in ("openai", "azure_openai") and is_reasoning_model(api_model_name)
+    )
+    if include_temperature and has_fixed_temperature(api_model_name) and (
         r_effort != "disabled" or provider in ("openai", "openrouter", "azure_openai")
     ):
         kwargs_dict["temperature"] = 1.0
-    else:
+    elif include_temperature:
         kwargs_dict["temperature"] = random.choice(temperatures)
 
     # 4.a) SET: max_output_tokens for OpenAI reasoning effort

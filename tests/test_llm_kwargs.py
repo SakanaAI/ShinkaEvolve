@@ -30,7 +30,7 @@ def test_sample_model_kwargs_uses_max_output_tokens_for_dynamic_openrouter():
     assert "max_tokens" not in kwargs
 
 
-def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs():
+def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs_without_temperature():
     assert is_reasoning_model("gpt-5-mini")
     assert requires_reasoning("gpt-5-mini")
 
@@ -41,7 +41,7 @@ def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs():
         reasoning_efforts=["minimal"],
     )
 
-    assert kwargs["temperature"] == 1.0
+    assert "temperature" not in kwargs
     assert kwargs["max_output_tokens"] == 8192
     assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
 

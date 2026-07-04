@@ -16,6 +16,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed OpenAI reasoning model kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for GPT-5-series Responses API calls.
 - Fixed DeepSeek reasoning model kwargs so ShinkaEvolve passes DeepSeek thinking-mode controls and `reasoning_effort` for V4 models.
 - Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google API hosts and prefer IPv4 when needed.
 - Fixed LLM pricing boolean metadata normalization so reasoning-model flags handle whitespace and mixed CSV value types.
