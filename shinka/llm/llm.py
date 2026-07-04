@@ -324,7 +324,11 @@ class LLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
-                logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                model_name = llm_kwargs.get("model_name", "<unknown>")
+                logger.error(
+                    f"{try_count + 1}/{MAX_RETRIES} Error in query "
+                    f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
+                )
                 try_count += 1
         return None
 

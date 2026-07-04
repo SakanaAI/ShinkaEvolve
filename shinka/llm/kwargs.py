@@ -20,6 +20,8 @@ THINKING_TOKENS = {
 
 NO_TEMPERATURE_MODELS = {
     "claude-opus-4-8",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
     "us.anthropic.claude-opus-4-8",
 }
 

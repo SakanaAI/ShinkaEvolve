@@ -58,7 +58,6 @@ def test_deepseek_v4_reasoning_kwargs_enable_thinking_mode():
 
     assert kwargs == {
         "model_name": "deepseek-v4-pro",
-        "temperature": 0.0,
         "max_tokens": 64000,
         "reasoning_effort": "high",
         "extra_body": {"thinking": {"type": "enabled"}},
@@ -87,7 +86,6 @@ def test_deepseek_v4_disabled_reasoning_disables_thinking_mode():
 
     assert kwargs == {
         "model_name": "deepseek-v4-flash",
-        "temperature": 0.2,
         "max_tokens": 4096,
         "extra_body": {"thinking": {"type": "disabled"}},
     }
