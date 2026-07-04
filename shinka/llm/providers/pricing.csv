@@ -52,6 +52,8 @@ gpt-5.3-codex,openai,1.75,14.0,,,,True,1,1
 gpt-5.2-pro,openai,21.0,168.0,,,,True,1,1
 deepseek-chat,deepseek,0.28,0.42,,,," False"," 0"," 0"
 deepseek-reasoner,deepseek,0.28,0.42,,,," True"," 0"," 0"
+deepseek-v4-flash,deepseek,0.14,0.28,,,,True,0,0
+deepseek-v4-pro,deepseek,0.435,0.87,,,,True,0,0
 gemini-3.5-flash,google,1.5,9.0,,,,True,0,0
 gemini-3-flash-preview,google,0.5,3.0,,,,True,0,0
 gemini-3-pro-preview,google,2.0,12.0,4.0,18.0,200000,True,0,0
