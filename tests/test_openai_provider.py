@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from shinka.llm.providers.openai import get_openai_costs, query_openai
+from shinka.llm.providers.openai import (
+    _retry_after_seconds,
+    get_openai_costs,
+    query_openai,
+)
 
 
 def _usage(
@@ -57,6 +61,24 @@ def test_get_openai_costs_uses_openrouter_cost_details_when_available():
     assert costs["input_cost"] == 0.12
     assert costs["output_cost"] == 0.34
     assert costs["cost"] == 0.46
+
+
+def test_retry_after_seconds_reads_cloudflare_error_body():
+    exc = SimpleNamespace(
+        response=SimpleNamespace(headers={}),
+        body={"retry_after": 60},
+    )
+
+    assert _retry_after_seconds(exc) == 60
+
+
+def test_retry_after_seconds_prefers_response_header():
+    exc = SimpleNamespace(
+        response=SimpleNamespace(headers={"retry-after": "30"}),
+        body={"retry_after": 60},
+    )
+
+    assert _retry_after_seconds(exc) == 30
 
 
 class _FakeOpenAIClient:

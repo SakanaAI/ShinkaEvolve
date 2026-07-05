@@ -1,5 +1,6 @@
 import backoff
 import openai
+import time
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
@@ -66,9 +67,37 @@ def _extract_reasoning_summary(response) -> str:
 def backoff_handler(details):
     exc = details.get("exception")
     if exc:
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None and retry_after > details["wait"]:
+            logger.warning(
+                "OpenAI - server requested retry_after=%ss; sleeping before retry.",
+                retry_after,
+            )
+            time.sleep(retry_after - details["wait"])
         logger.warning(
             f"OpenAI - Retry {details['tries']} due to error: {exc}. Waiting {details['wait']:0.1f}s..."
         )
+
+
+def _retry_after_seconds(exc) -> int | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers:
+        value = headers.get("retry-after")
+        if value:
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                pass
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        value = body.get("retry_after")
+        if value is not None:
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def get_openai_costs(response, model):
