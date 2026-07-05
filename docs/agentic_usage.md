@@ -2,7 +2,7 @@
 
 This guide shows how to run Shinka with coding agents using the project skills:
 
-- `shinka-setup`: scaffold task files (`evaluate.py`, `initial.<ext>`, optional run config)
+- `shinka-setup`: scaffold repo-mode task files (`evaluate.py`, `seed_repo/`, optional run config)
 - `shinka-convert`: snapshot an existing repo into a Shinka task directory
 - `shinka-run`: launch and iterate evolution batches via `shinka_run`
 - `shinka-inspect`: load top-performing programs into a compact context bundle
@@ -115,8 +115,8 @@ Illustration (setup flow):
 ![Claude setup step 2](media/claude_setup_2.png)
 
 Expected output:
-- `initial.<ext>` with evolve block
-- `evaluate.py` producing `metrics.json` + `correct.json`
+- `seed_repo/` initialized as a git repository
+- `evaluate.py` accepting `--repo_path` and producing `metrics.json` + `correct.json`
 - optional `run_evo.py` / `shinka.yaml` scaffolds when requested
 
 ## 5) Run Skill Walkthrough (`shinka-run`)
@@ -192,7 +192,7 @@ When using `shinka-run` skill:
 Before first run:
 
 - `shinka_run --help` works
-- task dir has `evaluate.py` + `initial.<ext>`
+- task dir has `evaluate.py` + a git `seed_repo/`
 - API keys are available in environment
 - `npx skills list` shows the installed Shinka skills
 - for global installs, skills appear under `~/.claude/skills/` and/or `~/.codex/skills/`

@@ -43,10 +43,10 @@ if __name__ == "__main__":
         description="Shinka hydra-based evaluation launcher"
     )
     parser.add_argument(
-        "--program_path",
+        "--repo_path",
         type=str,
-        default="initial.py",
-        help="Path to the program to evaluate",
+        required=True,
+        help="Path to the candidate repository to evaluate",
     )
     parser.add_argument(
         "--results_dir",
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     Path(args.results_dir).mkdir(parents=True, exist_ok=True)
     cfg = load_hydra_config(args.results_dir, max_parent_depth=2)
-    cfg.evaluate_function.program_path = os.path.abspath(args.program_path)
+    cfg.evaluate_function.repo_path = os.path.abspath(args.repo_path)
     cfg.evaluate_function.results_dir = os.path.abspath(args.results_dir)
     print(os.getcwd())
     print("Launching evaluation of function:")

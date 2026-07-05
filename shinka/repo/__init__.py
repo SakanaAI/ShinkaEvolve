@@ -1,10 +1,11 @@
 from .summary import (
     SUMMARY_SCHEMA_VERSION,
+    SUMMARY_TEMPLATE_PLACEHOLDER,
     SummaryValidationResult,
     build_initial_summary,
+    build_summary_template,
     validate_summary,
 )
-from .context import RepoContext, render_repo_context
 from .worktree import (
     MutabilityViolation,
     RepoWorktree,
@@ -14,11 +15,11 @@ from .worktree import (
 
 __all__ = [
     "SUMMARY_SCHEMA_VERSION",
+    "SUMMARY_TEMPLATE_PLACEHOLDER",
     "SummaryValidationResult",
     "build_initial_summary",
+    "build_summary_template",
     "validate_summary",
-    "RepoContext",
-    "render_repo_context",
     "MutabilityViolation",
     "RepoWorktree",
     "WorktreeManager",

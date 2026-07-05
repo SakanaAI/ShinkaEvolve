@@ -64,8 +64,8 @@ class DatabaseConfig:
 
     # Inspiration parameters
     elite_selection_ratio: float = 0.3  # Prop of elites inspirations
-    num_archive_inspirations: int = 1  # No. inspiration repos
-    num_top_k_inspirations: int = 1  # No. top-k inspiration repos
+    num_archive_inspirations: int = 1  # No. inspiration programs
+    num_top_k_inspirations: int = 1  # No. top-k inspiration programs
 
     # Island model/migration parameters
     migration_interval: int = 10  # Migrate every N generations
@@ -82,7 +82,7 @@ class DatabaseConfig:
     island_spawn_strategy: str = (
         "initial"  # How to seed new islands: "initial", "best", "archive_random"
     )
-    island_spawn_subtree_size: int = 1  # Max repos to copy (1=single, >1=subtree)
+    island_spawn_subtree_size: int = 1  # Max programs to copy (1=single, >1=subtree)
 
     # Parent selection parameters
     parent_selection_strategy: str = (
@@ -150,11 +150,13 @@ def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
 
 
 @dataclass
-class Repo:
+class Program:
     """Represents a repo in the database"""
 
-    # Repo identification
+    # Program identification
     id: str
+    code: str = ""
+    language: str = "repo"
     individual_type: str = "repo"
 
     # Evolution information
@@ -178,6 +180,10 @@ class Repo:
     artifact_uri: Optional[str] = None
     mutable_paths: List[str] = field(default_factory=list)
     immutable_paths: List[str] = field(default_factory=list)
+    agent_session_id: Optional[str] = None
+    agent_session_name: Optional[str] = None
+    agent_provider: Optional[str] = None
+    agent_model: Optional[str] = None
 
     # Performance metrics
     combined_score: float = 0.0
@@ -212,7 +218,7 @@ class Repo:
         return clean_nan_values(data)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Repo":
+    def from_dict(cls, data: Dict[str, Any]) -> "Program":
         """Create from dictionary representation, ensuring correct types for
         nested dicts."""
         # Ensure metrics and metadata are dictionaries, even if None/empty from
@@ -277,14 +283,14 @@ class Repo:
             list_val = data.get(list_field)
             data[list_field] = list_val if isinstance(list_val, list) else []
 
-        # Filter out keys not in Repo fields to avoid TypeError with **data
+        # Filter out keys not in Program fields to avoid TypeError with **data
         program_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in program_fields}
 
         return cls(**filtered_data)
 
 
-class RepoDatabase:
+class ProgramDatabase:
     """
     SQLite-backed database for storing and managing programs during an
     evolutionary process.
@@ -311,7 +317,7 @@ class RepoDatabase:
         self._embedding_client_init_failed = False
 
         self.last_iteration: int = 0
-        self.best_repo_id: Optional[str] = None
+        self.best_program_id: Optional[str] = None
         self.beam_search_parent_id: Optional[str] = None
         # For deferring expensive operations
         self._schedule_migration: bool = False
@@ -389,10 +395,10 @@ class RepoDatabase:
             strategy=island_selection_strategy,
         )
 
-        count = self._count_repos_in_db()
-        logger.debug(f"DB initialized with {count} repos.")
+        count = self._count_programs_in_db()
+        logger.debug(f"DB initialized with {count} programs.")
         logger.debug(
-            f"Last iter: {self.last_iteration}. Best ID: {self.best_repo_id}"
+            f"Last iter: {self.last_iteration}. Best ID: {self.best_program_id}"
         )
 
     def _ensure_embedding_client(self) -> Optional["EmbeddingClient"]:
@@ -442,7 +448,7 @@ class RepoDatabase:
 
         self.cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS repos (
+            CREATE TABLE IF NOT EXISTS programs (
                 id TEXT PRIMARY KEY,
                 code TEXT NOT NULL,
                 language TEXT NOT NULL,
@@ -462,6 +468,10 @@ class RepoDatabase:
                 artifact_uri TEXT,
                 mutable_paths TEXT,
                 immutable_paths TEXT,
+                agent_session_id TEXT,
+                agent_session_name TEXT,
+                agent_provider TEXT,
+                agent_model TEXT,
                 combined_score REAL,
                 public_metrics TEXT, -- JSON serialized Dict[str, Any]
                 private_metrics TEXT, -- JSON serialized Dict[str, Any]
@@ -483,22 +493,22 @@ class RepoDatabase:
 
         # Add indices for common query patterns
         idx_cmds = [
-            "CREATE INDEX IF NOT EXISTS idx_repos_generation ON "
-            "repos(generation)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_timestamp ON repos(timestamp)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_complexity ON "
-            "repos(complexity)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_parent_id ON repos(parent_id)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_individual_type ON "
-            "repos(individual_type)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_repo_commit ON "
-            "repos(repo_commit)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_children_count ON "
-            "repos(children_count)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_island_idx ON "
-            "repos(island_idx)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_system_prompt_id ON "
-            "repos(system_prompt_id)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_generation ON "
+            "programs(generation)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON programs(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_complexity ON "
+            "programs(complexity)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_parent_id ON programs(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_individual_type ON "
+            "programs(individual_type)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_repo_commit ON "
+            "programs(repo_commit)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_children_count ON "
+            "programs(children_count)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
+            "programs(island_idx)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
+            "programs(system_prompt_id)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
@@ -506,8 +516,8 @@ class RepoDatabase:
         self.cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS archive (
-                repo_id TEXT PRIMARY KEY,
-                FOREIGN KEY (repo_id) REFERENCES repos(id)
+                program_id TEXT PRIMARY KEY,
+                FOREIGN KEY (program_id) REFERENCES programs(id)
                     ON DELETE CASCADE
             )
             """
@@ -569,16 +579,31 @@ class RepoDatabase:
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
 
+        self._migrate_repo_named_tables()
+
         # Get current columns
-        self.cursor.execute("PRAGMA table_info(repos)")
+        self.cursor.execute("PRAGMA table_info(programs)")
         columns = [row[1] for row in self.cursor.fetchall()]
+
+        self.cursor.execute("PRAGMA table_info(archive)")
+        archive_columns = [row[1] for row in self.cursor.fetchall()]
+        if "repo_id" in archive_columns and "program_id" not in archive_columns:
+            try:
+                logger.info("Adding program_id column to legacy archive table")
+                self.cursor.execute("ALTER TABLE archive ADD COLUMN program_id TEXT")
+                self.cursor.execute(
+                    "UPDATE archive SET program_id = repo_id WHERE program_id IS NULL"
+                )
+                self.conn.commit()
+            except sqlite3.Error as e:
+                logger.error(f"Error during archive program_id migration: {e}")
 
         # Migration 1: Add text_feedback column if it doesn't exist
         try:
             if "text_feedback" not in columns:
-                logger.info("Adding text_feedback column to repos table")
+                logger.info("Adding text_feedback column to programs table")
                 self.cursor.execute(
-                    "ALTER TABLE repos ADD COLUMN text_feedback TEXT DEFAULT ''"
+                    "ALTER TABLE programs ADD COLUMN text_feedback TEXT DEFAULT ''"
                 )
                 self.conn.commit()
                 logger.info("Successfully added text_feedback column")
@@ -589,9 +614,9 @@ class RepoDatabase:
         # Migration 2: Add system_prompt_id column if it doesn't exist
         try:
             if "system_prompt_id" not in columns:
-                logger.info("Adding system_prompt_id column to repos table")
+                logger.info("Adding system_prompt_id column to programs table")
                 self.cursor.execute(
-                    "ALTER TABLE repos ADD COLUMN system_prompt_id TEXT"
+                    "ALTER TABLE programs ADD COLUMN system_prompt_id TEXT"
                 )
                 self.conn.commit()
                 logger.info("Successfully added system_prompt_id column")
@@ -610,29 +635,33 @@ class RepoDatabase:
             "artifact_uri": "TEXT",
             "mutable_paths": "TEXT",
             "immutable_paths": "TEXT",
+            "agent_session_id": "TEXT",
+            "agent_session_name": "TEXT",
+            "agent_provider": "TEXT",
+            "agent_model": "TEXT",
         }
         for column_name, column_type in repo_columns.items():
             try:
                 if column_name not in columns:
-                    logger.info("Adding %s column to repos table", column_name)
+                    logger.info("Adding %s column to programs table", column_name)
                     self.cursor.execute(
-                        f"ALTER TABLE repos ADD COLUMN {column_name} {column_type}"
+                        f"ALTER TABLE programs ADD COLUMN {column_name} {column_type}"
                     )
                     self.conn.commit()
             except sqlite3.Error as e:
                 logger.error(f"Error during {column_name} migration: {e}")
 
         for index_cmd in [
-            "CREATE INDEX IF NOT EXISTS idx_repos_individual_type ON "
-            "repos(individual_type)",
-            "CREATE INDEX IF NOT EXISTS idx_repos_repo_commit ON "
-            "repos(repo_commit)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_individual_type ON "
+            "programs(individual_type)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_repo_commit ON "
+            "programs(repo_commit)",
         ]:
             try:
                 self.cursor.execute(index_cmd)
                 self.conn.commit()
             except sqlite3.Error as e:
-                logger.error(f"Error creating repo individual index: {e}")
+                logger.error(f"Error creating program index: {e}")
 
         # Migration 4: Restore legacy compute_time semantics when detailed
         # pipeline timing is present. compute_time should mirror evaluation
@@ -640,7 +669,7 @@ class RepoDatabase:
         try:
             self.cursor.execute(
                 """
-                UPDATE repos
+                UPDATE programs
                 SET metadata = json_set(
                     metadata,
                     '$.compute_time',
@@ -685,6 +714,48 @@ class RepoDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error during attempt_log migration: {e}")
 
+    def _migrate_repo_named_tables(self) -> None:
+        """Copy rows from the temporary repo-named schema into programs."""
+        if not self.cursor or not self.conn:
+            raise ConnectionError("DB not connected.")
+
+        self.cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'repos'"
+        )
+        if self.cursor.fetchone() is None:
+            return
+
+        try:
+            self.cursor.execute("SELECT COUNT(*) FROM programs")
+            program_count = int(self.cursor.fetchone()[0])
+            self.cursor.execute("SELECT COUNT(*) FROM repos")
+            repo_count = int(self.cursor.fetchone()[0])
+            if program_count > 0 or repo_count == 0:
+                return
+
+            self.cursor.execute("PRAGMA table_info(programs)")
+            program_columns = [row[1] for row in self.cursor.fetchall()]
+            self.cursor.execute("PRAGMA table_info(repos)")
+            repo_columns = {row[1] for row in self.cursor.fetchall()}
+            common_columns = [
+                column for column in program_columns if column in repo_columns
+            ]
+            if not common_columns:
+                return
+
+            columns_sql = ", ".join(common_columns)
+            self.cursor.execute(
+                f"INSERT OR IGNORE INTO programs ({columns_sql}) "
+                f"SELECT {columns_sql} FROM repos"
+            )
+            self.conn.commit()
+            logger.info(
+                "Migrated %s rows from legacy repos table into programs",
+                repo_count,
+            )
+        except sqlite3.Error as e:
+            logger.error(f"Error migrating legacy repos table: {e}")
+
     @db_retry()
     def _load_metadata_from_db(self):
         if not self.cursor:
@@ -702,10 +773,10 @@ class RepoDatabase:
                 self._update_metadata_in_db("last_iteration", str(self.last_iteration))
 
         self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_repo_id'"
+            "SELECT value FROM metadata_store WHERE key = 'best_program_id'"
         )
         row = self.cursor.fetchone()
-        self.best_repo_id = (
+        self.best_program_id = (
             str(row["value"])
             if row and row["value"] is not None and row["value"] != "None"
             else None
@@ -714,7 +785,7 @@ class RepoDatabase:
             not row or row["value"] is None or row["value"] == "None"
         ):  # Initialize or clear if stored as 'None' string
             if not self.read_only:
-                self._update_metadata_in_db("best_repo_id", None)
+                self._update_metadata_in_db("best_program_id", None)
 
         self.cursor.execute(
             "SELECT value FROM metadata_store WHERE key = 'beam_search_parent_id'"
@@ -807,21 +878,21 @@ class RepoDatabase:
         self.conn.commit()
 
     @db_retry()
-    def _count_repos_in_db(self) -> int:
+    def _count_programs_in_db(self) -> int:
         if not self.cursor:
             return 0
-        self.cursor.execute("SELECT COUNT(*) FROM repos")
+        self.cursor.execute("SELECT COUNT(*) FROM programs")
         return (self.cursor.fetchone() or {"COUNT(*)": 0})["COUNT(*)"]
 
     @db_retry()
-    def has_repo_with_source_job_id(self, source_job_id: str) -> bool:
+    def has_program_with_source_job_id(self, source_job_id: str) -> bool:
         """Return True if a repo row already exists for the given job id."""
         if not self.cursor:
             return False
         self.cursor.execute(
             """
             SELECT 1
-            FROM repos
+            FROM programs
             WHERE json_valid(metadata)
               AND json_extract(metadata, '$.source_job_id') = ?
             LIMIT 1
@@ -831,14 +902,14 @@ class RepoDatabase:
         return self.cursor.fetchone() is not None
 
     @db_retry()
-    def get_repo_by_source_job_id(self, source_job_id: str) -> Optional[Repo]:
+    def get_program_by_source_job_id(self, source_job_id: str) -> Optional[Program]:
         """Return the persisted repo row for a completed scheduler job."""
         if not self.cursor:
             return None
         self.cursor.execute(
             """
             SELECT *
-            FROM repos
+            FROM programs
             WHERE json_valid(metadata)
               AND json_extract(metadata, '$.source_job_id') = ?
             LIMIT 1
@@ -851,7 +922,7 @@ class RepoDatabase:
     @db_retry()
     def add(
         self,
-        repo: Repo,
+        repo: Program,
         verbose: bool = False,
         defer_maintenance: bool = False,
     ) -> str:
@@ -868,7 +939,7 @@ class RepoDatabase:
             db.check_scheduled_operations()  # Run deferred operations
 
         Args:
-            repo: The Repo object to add
+            repo: The Program object to add
             verbose: Whether to print the per-repo summary.
             defer_maintenance: When true, skip archive / best / migration
                 follow-up work so callers can replay it later off the insert
@@ -902,7 +973,7 @@ class RepoDatabase:
         # Ensure repo.embedding is a list, even if empty.
         if not isinstance(repo.embedding, list):
             logger.warning(
-                f"Repo {repo.id} embedding is not a list, "
+                f"Program {repo.id} embedding is not a list, "
                 "defaulting to empty list."
             )
             repo.embedding = []
@@ -937,19 +1008,22 @@ class RepoDatabase:
             # Insert the repo in a single operation
             self.cursor.execute(
                 """
-                INSERT INTO repos
+                INSERT INTO programs
                    (id, code, language, individual_type, parent_id, archive_inspiration_ids,
                     top_k_inspiration_ids, generation, timestamp, code_diff,
                     repo_commit, repo_parent_commit, repo_diff, repo_summary,
                     summary_version, changed_files,
                     artifact_uri, mutable_paths, immutable_paths,
+                    agent_session_id, agent_session_name, agent_provider,
+                    agent_model,
                     combined_score, public_metrics, private_metrics,
                     text_feedback, complexity, embedding, embedding_pca_2d,
                     embedding_pca_3d, embedding_cluster_id, correct,
                     children_count, metadata, island_idx, migration_history,
                     system_prompt_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?)
                 """,
                 (
                     repo.id,
@@ -971,6 +1045,10 @@ class RepoDatabase:
                     repo.artifact_uri,
                     mutable_paths_json,
                     immutable_paths_json,
+                    repo.agent_session_id,
+                    repo.agent_session_name,
+                    repo.agent_provider,
+                    repo.agent_model,
                     repo.combined_score,
                     public_metrics_json,
                     private_metrics_json,
@@ -992,7 +1070,7 @@ class RepoDatabase:
             # Increment parent's children_count
             if repo.parent_id:
                 self.cursor.execute(
-                    "UPDATE repos SET children_count = children_count + 1 "
+                    "UPDATE programs SET children_count = children_count + 1 "
                     "WHERE id = ?",
                     (repo.parent_id,),
                 )
@@ -1000,7 +1078,7 @@ class RepoDatabase:
             # Commit the main repo insertion and related operations
             self.conn.commit()
             logger.info(
-                "Repo %s added to DB - score: %s.",
+                "Program %s added to DB - score: %s.",
                 repo.id,
                 repo.combined_score,
             )
@@ -1031,7 +1109,7 @@ class RepoDatabase:
 
     def run_post_add_maintenance(
         self,
-        repo: Repo,
+        repo: Program,
         verbose: bool = False,
         recompute_embeddings: bool = False,
     ) -> None:
@@ -1044,7 +1122,7 @@ class RepoDatabase:
 
     def run_post_add_maintenance_batch(
         self,
-        programs: List[Repo],
+        programs: List[Program],
         verbose: bool = False,
         recompute_embeddings: bool = False,
     ) -> None:
@@ -1069,7 +1147,7 @@ class RepoDatabase:
                     repo.metadata.pop("_needs_island_copies", None)
                     metadata_json = json.dumps(repo.metadata)
                     self.cursor.execute(
-                        "UPDATE repos SET metadata = ? WHERE id = ?",
+                        "UPDATE programs SET metadata = ? WHERE id = ?",
                         (metadata_json, repo.id),
                     )
                     self.conn.commit()
@@ -1093,7 +1171,7 @@ class RepoDatabase:
             )
             metadata_json = json.dumps(repo.metadata)
             self.cursor.execute(
-                "UPDATE repos SET metadata = ? WHERE id = ?",
+                "UPDATE programs SET metadata = ? WHERE id = ?",
                 (metadata_json, repo.id),
             )
             self.conn.commit()
@@ -1103,8 +1181,8 @@ class RepoDatabase:
 
         self.check_scheduled_operations()
 
-    def _program_from_row(self, row: sqlite3.Row) -> Optional[Repo]:
-        """Helper to create a Repo object from a database row."""
+    def _program_from_row(self, row: sqlite3.Row) -> Optional[Program]:
+        """Helper to create a Program object from a database row."""
         if not row:
             return None
 
@@ -1240,24 +1318,24 @@ class RepoDatabase:
         # Handle archive status
         program_data["in_archive"] = bool(program_data.get("in_archive", 0))
 
-        return Repo.from_dict(program_data)
+        return Program.from_dict(program_data)
 
     @db_retry()
-    def get(self, repo_id: str) -> Optional[Repo]:
+    def get(self, program_id: str) -> Optional[Program]:
         """Get a repo by its ID with optimized JSON operations."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
-        self.cursor.execute("SELECT * FROM repos WHERE id = ?", (repo_id,))
+        self.cursor.execute("SELECT * FROM programs WHERE id = ?", (program_id,))
         row = self.cursor.fetchone()
         return self._program_from_row(row)
 
     @db_retry()
-    def get_ancestry(self, repo_id: str, max_ancestors: int = 10) -> List[Repo]:
+    def get_ancestry(self, program_id: str, max_ancestors: int = 10) -> List[Program]:
         """
         Get the ancestry (lineage) of a repo by walking up the parent chain.
 
         Args:
-            repo_id: ID of the repo to get ancestry for
+            program_id: ID of the repo to get ancestry for
             max_ancestors: Maximum number of ancestors to retrieve
 
         Returns:
@@ -1266,13 +1344,13 @@ class RepoDatabase:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
-        ancestors: List[Repo] = []
-        current_id = repo_id
+        ancestors: List[Program] = []
+        current_id = program_id
 
         # Walk up the parent chain
         for _ in range(max_ancestors):
             self.cursor.execute(
-                "SELECT parent_id FROM repos WHERE id = ?", (current_id,)
+                "SELECT parent_id FROM programs WHERE id = ?", (current_id,)
             )
             row = self.cursor.fetchone()
             if not row or not row["parent_id"]:
@@ -1291,7 +1369,7 @@ class RepoDatabase:
 
         if ancestors:
             logger.info(
-                f"Retrieved {len(ancestors)} ancestors for repo {repo_id} "
+                f"Retrieved {len(ancestors)} ancestors for repo {program_id} "
                 f"(generations: {[p.generation for p in ancestors]})"
             )
 
@@ -1305,14 +1383,14 @@ class RepoDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
-    ) -> Tuple[Repo, List[Repo], List[Repo]]:
+    ) -> Tuple[Program, List[Program], List[Program]]:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
         # Check if all islands are initialized
         if not self.island_manager.are_all_islands_initialized():
             # Get initial repo (first repo in database)
-            self.cursor.execute("SELECT * FROM repos ORDER BY timestamp ASC LIMIT 1")
+            self.cursor.execute("SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1")
             row = self.cursor.fetchone()
             if not row:
                 raise RuntimeError("No programs found in database")
@@ -1353,13 +1431,13 @@ class RepoDatabase:
             conn=self.conn,
             config=self.config,
             get_program_func=self.get,
-            best_repo_id=self.best_repo_id,
+            best_program_id=self.best_program_id,
             beam_search_parent_id=self.beam_search_parent_id,
             last_iteration=self.last_iteration,
             update_metadata_func=None
             if self.read_only
             else self._update_metadata_in_db,
-            get_best_program_func=self.get_best_repo,
+            get_best_program_func=self.get_best_program,
         )
 
         parent = parent_selector.sample_parent(island_idx=sampled_island)
@@ -1383,7 +1461,7 @@ class RepoDatabase:
             conn=self.conn,
             config=self.config,
             get_program_func=self.get,
-            best_repo_id=self.best_repo_id,
+            best_program_id=self.best_program_id,
             get_island_idx_func=self.island_manager.get_island_idx,
             program_from_row_func=self._program_from_row,
         )
@@ -1420,7 +1498,7 @@ class RepoDatabase:
         max_novelty_attempts=None,
         resample_attempt=None,
         max_resample_attempts=None,
-    ) -> Tuple[Repo, List[Repo], List[Repo], bool]:
+    ) -> Tuple[Program, List[Program], List[Program], bool]:
         """
         Sample a parent repo, returning fix mode indicator if no correct
         programs exist.
@@ -1437,7 +1515,7 @@ class RepoDatabase:
         if not self.island_manager.are_all_islands_initialized():
             # Check if there are any correct programs at all
             self.cursor.execute(
-                "SELECT COUNT(*) as cnt FROM repos WHERE correct = 1"
+                "SELECT COUNT(*) as cnt FROM programs WHERE correct = 1"
             )
             correct_count = self.cursor.fetchone()["cnt"]
 
@@ -1445,7 +1523,7 @@ class RepoDatabase:
                 # There are correct programs, just not in all islands yet
                 # Use initial repo (first repo in database)
                 self.cursor.execute(
-                    "SELECT * FROM repos ORDER BY timestamp ASC LIMIT 1"
+                    "SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1"
                 )
                 row = self.cursor.fetchone()
                 if not row:
@@ -1460,7 +1538,7 @@ class RepoDatabase:
                 )
             else:
                 # No correct programs exist - randomly sample from incorrect
-                self.cursor.execute("SELECT * FROM repos WHERE correct = 0")
+                self.cursor.execute("SELECT * FROM programs WHERE correct = 0")
                 rows = self.cursor.fetchall()
                 if rows:
                     selected_row = rows[_np().random.randint(len(rows))]
@@ -1476,7 +1554,7 @@ class RepoDatabase:
                 else:
                     # Fallback to initial repo if no incorrect programs either
                     self.cursor.execute(
-                        "SELECT * FROM repos ORDER BY timestamp ASC LIMIT 1"
+                        "SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1"
                     )
                     row = self.cursor.fetchone()
                     if not row:
@@ -1539,13 +1617,13 @@ class RepoDatabase:
             conn=self.conn,
             config=self.config,
             get_program_func=self.get,
-            best_repo_id=self.best_repo_id,
+            best_program_id=self.best_program_id,
             beam_search_parent_id=self.beam_search_parent_id,
             last_iteration=self.last_iteration,
             update_metadata_func=None
             if self.read_only
             else self._update_metadata_in_db,
-            get_best_program_func=self.get_best_repo,
+            get_best_program_func=self.get_best_program,
         )
 
         # Use the new method that returns fix mode
@@ -1590,7 +1668,7 @@ class RepoDatabase:
             conn=self.conn,
             config=self.config,
             get_program_func=self.get,
-            best_repo_id=self.best_repo_id,
+            best_program_id=self.best_program_id,
             get_island_idx_func=self.island_manager.get_island_idx,
             program_from_row_func=self._program_from_row,
         )
@@ -1638,8 +1716,8 @@ class RepoDatabase:
                 conn=self.conn,
                 config=self.config,
                 island_manager=self.island_manager,
-                count_programs_func=self._count_repos_in_db,
-                get_best_program_func=self.get_best_repo,
+                count_programs_func=self._count_programs_in_db,
+                get_best_program_func=self.get_best_program,
                 default_console=self.display_console,
             )
 
@@ -1658,26 +1736,26 @@ class RepoDatabase:
         )
 
     @db_retry()
-    def get_best_repo(self, metric: Optional[str] = None) -> Optional[Repo]:
+    def get_best_program(self, metric: Optional[str] = None) -> Optional[Program]:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
-        # Attempt to use tracked best_repo_id first if no specific metric
-        if metric is None and self.best_repo_id:
-            repo = self.get(self.best_repo_id)
+        # Attempt to use tracked best_program_id first if no specific metric
+        if metric is None and self.best_program_id:
+            repo = self.get(self.best_program_id)
             if repo and repo.correct:  # Ensure best repo is correct
                 return repo
             else:  # Stale ID or incorrect repo
                 logger.warning(
-                    f"Tracked best_repo_id '{self.best_repo_id}' "
+                    f"Tracked best_program_id '{self.best_program_id}' "
                     "not found or incorrect. Re-evaluating."
                 )
                 if not self.read_only:
-                    self._update_metadata_in_db("best_repo_id", None)
-                self.best_repo_id = None
+                    self._update_metadata_in_db("best_program_id", None)
+                self.best_program_id = None
 
         # Fetch only correct programs and sort in Python.
-        self.cursor.execute("SELECT * FROM repos WHERE correct = 1")
+        self.cursor.execute("SELECT * FROM programs WHERE correct = 1")
         all_rows = self.cursor.fetchall()
         if not all_rows:
             logger.debug("No correct programs found in database.")
@@ -1699,12 +1777,12 @@ class RepoDatabase:
             p_dict["metadata"] = (
                 json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
             )
-            programs.append(Repo.from_dict(p_dict))
+            programs.append(Program.from_dict(p_dict))
 
         if not programs:
             return None
 
-        sorted_p: List[Repo] = []
+        sorted_p: List[Program] = []
         log_key = "average metrics"
 
         if metric:
@@ -1743,27 +1821,27 @@ class RepoDatabase:
         best_overall = sorted_p[0]
         logger.debug(f"Best correct repo by {log_key}: {best_overall.id}")
 
-        if self.best_repo_id != best_overall.id:  # Update ID if different
+        if self.best_program_id != best_overall.id:  # Update ID if different
             logger.info(
                 "Updating tracked best repo from "
-                f"'{self.best_repo_id}' to '{best_overall.id}'."
+                f"'{self.best_program_id}' to '{best_overall.id}'."
             )
-            self.best_repo_id = best_overall.id
+            self.best_program_id = best_overall.id
             if not self.read_only:
-                self._update_metadata_in_db("best_repo_id", self.best_repo_id)
+                self._update_metadata_in_db("best_program_id", self.best_program_id)
         return best_overall
 
     @db_retry()
-    def get_all_repos(self) -> List[Repo]:
+    def get_all_programs(self) -> List[Program]:
         """Get all programs from the database."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
         self.cursor.execute(
             """
             SELECT p.*,
-                   CASE WHEN a.repo_id IS NOT NULL THEN 1 ELSE 0 END as in_archive
-            FROM repos p
-            LEFT JOIN archive a ON p.id = a.repo_id
+                   CASE WHEN a.program_id IS NOT NULL THEN 1 ELSE 0 END as in_archive
+            FROM programs p
+            LEFT JOIN archive a ON p.id = a.program_id
             """
         )
         rows = self.cursor.fetchall()
@@ -1776,45 +1854,57 @@ class RepoDatabase:
         """
         Get lightweight summary of all programs for visualization.
         Excludes heavy fields like code, embeddings, and large metadata.
-        Returns raw dicts instead of Repo objects for efficiency.
+        Returns raw dicts instead of Program objects for efficiency.
         """
         if not self.cursor:
             raise ConnectionError("DB not connected.")
+        self.cursor.execute("PRAGMA table_info(programs)")
+        existing_columns = {row["name"] for row in self.cursor.fetchall()}
+
+        def select_col(name: str, default_sql: str) -> str:
+            if name in existing_columns:
+                return f"p.{name}"
+            return f"{default_sql} AS {name}"
+
         self.cursor.execute(
-            """
+            f"""
             SELECT
                 p.id,
-                p.parent_id,
-                p.generation,
-                p.timestamp,
-                p.combined_score,
-                p.correct,
-                p.complexity,
-                p.island_idx,
-                p.children_count,
-                p.public_metrics,
-                p.private_metrics,
-                p.metadata,
-                p.embedding_pca_2d,
-                p.embedding_pca_3d,
-                p.embedding_cluster_id,
-                p.language,
-                p.individual_type,
-                p.repo_commit,
-                p.repo_parent_commit,
-                p.repo_summary,
-                p.summary_version,
-                p.changed_files,
-                p.artifact_uri,
-                p.mutable_paths,
-                p.immutable_paths,
-                p.text_feedback,
-                p.top_k_inspiration_ids,
-                p.archive_inspiration_ids,
-                p.migration_history,
-                CASE WHEN a.repo_id IS NOT NULL THEN 1 ELSE 0 END as in_archive
-            FROM repos p
-            LEFT JOIN archive a ON p.id = a.repo_id
+                {select_col("parent_id", "NULL")},
+                {select_col("generation", "0")},
+                {select_col("timestamp", "0.0")},
+                {select_col("combined_score", "0.0")},
+                {select_col("correct", "0")},
+                {select_col("complexity", "0.0")},
+                {select_col("island_idx", "NULL")},
+                {select_col("children_count", "0")},
+                {select_col("public_metrics", "'{}'")},
+                {select_col("private_metrics", "'{}'")},
+                {select_col("metadata", "'{}'")},
+                {select_col("embedding_pca_2d", "'[]'")},
+                {select_col("embedding_pca_3d", "'[]'")},
+                {select_col("embedding_cluster_id", "NULL")},
+                {select_col("language", "'repo'")},
+                {select_col("individual_type", "'repo'")},
+                {select_col("repo_commit", "NULL")},
+                {select_col("repo_parent_commit", "NULL")},
+                {select_col("repo_summary", "NULL")},
+                {select_col("summary_version", "NULL")},
+                {select_col("changed_files", "'[]'")},
+                {select_col("artifact_uri", "NULL")},
+                {select_col("mutable_paths", "'[]'")},
+                {select_col("immutable_paths", "'[]'")},
+                {select_col("agent_session_id", "NULL")},
+                {select_col("agent_session_name", "NULL")},
+                {select_col("agent_provider", "NULL")},
+                {select_col("agent_model", "NULL")},
+                {select_col("text_feedback", "''")},
+                {select_col("top_k_inspiration_ids", "'[]'")},
+                {select_col("archive_inspiration_ids", "'[]'")},
+                {select_col("migration_history", "'[]'")},
+                CASE WHEN a.program_id IS NOT NULL THEN 1 ELSE 0 END as in_archive
+            FROM programs p
+            LEFT JOIN archive a ON p.id = a.program_id
             """
         )
         rows = self.cursor.fetchall()
@@ -1868,7 +1958,7 @@ class RepoDatabase:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
         self.cursor.execute(
-            "SELECT COUNT(*) as count, MAX(timestamp) as max_timestamp FROM repos"
+            "SELECT COUNT(*) as count, MAX(timestamp) as max_timestamp FROM programs"
         )
         row = self.cursor.fetchone()
         return {
@@ -1877,24 +1967,24 @@ class RepoDatabase:
         }
 
     @db_retry()
-    def get_programs_by_generation(self, generation: int) -> List[Repo]:
+    def get_programs_by_generation(self, generation: int) -> List[Program]:
         """Get all programs from a specific generation."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
         self.cursor.execute(
-            "SELECT * FROM repos WHERE generation = ?", (generation,)
+            "SELECT * FROM programs WHERE generation = ?", (generation,)
         )
         rows = self.cursor.fetchall()
         programs = [self._program_from_row(row) for row in rows]
         return [p for p in programs if p is not None]
 
     @db_retry()
-    def get_top_repos(
+    def get_top_programs(
         self,
         n: int = 10,
         metric: Optional[str] = "combined_score",
         correct_only: bool = False,
-    ) -> List[Repo]:
+    ) -> List[Program]:
         """Get top programs, using SQL for sorting when possible."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
@@ -1906,7 +1996,7 @@ class RepoDatabase:
         if metric == "combined_score":
             # Use SQLite's json_extract for better performance
             base_query = """
-                SELECT * FROM repos
+                SELECT * FROM programs
                 WHERE combined_score IS NOT NULL
             """
             if correct_only:
@@ -1918,14 +2008,14 @@ class RepoDatabase:
         elif metric == "timestamp":
             # Direct timestamp sorting
             query = (
-                f"SELECT * FROM repos {correctness_filter} "
+                f"SELECT * FROM programs {correctness_filter} "
                 "ORDER BY timestamp DESC LIMIT ?"
             )
             self.cursor.execute(query, (n,))
             all_rows = self.cursor.fetchall()
         else:
             # Fall back to Python sorting for complex cases
-            query = f"SELECT * FROM repos {correctness_filter}"
+            query = f"SELECT * FROM programs {correctness_filter}"
             self.cursor.execute(query)
             all_rows = self.cursor.fetchall()
 
@@ -1966,7 +2056,7 @@ class RepoDatabase:
                 p_dict["metadata"] = {}
 
             # Create repo object
-            programs.append(Repo.from_dict(p_dict))
+            programs.append(Program.from_dict(p_dict))
 
         # If we already have the sorted programs from SQL, just return them
         if metric in ["combined_score", "timestamp"] and programs:
@@ -2026,7 +2116,7 @@ class RepoDatabase:
         self.conn.commit()  # Commit any pending transactions
         logger.info(
             f"Database state committed. Last iteration: "
-            f"{self.last_iteration}. Best: {self.best_repo_id}"
+            f"{self.last_iteration}. Best: {self.best_program_id}"
         )
 
     def load(self, path: str) -> None:
@@ -2070,13 +2160,13 @@ class RepoDatabase:
         self._create_tables()
         self._load_metadata_from_db()
 
-        count = self._count_repos_in_db()
+        count = self._count_programs_in_db()
         logger.info(
             f"Loaded DB from '{db_path_obj}'. {count} programs. "
             f"Last iter: {self.last_iteration}."
         )
 
-    def _get_criterion_value(self, repo: Repo, criterion: str) -> float:
+    def _get_criterion_value(self, repo: Program, criterion: str) -> float:
         """
         Get the value of a specific criterion for a repo.
 
@@ -2117,7 +2207,7 @@ class RepoDatabase:
         return 0.0
 
     def _compute_archive_score_ranked(
-        self, repo: Repo, archive_programs: List[Repo]
+        self, repo: Program, archive_programs: List[Program]
     ) -> float:
         """
         Compute score using rank-based normalization for scale-invariant comparison.
@@ -2162,13 +2252,13 @@ class RepoDatabase:
 
         return score
 
-    def _get_archive_repos(self) -> List[Repo]:
+    def _get_archive_programs(self) -> List[Program]:
         """Fetch all programs currently in the archive."""
         if not self.cursor:
             return []
 
         self.cursor.execute(
-            "SELECT p.* FROM repos p JOIN archive a ON p.id = a.repo_id"
+            "SELECT p.* FROM programs p JOIN archive a ON p.id = a.program_id"
         )
         rows = self.cursor.fetchall()
 
@@ -2182,7 +2272,7 @@ class RepoDatabase:
 
     def _find_most_similar_in_archive(
         self, embedding: List[float]
-    ) -> Optional[Repo]:
+    ) -> Optional[Program]:
         """
         Find the most similar repo in the archive by embedding cosine similarity.
         Used for crowding-based archive selection.
@@ -2197,7 +2287,7 @@ class RepoDatabase:
             return None
 
         self.cursor.execute(
-            "SELECT p.* FROM repos p JOIN archive a ON p.id = a.repo_id"
+            "SELECT p.* FROM programs p JOIN archive a ON p.id = a.program_id"
         )
         rows = self.cursor.fetchall()
 
@@ -2237,9 +2327,9 @@ class RepoDatabase:
 
     def _is_better(
         self,
-        program1: Repo,
-        program2: Repo,
-        archive_programs: Optional[List[Repo]] = None,
+        program1: Program,
+        program2: Program,
+        archive_programs: Optional[List[Program]] = None,
     ) -> bool:
         """
         Compare two programs to determine if program1 is better than program2.
@@ -2309,7 +2399,7 @@ class RepoDatabase:
         return program1.timestamp > program2.timestamp
 
     @db_retry()
-    def _update_archive(self, repo: Repo) -> None:
+    def _update_archive(self, repo: Program) -> None:
         """
         Update the archive with a new repo using the configured selection strategy.
 
@@ -2328,7 +2418,7 @@ class RepoDatabase:
 
         # Only add correct programs to the archive
         if not repo.correct:
-            logger.debug(f"Repo {repo.id} not added to archive (not correct).")
+            logger.debug(f"Program {repo.id} not added to archive (not correct).")
             return
 
         self.cursor.execute("SELECT COUNT(*) FROM archive")
@@ -2337,11 +2427,11 @@ class RepoDatabase:
         if count < self.config.archive_size:
             # Archive not full - add directly
             self.cursor.execute(
-                "INSERT OR IGNORE INTO archive (repo_id) VALUES (?)",
+                "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                 (repo.id,),
             )
             self.conn.commit()
-            logger.debug(f"Repo {repo.id} added to archive (space available).")
+            logger.debug(f"Program {repo.id} added to archive (space available).")
             return
 
         # Archive is full - use strategy to decide replacement
@@ -2352,18 +2442,18 @@ class RepoDatabase:
         else:  # "fitness" - default behavior
             self._update_archive_fitness(repo)
 
-    def _update_archive_fitness(self, repo: Repo) -> None:
+    def _update_archive_fitness(self, repo: Program) -> None:
         """
         Fitness-based archive update: replace the worst repo globally.
 
         Uses rank-based scoring if multiple criteria are configured.
         """
         # Fetch full archive programs for multi-criteria comparison
-        archive_programs = self._get_archive_repos()
+        archive_programs = self._get_archive_programs()
 
         if not archive_programs:
             self.cursor.execute(
-                "INSERT OR IGNORE INTO archive (repo_id) VALUES (?)",
+                "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                 (repo.id,),
             )
             self.conn.commit()
@@ -2389,24 +2479,24 @@ class RepoDatabase:
         # Check if new repo is better than the worst
         if self._is_better(repo, worst_in_archive, archive_programs):
             self.cursor.execute(
-                "DELETE FROM archive WHERE repo_id = ?",
+                "DELETE FROM archive WHERE program_id = ?",
                 (worst_in_archive.id,),
             )
             self.cursor.execute(
-                "INSERT INTO archive (repo_id) VALUES (?)", (repo.id,)
+                "INSERT INTO archive (program_id) VALUES (?)", (repo.id,)
             )
 
             # Log with score information
             p_score = repo.combined_score or 0.0
             w_score = worst_in_archive.combined_score or 0.0
             logger.info(
-                f"Repo {repo.id} (score={p_score:.4f}) replaced "
+                f"Program {repo.id} (score={p_score:.4f}) replaced "
                 f"{worst_in_archive.id} (score={w_score:.4f}) in archive [fitness]."
             )
 
         self.conn.commit()
 
-    def _update_archive_crowding(self, repo: Repo) -> None:
+    def _update_archive_crowding(self, repo: Program) -> None:
         """
         Crowding-based archive update: replace the most similar repo if better.
 
@@ -2417,7 +2507,7 @@ class RepoDatabase:
         # Check if repo has embedding for similarity computation
         if not repo.embedding:
             logger.debug(
-                f"Repo {repo.id} has no embedding, falling back to fitness-based."
+                f"Program {repo.id} has no embedding, falling back to fitness-based."
             )
             return self._update_archive_fitness(repo)
 
@@ -2431,41 +2521,41 @@ class RepoDatabase:
             return self._update_archive_fitness(repo)
 
         # Get archive for ranked comparison
-        archive_programs = self._get_archive_repos()
+        archive_programs = self._get_archive_programs()
 
         # Only replace if better than the similar repo (niching)
         if self._is_better(repo, most_similar, archive_programs):
             self.cursor.execute(
-                "DELETE FROM archive WHERE repo_id = ?",
+                "DELETE FROM archive WHERE program_id = ?",
                 (most_similar.id,),
             )
             self.cursor.execute(
-                "INSERT INTO archive (repo_id) VALUES (?)", (repo.id,)
+                "INSERT INTO archive (program_id) VALUES (?)", (repo.id,)
             )
 
             p_score = repo.combined_score or 0.0
             s_score = most_similar.combined_score or 0.0
             logger.info(
-                f"Repo {repo.id} (score={p_score:.4f}) replaced similar repo "
+                f"Program {repo.id} (score={p_score:.4f}) replaced similar repo "
                 f"{most_similar.id} (score={s_score:.4f}) in archive [crowding]."
             )
 
         self.conn.commit()
 
     @db_retry()
-    def _update_best_repo(self, repo: Repo) -> None:
+    def _update_best_repo(self, repo: Program) -> None:
         # Only consider correct programs for best repo tracking
         if not repo.correct:
-            logger.debug(f"Repo {repo.id} not considered for best (not correct).")
+            logger.debug(f"Program {repo.id} not considered for best (not correct).")
             return
 
         current_best_p = None
-        if self.best_repo_id:
-            current_best_p = self.get(self.best_repo_id)
+        if self.best_program_id:
+            current_best_p = self.get(self.best_program_id)
 
         if current_best_p is None or self._is_better(repo, current_best_p):
-            self.best_repo_id = repo.id
-            self._update_metadata_in_db("best_repo_id", self.best_repo_id)
+            self.best_program_id = repo.id
+            self._update_metadata_in_db("best_program_id", self.best_program_id)
 
             # Update stagnation tracking - new best found
             program_score = repo.combined_score or 0.0
@@ -2504,8 +2594,8 @@ class RepoDatabase:
                 conn=self.conn,
                 config=self.config,
                 island_manager=self.island_manager,
-                count_programs_func=self._count_repos_in_db,
-                get_best_program_func=self.get_best_repo,
+                count_programs_func=self._count_programs_in_db,
+                get_best_program_func=self.get_best_program,
                 default_console=self.display_console,
             )
             self._database_display.set_last_iteration(self.last_iteration)
@@ -2525,8 +2615,8 @@ class RepoDatabase:
                 conn=self.conn,
                 config=self.config,
                 island_manager=self.island_manager,
-                count_programs_func=self._count_repos_in_db,
-                get_best_program_func=self.get_best_repo,
+                count_programs_func=self._count_programs_in_db,
+                get_best_program_func=self.get_best_program,
                 default_console=self.display_console,
             )
 
@@ -2640,7 +2730,7 @@ class RepoDatabase:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT embedding FROM repos WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'",
+                "SELECT embedding FROM programs WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'",
                 (island_idx,),
             )
             rows = cursor.fetchall()
@@ -2688,7 +2778,7 @@ class RepoDatabase:
         # Get all programs in the specified island that have embeddings
         self.cursor.execute(
             """
-            SELECT id, embedding FROM repos 
+            SELECT id, embedding FROM programs 
             WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'
             """,
             (island_idx,),
@@ -2723,7 +2813,7 @@ class RepoDatabase:
     @db_retry()
     def get_most_similar_program(
         self, code_embedding: List[float], island_idx: int
-    ) -> Optional[Repo]:
+    ) -> Optional[Program]:
         """
         Get the most similar repo to the given embedding in the specified island.
 
@@ -2732,7 +2822,7 @@ class RepoDatabase:
             island_idx: The island index to constrain the search to
 
         Returns:
-            The most similar Repo object, or None if no programs found
+            The most similar Program object, or None if no programs found
         """
         if not self.cursor:
             raise ConnectionError("DB not connected.")
@@ -2744,7 +2834,7 @@ class RepoDatabase:
         # Get all programs in the specified island that have embeddings
         self.cursor.execute(
             """
-            SELECT id, embedding FROM repos 
+            SELECT id, embedding FROM programs 
             WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'
             """,
             (island_idx,),
@@ -2778,7 +2868,7 @@ class RepoDatabase:
     @db_retry()
     def get_most_similar_program_thread_safe(
         self, code_embedding: List[float], island_idx: int
-    ) -> Optional[Repo]:
+    ) -> Optional[Program]:
         """
         Thread-safe version of get_most_similar_program that creates its own DB connection.
 
@@ -2787,7 +2877,7 @@ class RepoDatabase:
             island_idx: The island index to constrain the search to
 
         Returns:
-            The most similar Repo object, or None if not found
+            The most similar Program object, or None if not found
         """
         if not code_embedding:
             logger.warning(
@@ -2807,7 +2897,7 @@ class RepoDatabase:
             # Get all programs in the specified island that have embeddings
             cursor.execute(
                 """
-                SELECT id, embedding FROM repos 
+                SELECT id, embedding FROM programs 
                 WHERE island_idx = ? AND embedding IS NOT NULL AND embedding != '[]'
                 """,
                 (island_idx,),
@@ -2820,7 +2910,7 @@ class RepoDatabase:
             # Compute similarities
             
             similarities = []
-            repo_ids = []
+            program_ids = []
 
             for row in rows:
                 try:
@@ -2830,7 +2920,7 @@ class RepoDatabase:
                             _np().linalg.norm(code_embedding) * _np().linalg.norm(embedding)
                         )
                         similarities.append(similarity)
-                        repo_ids.append(row["id"])
+                        program_ids.append(row["id"])
                 except (json.JSONDecodeError, ValueError, ZeroDivisionError) as e:
                     logger.warning(
                         f"Error computing similarity for repo {row['id']}: {e}"
@@ -2842,10 +2932,10 @@ class RepoDatabase:
 
             # Find the most similar repo
             max_similarity_idx = _np().argmax(similarities)
-            most_similar_id = repo_ids[max_similarity_idx]
+            most_similar_id = program_ids[max_similarity_idx]
 
             # Get the full repo data
-            cursor.execute("SELECT * FROM repos WHERE id = ?", (most_similar_id,))
+            cursor.execute("SELECT * FROM programs WHERE id = ?", (most_similar_id,))
             row = cursor.fetchone()
 
             if row:
@@ -2867,7 +2957,7 @@ class RepoDatabase:
             raise ConnectionError("DB not connected.")
 
         self.cursor.execute(
-            "SELECT id, embedding FROM repos "
+            "SELECT id, embedding FROM programs "
             "WHERE embedding IS NOT NULL AND embedding != '[]'"
         )
         rows = self.cursor.fetchall()
@@ -2879,7 +2969,7 @@ class RepoDatabase:
             )
             return
 
-        repo_ids = [row["id"] for row in rows]
+        program_ids = [row["id"] for row in rows]
         embeddings = [json.loads(row["embedding"]) for row in rows]
         embedding_client = self._ensure_embedding_client()
         if embedding_client is None:
@@ -2889,7 +2979,7 @@ class RepoDatabase:
         try:
             logger.info(
                 "Recomputing PCA-reduced embedding features for %s programs.",
-                len(repo_ids),
+                len(program_ids),
             )
             reduced_2d = embedding_client.get_dim_reduction(
                 embeddings, method="pca", dims=2
@@ -2907,14 +2997,14 @@ class RepoDatabase:
         # Update all programs in a single transaction
         self.conn.execute("BEGIN TRANSACTION")
         try:
-            for i, repo_id in enumerate(repo_ids):
+            for i, program_id in enumerate(program_ids):
                 embedding_pca_2d_json = json.dumps(reduced_2d[i].tolist())
                 embedding_pca_3d_json = json.dumps(reduced_3d[i].tolist())
                 cluster_id = int(cluster_ids[i])
 
                 self.cursor.execute(
                     """
-                    UPDATE repos
+                    UPDATE programs
                     SET embedding_pca_2d = ?,
                         embedding_pca_3d = ?,
                         embedding_cluster_id = ?
@@ -2924,17 +3014,17 @@ class RepoDatabase:
                         embedding_pca_2d_json,
                         embedding_pca_3d_json,
                         cluster_id,
-                        repo_id,
+                        program_id,
                     ),
                 )
             self.conn.commit()
             logger.info(
                 "Successfully updated embedding features for %s programs.",
-                len(repo_ids),
+                len(program_ids),
             )
         except Exception as e:
             self.conn.rollback()
-            logger.error("Failed to update repos with new embedding features: %s", e)
+            logger.error("Failed to update programs with new embedding features: %s", e)
 
     @db_retry()
     def _recompute_embeddings_and_clusters_thread_safe(self, num_clusters: int = 4):
@@ -2954,7 +3044,7 @@ class RepoDatabase:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT id, embedding FROM repos "
+                "SELECT id, embedding FROM programs "
                 "WHERE embedding IS NOT NULL AND embedding != '[]'"
             )
             rows = cursor.fetchall()
@@ -2962,12 +3052,12 @@ class RepoDatabase:
             if len(rows) < num_clusters:
                 if len(rows) > 0:
                     logger.info(
-                        f"Not enough repos with embeddings ({len(rows)}) to "
+                        f"Not enough programs with embeddings ({len(rows)}) to "
                         f"perform clustering. Need at least {num_clusters}."
                     )
                 return
 
-            repo_ids = [row["id"] for row in rows]
+            program_ids = [row["id"] for row in rows]
             embeddings = [json.loads(row["embedding"]) for row in rows]
             embedding_client = self._ensure_embedding_client()
             if embedding_client is None:
@@ -2977,7 +3067,7 @@ class RepoDatabase:
             try:
                 logger.info(
                     "Recomputing PCA-reduced embedding features for %s programs.",
-                    len(repo_ids),
+                    len(program_ids),
                 )
 
                 logger.info("Computing 2D PCA reduction...")
@@ -3004,14 +3094,14 @@ class RepoDatabase:
             # Update all programs in a single transaction
             conn.execute("BEGIN TRANSACTION")
             try:
-                for i, repo_id in enumerate(repo_ids):
+                for i, program_id in enumerate(program_ids):
                     embedding_pca_2d_json = json.dumps(reduced_2d[i].tolist())
                     embedding_pca_3d_json = json.dumps(reduced_3d[i].tolist())
                     cluster_id = int(cluster_ids[i])
 
                     cursor.execute(
                         """
-                        UPDATE repos
+                        UPDATE programs
                         SET embedding_pca_2d = ?,
                             embedding_pca_3d = ?,
                             embedding_cluster_id = ?
@@ -3021,18 +3111,18 @@ class RepoDatabase:
                             embedding_pca_2d_json,
                             embedding_pca_3d_json,
                             cluster_id,
-                            repo_id,
+                            program_id,
                         ),
                     )
                 conn.commit()
                 logger.info(
-                    "Successfully updated embedding features for %s repos.",
-                    len(repo_ids),
+                    "Successfully updated embedding features for %s programs.",
+                    len(program_ids),
                 )
             except Exception as e:
                 conn.rollback()
                 logger.error(
-                    "Failed to update repos with new embedding features: %s", e
+                    "Failed to update programs with new embedding features: %s", e
                 )
                 raise  # Re-raise exception
 
@@ -3045,7 +3135,7 @@ class RepoDatabase:
                 conn.close()
 
     @db_retry()
-    def get_repos_by_generation_thread_safe(self, generation: int) -> List[Repo]:
+    def get_programs_by_generation_thread_safe(self, generation: int) -> List[Program]:
         """Thread-safe version of get_programs_by_generation."""
         conn = None
         try:
@@ -3055,16 +3145,16 @@ class RepoDatabase:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT * FROM repos WHERE generation = ?", (generation,))
+            cursor.execute("SELECT * FROM programs WHERE generation = ?", (generation,))
             rows = cursor.fetchall()
 
-            repos = []
+            programs = []
             for row in rows:
                 if not row:
                     continue
-                repo_data = dict(row)
+                program_data = dict(row)
                 # Manually handle JSON deserialization for thread safety
-                for key, value in repo_data.items():
+                for key, value in program_data.items():
                     if key in [
                         "public_metrics",
                         "private_metrics",
@@ -3077,22 +3167,22 @@ class RepoDatabase:
                         "migration_history",
                     ] and isinstance(value, str):
                         try:
-                            repo_data[key] = json.loads(value)
+                            program_data[key] = json.loads(value)
                         except json.JSONDecodeError:
-                            repo_data[key] = {} if key.endswith("_metrics") else []
-                repos.append(Repo(**repo_data))
-            return repos
+                            program_data[key] = {} if key.endswith("_metrics") else []
+                programs.append(Program(**program_data))
+            return programs
         finally:
             if conn:
                 conn.close()
 
     @db_retry()
-    def get_top_repos_thread_safe(
+    def get_top_programs_thread_safe(
         self,
         n: int = 10,
         correct_only: bool = True,
-    ) -> List[Repo]:
-        """Thread-safe version of get_top_repos."""
+    ) -> List[Program]:
+        """Thread-safe version of get_top_programs."""
         conn = None
         try:
             conn = sqlite3.connect(
@@ -3103,7 +3193,7 @@ class RepoDatabase:
 
             # Use combined_score for sorting
             base_query = """
-                SELECT * FROM repos
+                SELECT * FROM programs
                 WHERE combined_score IS NOT NULL
             """
             if correct_only:
@@ -3117,9 +3207,9 @@ class RepoDatabase:
                 return []
 
             # Process results
-            repos = []
+            programs = []
             for row_data in all_rows:
-                repo_data = dict(row_data)
+                program_data = dict(row_data)
 
                 # Manually handle JSON deserialization for thread safety
                 json_fields = [
@@ -3133,45 +3223,38 @@ class RepoDatabase:
                     "embedding_pca_3d",
                     "migration_history",
                 ]
-                for key, value in repo_data.items():
+                for key, value in program_data.items():
                     if key in json_fields and isinstance(value, str):
                         try:
-                            repo_data[key] = json.loads(value)
+                            program_data[key] = json.loads(value)
                         except json.JSONDecodeError:
                             is_dict_field = (
                                 key.endswith("_metrics") or key == "metadata"
                             )
-                            repo_data[key] = {} if is_dict_field else []
+                            program_data[key] = {} if is_dict_field else []
 
                 # Handle text_feedback
                 if (
-                    "text_feedback" not in repo_data
-                    or repo_data["text_feedback"] is None
+                    "text_feedback" not in program_data
+                    or program_data["text_feedback"] is None
                 ):
-                    repo_data["text_feedback"] = ""
+                    program_data["text_feedback"] = ""
 
-                repos.append(Repo.from_dict(repo_data))
+                programs.append(Program.from_dict(program_data))
 
-            return repos
+            return programs
 
         finally:
             if conn:
                 conn.close()
 
-    def _get_repos_for_island(self, island_idx: int) -> List[Repo]:
+    def _get_programs_for_island(self, island_idx: int) -> List[Program]:
         """
-        Get all repos for a specific island.
+        Get all programs for a specific island.
         """
         if not self.cursor:
             return []
-        self.cursor.execute("SELECT * FROM repos WHERE island_idx = ?", (island_idx,))
+        self.cursor.execute("SELECT * FROM programs WHERE island_idx = ?", (island_idx,))
         rows = self.cursor.fetchall()
-        repos = [self._program_from_row(row) for row in rows]
-        return [repo for repo in repos if repo is not None]
-
-
-# Transitional import aliases while the rest of the package is renamed.
-# The runtime behavior is repo-only; these names keep older internal modules
-# importable until their type hints and helper names are fully updated.
-Program = Repo
-ProgramDatabase = RepoDatabase
+        programs = [self._program_from_row(row) for row in rows]
+        return [repo for repo in programs if repo is not None]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent-friendly async CLI launcher for Shinka tasks."""
+"""Agent-friendly repo-only async CLI launcher for Shinka tasks."""
 
 from __future__ import annotations
 
@@ -13,39 +13,6 @@ from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig
 from shinka.cli.run_config import load_optional_yaml_config
-
-SUPPORTED_INITIAL_EXTENSIONS: dict[str, str] = {
-    ".py": "python",
-    ".jl": "julia",
-    ".rs": "rust",
-    ".swift": "swift",
-    ".cpp": "cpp",
-    ".cc": "cpp",
-    ".cxx": "cpp",
-    ".cu": "cuda",
-    ".json": "json",
-    ".f90": "fortran",
-    ".f95": "fortran",
-    ".f03": "fortran",
-    ".f08": "fortran",
-}
-
-INITIAL_EXTENSION_PRIORITY: list[str] = [
-    ".py",
-    ".jl",
-    ".rs",
-    ".cpp",
-    ".cc",
-    ".cxx",
-    ".cu",
-    ".swift",
-    ".json",
-    ".f90",
-    ".f95",
-    ".f03",
-    ".f08",
-]
-
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -69,7 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "Run async Shinka evolution from a task directory.\n\n"
         "Task directory contract:\n"
         "  - evaluate.py\n"
-        "  - initial.<ext> (e.g. initial.py, initial.jl)"
+        "  - seed_repo/ git repository, unless evo.seed_repo_path or "
+        "--seed-repo-path is provided"
     )
     epilog = (
         "Override grammar:\n"
@@ -111,7 +79,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "Failure behavior:\n"
         "  - unknown namespace/field: non-zero exit\n"
         "  - invalid value type: non-zero exit\n"
-        "  - missing evaluate.py or initial.<ext>/invalid --config-fname YAML: non-zero exit\n\n"
+        "  - missing evaluate.py, missing seed repo, or invalid --config-fname YAML: "
+        "non-zero exit\n\n"
         "Precedence:\n"
         "  - --config-fname YAML loads first; --set overrides config YAML\n"
         "  - --results_dir always sets evo.results_dir\n"
@@ -129,7 +98,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--task-dir",
         type=Path,
         required=True,
-        help="Directory containing evaluate.py and initial.<ext>.",
+        help="Directory containing evaluate.py and seed_repo/ by default.",
+    )
+    required_group.add_argument(
+        "--seed-repo-path",
+        type=Path,
+        default=None,
+        help="Seed git repository. Defaults to TASK_DIR/seed_repo.",
     )
     required_group.add_argument(
         "--results_dir",
@@ -168,7 +143,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config-fname",
         type=str,
         default=None,
-        help="Optional YAML config loaded before --set. Relative paths resolve from --task-dir. Supports evo/db/job or evo_config/db_config/job_config.",
+        help=(
+            "Optional YAML config loaded before --set. Relative paths resolve from "
+            "--task-dir. Supports evo/db/job or evo_config/db_config/job_config."
+        ),
     )
 
     concurrency_group = parser.add_argument_group("concurrency")
@@ -348,6 +326,7 @@ def _build_default_evo_values(
     return asdict(
         EvolutionConfig(
             seed_repo_path=str(seed_repo_path),
+            mutable_paths=[],
             num_generations=num_generations,
             job_type="local",
             language=language,
@@ -364,6 +343,18 @@ def _build_default_job_values(evaluate_path: Path) -> Dict[str, Any]:
     return asdict(LocalJobConfig(eval_program_path=str(evaluate_path)))
 
 
+def _resolve_job_eval_program_path(*, task_dir: Path, job_values: Dict[str, Any]) -> None:
+    raw_path = job_values.get("eval_program_path")
+    if raw_path is None:
+        return
+    eval_path = Path(str(raw_path))
+    if not eval_path.is_absolute():
+        eval_path = (task_dir / eval_path).resolve()
+    else:
+        eval_path = eval_path.resolve()
+    job_values["eval_program_path"] = str(eval_path)
+
+
 def _validate_task_dir(task_dir: Path) -> Path:
     if not task_dir.exists():
         raise FileNotFoundError(f"Task dir does not exist: {task_dir}")
@@ -373,6 +364,31 @@ def _validate_task_dir(task_dir: Path) -> Path:
     if not evaluate_path.exists():
         raise FileNotFoundError(f"Missing evaluate.py in task dir: {task_dir}")
     return evaluate_path
+
+
+def _resolve_seed_repo_path(
+    *,
+    task_dir: Path,
+    cli_seed_repo_path: Optional[Path],
+    evo_overrides: Dict[str, Any],
+) -> Path:
+    raw_seed_path = evo_overrides.get("seed_repo_path")
+    if raw_seed_path:
+        seed_repo_path = Path(str(raw_seed_path))
+    elif cli_seed_repo_path is not None:
+        seed_repo_path = cli_seed_repo_path
+    else:
+        seed_repo_path = task_dir / "seed_repo"
+
+    if not seed_repo_path.is_absolute():
+        seed_repo_path = (task_dir / seed_repo_path).resolve()
+    else:
+        seed_repo_path = seed_repo_path.resolve()
+    if not seed_repo_path.exists():
+        raise FileNotFoundError(f"Seed repo does not exist: {seed_repo_path}")
+    if not (seed_repo_path / ".git").exists():
+        raise FileNotFoundError(f"Seed repo is not a git repository: {seed_repo_path}")
+    return seed_repo_path
 
 
 def _build_runner(
@@ -418,12 +434,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         parsed_overrides = _parse_overrides(args.overrides, allowed_types)
 
+        merged_evo_overrides = {
+            **file_overrides["evo"],
+            **parsed_overrides["evo"],
+        }
+        language = str(merged_evo_overrides.get("language", "python"))
+        seed_repo_path = _resolve_seed_repo_path(
+            task_dir=task_dir,
+            cli_seed_repo_path=args.seed_repo_path,
+            evo_overrides=merged_evo_overrides,
+        )
         evo_values = _build_default_evo_values(
+            language=language,
+            seed_repo_path=seed_repo_path,
             results_dir=results_dir,
             num_generations=args.num_generations,
         )
         evo_values.update(file_overrides["evo"])
         evo_values.update(parsed_overrides["evo"])
+        evo_values["seed_repo_path"] = str(seed_repo_path)
         evo_values["results_dir"] = str(results_dir)
         evo_values["num_generations"] = args.num_generations
 
@@ -434,6 +463,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         job_values = _build_default_job_values(evaluate_path)
         job_values.update(file_overrides["job"])
         job_values.update(parsed_overrides["job"])
+        _resolve_job_eval_program_path(task_dir=task_dir, job_values=job_values)
 
         if args.max_evaluation_jobs is None:
             args.max_evaluation_jobs = runner_config.get("max_evaluation_jobs")

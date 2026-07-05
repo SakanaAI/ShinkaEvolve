@@ -1,0 +1,28 @@
+evo:
+  seed_repo_path: seed_repo
+  mutable_paths:
+    - src
+  immutable_paths: []
+  agent_hidden_paths: []
+  llm_models:
+    - headless/codex@test-model?effort=low
+  llm_dynamic_selection: null
+  embedding_model: null
+  patch_types:
+    - full
+  patch_type_probs:
+    - 1.0
+  max_novelty_attempts: 1
+  max_patch_resamples: 1
+  max_patch_attempts: 1
+
+db:
+  num_islands: 1
+  archive_size: 4
+
+job:
+  eval_program_path: evaluate.py
+
+max_evaluation_jobs: 1
+max_proposal_jobs: 1
+max_db_workers: 1

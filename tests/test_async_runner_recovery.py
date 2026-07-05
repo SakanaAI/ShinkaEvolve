@@ -1,5 +1,6 @@
 import asyncio
 import json
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,7 +75,7 @@ class _FakeScheduler:
         self.cancelled_job_ids.append(job_id)
         return job_id in self._cancelled_job_ids
 
-    async def submit_async_nonblocking(self, exec_fname, results_dir):
+    async def submit_async_nonblocking(self, exec_fname, results_dir, repo_path=None):
         return f"job-for-{exec_fname}"
 
 
@@ -142,9 +143,86 @@ class _TrackedScheduler:
     def __init__(self, events):
         self.events = events
 
-    async def submit_async_nonblocking(self, exec_fname, results_dir):
+    async def submit_async_nonblocking(self, exec_fname, results_dir, repo_path=None):
         self.events.append(f"submit:{exec_fname}:{results_dir}")
         return "job-123"
+
+
+_VALID_SUMMARY = """# Individual Summary
+
+- Schema-Version: repo-individual-v1
+- Individual: test
+- Generation: 1
+- Commit: pending
+
+## Parent
+
+Test parent.
+
+## Core Idea
+
+Test mutation.
+
+## Lineage Context
+
+Test lineage.
+
+## Changed Files
+
+- src/app.py
+
+## Validation Performed
+
+Fake validation.
+
+## Performance Hypothesis
+
+Fake score.
+
+## Risks and Followups
+
+- None.
+
+## Minimal Snippets
+
+- VALUE = 2
+"""
+
+
+class _FakeRepoWorktreeManager:
+    def __init__(self):
+        self.root = Path(tempfile.mkdtemp(prefix="shinka-test-worktrees-"))
+
+    def create_child_worktree(self, *, parent_commit, generation, individual_id):
+        path = self.root / f"gen_{generation}_{individual_id}"
+        (path / ".shinka").mkdir(parents=True)
+        (path / "src").mkdir()
+        (path / ".shinka" / "parent_id").write_text(str(parent_commit), encoding="utf-8")
+        (path / ".shinka" / "individual.md").write_text(_VALID_SUMMARY, encoding="utf-8")
+        return SimpleNamespace(
+            individual_id=individual_id,
+            generation=generation,
+            path=path,
+            parent_commit=parent_commit,
+        )
+
+    def diff_parent(self, worktree_path, parent_commit):
+        return SimpleNamespace(
+            commit_sha=None,
+            parent_commit=parent_commit,
+            diff="diff --git a/src/app.py b/src/app.py\n",
+            changed_files=["src/app.py"],
+            diff_stat=" src/app.py | 1 +",
+            status=" M src/app.py",
+        )
+
+    def validate_snapshot(self, worktree, snapshot):
+        return None
+
+    def commit_child(self, worktree):
+        snapshot = self.diff_parent(worktree.path, worktree.parent_commit)
+        snapshot.commit_sha = "child-commit"
+        return snapshot
 
 
 def _build_runner(**overrides):
@@ -155,6 +233,16 @@ def _build_runner(**overrides):
     runner.job_config = overrides.get("job_config", SimpleNamespace(time=None))
     runner.scheduler = overrides.get("scheduler", SimpleNamespace(job_type="local"))
     runner.evo_config = overrides.get("evo_config", SimpleNamespace(num_generations=10))
+    if not hasattr(runner.evo_config, "summary_filename"):
+        runner.evo_config.summary_filename = ".shinka/individual.md"
+    if not hasattr(runner.evo_config, "summary_max_chars"):
+        runner.evo_config.summary_max_chars = 12000
+    if not hasattr(runner.evo_config, "max_api_costs"):
+        runner.evo_config.max_api_costs = None
+    if not hasattr(runner.evo_config, "mutable_paths"):
+        runner.evo_config.mutable_paths = ["src"]
+    if not hasattr(runner.evo_config, "immutable_paths"):
+        runner.evo_config.immutable_paths = []
     runner.completed_generations = overrides.get("completed_generations", 0)
     runner.next_generation_to_submit = overrides.get("next_generation_to_submit", 1)
     runner.running_jobs = overrides.get("running_jobs", [])
@@ -189,6 +277,16 @@ def _build_runner(**overrides):
     )
     runner._prompt_percentile_recompute_pending = overrides.get(
         "_prompt_percentile_recompute_pending", False
+    )
+    runner.repo_worktree_manager = overrides.get(
+        "repo_worktree_manager", _FakeRepoWorktreeManager()
+    )
+
+    async def _default_get_text_embedding_async(_text):
+        return [0.1], 0.0
+
+    runner._get_text_embedding_async = overrides.get(
+        "_get_text_embedding_async", _default_get_text_embedding_async
     )
     return runner
 
@@ -411,7 +509,12 @@ def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_fa
 
         async def _sample_with_fix_mode_async(**_kwargs):
             return (
-                SimpleNamespace(id="parent-1", generation=1, island_idx=None),
+                SimpleNamespace(
+                    id="parent-1",
+                    generation=1,
+                    island_idx=None,
+                    repo_commit="parent-1",
+                ),
                 [SimpleNamespace(id="archive-1")],
                 [SimpleNamespace(id="topk-1")],
                 False,
@@ -649,7 +752,7 @@ def test_maybe_evolve_prompt_updates_total_api_cost():
                 0, result=(SimpleNamespace(id="prompt-new", generation=3), "diff", 0.25)
             )
         )
-        runner.async_db.get_top_repos_async = lambda n: asyncio.sleep(0, result=[])
+        runner.async_db.get_top_programs_async = lambda n: asyncio.sleep(0, result=[])
         runner.meta_summarizer = None
         runner.prompt_api_cost = 0.0
         runner.verbose = False
@@ -676,7 +779,7 @@ def test_process_single_job_safely_applies_side_effects_inline():
         )
         event = PersistedProgramEvent(
             job=job,
-            repo=SimpleNamespace(id="program-1"),
+            program=SimpleNamespace(id="program-1"),
             evaluation_finished_at=1.0,
             postprocess_started_at=2.0,
             postprocess_finished_at=3.0,
@@ -759,7 +862,12 @@ def test_generate_evolved_proposal_returns_none_when_all_attempts_fail(tmp_path)
                 sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
                     0,
                     result=(
-                        SimpleNamespace(id="parent-1", generation=0, combined_score=1.0),
+                            SimpleNamespace(
+                                id="parent-1",
+                                generation=0,
+                                combined_score=1.0,
+                                repo_commit="parent-1",
+                            ),
                         [],
                         [],
                         False,
@@ -805,7 +913,7 @@ def test_generate_evolved_proposal_returns_none_when_all_attempts_fail(tmp_path)
 def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
     async def _run():
         class _FailingSubmitScheduler:
-            async def submit_async_nonblocking(self, exec_fname, results_dir):
+            async def submit_async_nonblocking(self, exec_fname, results_dir, repo_path=None):
                 raise RuntimeError("submit boom")
 
         runner = _build_runner(
@@ -813,7 +921,12 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
                 sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
                     0,
                     result=(
-                        SimpleNamespace(id="parent-1", generation=0, combined_score=1.0),
+                        SimpleNamespace(
+                            id="parent-1",
+                            generation=0,
+                            combined_score=1.0,
+                            repo_commit="parent-1",
+                        ),
                         [],
                         [],
                         False,
@@ -831,7 +944,7 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
         )
         runner.llm_selection = None
         runner.novelty_judge = None
-        runner._get_code_embedding_async = lambda _path: asyncio.sleep(
+        runner._get_text_embedding_async = lambda _text: asyncio.sleep(
             0, result=([0.1], 0.01)
         )
 
@@ -869,7 +982,12 @@ def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
                 sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
                     0,
                     result=(
-                        SimpleNamespace(id="parent-1", generation=0, combined_score=1.0),
+                        SimpleNamespace(
+                            id="parent-1",
+                            generation=0,
+                            combined_score=1.0,
+                            repo_commit="parent-1",
+                        ),
                         [],
                         [],
                         False,
@@ -887,7 +1005,7 @@ def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
         )
         runner.llm_selection = None
         runner.novelty_judge = None
-        runner._get_code_embedding_async = lambda _path: asyncio.sleep(
+        runner._get_text_embedding_async = lambda _text: asyncio.sleep(
             0, result=([0.1], 0.01)
         )
 
@@ -1142,6 +1260,7 @@ def test_submit_evaluation_job_acquires_slot_before_submitting():
             exec_fname="candidate.py",
             results_dir="results-dir",
             sampling_worker_id=3,
+            repo_path="repo-dir",
         )
 
         assert events == [
@@ -1161,9 +1280,14 @@ def test_generate_evolved_proposal_uses_slot_reservation_helper():
         helper_calls = []
 
         async def sample_with_fix_mode_async(**kwargs):
-            return SimpleNamespace(id="parent", generation=0), [], [], False
+            return (
+                SimpleNamespace(id="parent", generation=0, repo_commit="parent"),
+                [],
+                [],
+                False,
+            )
 
-        async def submit_with_slot(exec_fname, results_dir, sampling_worker_id):
+        async def submit_with_slot(exec_fname, results_dir, sampling_worker_id, repo_path=None):
             helper_calls.append((exec_fname, results_dir, sampling_worker_id))
             return "job-123", 9, 10.0, 10.0, 1
 
@@ -1197,11 +1321,11 @@ def test_generate_evolved_proposal_uses_slot_reservation_helper():
         async def run_patch_async(*args, **kwargs):
             return "diff", {"api_costs": 0.0}, True
 
-        async def get_code_embedding_async(exec_fname):
+        async def get_text_embedding_async(_summary_text):
             return [0.1], 0.0
 
         runner._run_patch_async = run_patch_async
-        runner._get_code_embedding_async = get_code_embedding_async
+        runner._get_text_embedding_async = get_text_embedding_async
 
         job = await runner._generate_evolved_proposal(
             generation=4,

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 SUMMARY_SCHEMA_VERSION = "repo-individual-v1"
+SUMMARY_TEMPLATE_PLACEHOLDER = "TODO_AGENT_SUMMARY"
 
 # TODO: Simplify the summary schema
 REQUIRED_HEADINGS = [
@@ -58,6 +59,10 @@ def validate_summary(
         errors.append(
             f"Schema-Version must be {SUMMARY_SCHEMA_VERSION!r}, got {schema_version!r}"
         )
+    if SUMMARY_TEMPLATE_PLACEHOLDER in content:
+        errors.append(
+            f"summary contains unresolved placeholder: {SUMMARY_TEMPLATE_PLACEHOLDER}"
+        )
 
     if "```" in content and content.count("```") % 2 != 0:
         errors.append("unbalanced fenced code block")
@@ -78,6 +83,72 @@ def _bullet_lines(values: Iterable[str]) -> str:
     if not items:
         return "- None recorded"
     return "\n".join(f"- {item}" for item in items)
+
+
+def build_summary_template(
+    *,
+    individual_id: str,
+    generation: int,
+    parent_id: Optional[str] = None,
+    parent_commit: Optional[str] = None,
+) -> str:
+    """Build the agent-facing summary scaffold.
+
+    The template is intentionally rejected by validate_summary until the agent
+    replaces every placeholder.
+    """
+
+    parent_bits = []
+    if parent_id:
+        parent_bits.append(f"parent id {parent_id}")
+    if parent_commit:
+        parent_bits.append(f"parent commit {parent_commit}")
+    parent_hint = f" ({', '.join(parent_bits)})" if parent_bits else ""
+
+    return textwrap.dedent(
+        f"""\
+        # Individual Summary
+
+        - Schema-Version: {SUMMARY_SCHEMA_VERSION}
+        - Individual: {individual_id}
+        - Generation: {generation}
+        - Commit: pending
+
+        Replace every {SUMMARY_TEMPLATE_PLACEHOLDER} entry before finishing.
+
+        ## Parent
+
+        {SUMMARY_TEMPLATE_PLACEHOLDER}: summarize the direct parent{parent_hint}.
+
+        ## Core Idea
+
+        {SUMMARY_TEMPLATE_PLACEHOLDER}: state the main change in one or two sentences.
+
+        ## Lineage Context
+
+        {SUMMARY_TEMPLATE_PLACEHOLDER}: note what future agents need to know.
+
+        ## Changed Files
+
+        - {SUMMARY_TEMPLATE_PLACEHOLDER}: list each changed mutable file.
+
+        ## Validation Performed
+
+        {SUMMARY_TEMPLATE_PLACEHOLDER}: record commands, checks, or reason not run.
+
+        ## Performance Hypothesis
+
+        {SUMMARY_TEMPLATE_PLACEHOLDER}: explain why this should improve evaluation.
+
+        ## Risks and Followups
+
+        - {SUMMARY_TEMPLATE_PLACEHOLDER}: mention residual risk or follow-up.
+
+        ## Minimal Snippets
+
+        - {SUMMARY_TEMPLATE_PLACEHOLDER}: include only compact representative snippets.
+        """
+    ).strip() + "\n"
 
 
 def build_initial_summary(

@@ -5,6 +5,7 @@ import shlex
 import stat
 import sys
 import asyncio
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,51 @@ def _make_fake_headless(tmp_path: Path) -> Path:
                 "assert prompt_path.parent == work_dir / '.shinka', prompt_path",
                 "assert work_dir.exists(), work_dir",
                 "assert allow_mode == 'yolo', allow_mode",
-                "(work_dir / 'generated.txt').write_text('mutated by headless\\n')",
+                "if not (work_dir / '.git').exists():",
+                "    (work_dir / 'generated.txt').write_text('mutated by headless\\n')",
+                "src_file = work_dir / 'src' / 'app.py'",
+                "if src_file.exists():",
+                "    src_file.write_text('VALUE = 2\\n')",
+                "    summary = '''# Individual Summary",
+                "",
+                "- Schema-Version: repo-individual-v1",
+                "- Individual: fake",
+                "- Generation: 1",
+                "- Commit: pending",
+                "",
+                "## Parent",
+                "",
+                "Fake parent.",
+                "",
+                "## Core Idea",
+                "",
+                "Change VALUE to improve the fake score.",
+                "",
+                "## Lineage Context",
+                "",
+                "Fake lineage.",
+                "",
+                "## Changed Files",
+                "",
+                "- src/app.py",
+                "",
+                "## Validation Performed",
+                "",
+                "Fake validation.",
+                "",
+                "## Performance Hypothesis",
+                "",
+                "VALUE = 2 should score one.",
+                "",
+                "## Risks and Followups",
+                "",
+                "- None.",
+                "",
+                "## Minimal Snippets",
+                "",
+                "- VALUE = 2",
+                "'''",
+                "    (work_dir / '.shinka' / 'individual.md').write_text(summary + '\\n')",
                 "print('fake headless completed')",
             ]
         ),
@@ -58,17 +103,29 @@ def _fake_headless_command(script: Path) -> str:
 def _make_task_dir(tmp_path: Path) -> Path:
     task_dir = tmp_path / "headless_task"
     task_dir.mkdir()
-    (task_dir / "initial.py").write_text(
-        "\n".join(
-            [
-                "# EVOLVE-BLOCK-START",
-                "def score():",
-                "    return 0.0",
-                "# EVOLVE-BLOCK-END",
-                "",
-            ]
-        ),
+    seed_repo = task_dir / "seed_repo"
+    seed_repo.mkdir()
+    subprocess.run(["git", "init"], cwd=seed_repo, check=True, capture_output=True)
+    (seed_repo / "src").mkdir()
+    (seed_repo / "src" / "app.py").write_text(
+        "VALUE = 1\n",
         encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=seed_repo, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "seed",
+        ],
+        cwd=seed_repo,
+        check=True,
+        capture_output=True,
     )
     (task_dir / "evaluate.py").write_text(
         "\n".join(
@@ -76,28 +133,22 @@ def _make_task_dir(tmp_path: Path) -> Path:
                 "from __future__ import annotations",
                 "",
                 "import argparse",
-                "import importlib.util",
                 "import json",
                 "from pathlib import Path",
                 "",
-                "def _load(path):",
-                "    spec = importlib.util.spec_from_file_location('program', path)",
-                "    module = importlib.util.module_from_spec(spec)",
-                "    spec.loader.exec_module(module)",
-                "    return module",
-                "",
-                "def main(program_path: str, results_dir: str):",
-                "    score = float(_load(program_path).score())",
+                "def main(repo_path: str, results_dir: str):",
+                "    value = int((Path(repo_path) / 'src' / 'app.py').read_text().split('=')[1])",
+                "    score = 1.0 if value == 2 else 0.0",
                 "    Path(results_dir).mkdir(parents=True, exist_ok=True)",
                 "    Path(results_dir, 'metrics.json').write_text(json.dumps({'combined_score': score, 'public': {'score': score}, 'private': {}}))",
-                "    Path(results_dir, 'correct.json').write_text(json.dumps({'correct': True, 'error': ''}))",
+                "    Path(results_dir, 'correct.json').write_text(json.dumps({'correct': score == 1.0, 'error': ''}))",
                 "",
                 "if __name__ == '__main__':",
                 "    parser = argparse.ArgumentParser()",
-                "    parser.add_argument('--program_path', required=True)",
+                "    parser.add_argument('--repo_path', required=True)",
                 "    parser.add_argument('--results_dir', required=True)",
                 "    args = parser.parse_args()",
-                "    main(args.program_path, args.results_dir)",
+                "    main(args.repo_path, args.results_dir)",
                 "",
             ]
         ),
@@ -193,7 +244,7 @@ def test_query_headless_invokes_claude_through_shell(tmp_path, monkeypatch):
     assert result.model_name == "headless/claude"
 
 
-def test_query_headless_logs_stdout_without_parsing_usage(tmp_path, monkeypatch):
+def test_query_headless_parses_appended_usage(tmp_path, monkeypatch):
     script = tmp_path / "stdout_headless.py"
     script.write_text(
         "\n".join(
@@ -206,7 +257,28 @@ def test_query_headless_logs_stdout_without_parsing_usage(tmp_path, monkeypatch)
                 "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
                 "Path(sys.argv[sys.argv.index('--prompt-file') + 1]).exists() or sys.exit(2)",
                 "(work_dir / 'generated.txt').write_text('mutated')",
-                "print(json.dumps({'usage': {'inputTokens': 1, 'outputTokens': 2, 'reasoningOutputTokens': 3, 'cost': {'input': 0.01, 'output': 0.02, 'total': 0.03}}}))",
+                "usage = {",
+                "    'agent': 'codex',",
+                "    'provider': 'openai',",
+                "    'model': 'gpt-5',",
+                "    'inputTokens': 1,",
+                "    'cacheReadTokens': 2,",
+                "    'cacheWriteTokens': 3,",
+                "    'outputTokens': 4,",
+                "    'reasoningOutputTokens': 5,",
+                "    'totalTokens': 15,",
+                "    'cost': {",
+                "        'input': 0.01,",
+                "        'cacheRead': 0.02,",
+                "        'cacheWrite': 0.03,",
+                "        'output': 0.04,",
+                "        'total': 0.10,",
+                "    },",
+                "    'pricingSource': 'models.dev',",
+                "    'pricingStatus': 'priced',",
+                "}",
+                "print('final assistant message')",
+                "print(json.dumps({'usage': usage}))",
             ]
         ),
         encoding="utf-8",
@@ -223,12 +295,14 @@ def test_query_headless_logs_stdout_without_parsing_usage(tmp_path, monkeypatch)
         headless_work_dir=str(tmp_path),
     )
 
-    assert result.cost == pytest.approx(0.0)
-    assert result.input_cost == pytest.approx(0.0)
-    assert result.output_cost == pytest.approx(0.0)
-    assert result.input_tokens == 0
-    assert result.output_tokens == 0
-    assert result.thinking_tokens == 0
+    assert result.cost == pytest.approx(0.10)
+    assert result.input_cost == pytest.approx(0.06)
+    assert result.output_cost == pytest.approx(0.04)
+    assert result.input_tokens == 6
+    assert result.output_tokens == 4
+    assert result.thinking_tokens == 5
+    assert result.kwargs["headless_usage_unknown"] is False
+    assert result.kwargs["headless_usage"]["totalTokens"] == 15
     stdout_path = Path(result.kwargs["headless_stdout_path"])
     assert '"usage"' in stdout_path.read_text(encoding="utf-8")
 
@@ -331,6 +405,8 @@ def test_shinka_run_full_headless_cli_mutation_succeeds(tmp_path, monkeypatch):
             "--set",
             "evo.embedding_model=null",
             "--set",
+            'evo.mutable_paths=["src"]',
+            "--set",
             'evo.patch_types=["full"]',
             "--set",
             "evo.patch_type_probs=[1.0]",
@@ -350,7 +426,9 @@ def test_shinka_run_full_headless_cli_mutation_succeeds(tmp_path, monkeypatch):
     assert exit_code == 0
     attempt_prompts = list(results_dir.glob("gen_1/attempts/**/headless_prompt.md"))
     assert attempt_prompts, sorted(str(path) for path in results_dir.rglob("*"))
-    assert "Current program" in attempt_prompts[0].read_text(encoding="utf-8")
+    prompt_text = attempt_prompts[0].read_text(encoding="utf-8")
+    assert "Repository Mode Contract" in prompt_text
+    assert ".shinka/individual.md" in prompt_text
 
     metrics_files = list(results_dir.glob("gen_1/**/metrics.json"))
     assert metrics_files

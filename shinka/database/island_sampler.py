@@ -55,7 +55,7 @@ class IslandSampler(ABC):
         placeholders = ",".join("?" * len(island_indices))
         query = f"""
             SELECT island_idx, COUNT(*) as count
-            FROM repos
+            FROM programs
             WHERE island_idx IN ({placeholders}) AND correct = 1
             GROUP BY island_idx
         """
@@ -82,7 +82,7 @@ class IslandSampler(ABC):
         placeholders = ",".join("?" * len(island_indices))
         query = f"""
             SELECT island_idx, MAX(combined_score) as best_fitness
-            FROM repos
+            FROM programs
             WHERE island_idx IN ({placeholders}) AND correct = 1
             GROUP BY island_idx
         """

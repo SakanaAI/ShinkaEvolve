@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 from pathlib import Path
 
-from shinka.database import DatabaseConfig, Repo, RepoDatabase
+import pytest
+
+from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.launch import JobScheduler, LocalJobConfig
 from shinka.repo import (
     WorktreeManager,
     build_initial_summary,
+    build_summary_template,
     validate_summary,
 )
 
@@ -37,6 +41,21 @@ def _make_seed_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _add_seed_evaluator(seed_repo: Path) -> None:
+    (seed_repo / "evaluate.py").write_text("print('hidden')\n", encoding="utf-8")
+    _git(seed_repo, "add", "evaluate.py")
+    _git(
+        seed_repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "add evaluator",
+    )
+
+
 def test_summary_schema_validates():
     summary = build_initial_summary(
         individual_id="child",
@@ -51,6 +70,23 @@ def test_summary_schema_validates():
 
     assert result.valid
     assert result.schema_version == "repo-individual-v1"
+
+
+def test_summary_template_requires_agent_rewrite():
+    summary = build_summary_template(
+        individual_id="child",
+        generation=1,
+        parent_id="parent",
+        parent_commit="abc",
+    )
+
+    result = validate_summary(
+        summary,
+        max_chars=12000,
+    )
+
+    assert not result.valid
+    assert any("unresolved placeholder" in error for error in result.errors)
 
 
 def test_worktree_manager_preserves_seed_and_excludes_summary_from_children(tmp_path):
@@ -133,20 +169,173 @@ def test_worktree_manager_enforces_immutable_paths(tmp_path):
     (bad_worktree.path / "README.md").write_text("changed\n", encoding="utf-8")
     bad_snapshot = manager.diff_parent(bad_worktree.path, parent)
 
-    try:
-        manager.enforce_mutability(bad_snapshot.changed_files)
-    except Exception as exc:
-        assert "immutable path" in str(exc)
-    else:
-        raise AssertionError("expected immutable path violation")
+    with pytest.raises(Exception, match="immutable path"):
+        manager.validate_snapshot(bad_worktree, bad_snapshot)
+
+
+def test_agent_worktree_view_hides_evaluator_and_freezes_immutable_paths(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    _add_seed_evaluator(seed_repo)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+        hidden_paths=["evaluate.py"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="view123",
+    )
+
+    agent_view = manager.create_agent_worktree_view(
+        worktree,
+        hidden_paths=["evaluate.py"],
+    )
+
+    assert not (agent_view.path / "evaluate.py").exists()
+    assert (agent_view.path / "README.md").exists()
+    assert (agent_view.path / "README.md").stat().st_mode & stat.S_IWUSR == 0
+    assert _git(agent_view.path, "status", "--short") == ""
+
+    (agent_view.path / "evaluate.py").write_text("print('touch')\n", encoding="utf-8")
+    snapshot = manager.diff_parent(agent_view.path, parent)
+    with pytest.raises(Exception, match="hidden evaluation path is visible"):
+        manager.validate_snapshot(agent_view, snapshot)
+
+
+def test_agent_worktree_view_imports_only_mutable_changes(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    _add_seed_evaluator(seed_repo)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+        hidden_paths=["evaluate.py"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="import123",
+    )
+    agent_view = manager.create_agent_worktree_view(
+        worktree,
+        hidden_paths=["evaluate.py"],
+    )
+
+    (agent_view.path / "src" / "app.py").write_text("VALUE = 4\n", encoding="utf-8")
+    view_snapshot = manager.apply_agent_view_changes(agent_view, worktree)
+    canonical_snapshot = manager.diff_parent(worktree.path, parent)
+
+    assert view_snapshot.changed_files == ["src/app.py"]
+    assert canonical_snapshot.changed_files == ["src/app.py"]
+    assert (worktree.path / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 4\n"
+    assert (worktree.path / "README.md").read_text(encoding="utf-8") == "immutable\n"
+    assert (worktree.path / "evaluate.py").read_text(encoding="utf-8") == "print('hidden')\n"
+
+
+def test_worktree_manager_rejects_policy_tampering(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="tamper123",
+    )
+
+    manager.write_policy_files(worktree, prompt_text="change src only")
+    (worktree.path / ".shinka" / "mutable_paths.txt").write_text(
+        "src\nREADME.md\n",
+        encoding="utf-8",
+    )
+    (worktree.path / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    snapshot = manager.diff_parent(worktree.path, parent)
+
+    with pytest.raises(Exception, match="policy file modified"):
+        manager.validate_snapshot(worktree, snapshot)
+
+
+def test_worktree_manager_rejects_deleted_files(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="delete123",
+    )
+    (worktree.path / "src" / "app.py").unlink()
+    snapshot = manager.diff_parent(worktree.path, parent)
+
+    with pytest.raises(Exception, match="deletions are not allowed"):
+        manager.validate_snapshot(worktree, snapshot)
+
+
+def test_worktree_manager_rejects_binary_files(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="binary123",
+    )
+    (worktree.path / "src" / "blob.bin").write_bytes(b"abc\0def")
+    snapshot = manager.diff_parent(worktree.path, parent)
+
+    with pytest.raises(Exception, match="binary files are not allowed"):
+        manager.validate_snapshot(worktree, snapshot)
+
+
+def test_worktree_manager_rejects_symlink_escape(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="link123",
+    )
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    (worktree.path / "src" / "outside").symlink_to(outside)
+    snapshot = manager.diff_parent(worktree.path, parent)
+
+    with pytest.raises(Exception, match="symlink target escapes worktree"):
+        manager.validate_snapshot(worktree, snapshot)
 
 
 def test_repo_database_fields_roundtrip(tmp_path):
-    db = RepoDatabase(
-        DatabaseConfig(db_path=str(tmp_path / "repos.sqlite")),
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite")),
         embedding_model=None,
     )
-    repo = Repo(
+    repo = Program(
         id="repo-1",
         code="# summary\n",
         language="repo",
@@ -161,6 +350,10 @@ def test_repo_database_fields_roundtrip(tmp_path):
         artifact_uri="/tmp/worktree",
         mutable_paths=["src"],
         immutable_paths=["README.md"],
+        agent_session_id="shinka-gen-0-repo1",
+        agent_session_name="shinka-gen-0-repo1",
+        agent_provider="codex",
+        agent_model="gpt-test",
         correct=True,
     )
     db.add(repo)
@@ -171,8 +364,12 @@ def test_repo_database_fields_roundtrip(tmp_path):
     assert loaded.individual_type == "repo"
     assert loaded.repo_commit == "abc"
     assert loaded.changed_files == ["src/app.py"]
+    assert loaded.agent_session_id == "shinka-gen-0-repo1"
+    assert loaded.agent_session_name == "shinka-gen-0-repo1"
+    assert loaded.agent_provider == "codex"
+    assert loaded.agent_model == "gpt-test"
     db.cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    assert "repos" in {row["name"] for row in db.cursor.fetchall()}
+    assert "programs" in {row["name"] for row in db.cursor.fetchall()}
 
 
 def test_scheduler_passes_repo_path_and_cwd(tmp_path):

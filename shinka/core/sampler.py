@@ -14,9 +14,6 @@ from shinka.prompts import (
     CROSS_SYS_FORMAT,
     CROSS_ITER_MSG,
     get_cross_component,
-    FIX_SYS_FORMAT,
-    FIX_ITER_MSG,
-    format_error_output_section,
 )
 from shinka.prompts.prompts_init import INIT_SYSTEM_MSG, INIT_USER_MSG
 from shinka.defaults import default_patch_type_probs, default_patch_types
@@ -164,11 +161,12 @@ class PromptSampler:
             text_feedback_section = "\n" + format_text_feedback_section(
                 parent.text_feedback
             )
+        parent_content = parent.repo_summary or parent.code
 
         if patch_type == "diff":
             iter_msg = DIFF_ITER_MSG.format(
                 language=self.language,
-                code_content=parent.code,
+                code_content=parent_content,
                 performance_metrics=perf_str(
                     parent.combined_score, parent.public_metrics
                 ),
@@ -177,7 +175,7 @@ class PromptSampler:
         elif patch_type == "full":
             iter_msg = FULL_ITER_MSG.format(
                 language=self.language,
-                code_content=parent.code,
+                code_content=parent_content,
                 performance_metrics=perf_str(
                     parent.combined_score, parent.public_metrics
                 ),
@@ -186,7 +184,7 @@ class PromptSampler:
         elif patch_type == "cross":
             iter_msg = CROSS_ITER_MSG.format(
                 language=self.language,
-                code_content=parent.code,
+                code_content=parent_content,
                 performance_metrics=perf_str(
                     parent.combined_score, parent.public_metrics
                 ),
@@ -205,81 +203,5 @@ class PromptSampler:
         return (
             sys_msg,
             eval_history_msg + "\n" + iter_msg,
-            patch_type,
-        )
-
-    def sample_fix(
-        self,
-        incorrect_program: Program,
-        ancestor_inspirations: Optional[List[Program]] = None,
-    ) -> Tuple[str, str, str]:
-        """
-        Generate prompts for fixing an incorrect program.
-
-        This is used when no correct parent exists in the database,
-        and we need to fix an incorrect program using its error output.
-
-        Args:
-            incorrect_program: The incorrect program to fix
-            ancestor_inspirations: Programs from the ancestry of the program
-                (sorted chronologically, oldest first)
-            meta_recommendations: Optional recommendations from meta summarizer
-
-        Returns:
-            Tuple of (system_message, user_message, patch_type="fix")
-        """
-        if self.task_sys_msg is None:
-            sys_msg = BASE_SYSTEM_MSG
-        else:
-            sys_msg = self.task_sys_msg
-
-        sys_msg += FIX_SYS_FORMAT.format(language=self.language)
-
-        # Build eval history from ancestor inspirations (already chronological)
-        if ancestor_inspirations and len(ancestor_inspirations) > 0:
-            eval_history_msg = construct_eval_history_msg(
-                ancestor_inspirations,
-                language=self.language,
-                include_text_feedback=self.use_text_feedback,
-                correct=False,
-            )
-        else:
-            eval_history_msg = ""
-
-        # Format text feedback section
-        text_feedback_section = ""
-        if self.use_text_feedback and incorrect_program.text_feedback:
-            text_feedback_section = "\n" + format_text_feedback_section(
-                incorrect_program.text_feedback
-            )
-
-        # Extract stdout/stderr from metadata if available
-        metadata = incorrect_program.metadata or {}
-        stdout_log = metadata.get("stdout_log", "")
-        stderr_log = metadata.get("stderr_log", "")
-
-        error_output_section = format_error_output_section(
-            stdout_log=stdout_log,
-            stderr_log=stderr_log,
-        )
-
-        iter_msg = FIX_ITER_MSG.format(
-            language=self.language,
-            code_content=incorrect_program.code,
-            text_feedback_section=text_feedback_section,
-            error_output_section=error_output_section,
-        )
-
-        patch_type = "fix"
-        logger.info(
-            f"Generated FIX prompt for incorrect program "
-            f"(Gen: {incorrect_program.generation}, "
-            f"Score: {incorrect_program.combined_score or 0.0:.4f}, "
-            f"Ancestors: {len(ancestor_inspirations or [])})"
-        )
-
-        return (
-            sys_msg,
-            eval_history_msg + "\n" + iter_msg if eval_history_msg else iter_msg,
             patch_type,
         )

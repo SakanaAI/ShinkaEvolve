@@ -164,7 +164,7 @@ shinka_run \
 
 | Constraint | Rule |
 |------------|------|
-| `--task-dir` | Must contain `evaluate.py` and `initial.<ext>` |
+| `--task-dir` | Must contain `evaluate.py` and a git `seed_repo/`, unless `--seed-repo-path` or `evo.seed_repo_path` points elsewhere. |
 | `--set` | Strict namespaces: `evo.<field>`, `db.<field>`, `job.<field>` |
 | `--results_dir` / `--num_generations` | Always authoritative |
 
@@ -189,10 +189,13 @@ db_config = DatabaseConfig(
 
 evo_config = EvolutionConfig(
     num_generations=50,
-    llm_models=["gpt-5-mini", "gemini-3-flash-preview"],
-    init_program_path="examples/circle_packing/initial.py",
+    llm_models=["headless/codex@gpt-5.5?effort=high"],
+    seed_repo_path="examples/inference_pipeline_repo/seed_repo",
+    mutable_paths=["src"],
+    immutable_paths=[],
+    agent_hidden_paths=["private_tests", "fixtures/private"],
     language="python",
-    task_sys_msg="You are optimizing circle packing...",
+    task_sys_msg="You are optimizing an inference pipeline...",
 )
 
 runner = ShinkaEvolveRunner(

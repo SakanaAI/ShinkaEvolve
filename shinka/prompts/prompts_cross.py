@@ -6,51 +6,30 @@ from .prompts_base import perf_str
 
 
 CROSS_SYS_FORMAT = """
-You are given multiple code scripts implementing the same algorithm.
-You are tasked with generating a new code snippet that combines these code scripts in a way that is more efficient. 
-I.e. perform crossover between the code scripts.
-Provide the complete new program code.
-You MUST repond using a short summary name, description and the full code:
+You are given multiple repository individuals for the same task.
+Combine useful ideas from these individuals in a way that is more efficient.
+Edit the repository directly in the active working directory.
+Do not return a standalone full-code response for Shinka to apply.
 
-<NAME>
-A shortened name summarizing the code you are proposing. Lowercase, no spaces, underscores allowed.
-</NAME>
-
-<DESCRIPTION>
-A description and argumentation process of the code you are proposing.
-</DESCRIPTION>
-
-<CODE>
-```{language}
-# The new rewritten program here.
-```
-</CODE>
-
-* Keep the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the code. Do not change the code outside of these markers.
-* Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
-* Make sure the file still runs after your changes.
-* Use the <NAME>, <DESCRIPTION>, and <CODE> delimiters to structure your response. It will be parsed afterwards.
+* Make sure your changes maintain the evaluator-facing behavior expected by the original repository while improving the internal implementation.
+* Make sure the repository still runs after your changes.
 """.rstrip()
 
 
-CROSS_ITER_MSG = """# Current program
+CROSS_ITER_MSG = """# Current repository individual
 
-Here is the current program we are trying to improve (you will need to propose a new program with the same inputs and outputs as the original program, but with improved internal implementation):
-
-```{language}
+Here is the current repository summary:
 {code_content}
-```
 
-Here are the performance metrics of the program:
+Here are the performance metrics of the repository individual:
 
 {performance_metrics}{text_feedback_section}
 
 # Task
 
-Perform a cross-over between the code script above and the one below. Aim to combine the best parts of both code implementations that improves the score.
-Provide the complete new program code.
+Perform a cross-over between the current repository individual and the inspiration below. Aim to combine the best parts of both implementations to improve the score.
 
-IMPORTANT: Make sure your rewritten program maintains the same inputs and outputs as the original program, but with improved internal implementation.
+IMPORTANT: Make sure your changes maintain the evaluator-facing behavior expected by the original repository while improving the internal implementation.
 """.rstrip()
 
 
@@ -66,8 +45,9 @@ def get_cross_component(
     # Sample a random inspiration
     inspiration = random.choice(all_inspirations)
 
-    crossover_inspiration = "# Crossover Inspiration Programs\n"
-    crossover_inspiration += f"```{language}\n{inspiration.code}\n```\n\n"
+    inspiration_summary = inspiration.repo_summary or inspiration.code or "No summary recorded."
+    crossover_inspiration = "# Crossover Inspiration Repository Individual\n"
+    crossover_inspiration += f"{inspiration_summary}\n\n"
     crossover_inspiration += f"Performance metrics: {perf_str(inspiration.combined_score, inspiration.public_metrics)}\n\n"
 
     return crossover_inspiration

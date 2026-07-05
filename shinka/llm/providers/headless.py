@@ -167,6 +167,7 @@ def _build_headless_command(
     model: HeadlessModel,
     prompt_path: Path,
     work_dir: str | None,
+    session_name: str | None = None,
 ) -> list[str]:
     resolved_work_dir = str(Path(work_dir or os.getcwd()).absolute())
     cmd = [
@@ -184,6 +185,8 @@ def _build_headless_command(
         cmd.extend(["--model", model.agent_model])
     if model.effort:
         cmd.extend(["--reasoning-effort", model.effort])
+    if session_name:
+        cmd.extend(["--session", session_name])
     return cmd
 
 
@@ -353,6 +356,114 @@ def _numeric_values(value: Any) -> list[float]:
     return []
 
 
+_HEADLESS_USAGE_KEYS = {
+    "inputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
+    "input_tokens",
+    "output_tokens",
+}
+
+
+def _headless_usage_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, list):
+        for item in reversed(value):
+            usage = _headless_usage_payload(item)
+            if usage is not None:
+                return usage
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    nested_usage = value.get("usage")
+    if isinstance(nested_usage, dict):
+        return nested_usage
+    if _HEADLESS_USAGE_KEYS.intersection(value):
+        return value
+    return None
+
+
+def _extract_headless_usage(stdout: str) -> dict[str, Any]:
+    for line in reversed(stdout.splitlines()):
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        try:
+            parsed = json.loads(trimmed)
+        except json.JSONDecodeError:
+            continue
+        usage = _headless_usage_payload(parsed)
+        if usage is not None:
+            return usage
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {}
+    usage = _headless_usage_payload(parsed)
+    return usage or {}
+
+
+def _query_usage_from_headless(usage: dict[str, Any]) -> dict[str, Any]:
+    if not usage:
+        return {}
+
+    query_usage = dict(usage)
+    input_tokens = _usage_int(usage, "input_tokens", "prompt_tokens", "inputTokens")
+    cache_read_tokens = _usage_int(
+        usage,
+        "cache_read_tokens",
+        "cacheReadTokens",
+        "cache_read_input_tokens",
+        "cached_input_tokens",
+    )
+    cache_write_tokens = _usage_int(
+        usage,
+        "cache_write_tokens",
+        "cacheWriteTokens",
+        "cache_creation_input_tokens",
+    )
+    output_tokens = _usage_int(
+        usage, "output_tokens", "completion_tokens", "outputTokens"
+    )
+    thinking_tokens = _usage_int(
+        usage,
+        "thinking_tokens",
+        "reasoning_tokens",
+        "reasoning_output_tokens",
+        "reasoningOutputTokens",
+    )
+    total_tokens = _usage_int(usage, "total_tokens", "totalTokens")
+    input_side_tokens = input_tokens + cache_read_tokens + cache_write_tokens
+
+    if thinking_tokens and total_tokens == input_side_tokens + output_tokens:
+        output_tokens = max(output_tokens - thinking_tokens, 0)
+
+    query_usage["input_tokens"] = input_side_tokens
+    query_usage["output_tokens"] = output_tokens
+    query_usage["thinking_tokens"] = thinking_tokens
+    query_usage["cache_read_tokens"] = cache_read_tokens
+    query_usage["cache_write_tokens"] = cache_write_tokens
+    query_usage["total_tokens"] = total_tokens
+
+    nested_cost = usage.get("cost") if isinstance(usage.get("cost"), dict) else {}
+    input_cost = (
+        _usage_float(nested_cost, "input")
+        + _usage_float(nested_cost, "cacheRead", "cache_read")
+        + _usage_float(nested_cost, "cacheWrite", "cache_write")
+    )
+    output_cost = _usage_float(nested_cost, "output", "completion")
+    if input_cost:
+        query_usage["input_cost"] = input_cost
+    if output_cost:
+        query_usage["output_cost"] = output_cost
+
+    return query_usage
+
+
 def _worktree_completion_content(work_dir: Path) -> str:
     status_text = ""
     try:
@@ -402,6 +513,12 @@ def _query_result(
     return QueryResult(
         msg=msg,
         system_msg=system_msg,
+        content=content,
+        new_msg_history=[
+            *msg_history,
+            {"role": "user", "content": msg},
+            {"role": "assistant", "content": content},
+        ],
         model_name=model,
         kwargs=kwargs,
         input_tokens=_usage_int(usage, "input_tokens", "prompt_tokens", "inputTokens"),
@@ -436,6 +553,9 @@ def query_headless(
         raise ValueError("Headless does not support structured output.")
 
     headless_work_dir = kwargs.pop("headless_work_dir", None)
+    headless_session_name = kwargs.pop("headless_session", None) or kwargs.pop(
+        "headless_session_name", None
+    )
     parsed_model = parse_headless_model(model)
     resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
     prompt_path = _write_prompt_file(
@@ -448,17 +568,26 @@ def query_headless(
         model=parsed_model,
         prompt_path=prompt_path,
         work_dir=str(resolved_work_dir),
+        session_name=headless_session_name,
     )
     stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
     try:
-        with _thread_cli_lock():
+        if _uses_shell_invocation(parsed_model):
+            _thread_cli_lock().acquire()
+            lock_acquired = True
+        else:
+            lock_acquired = False
+        try:
             completed = _run_headless_command_sync(
                 model=parsed_model,
                 command=command,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
             )
+        finally:
+            if lock_acquired:
+                _THREAD_LOCK.release()
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(
             f"Headless query timed out after {headless_timeout()}s."
@@ -468,6 +597,8 @@ def query_headless(
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"Headless query failed: {detail}")
 
+    headless_usage = _extract_headless_usage(completed.stdout)
+    query_usage = _query_usage_from_headless(headless_usage)
     content = _worktree_completion_content(resolved_work_dir)
     result_kwargs = {
         **kwargs,
@@ -476,10 +607,14 @@ def query_headless(
         "headless_prompt_path": str(prompt_path),
         "headless_stdout_path": str(stdout_path),
         "headless_stderr_path": str(stderr_path),
+        "headless_session_name": headless_session_name,
+        "headless_session_id": headless_session_name,
+        "headless_usage": headless_usage or None,
+        "headless_usage_unknown": not bool(headless_usage),
     }
     return _query_result(
         content=content,
-        usage={},
+        usage=query_usage,
         model=model,
         msg=msg,
         system_msg=system_msg,
@@ -503,6 +638,9 @@ async def query_headless_async(
         raise ValueError("Headless does not support structured output.")
 
     headless_work_dir = kwargs.pop("headless_work_dir", None)
+    headless_session_name = kwargs.pop("headless_session", None) or kwargs.pop(
+        "headless_session_name", None
+    )
     parsed_model = parse_headless_model(model)
     resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
     prompt_path = _write_prompt_file(
@@ -515,10 +653,14 @@ async def query_headless_async(
         model=parsed_model,
         prompt_path=prompt_path,
         work_dir=str(resolved_work_dir),
+        session_name=headless_session_name,
     )
     stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
-    await _acquire_cli_lock_async()
+    lock_acquired = False
+    if _uses_shell_invocation(parsed_model):
+        await _acquire_cli_lock_async()
+        lock_acquired = True
     try:
         try:
             completed = await _run_headless_command_async(
@@ -532,12 +674,15 @@ async def query_headless_async(
                 f"Headless query timed out after {headless_timeout()}s."
             ) from exc
     finally:
-        _THREAD_LOCK.release()
+        if lock_acquired:
+            _THREAD_LOCK.release()
 
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"Headless query failed: {detail}")
 
+    headless_usage = _extract_headless_usage(completed.stdout)
+    query_usage = _query_usage_from_headless(headless_usage)
     content = _worktree_completion_content(resolved_work_dir)
     result_kwargs = {
         **kwargs,
@@ -546,14 +691,18 @@ async def query_headless_async(
         "headless_prompt_path": str(prompt_path),
         "headless_stdout_path": str(stdout_path),
         "headless_stderr_path": str(stderr_path),
+        "headless_session_name": headless_session_name,
+        "headless_session_id": headless_session_name,
+        "headless_usage": headless_usage or None,
+        "headless_usage_unknown": not bool(headless_usage),
     }
     return _query_result(
         content=content,
-        usage=usage, # TODO: get usage from headless
+        usage=query_usage,
         model=model,
         msg=msg,
         system_msg=system_msg,
         msg_history=msg_history,
         kwargs=result_kwargs,
-        model_posteriors=model_posteriors, 
+        model_posteriors=model_posteriors,
     )

@@ -118,12 +118,16 @@ from shinka.launch import LocalJobConfig
 
 runner = ShinkaEvolveRunner(
     evo_config=EvolutionConfig(
-        init_program_path="examples/circle_packing/initial.py",
+        seed_repo_path="examples/inference_pipeline_repo/seed_repo",
+        mutable_paths=["src"],
+        immutable_paths=[],
+        agent_hidden_paths=["private_tests", "fixtures/private"],
+        llm_models=["headless/codex@gpt-5.5?effort=high"],
         num_generations=20,
     ),
     db_config=DatabaseConfig(),
     job_config=LocalJobConfig(
-        eval_program_path="examples/circle_packing/evaluate.py",
+        eval_program_path="examples/inference_pipeline_repo/evaluate.py",
     ),
     max_evaluation_jobs=1,
     max_proposal_jobs=1,

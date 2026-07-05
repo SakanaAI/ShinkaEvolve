@@ -129,6 +129,9 @@ class JobScheduler:
         results_dir_t: str,
         repo_path_t: Optional[str] = None,
     ) -> List[str]:
+        if not _has_value(repo_path_t):
+            raise ValueError("repo_path is required for evaluation")
+
         python_executable = "python"
         if self.job_type == "local" and isinstance(self.config, LocalJobConfig):
             if not (
@@ -141,24 +144,20 @@ class JobScheduler:
 
         if self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
-            input_flag = "--repo_path" if repo_path_t else "--program_path"
-            input_path = repo_path_t or exec_fname_t
             python_cmd = [
                 "python",
                 f"/workspace/{self.config.eval_program_path}",
-                input_flag,
-                f"/workspace/{input_path}",
+                "--repo_path",
+                f"/workspace/{repo_path_t}",
                 "--results_dir",
                 results_dir_t,
             ]
         else:
-            input_flag = "--repo_path" if repo_path_t else "--program_path"
-            input_path = repo_path_t or exec_fname_t
             python_cmd = [
                 python_executable,
                 f"{self.config.eval_program_path}",
-                input_flag,
-                f"{input_path}",
+                "--repo_path",
+                f"{repo_path_t}",
                 "--results_dir",
                 results_dir_t,
             ]

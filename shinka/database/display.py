@@ -51,7 +51,7 @@ class DatabaseDisplay:
         # Calculate total API costs
         total_api_cost = 0
         if self.cursor:
-            query = "SELECT metadata FROM repos"
+            query = "SELECT metadata FROM programs"
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
                 if row["metadata"]:
@@ -190,7 +190,7 @@ class DatabaseDisplay:
         num_with_scores = 0
         all_scores = []
         if self.cursor:  # Ensure cursor is not None
-            query = "SELECT metadata, combined_score, correct FROM repos"
+            query = "SELECT metadata, combined_score, correct FROM programs"
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
                 if row["metadata"]:
@@ -244,7 +244,7 @@ class DatabaseDisplay:
         summary_table.add_row("Total Programs", total_programs_display)
 
         # Correctness info
-        self.cursor.execute("SELECT COUNT(*) FROM repos WHERE correct = 1")
+        self.cursor.execute("SELECT COUNT(*) FROM programs WHERE correct = 1")
         correct_programs = (self.cursor.fetchone() or [0])[0]
         correct_percentage = (
             (correct_programs / total_programs * 100) if total_programs > 0 else 0
@@ -404,7 +404,7 @@ class DatabaseDisplay:
             "combined_score, public_metrics, private_metrics, "
             "complexity, embedding, metadata, correct, island_idx, "
             "children_count "
-            "FROM repos WHERE combined_score IS NOT NULL AND correct = 1 "
+            "FROM programs WHERE combined_score IS NOT NULL AND correct = 1 "
             "ORDER BY combined_score DESC LIMIT 10"
         )
         self.cursor.execute(query)
@@ -525,7 +525,7 @@ class DatabaseDisplay:
         # Calculate total API costs
         total_api_cost = 0
         if self.cursor:
-            query = "SELECT metadata FROM repos"
+            query = "SELECT metadata FROM programs"
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
                 if row["metadata"]:

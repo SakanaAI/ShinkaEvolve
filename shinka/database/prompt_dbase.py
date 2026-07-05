@@ -140,7 +140,7 @@ class SystemPrompt:
     total_improvement: float = 0.0  # Sum of improvements (deprecated)
 
     # Track associated programs
-    repo_ids: List[str] = field(default_factory=list)
+    program_ids: List[str] = field(default_factory=list)
 
     # Archive status
     in_archive: bool = False
@@ -160,12 +160,12 @@ class SystemPrompt:
         data["metadata"] = (
             data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
         )
-        # Ensure repo_ids is a list
-        repo_ids_val = data.get("repo_ids")
-        if isinstance(repo_ids_val, list):
-            data["repo_ids"] = repo_ids_val
+        # Ensure program IDs are a list. Accept old repo_ids rows.
+        program_ids_val = data.get("program_ids", data.get("repo_ids"))
+        if isinstance(program_ids_val, list):
+            data["program_ids"] = program_ids_val
         else:
-            data["repo_ids"] = []
+            data["program_ids"] = []
 
         # Backward compatibility: if correct_program_count not present, use program_count
         if "correct_program_count" not in data:
@@ -318,7 +318,7 @@ class SystemPromptDatabase:
                 total_improvement REAL NOT NULL DEFAULT 0.0,
                 fitness REAL NOT NULL DEFAULT 0.0,
                 program_scores TEXT,  -- JSON serialized List[float] for percentile recomputation
-                repo_ids TEXT,  -- JSON serialized List[str]
+                program_ids TEXT,  -- JSON serialized List[str]
                 metadata TEXT      -- JSON serialized Dict[str, Any]
             )
             """
@@ -334,6 +334,23 @@ class SystemPromptDatabase:
             logger.info("Added correct_program_count column to system_prompts table")
         except sqlite3.OperationalError:
             # Column already exists, ignore
+            pass
+
+        # Migration: Add program_ids and copy old repo_ids data when present.
+        try:
+            self.cursor.execute("PRAGMA table_info(system_prompts)")
+            columns = {row["name"] for row in self.cursor.fetchall()}
+            if "program_ids" not in columns:
+                self.cursor.execute(
+                    "ALTER TABLE system_prompts ADD COLUMN program_ids TEXT"
+                )
+            if "repo_ids" in columns:
+                self.cursor.execute(
+                    "UPDATE system_prompts SET program_ids = repo_ids "
+                    "WHERE program_ids IS NULL"
+                )
+            self.conn.commit()
+        except sqlite3.OperationalError:
             pass
 
         # Migration: Add program_generation column if it doesn't exist
@@ -492,7 +509,7 @@ class SystemPromptDatabase:
 
         # Pre-serialize JSON data
         program_scores_json = json.dumps(prompt.program_scores or [])
-        repo_ids_json = json.dumps(prompt.repo_ids or [])
+        program_ids_json = json.dumps(prompt.program_ids or [])
         metadata_json = json.dumps(prompt.metadata or {})
 
         # Begin transaction
@@ -505,7 +522,7 @@ class SystemPromptDatabase:
                    (id, prompt_text, name, description, parent_id, generation,
                     program_generation, patch_type, timestamp, program_count,
                     correct_program_count, total_percentile, total_improvement,
-                    fitness, program_scores, repo_ids, metadata)
+                    fitness, program_scores, program_ids, metadata)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -524,7 +541,7 @@ class SystemPromptDatabase:
                     prompt.total_improvement,
                     prompt.fitness,
                     program_scores_json,
-                    repo_ids_json,
+                    program_ids_json,
                     metadata_json,
                 ),
             )
@@ -584,14 +601,14 @@ class SystemPromptDatabase:
         else:
             prompt_data["program_scores"] = []
 
-        repo_ids_text = prompt_data.get("repo_ids")
-        if repo_ids_text:
+        program_ids_text = prompt_data.get("program_ids") or prompt_data.get("repo_ids")
+        if program_ids_text:
             try:
-                prompt_data["repo_ids"] = json.loads(repo_ids_text)
+                prompt_data["program_ids"] = json.loads(program_ids_text)
             except json.JSONDecodeError:
-                prompt_data["repo_ids"] = []
+                prompt_data["program_ids"] = []
         else:
-            prompt_data["repo_ids"] = []
+            prompt_data["program_ids"] = []
 
         metadata_text = prompt_data.get("metadata")
         if metadata_text:
@@ -814,7 +831,8 @@ class SystemPromptDatabase:
         self,
         prompt_id: str,
         percentile: float,
-        repo_id: Optional[str] = None,
+        legacy_program_id: Optional[str] = None,
+        program_id: Optional[str] = None,
         correct: bool = True,
         improvement: float = 0.0,
         program_score: float = 0.0,
@@ -830,7 +848,7 @@ class SystemPromptDatabase:
             prompt_id: ID of the prompt to update
             percentile: The percentile score (0-1), representing what fraction
                        of all correct programs this program beats
-            repo_id: Optional ID of the program to associate
+            program_id: Optional ID of the program to associate
             correct: Whether the program was correct. Only correct programs
                      contribute to fitness calculation.
             improvement: Legacy improvement score (kept for backward compatibility)
@@ -840,6 +858,8 @@ class SystemPromptDatabase:
             raise PermissionError("Cannot update fitness in read-only mode.")
         if not self.cursor or not self.conn:
             raise ConnectionError("Prompt DB not connected.")
+        if program_id is None:
+            program_id = legacy_program_id
 
         # Get current values
         prompt = self.get(prompt_id)
@@ -866,14 +886,14 @@ class SystemPromptDatabase:
             new_total_percentile / new_correct_count if new_correct_count > 0 else 0.0
         )
 
-        # Update repo_ids list
-        new_repo_ids = prompt.repo_ids.copy()
-        if repo_id:
-            new_repo_ids.append(repo_id)
+        # Update program_ids list
+        new_program_ids = prompt.program_ids.copy()
+        if program_id:
+            new_program_ids.append(program_id)
 
         # Serialize lists to JSON
         program_scores_json = json.dumps(new_program_scores)
-        repo_ids_json = json.dumps(new_repo_ids)
+        program_ids_json = json.dumps(new_program_ids)
 
         # Update database
         self.cursor.execute(
@@ -885,7 +905,7 @@ class SystemPromptDatabase:
                 total_improvement = ?,
                 fitness = ?,
                 program_scores = ?,
-                repo_ids = ?
+                program_ids = ?
             WHERE id = ?
             """,
             (
@@ -895,7 +915,7 @@ class SystemPromptDatabase:
                 new_total_improvement,
                 new_fitness,
                 program_scores_json,
-                repo_ids_json,
+                program_ids_json,
                 prompt_id,
             ),
         )
@@ -1144,7 +1164,7 @@ class SystemPromptDatabase:
     def recompute_all_percentiles(
         self,
         all_program_scores: Optional[List[float]] = None,
-        repo_id_to_score: Optional[Dict[str, float]] = None,
+        program_id_to_score: Optional[Dict[str, float]] = None,
     ) -> None:
         """
         Recompute percentile-based fitness for all prompts.
@@ -1155,7 +1175,7 @@ class SystemPromptDatabase:
         Args:
             all_program_scores: List of all correct program scores from the
                 main programs database. Percentiles are computed against this.
-            repo_id_to_score: Optional mapping from repo_id to current
+            program_id_to_score: Optional mapping from program_id to current
                 score. If provided, uses current scores for each prompt's
                 programs (matching webUI). If None, uses stored program_scores.
         """
@@ -1188,12 +1208,12 @@ class SystemPromptDatabase:
         # Recompute percentiles for each prompt
         for prompt in prompts:
             # Get scores for this prompt's programs
-            if repo_id_to_score is not None:
+            if program_id_to_score is not None:
                 # Use current scores from main database (matches webUI)
                 scores_for_prompt = [
-                    repo_id_to_score[pid]
-                    for pid in prompt.repo_ids
-                    if pid in repo_id_to_score
+                    program_id_to_score[pid]
+                    for pid in prompt.program_ids
+                    if pid in program_id_to_score
                 ]
             else:
                 # Fallback: use stored program_scores

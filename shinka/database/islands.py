@@ -37,7 +37,7 @@ class IslandStrategy(ABC):
         """Get list of islands that have correct programs.
         Default implementation for base class."""
         self.cursor.execute(
-            """SELECT DISTINCT island_idx FROM repos
+            """SELECT DISTINCT island_idx FROM programs
                 WHERE correct = 1 AND island_idx IS NOT NULL"""
         )
         islands_with_correct = {
@@ -53,7 +53,7 @@ class DefaultIslandAssignmentStrategy(IslandStrategy):
 
     def get_initialized_islands(self) -> List[int]:
         self.cursor.execute(
-            """SELECT DISTINCT island_idx FROM repos
+            """SELECT DISTINCT island_idx FROM programs
                 WHERE correct = 1 AND island_idx IS NOT NULL"""
         )
         islands_with_correct = {
@@ -91,7 +91,7 @@ class DefaultIslandAssignmentStrategy(IslandStrategy):
         # If the program has a parent, it inherits the parent's island.
         if program.parent_id:
             self.cursor.execute(
-                "SELECT island_idx FROM repos WHERE id = ?", (program.parent_id,)
+                "SELECT island_idx FROM programs WHERE id = ?", (program.parent_id,)
             )
             row = self.cursor.fetchone()
             if row and row["island_idx"] is not None:
@@ -115,7 +115,7 @@ class CopyInitialProgramIslandStrategy(IslandStrategy):
 
     def get_initialized_islands(self) -> List[int]:
         self.cursor.execute(
-            """SELECT DISTINCT island_idx FROM repos
+            """SELECT DISTINCT island_idx FROM programs
                 WHERE correct = 1 AND island_idx IS NOT NULL"""
         )
         islands_with_correct = {
@@ -139,7 +139,7 @@ class CopyInitialProgramIslandStrategy(IslandStrategy):
             return
 
         # Check if this is the very first program in the database
-        self.cursor.execute("SELECT COUNT(*) FROM repos")
+        self.cursor.execute("SELECT COUNT(*) FROM programs")
         program_count = (self.cursor.fetchone() or [0])[0]
         if program_count == 0:
             # This is the first program - assign to island 0
@@ -158,7 +158,7 @@ class CopyInitialProgramIslandStrategy(IslandStrategy):
         # If the program has a parent, it inherits the parent's island.
         if program.parent_id:
             self.cursor.execute(
-                "SELECT island_idx FROM repos WHERE id = ?", (program.parent_id,)
+                "SELECT island_idx FROM programs WHERE id = ?", (program.parent_id,)
             )
             row = self.cursor.fetchone()
             if row and row["island_idx"] is not None:
@@ -235,7 +235,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         for source_idx in range(num_islands):
             # Count programs in this island
             self.cursor.execute(
-                "SELECT COUNT(*) FROM repos WHERE island_idx = ?",
+                "SELECT COUNT(*) FROM programs WHERE island_idx = ?",
                 (source_idx,),
             )
             island_size = (self.cursor.fetchone() or [0])[0]
@@ -300,7 +300,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         # Base query excludes generation 0 programs and only includes
         # correct programs
         selection_query = """
-            SELECT id FROM repos
+            SELECT id FROM programs
             WHERE island_idx = ? AND generation > 0 AND correct = 1
         """
 
@@ -309,7 +309,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
             # Also exclude generation 0 programs from elite selection and
             # only consider correct programs
             elite_query = """
-                SELECT id FROM repos
+                SELECT id FROM programs
                 WHERE island_idx = ? AND generation > 0 AND correct = 1
                 ORDER BY combined_score DESC
                 LIMIT 1
@@ -335,7 +335,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
 
         # First check how many correct non-generation-0 programs are available
         self.cursor.execute(
-            "SELECT COUNT(*) FROM repos WHERE island_idx = ? AND "
+            "SELECT COUNT(*) FROM programs WHERE island_idx = ? AND "
             "generation > 0 AND correct = 1",
             (source_idx,),
         )
@@ -394,7 +394,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         """Migrate a single program from source to destination island."""
         # Get current migration history
         self.cursor.execute(
-            "SELECT migration_history FROM repos WHERE id = ?", (migrant_id,)
+            "SELECT migration_history FROM programs WHERE id = ?", (migrant_id,)
         )
         row = self.cursor.fetchone()
         history = (
@@ -415,7 +415,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         history_json = json.dumps(history)
 
         self.cursor.execute(
-            """UPDATE repos
+            """UPDATE programs
                SET island_idx = ?, migration_history = ?
                WHERE id = ?""",
             (dest_idx, history_json, migrant_id),
@@ -462,7 +462,7 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
                     self.cursor.execute(
                         """SELECT combined_score as score, children_count,
                                   generation, metadata, complexity
-                           FROM repos WHERE id = ?""",
+                           FROM programs WHERE id = ?""",
                         (prog_id,),
                     )
                     result = self.cursor.fetchone()
@@ -525,10 +525,10 @@ class CombinedIslandManager:
         """Perform migration using the configured strategy."""
         return self.migration_strategy.perform_migration(current_generation)
 
-    def get_island_idx(self, repo_id: str) -> Optional[int]:
+    def get_island_idx(self, program_id: str) -> Optional[int]:
         """Get the island index for a given program ID."""
         self.cursor.execute(
-            "SELECT island_idx FROM repos WHERE id = ?", (repo_id,)
+            "SELECT island_idx FROM programs WHERE id = ?", (program_id,)
         )
         row = self.cursor.fetchone()
         return row["island_idx"] if row else None
@@ -561,7 +561,7 @@ class CombinedIslandManager:
             return {}
 
         self.cursor.execute(
-            "SELECT island_idx, COUNT(id) as count FROM repos GROUP BY island_idx"
+            "SELECT island_idx, COUNT(id) as count FROM programs GROUP BY island_idx"
         )
         return {
             row["island_idx"]: row["count"]
@@ -621,7 +621,7 @@ class CombinedIslandManager:
             copy_metadata.pop("_needs_island_copies", None)
             # Add metadata to indicate this is a copy
             copy_metadata["_is_island_copy"] = True
-            copy_metadata["_original_repo_id"] = program.id
+            copy_metadata["_original_program_id"] = program.id
             # Serialize JSON data
             public_metrics_json = json.dumps(program.public_metrics or {})
             private_metrics_json = json.dumps(program.private_metrics or {})
@@ -641,7 +641,7 @@ class CombinedIslandManager:
                 text_feedback_str = ""
             self.cursor.execute(
                 """
-                INSERT INTO repos
+                INSERT INTO programs
                    (id, code, language, parent_id, archive_inspiration_ids,
                     top_k_inspiration_ids, generation, timestamp, code_diff,
                     combined_score, public_metrics, private_metrics,
@@ -687,7 +687,7 @@ class CombinedIslandManager:
             # This ensures it can be used as inspiration for that island
             if program.correct:
                 self.cursor.execute(
-                    "INSERT OR IGNORE INTO archive (repo_id) VALUES (?)",
+                    "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                     (new_id,),
                 )
                 logger.debug(f"Added copy {new_id[:8]}... to archive (correct program)")
@@ -712,7 +712,7 @@ class CombinedIslandManager:
             Dictionary with program data or None if not found
         """
         self.cursor.execute(
-            """SELECT * FROM repos
+            """SELECT * FROM programs
                WHERE generation = 0 AND parent_id IS NULL
                ORDER BY timestamp ASC LIMIT 1"""
         )
@@ -726,7 +726,7 @@ class CombinedIslandManager:
             Dictionary with program data or None if not found
         """
         self.cursor.execute(
-            """SELECT * FROM repos
+            """SELECT * FROM programs
                WHERE correct = 1
                ORDER BY combined_score DESC LIMIT 1"""
         )
@@ -740,8 +740,8 @@ class CombinedIslandManager:
             Dictionary with program data or None if archive is empty
         """
         self.cursor.execute(
-            """SELECT p.* FROM repos p
-               INNER JOIN archive a ON p.id = a.repo_id
+            """SELECT p.* FROM programs p
+               INNER JOIN archive a ON p.id = a.program_id
                ORDER BY RANDOM() LIMIT 1"""
         )
         row = self.cursor.fetchone()
@@ -754,7 +754,7 @@ class CombinedIslandManager:
             The next island index (max existing + 1, or num_islands if no spawned islands)
         """
         # Get the maximum island index currently in use
-        self.cursor.execute("SELECT MAX(island_idx) as max_idx FROM repos")
+        self.cursor.execute("SELECT MAX(island_idx) as max_idx FROM programs")
         row = self.cursor.fetchone()
         max_idx = row["max_idx"] if row and row["max_idx"] is not None else -1
 
@@ -810,7 +810,7 @@ class CombinedIslandManager:
         # Parse and update metadata
         metadata = json.loads(source_program.get("metadata") or "{}")
         metadata["_spawned_island"] = True
-        metadata["_spawned_from_repo_id"] = source_program["id"]
+        metadata["_spawned_from_program_id"] = source_program["id"]
         metadata["_spawn_island_idx"] = new_island_idx
         metadata["_spawn_strategy"] = strategy
         if not is_root:
@@ -831,7 +831,7 @@ class CombinedIslandManager:
         # Insert the new program
         self.cursor.execute(
             """
-            INSERT INTO repos
+            INSERT INTO programs
                (id, code, language, parent_id, archive_inspiration_ids,
                 top_k_inspiration_ids, generation, timestamp, code_diff,
                 combined_score, public_metrics, private_metrics,
@@ -871,14 +871,14 @@ class CombinedIslandManager:
         # Add to archive if correct
         if source_program.get("correct"):
             self.cursor.execute(
-                "INSERT OR IGNORE INTO archive (repo_id) VALUES (?)",
+                "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                 (new_id,),
             )
 
         # Update parent's children_count
         if new_parent_id:
             self.cursor.execute(
-                "UPDATE repos SET children_count = children_count + 1 WHERE id = ?",
+                "UPDATE programs SET children_count = children_count + 1 WHERE id = ?",
                 (new_parent_id,),
             )
 
@@ -897,7 +897,7 @@ class CombinedIslandManager:
             List of child program dicts
         """
         query = """
-            SELECT * FROM repos
+            SELECT * FROM programs
             WHERE parent_id = ? AND correct = 1
             ORDER BY combined_score DESC
         """

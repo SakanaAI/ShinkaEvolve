@@ -1,10 +1,10 @@
 """
-Prompts for novelty assessment and LLM-based code comparison.
+Prompts for novelty assessment and LLM-based repository comparison.
 """
 
-NOVELTY_SYSTEM_MSG = """You are an expert code reviewer tasked with determining if two code snippets are meaningfully different from each other.
+NOVELTY_SYSTEM_MSG = """You are an expert code reviewer tasked with determining if two repository summaries are meaningfully different from each other.
 
-Your job is to analyze both programs and determine if the proposed code introduces meaningful changes compared to the existing code. Consider:
+Your job is to analyze both summaries and determine if the proposed repository individual introduces meaningful changes compared to the existing repository individual. Consider:
 
 1. **Algorithmic differences**: Different approaches, logic, or strategies
 2. **Structural changes**: Different data structures, control flow, or organization
@@ -19,22 +19,18 @@ Ignore trivial differences like:
 - Insignificant refactoring that doesn't change the core logic
 
 Respond with:
-- **NOVEL**: If the codes are meaningfully different
-- **NOT_NOVEL**: If the codes are essentially the same with only trivial differences
+- **NOVEL**: If the repository individuals are meaningfully different
+- **NOT_NOVEL**: If the repository individuals are essentially the same with only trivial differences
 
 After your decision, provide a brief explanation of your reasoning."""
 
 
-NOVELTY_USER_MSG = """Please analyze these two code snippets:
+NOVELTY_USER_MSG = """Please analyze these two repository summaries:
 
-**EXISTING CODE:**
-```{language}
+**EXISTING REPOSITORY SUMMARY:**
 {existing_code}
-```
 
-**PROPOSED CODE:**
-```{language}
+**PROPOSED REPOSITORY SUMMARY:**
 {proposed_code}
-```
 
-Are these codes meaningfully different? Respond with NOVEL or NOT_NOVEL followed by your explanation."""
+Are these repository individuals meaningfully different? Respond with NOVEL or NOT_NOVEL followed by your explanation."""

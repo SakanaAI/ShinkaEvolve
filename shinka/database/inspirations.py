@@ -15,7 +15,7 @@ class ContextSelectorStrategy(ABC):
         conn: sqlite3.Connection,
         config: Any,
         get_program_func: Callable[[str], Any],
-        best_repo_id: Optional[str] = None,
+        best_program_id: Optional[str] = None,
         get_island_idx_func: Optional[Callable[[str], Optional[int]]] = None,
         program_from_row_func: Optional[Callable[[sqlite3.Row], Any]] = None,
     ):
@@ -23,7 +23,7 @@ class ContextSelectorStrategy(ABC):
         self.conn = conn
         self.config = config
         self.get_program = get_program_func
-        self.best_repo_id = best_repo_id
+        self.best_program_id = best_program_id
         self.get_island_idx = get_island_idx_func
         self.program_from_row = program_from_row_func
 
@@ -55,8 +55,8 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
         enforce_separation = getattr(self.config, "enforce_island_separation", False)
 
         # 1. Best program (only if correct)
-        if self.best_repo_id and self.best_repo_id not in insp_ids:
-            prog = self.get_program(self.best_repo_id)
+        if self.best_program_id and self.best_program_id not in insp_ids:
+            prog = self.get_program(self.best_program_id)
             if prog and prog.correct:
                 if enforce_separation:
                     if prog.island_idx == parent_island_idx:
@@ -71,8 +71,8 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
         if num_elites > 0 and len(inspirations) < n and parent_island_idx is not None:
             self.cursor.execute(
                 """
-                SELECT p.id FROM repos p
-                JOIN archive a ON p.id = a.repo_id
+                SELECT p.id FROM programs p
+                JOIN archive a ON p.id = a.program_id
                 WHERE p.island_idx = ? AND p.correct = 1
                 ORDER BY p.combined_score DESC
                 LIMIT ?
@@ -93,8 +93,8 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             if needed > 0:
                 placeholders_rand = ",".join("?" * len(insp_ids))
                 sql_rand = f"""
-                    SELECT p.id FROM repos p
-                    JOIN archive a ON p.id = a.repo_id
+                    SELECT p.id FROM programs p
+                    JOIN archive a ON p.id = a.program_id
                     WHERE p.island_idx = ? AND p.correct = 1
                     AND p.id NOT IN ({placeholders_rand})
                     ORDER BY RANDOM() LIMIT ?
@@ -113,8 +113,8 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             needed = n - len(inspirations)
             if needed > 0:
                 placeholders_rand = ",".join("?" * len(insp_ids))
-                sql_rand = f"""SELECT p.id FROM repos p
-                                 JOIN archive a ON p.id = a.repo_id
+                sql_rand = f"""SELECT p.id FROM programs p
+                                 JOIN archive a ON p.id = a.program_id
                                  WHERE p.correct = 1
                                  AND p.id NOT IN ({placeholders_rand})
                                  ORDER BY RANDOM() LIMIT ?
@@ -177,8 +177,8 @@ class TopKInspirationSelector(ContextSelectorStrategy):
             # Only search within parent's island
             query = f"""
                 SELECT p.*
-                FROM repos p
-                JOIN archive a ON p.id = a.repo_id
+                FROM programs p
+                JOIN archive a ON p.id = a.program_id
                 WHERE p.island_idx = ? AND p.id NOT IN ({placeholders}) 
                 AND p.correct = 1
             """
@@ -188,8 +188,8 @@ class TopKInspirationSelector(ContextSelectorStrategy):
             # Search globally across all islands
             query = f"""
                 SELECT p.*
-                FROM repos p
-                JOIN archive a ON p.id = a.repo_id
+                FROM programs p
+                JOIN archive a ON p.id = a.program_id
                 WHERE p.id NOT IN ({placeholders}) 
                 AND p.correct = 1
             """
@@ -251,7 +251,7 @@ class CombinedContextSelector:
         conn: sqlite3.Connection,
         config: Any,
         get_program_func: Callable[[str], Any],
-        best_repo_id: Optional[str] = None,
+        best_program_id: Optional[str] = None,
         get_island_idx_func: Optional[Callable[[str], Optional[int]]] = None,
         program_from_row_func: Optional[Callable[[sqlite3.Row], Any]] = None,
     ):
@@ -260,7 +260,7 @@ class CombinedContextSelector:
             conn=conn,
             config=config,
             get_program_func=get_program_func,
-            best_repo_id=best_repo_id,
+            best_program_id=best_program_id,
             get_island_idx_func=get_island_idx_func,
             program_from_row_func=program_from_row_func,
         )
@@ -269,7 +269,7 @@ class CombinedContextSelector:
             conn=conn,
             config=config,
             get_program_func=get_program_func,
-            best_repo_id=best_repo_id,
+            best_program_id=best_program_id,
             get_island_idx_func=get_island_idx_func,
             program_from_row_func=program_from_row_func,
         )

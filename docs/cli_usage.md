@@ -44,16 +44,18 @@ cluster/database/evolution/task settings.
 
 ## `shinka_run`
 
-Direct task launcher for async evolution. Expects a task directory containing
-`evaluate.py` and `initial.<ext>`.
+Direct task launcher for async repo evolution. Expects a task directory
+containing `evaluate.py` and a git `seed_repo/`, unless `--seed-repo-path` or
+`evo.seed_repo_path` points elsewhere.
 
 ### Minimal run
 
 ```bash
 shinka_run \
-  --task-dir examples/circle_packing \
-  --results_dir results/circle_agent_run \
-  --num_generations 20
+  --task-dir examples/inference_pipeline_repo \
+  --config-fname shinka.yaml \
+  --results_dir results/inference_pipeline_repo \
+  --num_generations 2
 ```
 
 ### Namespaced overrides

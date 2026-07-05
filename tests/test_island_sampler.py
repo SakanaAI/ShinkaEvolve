@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from shinka.database import DatabaseConfig, RepoDatabase, Program
+from shinka.database import DatabaseConfig, ProgramDatabase, Program
 
 
 def test_island_samplers():
@@ -23,7 +23,7 @@ def test_island_samplers():
                 island_selection_strategy=strategy,
             )
 
-            db = RepoDatabase(config=config, embedding_model="", read_only=False)
+            db = ProgramDatabase(config=config, embedding_model="", read_only=False)
 
             # Add some test programs to different islands
             for island_idx in range(3):

@@ -1,5 +1,5 @@
-from .dbase import Repo, RepoDatabase, Program, ProgramDatabase, DatabaseConfig
-from .async_dbase import AsyncRepoDatabase
+from .dbase import Program, ProgramDatabase, DatabaseConfig
+from .async_dbase import AsyncProgramDatabase
 
 
 def __getattr__(name):
@@ -15,12 +15,10 @@ def __getattr__(name):
     raise AttributeError(name)
 
 __all__ = [
-    "RepoDatabase",
     "ProgramDatabase",
     "Program",
-    "Repo",
     "DatabaseConfig",
-    "AsyncRepoDatabase",
+    "AsyncProgramDatabase",
     "SystemPromptDatabase",
     "SystemPrompt",
     "SystemPromptConfig",

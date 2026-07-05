@@ -44,6 +44,8 @@ class LLMClient:
         model_name = llm_kwargs.get("model_name")
         if not model_name or self.headless_work_dir is None:
             return llm_kwargs
+        if "headless_work_dir" in llm_kwargs:
+            return llm_kwargs
         if resolve_model_backend(model_name).provider != "headless":
             return llm_kwargs
         return {**llm_kwargs, "headless_work_dir": self.headless_work_dir}
@@ -356,6 +358,8 @@ class AsyncLLMClient:
     def _attach_headless_work_dir(self, llm_kwargs: Dict) -> Dict:
         model_name = llm_kwargs.get("model_name")
         if not model_name or self.headless_work_dir is None:
+            return llm_kwargs
+        if "headless_work_dir" in llm_kwargs:
             return llm_kwargs
         if resolve_model_backend(model_name).provider != "headless":
             return llm_kwargs

@@ -1,5 +1,9 @@
 # Examples
 
+The examples below are legacy single-file benchmarks unless they explicitly
+state repo mode. New runs should use a repo-mode task such as
+`examples/inference_pipeline_repo`, where evaluators accept `--repo_path`.
+
 ShinkaEvolve ships with runnable tasks demonstrating different languages,
 evaluation styles, and runtime profiles.
 
@@ -48,10 +52,8 @@ control-oriented problem shape.
 | **Language** | Julia candidate + Python evaluator |
 | **Focus** | Cross-language evolution, strict correctness scoring |
 
-```bash
-cd examples/julia_prime_counting
-python evaluate.py --program_path initial.jl --results_dir results/manual_eval
-```
+Legacy manual eval command: run `examples/julia_prime_counting/evaluate.py`
+against `initial.jl` and write to `results/manual_eval`.
 
 Cleanest example of evolving a non-Python candidate while keeping the evaluation
 harness in Python.
@@ -66,10 +68,8 @@ harness in Python.
 | **Language** | Fortran candidate + Python evaluator |
 | **Focus** | Compiled numerical stencil evolution |
 
-```bash
-cd examples/fortran_heat_diffusion
-python evaluate.py --program_path initial.f90 --results_dir results/manual_eval
-```
+Legacy manual eval command: run `examples/fortran_heat_diffusion/evaluate.py`
+against `initial.f90` and write to `results/manual_eval`.
 
 Use this when candidates should be compiled with `gfortran` before
 floating-point correctness and runtime scoring.

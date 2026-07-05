@@ -2,7 +2,7 @@ novelty_generator_number_of_samples: 20
 
 evaluate_function:
   _target_: examples.novelty_generator.evaluate.evaluate_with_lm_judge
-  program_path: ???
+  repo_path: ???
   results_dir: ???
   lm_input_and_output_processors:
     _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
@@ -41,12 +41,8 @@ evo_config:
 
     Now bring out your creativity, it's time to surprise us!
   language: "python"
-  init_program_path:
-    _target_: shinka.utils.add_evolve_markers
-    save_dir: ${output_dir}
-    initial_file_path: examples/novelty_generator/initial.py
-    insert_start: generate_novelty
-    insert_end: generate_novelty
+  seed_repo_path: ???
+  mutable_paths: ???
   job_type: "slurm_conda"
 
 exp_name: "shinka_novelty_generator_llm_judge"

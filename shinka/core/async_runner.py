@@ -21,8 +21,8 @@ from rich.console import Console
 from rich.table import Table
 import rich.box
 
-from shinka.database import RepoDatabase, DatabaseConfig, Program, Repo
-from shinka.database.async_dbase import AsyncRepoDatabase
+from shinka.database import ProgramDatabase, DatabaseConfig, Program
+from shinka.database.async_dbase import AsyncProgramDatabase
 from shinka.database.prompt_dbase import (
     SystemPromptDatabase,
     SystemPromptConfig,
@@ -68,7 +68,7 @@ from shinka.repo import (
     RepoWorktree,
     WorktreeManager,
     build_initial_summary,
-    render_repo_context,
+    build_summary_template,
     validate_summary,
 )
 
@@ -163,6 +163,10 @@ class AsyncRunningJob:
     repo_summary: Optional[str] = None
     summary_version: Optional[str] = None
     changed_files: List[str] = field(default_factory=list)
+    agent_session_id: Optional[str] = None
+    agent_session_name: Optional[str] = None
+    agent_provider: Optional[str] = None
+    agent_model: Optional[str] = None
     db_retry_count: int = 0  # Track number of DB write retry attempts
     results_retrieved_at: Optional[float] = None
     completion_detected_at: Optional[float] = None
@@ -175,7 +179,7 @@ class PersistedProgramEvent:
     """Durably persisted program ready for slower follow-up side effects."""
 
     job: AsyncRunningJob
-    repo: Repo
+    program: Program
     evaluation_finished_at: float
     postprocess_started_at: float
     postprocess_finished_at: float
@@ -422,12 +426,15 @@ class ShinkaEvolveRunner:
         seed_repo_path = evo_config.seed_repo_path
         if seed_repo_path is None:
             raise ValueError("seed_repo_path must be specified")
+        if not evo_config.mutable_paths:
+            raise ValueError("mutable_paths must be specified for repo-only runs")
         worktree_root = evo_config.worktree_root or str(Path(self.results_dir) / "worktrees")
         self.repo_worktree_manager = WorktreeManager(
             seed_repo_path=seed_repo_path,
             worktree_root=worktree_root,
             mutable_paths=evo_config.mutable_paths,
             immutable_paths=evo_config.immutable_paths,
+            hidden_paths=getattr(evo_config, "agent_hidden_paths", []),
             ignore_paths=evo_config.ignore_paths,
             base_ref=evo_config.base_ref,
         )
@@ -523,7 +530,7 @@ class ShinkaEvolveRunner:
             1  # Start from generation 1 since 0 is handled in setup
         )
         self.assigned_generations: Set[int] = set()  # Track assigned gens
-        self.best_repo_id: Optional[str] = None
+        self.best_program_id: Optional[str] = None
         self.lang_ext = get_language_extension(evo_config.language)
         # Async coordination
         self.slot_available = asyncio.Event()
@@ -782,7 +789,7 @@ class ShinkaEvolveRunner:
 
                 # Get all metadata fields
                 cursor.execute(
-                    "SELECT metadata FROM repos WHERE metadata IS NOT NULL"
+                    "SELECT metadata FROM programs WHERE metadata IS NOT NULL"
                 )
                 rows = cursor.fetchall()
 
@@ -1089,7 +1096,7 @@ class ShinkaEvolveRunner:
                     # Add timeout to meta summary operations
                     try:
                         best_program = await asyncio.wait_for(
-                            self.async_db.get_best_repo_async(),
+                            self.async_db.get_best_program_async(),
                             timeout=30.0,  # 30 second timeout for getting best program
                         )
                         if best_program:
@@ -1162,12 +1169,12 @@ class ShinkaEvolveRunner:
         self.db_config.db_path = str(db_path)
 
         # Reinitialize database with updated path
-        self.db = RepoDatabase(
+        self.db = ProgramDatabase(
             self.db_config, embedding_model=self.evo_config.embedding_model
         )
         if hasattr(self.db, "set_display_console"):
             self.db.set_display_console(self.console)
-        self.async_db = AsyncRepoDatabase(
+        self.async_db = AsyncProgramDatabase(
             self.db,
             max_workers=self.max_db_workers,
             enable_deadlock_debugging=self.enable_deadlock_debugging,
@@ -1186,7 +1193,7 @@ class ShinkaEvolveRunner:
             logger.info("RESUMING PREVIOUS ASYNC EVOLUTION RUN")
             logger.info("=" * 80)
             logger.info(f"Resuming from generation {self.db.last_iteration}")
-            program_count = await self.async_db.get_total_repo_count_async()
+            program_count = await self.async_db.get_total_program_count_async()
             logger.info(f"Found {program_count} programs in database")
 
             # Load existing API costs from database
@@ -1379,8 +1386,8 @@ class ShinkaEvolveRunner:
                 def load_program_scores_thread_safe() -> Tuple[List[float], Dict[str, float]]:
                     thread_db = None
                     try:
-                        thread_db = RepoDatabase(self.db.config, read_only=True)
-                        all_programs = thread_db.get_all_repos()
+                        thread_db = ProgramDatabase(self.db.config, read_only=True)
+                        all_programs = thread_db.get_all_programs()
                         all_correct_scores = [
                             p.combined_score
                             for p in all_programs
@@ -1400,7 +1407,7 @@ class ShinkaEvolveRunner:
                     None, load_program_scores_thread_safe
                 )
             else:
-                all_programs = self.db.get_all_repos()
+                all_programs = self.db.get_all_programs()
                 all_correct_scores = [
                     p.combined_score
                     for p in all_programs
@@ -1462,8 +1469,8 @@ class ShinkaEvolveRunner:
                 return
 
             # Get top-k programs for context
-            top_k = self.evo_config.prompt_evo_top_k_repos
-            top_programs = await self.async_db.get_top_repos_async(top_k)
+            top_k = self.evo_config.prompt_evo_top_k_programs
+            top_programs = await self.async_db.get_top_programs_async(top_k)
 
             logger.info(
                 f"Got {len(top_programs)} top programs for prompt evolution context"
@@ -1540,7 +1547,7 @@ class ShinkaEvolveRunner:
             summary_version = summary_check.schema_version
         else:
             summary_text = build_initial_summary(
-                individual_id="initial_repo",
+                individual_id="initial_program",
                 generation=0,
                 commit_sha=parent_commit,
             )
@@ -1605,7 +1612,7 @@ class ShinkaEvolveRunner:
                 "novelty_cost": 0.0,
                 "evaluation_failed": evaluation_failed,
                 "patch_type": "repo_init",
-                "patch_name": "initial_repo",
+                "patch_name": "initial_program",
                 "patch_description": "Initial repository setup",
                 "stdout_log": stdout_log,
                 "stderr_log": stderr_log,
@@ -1626,7 +1633,7 @@ class ShinkaEvolveRunner:
             postprocess_finished_at=postprocess_started_at,
         )
 
-        initial_repo = Repo(
+        initial_program = Program(
             id=individual_id,
             parent_id=None,
             generation=0,
@@ -1650,15 +1657,15 @@ class ShinkaEvolveRunner:
         )
 
         if self.verbose and not evaluation_failed:
-            logger.info(f"Initial repo evaluated - correct: {initial_repo.correct}, "
-                        f"combined_score: {initial_repo.combined_score}")
+            logger.info(f"Initial repo evaluated - correct: {initial_program.correct}, "
+                        f"combined_score: {initial_program.combined_score}")
 
-        await self.async_db.add_repo_async(initial_repo, verbose=self.verbose)
+        await self.async_db.add_program_async(initial_program, verbose=self.verbose)
         self.total_api_cost += e_cost
 
         # Add the initial repo to meta memory tracking
         if self.meta_summarizer:
-            self.meta_summarizer.add_evaluated_repo(initial_repo)
+            self.meta_summarizer.add_evaluated_program(initial_program)
 
             # Check if we should update meta memory after adding this repo
             if self.meta_summarizer.should_update_meta(
@@ -1666,14 +1673,14 @@ class ShinkaEvolveRunner:
             ):
                 logger.info(
                     f"Updating meta memory after processing "
-                    f"{len(self.meta_summarizer.evaluated_since_last_meta)} repos..."
+                    f"{len(self.meta_summarizer.evaluated_since_last_meta)} programs..."
                 )
-                best_repo = await self.async_db.get_best_repo_async()
+                best_program = await self.async_db.get_best_program_async()
                 # Use async meta summarizer for non-blocking meta analysis
                 (
                     updated_recs,
                     meta_cost,
-                ) = await self.meta_summarizer.update_meta_memory_async(best_repo)
+                ) = await self.meta_summarizer.update_meta_memory_async(best_program)
                 if updated_recs:
                     # Write meta output file asynchronously
                     await self.meta_summarizer.write_meta_output_async(
@@ -1688,14 +1695,14 @@ class ShinkaEvolveRunner:
                         self.total_api_cost += meta_cost
 
                         # Add meta cost to this repo's metadata (the one that triggered the update)
-                        if initial_repo.metadata is None:
-                            initial_repo.metadata = {}
-                        initial_repo.metadata["meta_cost"] = meta_cost
+                        if initial_program.metadata is None:
+                            initial_program.metadata = {}
+                        initial_program.metadata["meta_cost"] = meta_cost
 
         # Set baseline score for LLM selection
         if self.llm_selection is not None:
             self.llm_selection.set_baseline_score(
-                initial_repo.combined_score if initial_repo.correct else 0.0,
+                initial_program.combined_score if initial_program.correct else 0.0,
             )
 
         # Mark generation 0 as completed
@@ -1705,8 +1712,8 @@ class ShinkaEvolveRunner:
         self._record_progress()
 
         postprocess_finished_at = time.time()
-        initial_repo.metadata = with_pipeline_timing(
-            initial_repo.metadata,
+        initial_program.metadata = with_pipeline_timing(
+            initial_program.metadata,
             pipeline_started_at=pipeline_started_at,
             sampling_started_at=pipeline_started_at,
             sampling_finished_at=pipeline_started_at,
@@ -1715,10 +1722,10 @@ class ShinkaEvolveRunner:
             postprocess_started_at=postprocess_started_at,
             postprocess_finished_at=postprocess_finished_at,
         )
-        await self._persist_repo_metadata_async(initial_repo)
+        await self._persist_program_metadata_async(initial_program)
 
         if self.verbose:
-            logger.info(f"Setup initial repo: {initial_repo.id}")
+            logger.info(f"Setup initial repo: {initial_program.id}")
             logger.info("Generation 0 completed during setup")
 
 
@@ -1730,7 +1737,7 @@ class ShinkaEvolveRunner:
         try:
             # Use a simple count check instead of sample_async() to avoid
             # printing the sampling summary table during verification
-            program_count = await self.async_db.get_total_repo_count_async()
+            program_count = await self.async_db.get_total_program_count_async()
 
             if program_count > 0:
                 if self.verbose:
@@ -2439,12 +2446,18 @@ class ShinkaEvolveRunner:
         last_failure_stage = "proposal"
         last_failure_reason = "Agent failed to generate a valid proposal after all attempts"
         proposal_accepted = False
-        parent_repo: Optional[Repo] = None
-        archive_repos: List[Repo] = []
-        top_k_repos: List[Repo] = []
+        parent_program: Optional[Program] = None
+        archive_programs: List[Program] = []
+        top_k_programs: List[Program] = []
         code_diff: Optional[str] = None
         meta_patch_data: Dict[str, Any] = {}
         text_embedding: Optional[List[float]] = None
+        worktree: Optional[RepoWorktree] = None
+        parent_commit: Optional[str] = None
+        child_commit: Optional[str] = None
+        summary_text = ""
+        summary_version: Optional[str] = None
+        changed_files: List[str] = []
 
         # Select LLM once per program generation (before all loops)
         model_sample_probs = None
@@ -2456,9 +2469,9 @@ class ShinkaEvolveRunner:
             try:
                 # Sample parent and inspirations with fix mode detection
                 (
-                    parent_repo,
-                    archive_repos,
-                    top_k_repos,
+                    parent_program,
+                    archive_programs,
+                    top_k_programs,
                     needs_fix,
                 ) = await self.async_db.sample_with_fix_mode_async(
                     target_generation=generation,
@@ -2473,19 +2486,19 @@ class ShinkaEvolveRunner:
                 if (
                     getattr(self.db_config, "parent_selection_strategy", "")
                     == "beam_search"
-                    and parent_repo
+                    and parent_program
                 ):
                     await self.async_db.update_beam_search_parent_async(
-                        parent_repo.id
+                        parent_program.id
                     )
 
                 parent_commit = (
-                    parent_repo.repo_commit
-                    or (parent_repo.metadata or {}).get("repo_commit")
+                    parent_program.repo_commit
+                    or (parent_program.metadata or {}).get("repo_commit")
                     or self.seed_repo_commit
                 )
                 if not parent_commit:
-                    raise ValueError("Parent repo individual does not have a repo commit")
+                    raise ValueError("Parent program does not have a repo commit")
 
                 individual_id = str(uuid.uuid4())
                 worktree = self.repo_worktree_manager.create_child_worktree(
@@ -2496,17 +2509,17 @@ class ShinkaEvolveRunner:
 
                 # Choose between fix mode and normal patch mode
                 if needs_fix:
-                    # FIX MODE: No correct repos exist, try to fix
-                    # archive_repos contains ancestors in fix mode
+                    # FIX MODE: No correct programs exist, try to fix
+                    # archive_programs contains ancestors in fix mode
                     if self.verbose:
                         logger.info(
                             f"FIX MODE: Attempting to fix incorrect repo "
-                            f"{parent_repo.id} (Gen: {parent_repo.generation})"
+                            f"{parent_program.id} (Gen: {parent_program.generation})"
                         )
                 agent_result = await self._run_patch_async(
-                    parent_repo,
-                    archive_repos,  # ancestors in fix mode
-                    top_k_repos,
+                    parent_program,
+                    archive_programs,  # ancestors in fix mode
+                    top_k_programs,
                     generation=generation,
                     novelty_attempt=attempt + 1,
                     resample_attempt=1,
@@ -2518,20 +2531,20 @@ class ShinkaEvolveRunner:
 
                 if not agent_result:
                     last_failure_stage = "proposal"
-                    last_failure_reason = "Repo patch generation returned no result"
+                    last_failure_reason = "Program patch generation returned no result"
                     continue
 
                 code_diff, meta_patch_data, success = agent_result
                 api_costs += meta_patch_data.get("api_costs", 0.0)
 
                 snapshot = self.repo_worktree_manager.diff_parent(worktree.path, parent_commit)
-                self.repo_worktree_manager.enforce_mutability(snapshot.changed_files)
+                self.repo_worktree_manager.validate_snapshot(worktree, snapshot)
 
                 stashed_parent_id = WorktreeManager.read_parent_id(worktree.path)
-                if stashed_parent_id != parent_repo.id:
+                if stashed_parent_id != parent_program.id:
                     last_failure_stage = "proposal"
                     last_failure_reason = (
-                        f"Parent ID mismatch: expected {parent_repo.id!r}, "
+                        f"Parent ID mismatch: expected {parent_program.id!r}, "
                         f"got {stashed_parent_id!r}"
                     )
                     continue
@@ -2567,7 +2580,25 @@ class ShinkaEvolveRunner:
                 summary_text,
                 max_chars=self.evo_config.summary_max_chars,
             )
-            text_embedding, e_cost = await self._get_text_embedding_async(exec_fname)
+            if not summary_check.valid:
+                raise ValueError("; ".join(summary_check.errors))
+            summary_version = summary_check.schema_version
+            changed_files = snapshot.changed_files
+            meta_patch_data.update(
+                {
+                    "repo_path": str(worktree.path),
+                    "repo_commit": child_commit,
+                    "repo_parent_commit": parent_commit,
+                    "repo_diff": snapshot.diff,
+                    "repo_diff_stat": snapshot.diff_stat,
+                    "repo_summary": summary_text,
+                    "summary_version": summary_version,
+                    "changed_files": changed_files,
+                    "mutable_paths": self.evo_config.mutable_paths,
+                    "immutable_paths": self.evo_config.immutable_paths,
+                }
+            )
+            text_embedding, e_cost = await self._get_text_embedding_async(summary_text)
             
             embed_cost += e_cost
             if self.verbose:
@@ -2584,7 +2615,7 @@ class ShinkaEvolveRunner:
             # Novelty check (same logic as sync runner)
             if self.novelty_judge:
                 should_check = await self.novelty_judge.should_check_novelty_async(
-                    text_embedding, generation, parent_repo, self.db
+                    text_embedding, generation, parent_program, self.db
                 )
 
                 if should_check:
@@ -2592,7 +2623,7 @@ class ShinkaEvolveRunner:
                         should_accept,
                         novelty_metadata,
                     ) = await self.novelty_judge.assess_novelty_with_rejection_sampling_async(
-                        exec_fname, text_embedding, parent_repo, self.db
+                        summary_text, text_embedding, parent_program, self.db
                     )
 
                     # Update costs and metadata from novelty assessment (same as sync runner)
@@ -2676,6 +2707,7 @@ class ShinkaEvolveRunner:
                     exec_fname=exec_fname,
                     results_dir=results_dir,
                     sampling_worker_id=sampling_worker_id,
+                    repo_path=str(worktree.path) if worktree else None,
                 )
 
                 # Create running job
@@ -2687,20 +2719,31 @@ class ShinkaEvolveRunner:
                     proposal_started_at=proposal_started_at,
                     evaluation_submitted_at=evaluation_submitted_at,
                     generation=generation,
+                    individual_id=worktree.individual_id if worktree else None,
                     evaluation_started_at=evaluation_started_at,
                     sampling_worker_id=sampling_worker_id,
                     evaluation_worker_id=evaluation_worker_id,
                     active_proposals_at_start=active_proposals_at_start,
                     running_eval_jobs_at_submit=running_eval_jobs_at_submit,
-                    parent_id=parent_repo.id,
-                    archive_insp_ids=[p.id for p in archive_repos],
-                    top_k_insp_ids=[p.id for p in top_k_repos],
+                    parent_id=parent_program.id,
+                    archive_insp_ids=[p.id for p in archive_programs],
+                    top_k_insp_ids=[p.id for p in top_k_programs],
                     code_diff=code_diff,
                     meta_patch_data=meta_patch_data,
                     code_embedding=text_embedding,
                     embed_cost=embed_cost,
                     novelty_cost=novelty_total_cost,  # Store novelty cost in running job
                     proposal_task_id=task_id,
+                    repo_path=str(worktree.path) if worktree else None,
+                    repo_commit=child_commit,
+                    repo_parent_commit=parent_commit,
+                    repo_summary=summary_text,
+                    summary_version=summary_version,
+                    changed_files=changed_files,
+                    agent_session_id=meta_patch_data.get("headless_session_id"),
+                    agent_session_name=meta_patch_data.get("headless_session_name"),
+                    agent_provider="headless",
+                    agent_model=meta_patch_data.get("model_name"),
                 )
 
                 # Update costs
@@ -2748,9 +2791,9 @@ class ShinkaEvolveRunner:
                     proposal_started_at=proposal_started_at,
                     sampling_worker_id=sampling_worker_id,
                     active_proposals_at_start=active_proposals_at_start,
-                    parent_program=parent_repo,
-                    archive_programs=archive_repos,
-                    top_k_programs=top_k_repos,
+                    parent_program=parent_program,
+                    archive_programs=archive_programs,
+                    top_k_programs=top_k_programs,
                     code_diff=code_diff,
                     meta_patch_data=meta_patch_data,
                     code_embedding=text_embedding,
@@ -2771,9 +2814,9 @@ class ShinkaEvolveRunner:
             proposal_started_at=proposal_started_at,
             sampling_worker_id=sampling_worker_id,
             active_proposals_at_start=active_proposals_at_start,
-            parent_program=parent_repo,
-            archive_programs=archive_repos,
-            top_k_programs=top_k_repos,
+            parent_program=parent_program,
+            archive_programs=archive_programs,
+            top_k_programs=top_k_programs,
             code_diff=code_diff,
             meta_patch_data=meta_patch_data,
             code_embedding=text_embedding,
@@ -2793,232 +2836,6 @@ class ShinkaEvolveRunner:
             or (program.metadata or {}).get("repo_summary")
             or "No summary recorded."
         )
-
-    async def _generate_repo_proposal(
-        self,
-        *,
-        generation: int,
-        task_id: str,
-        exec_fname: str,
-        results_dir: str,
-        meta_recs: Optional[str],
-        meta_summary: Optional[str],
-        meta_scratch: Optional[str],
-        proposal_started_at: float,
-        sampling_worker_id: Optional[int],
-        active_proposals_at_start: int,
-    ) -> Optional[AsyncRunningJob]:
-        (
-            parent_program,
-            archive_programs,
-            top_k_programs,
-            _needs_fix,
-        ) = await self.async_db.sample_with_fix_mode_async(
-            target_generation=generation,
-            novelty_attempt=1,
-            max_novelty_attempts=1,
-            resample_attempt=1,
-            max_resample_attempts=1,
-        )
-        parent_commit = (
-            parent_program.repo_commit
-            or (parent_program.metadata or {}).get("repo_commit")
-            or self.seed_repo_commit
-        )
-        if not parent_commit:
-            raise ValueError("Parent repo individual does not have a repo commit")
-
-        individual_id = str(uuid.uuid4())
-        worktree = self.repo_worktree_manager.create_child_worktree(
-            parent_commit=parent_commit,
-            generation=generation,
-            individual_id=individual_id,
-        )
-        parent_summary = self._program_summary_text(parent_program)
-
-        context = RepoContext(
-            task_objective=self.evo_config.task_sys_msg or "",
-            parent_summary=parent_summary,
-            parent_id=parent_program.id,
-            parent_commit=parent_commit,
-            parent_metrics=parent_program.public_metrics or {},
-            parent_feedback=str(parent_program.text_feedback or ""),
-            archive_summaries=[self._program_summary_text(p) for p in archive_programs],
-            top_k_summaries=[self._program_summary_text(p) for p in top_k_programs],
-            mutable_paths=self.evo_config.mutable_paths,
-            immutable_paths=self.evo_config.immutable_paths,
-            summary_filename=self.evo_config.summary_filename,
-        )
-        prompt_text = render_repo_context(
-            context,
-            max_summary_chars=max(1000, self.evo_config.summary_max_chars // 2),
-        )
-        prompt_path = self.repo_worktree_manager.write_policy_files(
-            worktree,
-            prompt_text=prompt_text,
-        )
-        self.repo_worktree_manager.write_parent_id(worktree, parent_program.id)
-        summary_path = worktree.path / self.evo_config.summary_filename
-
-        agent_started_at = time.time()
-        agent_response = await self.llm.query(
-            msg=prompt_text,
-            system_msg=(
-                "You are a coding agent running inside a Shinka repo worktree. "
-                "Edit the repository directly and write the required summary file."
-            ),
-            msg_history=[],
-            llm_kwargs={
-                "model_name": self.repo_agent_model,
-                "headless_work_dir": str(worktree.path),
-            },
-        )
-        agent_duration_seconds = time.time() - agent_started_at
-        agent_response_kwargs = (
-            getattr(agent_response, "kwargs", {}) if agent_response else {}
-        )
-        agent_error = None if agent_response is not None else "repo agent query failed"
-        agent_metadata = {
-            "repo_agent_model": (
-                getattr(agent_response, "model_name", None)
-                if agent_response is not None
-                else self.repo_agent_model
-            ),
-            "repo_agent_prompt_path": agent_response_kwargs.get("headless_prompt_path")
-            or str(prompt_path),
-            "repo_agent_stdout_path": agent_response_kwargs.get("headless_stdout_path"),
-            "repo_agent_stderr_path": agent_response_kwargs.get("headless_stderr_path"),
-            "repo_agent_duration_seconds": agent_duration_seconds,
-            "repo_agent_error": agent_error,
-        }
-        snapshot = self.repo_worktree_manager.diff_parent(worktree.path, parent_commit)
-        try:
-            self.repo_worktree_manager.enforce_mutability(snapshot.changed_files)
-        except Exception as e:
-            agent_error = str(e)
-
-        # Validate parent ID was not tampered with
-        stashed_parent_id = WorktreeManager.read_parent_id(worktree.path)
-        if stashed_parent_id != parent_program.id:
-            agent_error = (
-                f"Parent ID mismatch: expected {parent_program.id!r}, "
-                f"got {stashed_parent_id!r}"
-            )
-
-        if summary_path.exists():
-            summary_text = summary_path.read_text(encoding="utf-8")
-            summary_check = validate_summary(
-                summary_text,
-                max_chars=self.evo_config.summary_max_chars,
-            )
-            if not summary_check.valid:
-                agent_error = "; ".join(summary_check.errors)
-        elif agent_error is None:
-            agent_error = "agent did not create required summary markdown"
-
-        agent_metadata["repo_agent_error"] = agent_error
-
-        if agent_error is not None:
-            await self._record_terminal_failed_proposal(
-                generation=generation,
-                exec_fname=str(worktree.path),
-                proposal_started_at=proposal_started_at,
-                sampling_worker_id=sampling_worker_id,
-                active_proposals_at_start=active_proposals_at_start,
-                parent_program=parent_program,
-                archive_programs=archive_programs,
-                top_k_programs=top_k_programs,
-                code_diff=snapshot.diff,
-                meta_patch_data=agent_metadata,
-                code_embedding=None,
-                embed_cost=0.0,
-                novelty_cost=0.0,
-                api_costs=0.0,
-                failure_stage="agent",
-                failure_reason=agent_error,
-            )
-            self.repo_worktree_manager.cleanup_worktree(worktree, remove=False)
-            return None
-
-        snapshot = self.repo_worktree_manager.commit_child(worktree)
-        child_commit = snapshot.commit_sha or parent_commit
-        summary_text = summary_path.read_text(encoding="utf-8")
-        summary_check = validate_summary(
-            summary_text,
-            max_chars=self.evo_config.summary_max_chars,
-        )
-        code_embedding, embed_cost = await self._get_text_embedding_async(summary_text)
-
-        meta_patch_data = {
-            "api_costs": getattr(agent_response, "cost", 0.0) if agent_response else 0.0,
-            "patch_type": "repo_agent",
-            "patch_name": "agent_repo_mutation",
-            "patch_description": "Repo mutation produced by Headless agent",
-            "repo_path": str(worktree.path),
-            "repo_commit": child_commit,
-            "repo_parent_commit": parent_commit,
-            "repo_diff": snapshot.diff,
-            "repo_diff_stat": snapshot.diff_stat,
-            "repo_summary": summary_text,
-            "summary_version": summary_check.schema_version,
-            "changed_files": snapshot.changed_files,
-            "mutable_paths": self.evo_config.mutable_paths,
-            "immutable_paths": self.evo_config.immutable_paths,
-            **agent_metadata,
-        }
-        if meta_recs is not None:
-            meta_patch_data["meta_recommendations"] = meta_recs
-            meta_patch_data["meta_summary"] = meta_summary
-            meta_patch_data["meta_scratch_pad"] = meta_scratch
-
-        (
-            job_id,
-            evaluation_worker_id,
-            evaluation_submitted_at,
-            evaluation_started_at,
-            running_eval_jobs_at_submit,
-        ) = await self._submit_evaluation_job_with_slot(
-            exec_fname=str(worktree.path),
-            results_dir=results_dir,
-            sampling_worker_id=sampling_worker_id,
-            repo_path=str(worktree.path),
-        )
-        running_job = AsyncRunningJob(
-            job_id=job_id,
-            exec_fname=str(worktree.path),
-            results_dir=results_dir,
-            start_time=proposal_started_at,
-            proposal_started_at=proposal_started_at,
-            evaluation_submitted_at=evaluation_submitted_at,
-            generation=generation,
-            individual_id=individual_id,
-            evaluation_started_at=evaluation_started_at,
-            sampling_worker_id=sampling_worker_id,
-            evaluation_worker_id=evaluation_worker_id,
-            active_proposals_at_start=active_proposals_at_start,
-            running_eval_jobs_at_submit=running_eval_jobs_at_submit,
-            parent_id=parent_program.id,
-            archive_insp_ids=[p.id for p in archive_programs],
-            top_k_insp_ids=[p.id for p in top_k_programs],
-            code_diff=snapshot.diff,
-            meta_patch_data=meta_patch_data,
-            code_embedding=code_embedding,
-            embed_cost=embed_cost,
-            novelty_cost=0.0,
-            proposal_task_id=task_id,
-            repo_path=str(worktree.path),
-            repo_commit=child_commit,
-            repo_parent_commit=parent_commit,
-            repo_summary=summary_text,
-            summary_version=summary_check.schema_version,
-            changed_files=snapshot.changed_files,
-        )
-        self.total_api_cost += embed_cost
-        self._update_avg_proposal_cost(embed_cost)
-        self.running_jobs.append(running_job)
-        self.submitted_jobs[str(job_id)] = running_job
-        self.slot_available.set()
-        return running_job
 
     async def _save_patch_attempt_async(
         self,
@@ -3378,9 +3195,9 @@ class ShinkaEvolveRunner:
 
     async def _run_patch_async(
         self,
-        parent_repo: Repo,
-        archive_repos: List[Repo],
-        top_k_repos: Optional[List[Repo]] = None,
+        parent_program: Program,
+        archive_programs: List[Program],
+        top_k_programs: Optional[List[Program]] = None,
         generation: int = 0,
         meta_recs: Optional[str] = None,
         novelty_attempt: int = 1,
@@ -3393,11 +3210,11 @@ class ShinkaEvolveRunner:
         """Run one repo-backed mutation attempt with a headless coding agent.
 
         Args:
-            parent_repo: The parent repo to patch. In fix mode this is the
+            parent_program: The parent repo to patch. In fix mode this is the
                 incorrect repo to fix.
-            archive_repos: Archive inspirations. In fix mode this is the list of
+            archive_programs: Archive inspirations. In fix mode this is the list of
                 ancestor inspirations (from ``sample_with_fix_mode``).
-            top_k_repos: Top-k inspirations (unused in fix mode).
+            top_k_programs: Top-k inspirations (unused in fix mode).
             generation: Current generation number.
             meta_recs: Meta recommendations (unused in fix mode).
             novelty_attempt: Current novelty attempt number.
@@ -3412,7 +3229,7 @@ class ShinkaEvolveRunner:
         current_prompt_id: Optional[str] = None
         current_sys_prompt: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
-        required_summary_name = "summary.md"
+        required_summary_name = self.evo_config.summary_filename
         patch_name = "agent_repo_fix" if fix_mode else "agent_repo_mutation"
         patch_description = (
             "Repo fix produced by headless coding agent"
@@ -3421,18 +3238,15 @@ class ShinkaEvolveRunner:
         )
         response_kwargs: Dict[str, Any] = {}
         summary_path: Optional[Path] = None
+        policy_path: Optional[Path] = None
+        agent_worktree: Optional[RepoWorktree] = None
         last_diff: Optional[str] = None
         last_diff_summary: Dict[str, Any] = {}
         last_summary_version: Optional[str] = None
         last_error_msg: Optional[str] = None
 
         try:
-            if fix_mode:
-                patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
-                    incorrect_program=parent_repo,
-                    ancestor_inspirations=archive_repos,
-                )
-            else:
+            if not fix_mode:
                 current_sys_prompt, current_prompt_id = (
                     self._get_current_system_prompt()
                 )
@@ -3440,12 +3254,58 @@ class ShinkaEvolveRunner:
                 if current_sys_prompt:
                     self.prompt_sampler.task_sys_msg = current_sys_prompt
 
-                patch_sys, patch_msg, patch_type = self.prompt_sampler.sample(
-                    parent=parent_repo,
-                    archive_inspirations=archive_repos,
-                    top_k_inspirations=top_k_repos,
-                    meta_recommendations=meta_recs,
+            patch_sys, patch_msg, patch_type = self.prompt_sampler.sample(
+                parent=parent_program,
+                archive_inspirations=archive_programs,
+                top_k_inspirations=top_k_programs or [],
+                meta_recommendations=meta_recs,
+            )
+            if worktree is not None:
+                agent_worktree = self.repo_worktree_manager.create_agent_worktree_view(
+                    worktree,
+                    hidden_paths=self._agent_hidden_paths_for_worktree(worktree.path),
                 )
+                self.repo_worktree_manager.write_parent_id(
+                    worktree,
+                    parent_program.id,
+                )
+
+            agent_target_worktree = agent_worktree or worktree
+            required_summary_path = (
+                agent_target_worktree.path / required_summary_name
+                if agent_target_worktree is not None
+                else None
+            )
+            required_summary_display = (
+                str(required_summary_path.resolve())
+                if required_summary_path is not None
+                else required_summary_name
+            )
+            repo_contract = f"""
+# Repository Mode Contract
+
+The active Headless working directory is a generation view. Shinka imports only
+validated mutable-path changes from that view into the candidate evaluation
+worktree.
+
+Required constraints:
+- Modify only configured mutable paths, plus the summary file at `{required_summary_display}`.
+- Immutable paths are read-only in the generation view; do not chmod, chown,
+  edit, delete, or touch them.
+- Evaluation code, private tests, and hidden paths are deliberately unavailable during generation.
+- Do not modify `.git/` or any other Shinka control files under `.shinka/`.
+- Complete the existing summary template at `{required_summary_display}` after generating changes.
+- Preserve the summary schema/headings and replace every `TODO_AGENT_SUMMARY` placeholder.
+- Keep the final assistant response brief; the repository files are the source of truth.
+""".strip()
+            if fix_mode:
+                patch_msg = (
+                    "# Incorrect Parent Program\n\n"
+                    "The selected parent failed evaluation. Make the repository correct "
+                    "first, then improve performance if possible.\n\n"
+                    f"{patch_msg}"
+                )
+            patch_sys = f"{patch_sys}\n\n{repo_contract}"
 
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
 
@@ -3453,12 +3313,50 @@ class ShinkaEvolveRunner:
                 if not fix_mode and current_prompt_id:
                     logger.info(f"Using evolved prompt: {current_prompt_id[:8]}...")
 
-            self.repo_worktree_manager.write_parent_id(worktree, parent_repo.id)
+            if agent_target_worktree is not None:
+                if required_summary_path is None:
+                    raise RuntimeError("Summary path was not prepared for worktree")
+                summary_template = build_summary_template(
+                    individual_id=agent_target_worktree.individual_id,
+                    generation=generation,
+                    parent_id=parent_program.id,
+                    parent_commit=agent_target_worktree.parent_commit,
+                )
+                summary_written = await write_file_async(
+                    str(required_summary_path),
+                    summary_template,
+                )
+                if not summary_written:
+                    raise RuntimeError(
+                        f"Failed to write summary template: {required_summary_path}"
+                    )
+                policy_path = self.repo_worktree_manager.write_policy_files(
+                    agent_target_worktree,
+                    prompt_text=(
+                        "# Headless System Prompt\n\n"
+                        f"{patch_sys}\n\n"
+                        "# Headless Patch Message\n\n"
+                        f"{patch_msg}\n"
+                    ),
+                )
+                self.repo_worktree_manager.write_parent_id(
+                    agent_target_worktree,
+                    parent_program.id,
+                )
 
             total_costs = 0.0
 
             # Use provided model_sample_probs (selected once before all loops)
             llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
+            headless_session_name = None
+            if agent_target_worktree is not None:
+                session_short_id = agent_target_worktree.individual_id.replace("-", "")[:12]
+                headless_session_name = f"shinka-gen-{generation}-{session_short_id}"
+                llm_kwargs = {
+                    **llm_kwargs,
+                    "headless_work_dir": str(agent_target_worktree.path),
+                    "headless_session_name": headless_session_name,
+                }
 
             # Update LLM selection with submission
             model_name = llm_kwargs.get("model_name", "unknown")
@@ -3511,6 +3409,7 @@ class ShinkaEvolveRunner:
                 )
                 error_str = None
                 summary_text = ""
+                num_applied = 0
 
                 if agent_dir_raw is None:
                     error_str = "Headless agent did not report a working directory."
@@ -3518,7 +3417,12 @@ class ShinkaEvolveRunner:
                     agent_dir = Path(agent_dir_raw).resolve()
                     summary_path = agent_dir / required_summary_name
 
-                    if worktree is not None and agent_dir != worktree.path.resolve():
+                    expected_agent_dir = (
+                        agent_target_worktree.path.resolve()
+                        if agent_target_worktree is not None
+                        else None
+                    )
+                    if expected_agent_dir is not None and agent_dir != expected_agent_dir:
                         error_str = (
                             f"Headless agent ran in unexpected worktree: {agent_dir}"
                         )
@@ -3543,20 +3447,21 @@ class ShinkaEvolveRunner:
                             if not summary_check.valid:
                                 error_str = "; ".join(summary_check.errors)
 
-                    if worktree is not None:
-                        snapshot = self.repo_worktree_manager.diff_parent(
-                            worktree.path,
-                            worktree.parent_commit,
+                    if agent_target_worktree is not None:
+                        source_snapshot = self.repo_worktree_manager.diff_parent(
+                            agent_target_worktree.path,
+                            agent_target_worktree.parent_commit,
                         )
-                        last_diff = snapshot.diff
-                        num_applied = len(snapshot.changed_files)
+                        last_diff = source_snapshot.diff
+                        num_applied = len(source_snapshot.changed_files)
                         diff_summary = {
-                            "changed_files": snapshot.changed_files,
-                            "diff_stat": snapshot.diff_stat.strip(),
+                            "changed_files": source_snapshot.changed_files,
+                            "diff_stat": source_snapshot.diff_stat.strip(),
                         }
                         try:
-                            self.repo_worktree_manager.enforce_mutability(
-                                snapshot.changed_files
+                            self.repo_worktree_manager.validate_snapshot(
+                                agent_target_worktree,
+                                source_snapshot,
                             )
                         except Exception as exc:
                             error_str = str(exc)
@@ -3564,18 +3469,37 @@ class ShinkaEvolveRunner:
                         if error_str is None and num_applied == 0:
                             error_str = "Agent did not apply any changes to the worktree."
 
-                        if error_str is None:
+                        if error_str is None and worktree is not None:
+                            if agent_worktree is not None:
+                                self.repo_worktree_manager.apply_agent_view_changes(
+                                    agent_worktree,
+                                    worktree,
+                                )
                             configured_summary_path = (
                                 worktree.path / self.evo_config.summary_filename
                             )
-                            if configured_summary_path.resolve() != summary_path.resolve():
-                                configured_summary_path.parent.mkdir(
-                                    parents=True, exist_ok=True
-                                )
-                                configured_summary_path.write_text(
-                                    summary_text,
-                                    encoding="utf-8",
-                                )
+                            configured_summary_path.parent.mkdir(
+                                parents=True,
+                                exist_ok=True,
+                            )
+                            configured_summary_path.write_text(
+                                summary_text,
+                                encoding="utf-8",
+                            )
+                            canonical_snapshot = self.repo_worktree_manager.diff_parent(
+                                worktree.path,
+                                worktree.parent_commit,
+                            )
+                            self.repo_worktree_manager.validate_snapshot(
+                                worktree,
+                                canonical_snapshot,
+                            )
+                            last_diff = canonical_snapshot.diff
+                            num_applied = len(canonical_snapshot.changed_files)
+                            diff_summary = {
+                                "changed_files": canonical_snapshot.changed_files,
+                                "diff_stat": canonical_snapshot.diff_stat.strip(),
+                            }
                     else:
                         last_diff = response.content or None
                         num_applied = 1 if summary_path and summary_path.is_file() else 0
@@ -3619,7 +3543,16 @@ class ShinkaEvolveRunner:
                         "novelty_attempt": novelty_attempt,
                         "resample_attempt": resample_attempt,
                         "patch_attempt": patch_attempt + 1,
-                        "goal_path": str(goal_path) if goal_path else None,
+                        "headless_session_name": response_kwargs.get(
+                            "headless_session_name", headless_session_name
+                        ),
+                        "headless_session_id": response_kwargs.get(
+                            "headless_session_id", headless_session_name
+                        ),
+                        "headless_usage_unknown": response_kwargs.get(
+                            "headless_usage_unknown", True
+                        ),
+                        "repo_policy_path": str(policy_path) if policy_path else None,
                         "headless_prompt_path": response_kwargs.get("headless_prompt_path"),
                         "headless_stdout_path": response_kwargs.get("headless_stdout_path"),
                         "headless_stderr_path": response_kwargs.get("headless_stderr_path"),
@@ -3662,10 +3595,12 @@ class ShinkaEvolveRunner:
                         )
 
                     if patch_attempt < self.evo_config.max_patch_attempts - 1:
-                        base_prompt = (
-                            f"{repo_prompt}\n\n## Retry Instructions\n\n"
+                        patch_msg = (
+                            f"{patch_msg}\n\n## Retry Instructions\n\n"
                             f"The previous attempt failed because: {error_str}\n"
-                            f"Retry in the same worktree, keep edits within the allowed paths, and make sure `{required_summary_name}` is valid when you finish.\n"
+                            "Retry in the same worktree, keep edits within the "
+                            "allowed paths, and make sure "
+                            f"`{required_summary_name}` is valid when you finish.\n"
                         )
 
             # Update LLM selection costs
@@ -3692,7 +3627,18 @@ class ShinkaEvolveRunner:
                 "novelty_attempt": novelty_attempt,
                 "resample_attempt": resample_attempt,
                 "patch_attempt": self.evo_config.max_patch_attempts,
-                "goal_path": str(goal_path) if goal_path else None,
+                "headless_session_name": response_kwargs.get(
+                    "headless_session_name",
+                    llm_kwargs.get("headless_session_name") if "llm_kwargs" in locals() else None,
+                ),
+                "headless_session_id": response_kwargs.get(
+                    "headless_session_id",
+                    llm_kwargs.get("headless_session_name") if "llm_kwargs" in locals() else None,
+                ),
+                "headless_usage_unknown": response_kwargs.get(
+                    "headless_usage_unknown", True
+                ),
+                "repo_policy_path": str(policy_path) if policy_path else None,
                 "headless_prompt_path": response_kwargs.get("headless_prompt_path"),
                 "headless_stdout_path": response_kwargs.get("headless_stdout_path"),
                 "headless_stderr_path": response_kwargs.get("headless_stderr_path"),
@@ -3733,19 +3679,19 @@ class ShinkaEvolveRunner:
             return
 
         if hasattr(self.async_db, "update_program_metadata_async"):
-            await self.async_db.update_repo_metadata_async(
+            await self.async_db.update_program_metadata_async(
                 program.id, dict(program.metadata)
             )
             return
 
         def update_metadata():
-            from shinka.database import RepoDatabase
+            from shinka.database import ProgramDatabase
 
-            thread_db = RepoDatabase(self.db.config)
+            thread_db = ProgramDatabase(self.db.config)
             try:
                 metadata_json = json.dumps(program.metadata)
                 thread_db.cursor.execute(
-                    "UPDATE repos SET metadata = ? WHERE id = ?",
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
                     (metadata_json, program.id),
                 )
                 thread_db.conn.commit()
@@ -3896,7 +3842,7 @@ class ShinkaEvolveRunner:
                 metadata=metadata,
             )
 
-            await self.async_db.add_repo_async(
+            await self.async_db.add_program_async(
                 program,
                 parent_id=program.parent_id,
                 archive_insp_ids=program.archive_inspiration_ids,
@@ -4013,7 +3959,7 @@ class ShinkaEvolveRunner:
                 job.evaluation_started_at or job.evaluation_submitted_at
             )
             persisted_summary = job.repo_summary or ""
-            program = Repo(
+            program = Program(
                 id=job.individual_id or str(uuid.uuid4()),
                 code=persisted_summary,
                 language="repo",
@@ -4038,6 +3984,10 @@ class ShinkaEvolveRunner:
                 artifact_uri=job.repo_path,
                 mutable_paths=getattr(self.evo_config, "mutable_paths", []),
                 immutable_paths=getattr(self.evo_config, "immutable_paths", []),
+                agent_session_id=job.agent_session_id,
+                agent_session_name=job.agent_session_name,
+                agent_provider=job.agent_provider,
+                agent_model=job.agent_model,
                 embedding=job.code_embedding or [],
                 system_prompt_id=system_prompt_id,  # Track evolved prompt
                 metadata=with_pipeline_timing(
@@ -4079,7 +4029,7 @@ class ShinkaEvolveRunner:
 
             try:
                 added = await asyncio.wait_for(
-                    self.async_db.add_repo_async(
+                    self.async_db.add_program_async(
                         program,
                         parent_id=job.parent_id,
                         archive_insp_ids=job.archive_insp_ids,
@@ -4101,7 +4051,7 @@ class ShinkaEvolveRunner:
                     existing_program = None
                     if hasattr(self.async_db, "get_program_by_source_job_id_async"):
                         existing_program = (
-                            await self.async_db.get_repo_by_source_job_id_async(
+                            await self.async_db.get_program_by_source_job_id_async(
                                 source_job_id
                             )
                         )
@@ -4264,14 +4214,14 @@ class ShinkaEvolveRunner:
     ) -> None:
         """Apply slower post-persistence side effects for one completed program."""
         job = persisted_event.job
-        program = persisted_event.repo
+        program = persisted_event.program
         apply_started_at = time.time()
         metadata_persist_needed = False
         side_effects_completed = False
 
         try:
             if hasattr(self.async_db, "run_program_maintenance_async"):
-                await self.async_db.run_repo_maintenance_async(
+                await self.async_db.run_program_maintenance_async(
                     program,
                     verbose=self.verbose,
                 )
@@ -4311,13 +4261,13 @@ class ShinkaEvolveRunner:
                         meta_lock = asyncio.Lock()
                         self._meta_side_effect_lock = meta_lock
                     async with meta_lock:
-                        self.meta_summarizer.add_evaluated_repo(program)
+                        self.meta_summarizer.add_evaluated_program(program)
 
                         if self.meta_summarizer.should_update_meta(
                             self.evo_config.meta_rec_interval
                         ):
                             logger.info("Updating meta memory...")
-                            best_program = await self.async_db.get_best_repo_async()
+                            best_program = await self.async_db.get_best_program_async()
                             # Use async meta summarizer for non-blocking meta analysis
                             (
                                 updated_recs,
@@ -4457,7 +4407,7 @@ class ShinkaEvolveRunner:
         """Construct a persisted-program event for follow-up side effects."""
         return PersistedProgramEvent(
             job=job,
-            repo=program,
+            program=program,
             evaluation_finished_at=evaluation_finished_at,
             postprocess_started_at=postprocess_started_at,
             postprocess_finished_at=postprocess_finished_at,
@@ -4865,7 +4815,7 @@ class ShinkaEvolveRunner:
 
     async def _count_completed_generations_from_db(self) -> int:
         """Count persisted completed generations, excluding island copies."""
-        total_programs = await self.async_db.get_total_repo_count_async()
+        total_programs = await self.async_db.get_total_program_count_async()
         island_copies = max(0, getattr(self.db_config, "num_islands", 1) - 1)
         completed_generations = max(0, total_programs - island_copies)
         return min(completed_generations, self.evo_config.num_generations)
@@ -4967,6 +4917,8 @@ class ShinkaEvolveRunner:
         repo_path: Optional[str] = None,
     ) -> tuple[Union[str, Any], int, float, float, int]:
         """Reserve an evaluation slot before submitting the evaluation job."""
+        if repo_path is None:
+            raise ValueError("repo_path is required for evaluation")
         if sampling_worker_id is not None:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
@@ -4989,6 +4941,34 @@ class ShinkaEvolveRunner:
             evaluation_started_at,
             running_eval_jobs_at_submit,
         )
+
+    def _agent_hidden_paths_for_worktree(self, worktree_path: Path) -> List[str]:
+        hidden_paths = list(getattr(self.evo_config, "agent_hidden_paths", []) or [])
+        eval_program_path = getattr(self.job_config, "eval_program_path", None)
+        if eval_program_path:
+            eval_path = Path(str(eval_program_path))
+            rel_eval_path: Optional[str] = None
+            if eval_path.is_absolute():
+                try:
+                    rel_eval_path = eval_path.resolve().relative_to(
+                        worktree_path.resolve()
+                    ).as_posix()
+                except ValueError:
+                    rel_eval_path = None
+            else:
+                rel_eval_path = eval_path.as_posix()
+
+            if rel_eval_path:
+                normalized = rel_eval_path.replace("\\", "/").strip("/")
+                if (
+                    normalized
+                    and normalized != "."
+                    and not normalized.startswith("../")
+                    and "/../" not in normalized
+                ):
+                    hidden_paths.append(normalized)
+
+        return list(dict.fromkeys(hidden_paths))
 
     def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
         """Return the wall-clock runtime limit for a single evaluation job."""
@@ -5069,7 +5049,7 @@ class ShinkaEvolveRunner:
             if gen not in running_generations:
                 try:
                     # Add timeout to prevent hanging on individual queries
-                    get_programs_coro = self.async_db.get_repos_by_generation_async(
+                    get_programs_coro = self.async_db.get_programs_by_generation_async(
                         gen
                     )
                     programs_in_gen = await asyncio.wait_for(
@@ -5367,7 +5347,7 @@ class ShinkaEvolveRunner:
 
                 # Update meta summarizer periodically
                 if self.completed_generations > 0:
-                    best_program = await self.async_db.get_best_repo_async()
+                    best_program = await self.async_db.get_best_program_async()
                     if best_program:
                         # This would need to be made async in MetaSummarizer
                         pass  # Placeholder for now
@@ -5398,7 +5378,7 @@ class ShinkaEvolveRunner:
             if self.prompt_db is not None and self.db is not None:
                 try:
                     # Get all correct program scores from main database
-                    all_programs = self.db.get_all_repos()
+                    all_programs = self.db.get_all_programs()
                     all_correct_scores = [
                         p.combined_score
                         for p in all_programs
@@ -5503,7 +5483,7 @@ class ShinkaEvolveRunner:
         try:
             programs = [
                 program
-                for program in self.db.get_all_repos()
+                for program in self.db.get_all_programs()
                 if program.generation > 0 and isinstance(program.metadata, dict)
             ]
             if not programs:
@@ -5590,7 +5570,7 @@ class ShinkaEvolveRunner:
                   AND json_extract(attempt_log.details, '$.node_kind') = 'failed_proposal'
                   AND attempt_log.generation < ?
                   AND attempt_log.generation NOT IN (
-                      SELECT DISTINCT generation FROM repos
+                      SELECT DISTINCT generation FROM programs
                   )
                 ORDER BY attempt_log.generation
                 """,
@@ -5716,7 +5696,7 @@ class ShinkaEvolveRunner:
             self._best_solution_lock = best_lock
 
         async with best_lock:
-            best_programs = await self.async_db.get_top_repos_async(
+            best_programs = await self.async_db.get_top_programs_async(
                 n=1, correct_only=True
             )
             if not best_programs:
@@ -5728,10 +5708,10 @@ class ShinkaEvolveRunner:
 
             best_program = best_programs[0]
 
-            if best_program.id == self.best_repo_id:
+            if best_program.id == self.best_program_id:
                 return  # No change
 
-            self.best_repo_id = best_program.id
+            self.best_program_id = best_program.id
 
             source_dir = f"{self.results_dir}/{FOLDER_PREFIX}_{best_program.generation}"
             best_dir = Path(self.results_dir) / "best"

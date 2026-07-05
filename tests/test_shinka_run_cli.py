@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,12 +13,29 @@ def _make_task_dir(tmp_path: Path, *, include_evaluate: bool = True) -> Path:
     task_dir.mkdir()
     if include_evaluate:
         (task_dir / "evaluate.py").write_text(
-            "def main(program_path: str, results_dir: str):\n    pass\n",
+            "def main(repo_path: str, results_dir: str):\n    pass\n",
             encoding="utf-8",
         )
-    (task_dir / "initial.py").write_text(
-        "# EVOLVE-BLOCK-START\ndef run():\n    return 0\n# EVOLVE-BLOCK-END\n",
-        encoding="utf-8",
+    seed_repo = task_dir / "seed_repo"
+    seed_repo.mkdir()
+    subprocess.run(["git", "init"], cwd=seed_repo, check=True, capture_output=True)
+    (seed_repo / "src").mkdir()
+    (seed_repo / "src" / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=seed_repo, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "seed",
+        ],
+        cwd=seed_repo,
+        check=True,
+        capture_output=True,
     )
     return task_dir
 
@@ -45,7 +63,7 @@ def test_shinka_run_help_is_detailed(capsys):
 
     help_output = capsys.readouterr().out
     assert "Task directory contract" in help_output
-    assert "initial.<ext>" in help_output
+    assert "seed_repo" in help_output
     assert "--set NS.FIELD=VALUE" in help_output
     assert "--config-fname" in help_output
     assert "unknown namespace/field: non-zero exit" in help_output
@@ -84,11 +102,11 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     evo_config = _DummyRunner.last_kwargs["evo_config"]
     db_config = _DummyRunner.last_kwargs["db_config"]
     job_config = _DummyRunner.last_kwargs["job_config"]
-    init_program_str = _DummyRunner.last_kwargs["init_program_str"]
     evaluate_str = _DummyRunner.last_kwargs["evaluate_str"]
 
     assert evo_config.results_dir == str(results_dir.resolve())
     assert evo_config.num_generations == 7
+    assert evo_config.seed_repo_path == str((task_dir / "seed_repo").resolve())
     assert evo_config.task_sys_msg is not None
     assert evo_config.patch_types == ["diff", "full", "cross"]
     assert evo_config.patch_type_probs == [0.6, 0.3, 0.1]
@@ -117,34 +135,26 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     assert job_config.time == "00:03:00"
     assert not hasattr(evo_config, "max_proposal_jobs")
     assert not hasattr(evo_config, "max_db_workers")
-    assert "def run" in init_program_str
     assert "def main" in evaluate_str
 
 
-@pytest.mark.parametrize("extension", [".f90", ".f95", ".f03", ".f08"])
-def test_shinka_run_infers_fortran_initial_extensions(
-    tmp_path,
-    monkeypatch,
-    extension,
-):
+def test_shinka_run_uses_explicit_seed_repo_path(tmp_path, monkeypatch):
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)
-    (task_dir / "initial.py").unlink()
-    (task_dir / f"initial{extension}").write_text(
-        "! EVOLVE-BLOCK-START\n"
-        "integer function run()\n"
-        "    run = 0\n"
-        "end function run\n"
-        "! EVOLVE-BLOCK-END\n",
-        encoding="utf-8",
+    explicit_seed = tmp_path / "explicit_seed"
+    subprocess.run(
+        ["cp", "-R", str(task_dir / "seed_repo"), str(explicit_seed)],
+        check=True,
     )
-    results_dir = tmp_path / f"results_fortran_{extension[1:]}"
+    results_dir = tmp_path / "results_explicit_seed"
     monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
 
     exit_code = cli_run.main(
         [
             "--task-dir",
             str(task_dir),
+            "--seed-repo-path",
+            str(explicit_seed),
             "--results_dir",
             str(results_dir),
             "--num_generations",
@@ -154,22 +164,7 @@ def test_shinka_run_infers_fortran_initial_extensions(
 
     assert exit_code == 0
     evo_config = _DummyRunner.last_kwargs["evo_config"]
-    assert evo_config.language == "fortran"
-    assert evo_config.init_program_path.endswith(f"initial{extension}")
-
-
-def test_shinka_run_prefers_python_over_fortran_initial(tmp_path):
-    task_dir = _make_task_dir(tmp_path)
-    (task_dir / "initial.f90").write_text(
-        "! EVOLVE-BLOCK-START\n"
-        "integer function run()\n"
-        "    run = 0\n"
-        "end function run\n"
-        "! EVOLVE-BLOCK-END\n",
-        encoding="utf-8",
-    )
-
-    assert cli_run._detect_initial_program(task_dir) == task_dir / "initial.py"
+    assert evo_config.seed_repo_path == str(explicit_seed.resolve())
 
 
 def test_shinka_run_parses_json_overrides(tmp_path, monkeypatch):
@@ -280,6 +275,7 @@ def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeyp
             "db_config:\n"
             "  num_islands: 4\n"
             "job_config:\n"
+            "  eval_program_path: evaluate.py\n"
             "  time: 00:04:00\n"
             "evo_config:\n"
             "  num_generations: 999\n"
@@ -319,6 +315,7 @@ def test_shinka_run_loads_optional_config_yaml_with_precedence(tmp_path, monkeyp
     assert evo_config.num_generations == 3
     assert evo_config.llm_models == ["gpt-5-mini"]
     assert db_config.num_islands == 2
+    assert job_config.eval_program_path == str((task_dir / "evaluate.py").resolve())
     assert job_config.time == "00:04:00"
     assert _DummyRunner.last_kwargs["max_evaluation_jobs"] == 8
     assert _DummyRunner.last_kwargs["max_proposal_jobs"] == 7

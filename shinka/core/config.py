@@ -22,6 +22,7 @@ class EvolutionConfig:
     base_ref: str = "HEAD"
     mutable_paths: List[str] = field(default_factory=list)
     immutable_paths: List[str] = field(default_factory=list)
+    agent_hidden_paths: List[str] = field(default_factory=list)
     ignore_paths: List[str] = field(default_factory=lambda: [".git", ".shinka"])
     summary_filename: str = ".shinka/individual.md"
     summary_max_chars: int = 12000
@@ -77,5 +78,5 @@ class EvolutionConfig:
     prompt_llm_kwargs: dict = field(default_factory=lambda: {})
     prompt_ucb_exploration_constant: float = 1.0
     prompt_epsilon: float = 0.1
-    prompt_evo_top_k_repos: int = 3
+    prompt_evo_top_k_programs: int = 3
     prompt_percentile_recompute_interval: int = 20

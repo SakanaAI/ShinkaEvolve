@@ -14,6 +14,8 @@ class QueryResult:
         cost: float = 0.0,
         input_cost: float = 0.0,
         output_cost: float = 0.0,
+        content: str = "",
+        new_msg_history: Optional[List[Dict]] = None,
         thought: str = "",
         model_posteriors: Optional[Dict[str, float]] = None,
         num_tool_calls: int = 0,
@@ -29,6 +31,8 @@ class QueryResult:
         self.cost = cost
         self.input_cost = input_cost
         self.output_cost = output_cost
+        self.content = content
+        self.new_msg_history = new_msg_history if new_msg_history is not None else []
         self.thought = thought
         self.model_posteriors = model_posteriors or {}
         self.num_tool_calls = num_tool_calls
@@ -46,6 +50,8 @@ class QueryResult:
             "cost": self.cost,
             "input_cost": self.input_cost,
             "output_cost": self.output_cost,
+            "content": self.content,
+            "new_msg_history": self.new_msg_history,
             "thought": self.thought,
             "model_posteriors": self.model_posteriors,
             "num_tool_calls": self.num_tool_calls,

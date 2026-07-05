@@ -13,8 +13,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from .complexity import analyze_code_metrics
-from .dbase import Program, RepoDatabase
-from .individuals import Repo
+from .dbase import Program, ProgramDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +74,12 @@ class AsyncDBDebugger:
 db_debugger = AsyncDBDebugger()
 
 
-class AsyncRepoDatabase:
-    """Async wrapper around RepoDatabase for concurrent operations."""
+class AsyncProgramDatabase:
+    """Async wrapper around ProgramDatabase for concurrent operations."""
 
     def __init__(
         self,
-        sync_db: RepoDatabase,
+        sync_db: ProgramDatabase,
         max_workers: int = 1,
         embedding_recompute_interval: int = 10,
         enable_deadlock_debugging: bool = False,
@@ -88,7 +87,7 @@ class AsyncRepoDatabase:
         """Initialize with existing sync database and thread pool.
 
         Args:
-            sync_db: The synchronous RepoDatabase instance
+            sync_db: The synchronous ProgramDatabase instance
             max_workers: Maximum number of threads for database operations
             embedding_recompute_interval: Repos to add before recomputing
             enable_deadlock_debugging: Enable detailed deadlock monitoring and logging
@@ -115,7 +114,7 @@ class AsyncRepoDatabase:
 
         # Embedding recomputation control
         self.embedding_recompute_interval = embedding_recompute_interval
-        self.repos_added_since_embedding_recompute = 0
+        self.programs_added_since_embedding_recompute = 0
         self.last_embedding_recompute_time = time.time()
         self._embedding_recompute_task = None
 
@@ -128,7 +127,7 @@ class AsyncRepoDatabase:
         else:
             logger.debug("Deadlock monitoring disabled")
 
-    def _merge_runtime_metadata_from_db(self, source_db: RepoDatabase) -> None:
+    def _merge_runtime_metadata_from_db(self, source_db: ProgramDatabase) -> None:
         """Merge key in-memory metadata from a worker DB back to the shared sync DB."""
         if hasattr(source_db, "last_iteration") and hasattr(self.sync_db, "last_iteration"):
             self.sync_db.last_iteration = max(
@@ -147,10 +146,10 @@ class AsyncRepoDatabase:
                 source_db, "best_score_generation"
             ):
                 self.sync_db.best_score_generation = source_db.best_score_generation
-            if hasattr(self.sync_db, "best_repo_id") and hasattr(
-                source_db, "best_repo_id"
+            if hasattr(self.sync_db, "best_program_id") and hasattr(
+                source_db, "best_program_id"
             ):
-                self.sync_db.best_repo_id = source_db.best_repo_id
+                self.sync_db.best_program_id = source_db.best_program_id
 
         if getattr(source_db, "beam_search_parent_id", None) is not None and hasattr(
             self.sync_db, "beam_search_parent_id"
@@ -218,9 +217,9 @@ class AsyncRepoDatabase:
                     thread_db = None
                     try:
                         # Create a new ProgramDatabase instance for this thread
-                        from .dbase import RepoDatabase
+                        from .dbase import ProgramDatabase
 
-                        thread_db = RepoDatabase(self.sync_db.config, read_only=True)
+                        thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                         if hasattr(thread_db, "set_display_console"):
                             thread_db.set_display_console(
                                 getattr(self.sync_db, "display_console", None)
@@ -284,9 +283,9 @@ class AsyncRepoDatabase:
                     )
                     thread_db = None
                     try:
-                        from .dbase import RepoDatabase
+                        from .dbase import ProgramDatabase
 
-                        thread_db = RepoDatabase(self.sync_db.config, read_only=True)
+                        thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                         if hasattr(thread_db, "set_display_console"):
                             thread_db.set_display_console(
                                 getattr(self.sync_db, "display_console", None)
@@ -338,11 +337,11 @@ class AsyncRepoDatabase:
                 def update_thread_safe():
                     # Create a new writable database instance for this thread
                     # (SQLite connections aren't thread-safe)
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
                     thread_db = None
                     try:
-                        thread_db = RepoDatabase(
+                        thread_db = ProgramDatabase(
                             self.sync_db.config,
                             embedding_model=self.sync_db.embedding_model,
                         )
@@ -366,9 +365,9 @@ class AsyncRepoDatabase:
             self._debug_track_end(op_id, success=False)
             logger.warning(f"Could not update beam_search_parent_id: {e}")
 
-    async def add_repo_async(
+    async def add_program_async(
         self,
-        repo: Repo,
+        repo: Optional[Program] = None,
         parent_id: Optional[str] = None,
         archive_insp_ids: Optional[List[str]] = None,
         top_k_insp_ids: Optional[List[str]] = None,
@@ -378,11 +377,12 @@ class AsyncRepoDatabase:
         embed_cost: float = 0.0,
         verbose: bool = False,
         defer_maintenance: bool = False,
+        program: Optional[Program] = None,
     ) -> bool:
         """Async version of adding a program to the database.
 
         Args:
-            repo: Repo to add
+            repo: Program to add
             parent_id: ID of parent program
             archive_insp_ids: List of archive inspiration IDs
             top_k_insp_ids: List of top-k inspiration IDs
@@ -395,10 +395,15 @@ class AsyncRepoDatabase:
                 follow-up work so it can be replayed later off the insert
                 hot path.
         """
+        if repo is None:
+            repo = program
+        if repo is None:
+            raise ValueError("program is required")
+
         # Debug tracking
         op_id = self._debug_track_start(
             "add_program_async",
-            repo_id=repo.id,
+            program_id=repo.id,
             generation=repo.generation,
             parent_id=parent_id,
         )
@@ -449,7 +454,7 @@ class AsyncRepoDatabase:
             # Serialize writes so duplicate source_job_id checks and inserts
             # happen in a single critical section.
             async with self._db_semaphore:
-                added = await self._add_repo_fast_async(
+                added = await self._add_program_fast_async(
                     repo,
                     verbose=verbose,
                     defer_maintenance=defer_maintenance,
@@ -459,9 +464,9 @@ class AsyncRepoDatabase:
             # when a new row is actually inserted.
             if added:
                 async with self._lock:
-                    self.repos_added_since_embedding_recompute += 1
+                    self.programs_added_since_embedding_recompute += 1
                     should_recompute = (
-                        self.repos_added_since_embedding_recompute
+                        self.programs_added_since_embedding_recompute
                         >= self.embedding_recompute_interval
                     )
 
@@ -474,14 +479,14 @@ class AsyncRepoDatabase:
 
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async add_repo: {e}")
+            logger.error(f"Error in async add_program: {e}")
             raise
 
-    async def add_repos_batch_async(
+    async def add_programs_batch_async(
         self,
-        repos_data: List[
+        programs_data: List[
             Tuple[
-                Repo,
+                Program,
                 Optional[str],
                 Optional[List[str]],
                 Optional[List[str]],
@@ -492,27 +497,27 @@ class AsyncRepoDatabase:
             ]
         ],
     ) -> None:
-        """Add multiple repos in a batch for improved performance.
+        """Add multiple programs in a batch for improved performance.
 
         Args:
-            repos_data: List of tuples containing repo data
+            programs_data: List of tuples containing repo data
         """
-        if not repos_data:
+        if not programs_data:
             return
 
         # Debug tracking
         op_id = self._debug_track_start(
-            "add_repos_batch_async",
-            batch_size=len(repos_data),
-            repo_ids=[r[0].id for r in repos_data[:3]],  # First 3 IDs for context
+            "add_programs_batch_async",
+            batch_size=len(programs_data),
+            program_ids=[r[0].id for r in programs_data[:3]],  # First 3 IDs for context
         )
 
         try:
-            # Prepare all repos outside the lock
+            # Prepare all programs outside the lock
             await asyncio.sleep(0)  # Yield control to event loop
 
-            prepared_repos = []
-            for repo_data in repos_data:
+            prepared_programs = []
+            for program_data in programs_data:
                 (
                     repo,
                     parent_id,
@@ -522,7 +527,7 @@ class AsyncRepoDatabase:
                     meta_patch_data,
                     code_embedding,
                     embed_cost,
-                ) = repo_data
+                ) = program_data
 
                 # Set additional metadata using setattr for dynamic attributes
                 if parent_id:
@@ -539,17 +544,17 @@ class AsyncRepoDatabase:
                     setattr(repo, "code_embedding", code_embedding)
                 setattr(repo, "embed_cost", embed_cost)
 
-                prepared_repos.append(repo)
+                prepared_programs.append(repo)
 
             # Use lock only for the actual database writes
             async with self._lock:
-                for repo in prepared_repos:
-                    await self._add_repo_fast_async(repo)
+                for repo in prepared_programs:
+                    await self._add_program_fast_async(repo)
 
-                # Track repos and schedule embedding recomputation
-                self.repos_added_since_embedding_recompute += len(prepared_repos)
+                # Track programs and schedule embedding recomputation
+                self.programs_added_since_embedding_recompute += len(prepared_programs)
                 should_recompute = (
-                    self.repos_added_since_embedding_recompute
+                    self.programs_added_since_embedding_recompute
                     >= self.embedding_recompute_interval
                 )
 
@@ -558,17 +563,17 @@ class AsyncRepoDatabase:
                 self._schedule_embedding_recomputation()
 
             logger.info(
-                f"Successfully added batch of {len(prepared_repos)} repos"
+                f"Successfully added batch of {len(prepared_programs)} programs"
             )
 
             self._debug_track_end(op_id, success=True)
 
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in batch add_repos: {e}")
+            logger.error(f"Error in batch add_programs: {e}")
             raise
 
-    def _add_repo_fast(self, repo: Repo):
+    def _add_program_fast(self, repo: Program):
         """Fast repo addition that defers expensive operations (deprecated - use async version)."""
         # Temporarily disable expensive operations in sync database
         original_embedding_method = self.sync_db._recompute_embeddings_and_clusters
@@ -581,18 +586,18 @@ class AsyncRepoDatabase:
             # Restore original methods
             self.sync_db._recompute_embeddings_and_clusters = original_embedding_method
 
-    async def _add_repo_fast_async(
+    async def _add_program_fast_async(
         self,
-        repo: Repo,
+        repo: Program,
         verbose: bool = False,
         defer_maintenance: bool = False,
     ) -> bool:
         """Async fast repo addition that defers expensive operations."""
 
-        def add_repo_sync():
+        def add_program_sync():
             thread_db = None
             try:
-                thread_db = RepoDatabase(
+                thread_db = ProgramDatabase(
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
@@ -609,7 +614,7 @@ class AsyncRepoDatabase:
                     with self._source_job_id_lock:
                         if (
                             source_job_id in self._in_flight_source_job_ids
-                            or thread_db.has_repo_with_source_job_id(source_job_id)
+                            or thread_db.has_program_with_source_job_id(source_job_id)
                         ):
                             logger.info(
                                 "Skipping duplicate persisted job for source_job_id=%s",
@@ -641,7 +646,7 @@ class AsyncRepoDatabase:
                     )
 
             except Exception as e:
-                logger.error(f"Error in add_repo_sync: {e}")
+                logger.error(f"Error in add_program_sync: {e}")
                 raise
             finally:
                 if thread_db is not None:
@@ -649,16 +654,16 @@ class AsyncRepoDatabase:
                         thread_db.close()
                     except Exception as e:
                         logger.warning(
-                            f"Error closing thread database in add_repo_sync: {e}"
+                            f"Error closing thread database in add_program_sync: {e}"
                         )
 
         # Run the thread-safe database operation in an executor
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self.write_executor, add_repo_sync)
+        return await loop.run_in_executor(self.write_executor, add_program_sync)
 
-    async def run_repo_maintenance_async(
+    async def run_program_maintenance_async(
         self,
-        repo: Repo,
+        repo: Program,
         verbose: bool = False,
         recompute_embeddings: bool = False,
     ) -> None:
@@ -667,7 +672,7 @@ class AsyncRepoDatabase:
         def run_maintenance_sync():
             thread_db = None
             try:
-                thread_db = RepoDatabase(
+                thread_db = ProgramDatabase(
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
@@ -688,24 +693,24 @@ class AsyncRepoDatabase:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self.write_executor, run_maintenance_sync)
 
-    async def update_repo_metadata_async(
+    async def update_program_metadata_async(
         self,
-        repo_id: str,
+        program_id: str,
         metadata: Dict[str, Any],
     ) -> None:
-        """Persist repo metadata on the dedicated writer lane."""
+        """Persist program metadata on the dedicated writer lane."""
 
         def update_metadata_sync():
             thread_db = None
             try:
-                thread_db = RepoDatabase(
+                thread_db = ProgramDatabase(
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
                 payload = json.dumps(metadata)
                 thread_db.cursor.execute(
-                    "UPDATE repos SET metadata = ? WHERE id = ?",
-                    (payload, repo_id),
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (payload, program_id),
                 )
                 thread_db.conn.commit()
             finally:
@@ -727,7 +732,7 @@ class AsyncRepoDatabase:
         self._embedding_recompute_task = asyncio.create_task(
             self._recompute_embeddings_background()
         )
-        self.repos_added_since_embedding_recompute = 0
+        self.programs_added_since_embedding_recompute = 0
         logger.info(
             f"Scheduled embedding recomputation after "
             f"{self.embedding_recompute_interval} repo additions"
@@ -754,10 +759,10 @@ class AsyncRepoDatabase:
         except Exception as e:
             logger.error(f"Error in background embedding recomputation: {e}")
 
-    async def get_async(self, repo_id: str) -> Optional[Repo]:
+    async def get_async(self, program_id: str) -> Optional[Program]:
         """Async version of get repo by ID."""
         # Debug tracking
-        op_id = self._debug_track_start("get_async", repo_id=repo_id)
+        op_id = self._debug_track_start("get_async", program_id=program_id)
 
         try:
             await asyncio.sleep(0)  # Yield control to event loop
@@ -765,11 +770,11 @@ class AsyncRepoDatabase:
             def get_thread_safe():
                 thread_op_id = self._debug_track_start("get_thread_safe")
                 try:
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                     try:
-                        result = thread_db.get(repo_id)
+                        result = thread_db.get(program_id)
                         self._debug_track_end(thread_op_id, success=True)
                         return result
                     finally:
@@ -787,10 +792,10 @@ class AsyncRepoDatabase:
             logger.error(f"Error in async get: {e}")
             raise
 
-    async def get_best_repo_async(self) -> Optional[Repo]:
+    async def get_best_program_async(self) -> Optional[Program]:
         """Async version of get best repo."""
         # Debug tracking
-        op_id = self._debug_track_start("get_best_repo_async")
+        op_id = self._debug_track_start("get_best_program_async")
 
         try:
             await asyncio.sleep(0)  # Yield control to event loop
@@ -798,11 +803,11 @@ class AsyncRepoDatabase:
             def get_best_thread_safe():
                 thread_op_id = self._debug_track_start("get_best_thread_safe")
                 try:
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                     try:
-                        result = thread_db.get_best_repo()
+                        result = thread_db.get_best_program()
                         self._debug_track_end(thread_op_id, success=True)
                         return result
                     finally:
@@ -817,13 +822,13 @@ class AsyncRepoDatabase:
             return result
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_best_repo: {e}")
+            logger.error(f"Error in async get_best_program: {e}")
             raise
 
-    async def has_repo_with_source_job_id_async(self, source_job_id: str) -> bool:
+    async def has_program_with_source_job_id_async(self, source_job_id: str) -> bool:
         """Check whether a completed job has already been persisted."""
         op_id = self._debug_track_start(
-            "has_repo_with_source_job_id_async", source_job_id=source_job_id
+            "has_program_with_source_job_id_async", source_job_id=source_job_id
         )
 
         try:
@@ -836,10 +841,10 @@ class AsyncRepoDatabase:
                         if source_job_id in self._in_flight_source_job_ids:
                             return True
 
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
-                    return thread_db.has_repo_with_source_job_id(source_job_id)
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    return thread_db.has_program_with_source_job_id(source_job_id)
                 finally:
                     if thread_db:
                         thread_db.close()
@@ -853,12 +858,12 @@ class AsyncRepoDatabase:
             logger.error(f"Error in async source_job_id existence check: {e}")
             raise
 
-    async def get_repo_by_source_job_id_async(
+    async def get_program_by_source_job_id_async(
         self, source_job_id: str
-    ) -> Optional[Repo]:
+    ) -> Optional[Program]:
         """Fetch a persisted repo row by completed scheduler job id."""
         op_id = self._debug_track_start(
-            "get_repo_by_source_job_id_async", source_job_id=source_job_id
+            "get_program_by_source_job_id_async", source_job_id=source_job_id
         )
 
         try:
@@ -867,10 +872,10 @@ class AsyncRepoDatabase:
             def fetch_thread_safe():
                 thread_db = None
                 try:
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
-                    return thread_db.get_repo_by_source_job_id(source_job_id)
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    return thread_db.get_program_by_source_job_id(source_job_id)
                 finally:
                     if thread_db:
                         thread_db.close()
@@ -993,7 +998,7 @@ class AsyncRepoDatabase:
 
     async def batch_sample_async(
         self, num_samples: int
-    ) -> List[Tuple[Repo, List[Repo], List[Repo]]]:
+    ) -> List[Tuple[Program, List[Program], List[Program]]]:
         """Sample multiple parent/inspiration sets concurrently.
 
         Args:
@@ -1094,30 +1099,30 @@ class AsyncRepoDatabase:
             logger.error(f"Error in force_recompute_embeddings_async: {e}")
             raise
 
-    async def get_repos_by_generation_async(self, generation: int) -> List[Repo]:
-        """Async get repos by generation."""
+    async def get_programs_by_generation_async(self, generation: int) -> List[Program]:
+        """Async get programs by generation."""
         # Debug tracking
         op_id = self._debug_track_start(
-            "get_repos_by_generation_async", generation=generation
+            "get_programs_by_generation_async", generation=generation
         )
 
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 self.executor,
-                self.sync_db.get_repos_by_generation_thread_safe,
+                self.sync_db.get_programs_by_generation_thread_safe,
                 generation,
             )
             self._debug_track_end(op_id, success=True)
             return result
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_repos_by_generation: {e}")
+            logger.error(f"Error in async get_programs_by_generation: {e}")
             return []  # Return empty list on error
 
-    async def get_total_repo_count_async(self) -> int:
+    async def get_total_program_count_async(self) -> int:
         """Async get total repo count - much faster than checking each generation."""
-        op_id = self._debug_track_start("get_total_repo_count_async")
+        op_id = self._debug_track_start("get_total_program_count_async")
 
         try:
             loop = asyncio.get_event_loop()
@@ -1126,10 +1131,10 @@ class AsyncRepoDatabase:
                 """Thread-safe repo counting."""
                 thread_db = None
                 try:
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
-                    thread_db.cursor.execute("SELECT COUNT(*) FROM repos")
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
+                    thread_db.cursor.execute("SELECT COUNT(*) FROM programs")
                     count = thread_db.cursor.fetchone()[0]
                     return count
                 finally:
@@ -1146,11 +1151,11 @@ class AsyncRepoDatabase:
             return result
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in get_total_repo_count_async: {e}")
+            logger.error(f"Error in get_total_program_count_async: {e}")
             return 0  # Return 0 on error
 
     async def get_persisted_generation_ids_async(self) -> List[int]:
-        """Return distinct persisted generations from the repos table."""
+        """Return distinct persisted generations from the programs table."""
         op_id = self._debug_track_start("get_persisted_generation_ids_async")
 
         try:
@@ -1159,9 +1164,9 @@ class AsyncRepoDatabase:
             def load_generation_ids_thread_safe():
                 thread_db = None
                 try:
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
                     thread_db.cursor.execute(
-                        "SELECT DISTINCT generation FROM repos ORDER BY generation"
+                        "SELECT DISTINCT generation FROM programs ORDER BY generation"
                     )
                     return [int(row[0]) for row in thread_db.cursor.fetchall()]
                 finally:
@@ -1181,20 +1186,20 @@ class AsyncRepoDatabase:
             logger.error(f"Error in get_persisted_generation_ids_async: {e}")
             return []
 
-    async def get_top_repos_async(
+    async def get_top_programs_async(
         self, n: int = 10, correct_only: bool = True
-    ) -> List[Repo]:
-        """Async get top repos."""
+    ) -> List[Program]:
+        """Async get top programs."""
         # Debug tracking
         op_id = self._debug_track_start(
-            "get_top_repos_async", n=n, correct_only=correct_only
+            "get_top_programs_async", n=n, correct_only=correct_only
         )
 
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 self.executor,
-                self.sync_db.get_top_repos_thread_safe,
+                self.sync_db.get_top_programs_thread_safe,
                 n,
                 correct_only,
             )
@@ -1202,20 +1207,20 @@ class AsyncRepoDatabase:
             return result
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in async get_top_repos: {e}")
+            logger.error(f"Error in async get_top_programs: {e}")
             return []
 
     async def compute_percentile_async(
         self, score: float, correct_only: bool = True
     ) -> float:
-        """Compute the percentile rank of a score among all correct repos.
+        """Compute the percentile rank of a score among all correct programs.
 
         This is used for percentile-based fitness calculation for system prompts.
-        A percentile of 0.8 means the score beats 80% of all correct repos.
+        A percentile of 0.8 means the score beats 80% of all correct programs.
 
         Args:
             score: The score to compute percentile for
-            correct_only: If True, only consider correct repos
+            correct_only: If True, only consider correct programs
 
         Returns:
             Percentile rank (0-1), where 1 means best
@@ -1231,29 +1236,29 @@ class AsyncRepoDatabase:
                 """Thread-safe percentile computation."""
                 thread_db = None
                 try:
-                    from .dbase import RepoDatabase
+                    from .dbase import ProgramDatabase
 
-                    thread_db = RepoDatabase(self.sync_db.config, read_only=True)
+                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
 
-                    # Get all scores from correct repos
+                    # Get all scores from correct programs
                     if correct_only:
                         thread_db.cursor.execute(
-                            "SELECT combined_score FROM repos "
+                            "SELECT combined_score FROM programs "
                             "WHERE correct = 1 AND combined_score IS NOT NULL"
                         )
                     else:
                         thread_db.cursor.execute(
-                            "SELECT combined_score FROM repos "
+                            "SELECT combined_score FROM programs "
                             "WHERE combined_score IS NOT NULL"
                         )
 
                     rows = thread_db.cursor.fetchall()
                     if not rows:
-                        return 0.5  # No repos yet, neutral percentile
+                        return 0.5  # No programs yet, neutral percentile
 
                     all_scores = [row[0] for row in rows]
 
-                    # Compute percentile: fraction of repos this score beats
+                    # Compute percentile: fraction of programs this score beats
                     beats = sum(1 for s in all_scores if score > s)
                     ties = sum(1 for s in all_scores if score == s)
 

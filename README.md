@@ -106,27 +106,28 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | 🔥 [Fortran Heat Diffusion](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/fortran_heat_diffusion) | Optimize a compiled Fortran stencil solver. | `LocalJobConfig` |
 | ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 | ∿ [Sine Approx Headless](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/sine_approx_headless) | Evolve a bounded sine approximation using Headless subscription-backed mutation calls. | `LocalJobConfig` |
+| 🧪 [Inference Pipeline Repo](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/inference_pipeline_repo) | Repo-mode evaluator with fake Headless smoke-test agent. | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
 
-For the simplest setup with default settings, you only need to specify the evaluation program:
+Repo-mode evolution requires a seed git repository, mutable paths, and an evaluator that accepts `--repo_path`:
 
 ```python
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
 from shinka.launch import LocalJobConfig, SlurmCondaJobConfig, SlurmDockerJobConfig
 
-# Minimal - only specify what's required
-job_conf = LocalJobConfig(eval_program_path="evaluate.py")
+# Minimal - keep evaluation outside the seed repo
+job_conf = LocalJobConfig(eval_program_path="examples/inference_pipeline_repo/evaluate.py")
 # Or source a uv/venv environment per job:
 # job_conf = LocalJobConfig(
-#     eval_program_path="evaluate.py",
+#     eval_program_path="examples/inference_pipeline_repo/evaluate.py",
 #     activate_script=".venv/bin/activate",
 # )
 # Or run evaluations on SLURM:
 # job_conf = SlurmCondaJobConfig(
-#     eval_program_path="evaluate.py",
+#     eval_program_path="examples/inference_pipeline_repo/evaluate.py",
 #     partition="gpu",
 #     time="01:00:00",
 #     cpus=1,
@@ -136,7 +137,7 @@ job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 # )
 # Or run evaluations in a Docker container on SLURM:
 # job_conf = SlurmDockerJobConfig(
-#     eval_program_path="evaluate.py",
+#     eval_program_path="examples/inference_pipeline_repo/evaluate.py",
 #     image="ubuntu:latest",
 #     partition="gpu",
 #     time="01:00:00",
@@ -145,7 +146,13 @@ job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 #     mem="8G",
 # )
 db_conf = DatabaseConfig()
-evo_conf = EvolutionConfig(init_program_path="initial.py")
+evo_conf = EvolutionConfig(
+    seed_repo_path="examples/inference_pipeline_repo/seed_repo",
+    mutable_paths=["src"],
+    immutable_paths=[],
+    agent_hidden_paths=["private_tests", "fixtures/private"],
+    llm_models=["headless/codex@gpt-5.5?effort=high"],
+)
 
 runner = ShinkaEvolveRunner(
     evo_config=evo_conf,
@@ -183,7 +190,12 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `meta_max_recommendations` | `5` | `int` | Max number of meta-recommendations |
 | `sample_single_meta_rec` | `True` | `bool` | Sample a single recommendation from meta output when enabled |
 | `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings. Also accepts `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding servers, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
-| `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
+| `seed_repo_path` | `None` | `Optional[str]` | Required path to the seed git repository. |
+| `worktree_root` | `None` | `Optional[str]` | Directory where child worktrees are created. |
+| `mutable_paths` | `[]` | `List[str]` | Required allow-list of paths the agent may edit. |
+| `immutable_paths` | `[]` | `List[str]` | Read-only paths in the agent view; changes are rejected during policy validation. |
+| `agent_hidden_paths` | `[]` | `List[str]` | Paths omitted from the agent generation view, for private tests/evaluator artifacts. Repo-relative `job.eval_program_path` is hidden automatically. |
+| `summary_filename` | `".shinka/individual.md"` | `str` | Per-individual summary file required in every child worktree. |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
 | `max_novelty_attempts` | `3` | `int` | Max attempts for novelty generation |
 | `code_embed_sim_threshold` | `0.99` | `float` | Similarity threshold for code embeddings |
@@ -424,7 +436,7 @@ shinka_run \
     --set db.num_islands=2
 ```
 
-`--task-dir` must contain `evaluate.py` and `initial.<ext>`.  
+`--task-dir` must contain `evaluate.py` and a git `seed_repo/`, unless `evo.seed_repo_path` or `--seed-repo-path` points elsewhere.  
 `--config-fname` can define `evo/db/job` (or `evo_config/db_config/job_config`) plus `max_evaluation_jobs/max_proposal_jobs/max_db_workers` and `verbose/debug`.  
 Precedence: config YAML < `--set` < authoritative flags.  
 `--results_dir` and `--num_generations` are authoritative and always override config/`--set` values for `evo.results_dir` and `evo.num_generations`.

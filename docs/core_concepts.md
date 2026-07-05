@@ -1,19 +1,19 @@
 # Core Concepts
 
-ShinkaEvolve works best when the task boundary is explicit: either one initial
-program or one seed repository, one evaluator, one results directory, and a
-search loop that mutates code while preserving correctness.
+ShinkaEvolve works on repository candidates. The task boundary is one seed git
+repository, one evaluator, one results directory, and a search loop that mutates
+allowed paths while preserving correctness.
 
 ---
 
 ## Task Contract
 
-Every runnable task centers on two files:
+Every runnable task centers on a seed repository and evaluator:
 
-| File | Purpose |
-|------|---------|
-| `initial.<ext>` | Seed program with mutable code regions |
-| `evaluate.py` | Evaluation harness that executes candidates, validates outputs, returns metrics |
+| Artifact | Purpose |
+|----------|---------|
+| `seed_repo/` | Git repository used as the parent for generated worktrees |
+| `evaluate.py` | Evaluation harness that accepts `--repo_path`, validates outputs, returns metrics |
 
 At minimum, the evaluator surfaces a `combined_score` and whether the candidate
 is functionally correct. This creates a stable interface for both the Hydra
