@@ -1,0 +1,69 @@
+evo:
+  seed_repo_path: seed_repo
+  mutable_paths:
+    - src
+  immutable_paths:
+    - README.md
+  agent_hidden_paths: []
+  ignore_paths:
+    - .git
+    - .shinka
+    - "__pycache__"
+    - "src/__pycache__"
+    - "*.pyc"
+    - "run_*.py"
+    - "test_*.py"
+    - "optimize*.py"
+    - "scratch*.py"
+    - "*.log"
+  llm_models:
+    - "headless/antigravity@Gemini 3.5 Flash (Medium)"
+  llm_dynamic_selection: null
+  llm_dynamic_selection_kwargs: {}
+  llm_kwargs:
+    temperatures: [0.0]
+    max_tokens: 16384
+  embedding_model: gemini-embedding-001
+  patch_types:
+    - diff
+  patch_type_probs:
+    - 1.0
+  max_patch_resamples: 1
+  max_patch_attempts: 2
+  max_novelty_attempts: 1
+  code_embed_sim_threshold: 0.995
+  meta_rec_interval: null
+  meta_llm_models: null
+  novelty_llm_models: null
+  evolve_prompts: false
+  task_sys_msg: |
+    Improve the 26-circle packing implementation in src/packing.py. The evaluator
+    maximizes the validated sum of circle radii inside the unit square. Keep the
+    public contract run_packing() -> (centers, radii, sum_radii).
+    Make one small bounded source edit only. Do not run terminal commands,
+    background tasks, scipy optimizers, random searches, or local benchmark
+    scripts. Do not create root-level scratch files. An acceptable mutation is
+    changing the fixed radius constant in src/packing.py from 0.0830 to a nearby
+    safe value no larger than 0.0832, or another similarly small deterministic
+    source-only improvement. Always complete .shinka/individual.md and replace
+    every TODO_AGENT_SUMMARY placeholder.
+
+db:
+  num_islands: 2
+  archive_size: 24
+  num_archive_inspirations: 1
+  num_top_k_inspirations: 1
+  migration_interval: 8
+  migration_rate: 0.0
+  parent_selection_strategy: weighted
+  parent_selection_lambda: 8.0
+  archive_selection_strategy: crowding
+  island_selection_strategy: equal
+
+job:
+  eval_program_path: evaluate.py
+
+max_evaluation_jobs: 4
+max_proposal_jobs: 4
+max_db_workers: 2
+verbose: true

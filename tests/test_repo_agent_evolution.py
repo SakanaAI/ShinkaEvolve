@@ -372,6 +372,145 @@ def test_repo_database_fields_roundtrip(tmp_path):
     assert "programs" in {row["name"] for row in db.cursor.fetchall()}
 
 
+def test_repo_island_copies_preserve_repo_fields(tmp_path):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=3),
+        embedding_model=None,
+    )
+    repo = Program(
+        id="repo-root",
+        code="# summary\n",
+        language="repo",
+        individual_type="repo",
+        generation=0,
+        code_diff="diff --git a/src/app.py b/src/app.py\n",
+        repo_commit="abc",
+        repo_parent_commit="parent",
+        repo_diff="diff --git a/src/app.py b/src/app.py\n",
+        repo_summary="# summary\n",
+        summary_version="repo-individual-v1",
+        changed_files=["src/app.py"],
+        artifact_uri=str(tmp_path / "worktree"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+        agent_session_id="shinka-gen-0-root",
+        agent_session_name="shinka-gen-0-root",
+        agent_provider="codex",
+        agent_model="gpt-test",
+        combined_score=1.25,
+        public_metrics={"valid": True},
+        private_metrics={"lengths": [1.0, 2.0]},
+        text_feedback=["line one", "line two"],
+        complexity=1.0,
+        correct=True,
+        metadata={"source_job_id": "job-1"},
+        system_prompt_id="prompt-1",
+    )
+
+    db.add(repo)
+
+    db.cursor.execute(
+        "SELECT * FROM programs WHERE id != ? ORDER BY island_idx",
+        (repo.id,),
+    )
+    copies = db.cursor.fetchall()
+    assert len(copies) == 2
+
+    for copy in copies:
+        assert copy["individual_type"] == "repo"
+        assert copy["parent_id"] is None
+        assert copy["repo_commit"] == "abc"
+        assert copy["repo_parent_commit"] == "parent"
+        assert copy["repo_diff"] == repo.repo_diff
+        assert copy["repo_summary"] == "# summary\n"
+        assert copy["summary_version"] == "repo-individual-v1"
+        assert json.loads(copy["changed_files"]) == ["src/app.py"]
+        assert copy["artifact_uri"] == str(tmp_path / "worktree")
+        assert json.loads(copy["mutable_paths"]) == ["src"]
+        assert json.loads(copy["immutable_paths"]) == ["README.md"]
+        assert copy["agent_session_id"] == "shinka-gen-0-root"
+        assert copy["agent_session_name"] == "shinka-gen-0-root"
+        assert copy["agent_provider"] == "codex"
+        assert copy["agent_model"] == "gpt-test"
+        assert copy["system_prompt_id"] == "prompt-1"
+        assert copy["code_diff"] == repo.code_diff
+        assert copy["combined_score"] == 1.25
+        assert json.loads(copy["public_metrics"]) == {"valid": True}
+        assert json.loads(copy["private_metrics"]) == {"lengths": [1.0, 2.0]}
+        assert copy["text_feedback"] == "line one\nline two"
+        metadata = json.loads(copy["metadata"])
+        assert metadata["source_job_id"] == "job-1"
+        assert metadata["_is_island_copy"] is True
+        assert metadata["_original_program_id"] == "repo-root"
+        assert "_needs_island_copies" not in metadata
+
+
+def test_dynamic_spawned_island_copy_preserves_repo_fields(tmp_path):
+    db = ProgramDatabase(
+        DatabaseConfig(
+            db_path=str(tmp_path / "programs.sqlite"),
+            num_islands=1,
+            enable_dynamic_islands=True,
+            island_spawn_strategy="initial",
+        ),
+        embedding_model=None,
+    )
+    repo = Program(
+        id="repo-root",
+        code="# summary\n",
+        language="repo",
+        individual_type="repo",
+        generation=0,
+        repo_commit="abc",
+        repo_parent_commit="parent",
+        repo_diff="repo-diff",
+        repo_summary="# summary\n",
+        summary_version="repo-individual-v1",
+        changed_files=["src/app.py"],
+        artifact_uri=str(tmp_path / "worktree"),
+        mutable_paths=["src"],
+        immutable_paths=["README.md"],
+        agent_session_id="session",
+        agent_session_name="session-name",
+        agent_provider="codex",
+        agent_model="gpt-test",
+        combined_score=1.25,
+        complexity=1.0,
+        correct=True,
+        metadata={"source_job_id": "job-1"},
+        system_prompt_id="prompt-1",
+    )
+    db.add(repo)
+
+    assert db.island_manager.spawn_new_island()
+
+    db.cursor.execute(
+        "SELECT * FROM programs WHERE id != ? ORDER BY island_idx",
+        (repo.id,),
+    )
+    spawned = db.cursor.fetchone()
+    assert spawned is not None
+    assert spawned["parent_id"] is None
+    assert spawned["repo_commit"] == "abc"
+    assert spawned["repo_parent_commit"] == "parent"
+    assert spawned["repo_diff"] == "repo-diff"
+    assert spawned["repo_summary"] == "# summary\n"
+    assert spawned["summary_version"] == "repo-individual-v1"
+    assert json.loads(spawned["changed_files"]) == ["src/app.py"]
+    assert spawned["artifact_uri"] == str(tmp_path / "worktree")
+    assert json.loads(spawned["mutable_paths"]) == ["src"]
+    assert json.loads(spawned["immutable_paths"]) == ["README.md"]
+    assert spawned["agent_session_id"] == "session"
+    assert spawned["agent_session_name"] == "session-name"
+    assert spawned["agent_provider"] == "codex"
+    assert spawned["agent_model"] == "gpt-test"
+    assert spawned["system_prompt_id"] == "prompt-1"
+    metadata = json.loads(spawned["metadata"])
+    assert metadata["source_job_id"] == "job-1"
+    assert metadata["_spawned_island"] is True
+    assert metadata["_spawned_from_program_id"] == "repo-root"
+
+
 def test_scheduler_passes_repo_path_and_cwd(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -600,6 +600,114 @@ class CombinedIslandManager:
             )
         return " | ".join(island_display)
 
+    @staticmethod
+    def _source_value(source: Any, field_name: str, default: Any = None) -> Any:
+        if isinstance(source, dict):
+            return source.get(field_name, default)
+        return getattr(source, field_name, default)
+
+    @staticmethod
+    def _json_field(value: Any, default: Any) -> str:
+        if value is None or value == "":
+            return json.dumps(default)
+        if isinstance(value, str):
+            return value
+        return json.dumps(value)
+
+    @staticmethod
+    def _text_feedback_field(value: Any) -> str:
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value)
+        if value is None:
+            return ""
+        return str(value)
+
+    def _insert_program_copy(
+        self,
+        source: Any,
+        *,
+        new_id: str,
+        new_parent_id: Optional[str],
+        new_island_idx: int,
+        metadata: Dict[str, Any],
+        timestamp: Optional[float] = None,
+        children_count: Optional[int] = None,
+        code_diff: Any = None,
+    ) -> None:
+        """Insert a copied program row while preserving repo-backed fields."""
+
+        if code_diff is None:
+            code_diff = self._source_value(source, "code_diff")
+        if children_count is None:
+            children_count = self._source_value(source, "children_count", 0)
+
+        self.cursor.execute(
+            """
+            INSERT INTO programs
+               (id, code, language, individual_type, parent_id,
+                archive_inspiration_ids, top_k_inspiration_ids, generation,
+                timestamp, code_diff, repo_commit, repo_parent_commit,
+                repo_diff, repo_summary, summary_version, changed_files,
+                artifact_uri, mutable_paths, immutable_paths, agent_session_id,
+                agent_session_name, agent_provider, agent_model, combined_score,
+                public_metrics, private_metrics, text_feedback, complexity,
+                embedding, embedding_pca_2d, embedding_pca_3d,
+                embedding_cluster_id, correct, children_count, metadata,
+                island_idx, migration_history, system_prompt_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?)
+            """,
+            (
+                new_id,
+                self._source_value(source, "code", ""),
+                self._source_value(source, "language", "repo"),
+                self._source_value(source, "individual_type", "repo") or "repo",
+                new_parent_id,
+                self._json_field(
+                    self._source_value(source, "archive_inspiration_ids"), []
+                ),
+                self._json_field(
+                    self._source_value(source, "top_k_inspiration_ids"), []
+                ),
+                self._source_value(source, "generation", 0),
+                timestamp
+                if timestamp is not None
+                else self._source_value(source, "timestamp", time.time()),
+                code_diff,
+                self._source_value(source, "repo_commit"),
+                self._source_value(source, "repo_parent_commit"),
+                self._source_value(source, "repo_diff"),
+                self._source_value(source, "repo_summary"),
+                self._source_value(source, "summary_version"),
+                self._json_field(self._source_value(source, "changed_files"), []),
+                self._source_value(source, "artifact_uri"),
+                self._json_field(self._source_value(source, "mutable_paths"), []),
+                self._json_field(self._source_value(source, "immutable_paths"), []),
+                self._source_value(source, "agent_session_id"),
+                self._source_value(source, "agent_session_name"),
+                self._source_value(source, "agent_provider"),
+                self._source_value(source, "agent_model"),
+                self._source_value(source, "combined_score"),
+                self._json_field(self._source_value(source, "public_metrics"), {}),
+                self._json_field(self._source_value(source, "private_metrics"), {}),
+                self._text_feedback_field(
+                    self._source_value(source, "text_feedback")
+                ),
+                self._source_value(source, "complexity"),
+                self._json_field(self._source_value(source, "embedding"), []),
+                self._json_field(self._source_value(source, "embedding_pca_2d"), []),
+                self._json_field(self._source_value(source, "embedding_pca_3d"), []),
+                self._source_value(source, "embedding_cluster_id"),
+                self._source_value(source, "correct", 0),
+                children_count,
+                json.dumps(metadata),
+                new_island_idx,
+                self._json_field(self._source_value(source, "migration_history"), []),
+                self._source_value(source, "system_prompt_id"),
+            ),
+        )
+
     def copy_program_to_islands(self, program: Any) -> List[str]:
         """
         Copy a program to all other islands.
@@ -622,60 +730,13 @@ class CombinedIslandManager:
             # Add metadata to indicate this is a copy
             copy_metadata["_is_island_copy"] = True
             copy_metadata["_original_program_id"] = program.id
-            # Serialize JSON data
-            public_metrics_json = json.dumps(program.public_metrics or {})
-            private_metrics_json = json.dumps(program.private_metrics or {})
-            metadata_json = json.dumps(copy_metadata)
-            archive_insp_ids_json = json.dumps(program.archive_inspiration_ids or [])
-            top_k_insp_ids_json = json.dumps(program.top_k_inspiration_ids or [])
-            embedding_json = json.dumps(program.embedding or [])
-            embedding_pca_2d_json = json.dumps(program.embedding_pca_2d or [])
-            embedding_pca_3d_json = json.dumps(program.embedding_pca_3d or [])
-            migration_history_json = json.dumps(program.migration_history or [])
-            # Insert the copy into the database
-            # Handle text_feedback - convert to string if it's a list
-            text_feedback_str = program.text_feedback
-            if isinstance(text_feedback_str, list):
-                text_feedback_str = "\n".join(text_feedback_str)
-            elif text_feedback_str is None:
-                text_feedback_str = ""
-            self.cursor.execute(
-                """
-                INSERT INTO programs
-                   (id, code, language, parent_id, archive_inspiration_ids,
-                    top_k_inspiration_ids, generation, timestamp, code_diff,
-                    combined_score, public_metrics, private_metrics,
-                    text_feedback, complexity, embedding, embedding_pca_2d,
-                    embedding_pca_3d, embedding_cluster_id, correct,
-                    children_count, metadata, island_idx, migration_history)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    new_id,
-                    program.code,
-                    program.language,
-                    program.parent_id,
-                    archive_insp_ids_json,
-                    top_k_insp_ids_json,
-                    program.generation,
-                    program.timestamp,
-                    program.code_diff,
-                    program.combined_score,
-                    public_metrics_json,
-                    private_metrics_json,
-                    text_feedback_str,
-                    program.complexity,
-                    embedding_json,
-                    embedding_pca_2d_json,
-                    embedding_pca_3d_json,
-                    program.embedding_cluster_id,
-                    program.correct,
-                    program.children_count,
-                    metadata_json,
-                    island_idx,
-                    migration_history_json,
-                ),
+            self._insert_program_copy(
+                program,
+                new_id=new_id,
+                new_parent_id=program.parent_id,
+                new_island_idx=island_idx,
+                metadata=copy_metadata,
+                timestamp=program.timestamp,
             )
             created_ids.append(new_id)
             logger.info(
@@ -816,56 +877,14 @@ class CombinedIslandManager:
         if not is_root:
             metadata["_spawned_as_child"] = True
 
-        # Serialize JSON data
-        public_metrics_json = source_program.get("public_metrics") or "{}"
-        private_metrics_json = source_program.get("private_metrics") or "{}"
-        metadata_json = json.dumps(metadata)
-        archive_insp_ids_json = source_program.get("archive_inspiration_ids") or "[]"
-        top_k_insp_ids_json = source_program.get("top_k_inspiration_ids") or "[]"
-        embedding_json = source_program.get("embedding") or "[]"
-        embedding_pca_2d_json = source_program.get("embedding_pca_2d") or "[]"
-        embedding_pca_3d_json = source_program.get("embedding_pca_3d") or "[]"
-        migration_history_json = source_program.get("migration_history") or "[]"
-        text_feedback_str = source_program.get("text_feedback") or ""
-
-        # Insert the new program
-        self.cursor.execute(
-            """
-            INSERT INTO programs
-               (id, code, language, parent_id, archive_inspiration_ids,
-                top_k_inspiration_ids, generation, timestamp, code_diff,
-                combined_score, public_metrics, private_metrics,
-                text_feedback, complexity, embedding, embedding_pca_2d,
-                embedding_pca_3d, embedding_cluster_id, correct,
-                children_count, metadata, island_idx, migration_history)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_id,
-                source_program["code"],
-                source_program["language"],
-                new_parent_id,
-                archive_insp_ids_json,
-                top_k_insp_ids_json,
-                source_program.get("generation", 0),
-                time.time(),
-                None,  # No code diff
-                source_program.get("combined_score"),
-                public_metrics_json,
-                private_metrics_json,
-                text_feedback_str,
-                source_program.get("complexity"),
-                embedding_json,
-                embedding_pca_2d_json,
-                embedding_pca_3d_json,
-                source_program.get("embedding_cluster_id"),
-                source_program.get("correct", 0),
-                0,  # Children count will be updated as children are added
-                metadata_json,
-                new_island_idx,
-                migration_history_json,
-            ),
+        self._insert_program_copy(
+            source_program,
+            new_id=new_id,
+            new_parent_id=new_parent_id,
+            new_island_idx=new_island_idx,
+            metadata=metadata,
+            timestamp=time.time(),
+            children_count=0,
         )
 
         # Add to archive if correct

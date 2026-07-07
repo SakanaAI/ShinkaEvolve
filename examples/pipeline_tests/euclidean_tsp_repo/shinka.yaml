@@ -1,0 +1,70 @@
+evo:
+  seed_repo_path: seed_repo
+  mutable_paths:
+    - src
+  immutable_paths:
+    - README.md
+  agent_hidden_paths: []
+  ignore_paths:
+    - .git
+    - .shinka
+    - "__pycache__"
+    - "src/__pycache__"
+    - "*.pyc"
+    - "run_*.py"
+    - "test_*.py"
+    - "scratch*.py"
+    - "*.log"
+  llm_models:
+    - "headless/antigravity@Gemini 3.5 Flash (Medium)"
+  llm_dynamic_selection: null
+  llm_dynamic_selection_kwargs: {}
+  llm_kwargs:
+    temperatures: [0.0]
+    max_tokens: 16384
+  embedding_model: gemini-embedding-001
+  patch_types:
+    - diff
+    - full
+  patch_type_probs:
+    - 0.7
+    - 0.3
+  max_patch_resamples: 2
+  max_patch_attempts: 2
+  max_novelty_attempts: 2
+  code_embed_sim_threshold: 0.985
+  meta_rec_interval: null
+  meta_llm_models: null
+  novelty_llm_models: null
+  evolve_prompts: false
+  task_sys_msg: |
+    Improve src/solver.py for deterministic Euclidean traveling-salesperson
+    instances. The evaluator only scores tour quality: shorter valid closed tours
+    receive higher combined_score. Keep solve_tsp(points) returning a permutation
+    of point indices.
+    Make one bounded deterministic source edit only. Do not run terminal commands,
+    background tasks, brute-force search jobs, or root-level scratch files. A
+    simple 2-opt local-improvement pass with a small deterministic iteration cap
+    is preferred over expensive exhaustive search. Always complete
+    .shinka/individual.md and replace every TODO_AGENT_SUMMARY placeholder.
+
+db:
+  num_islands: 3
+  archive_size: 36
+  num_archive_inspirations: 2
+  num_top_k_inspirations: 1
+  migration_interval: 6
+  migration_rate: 0.0
+  parent_selection_strategy: power_law
+  exploitation_alpha: 0.8
+  exploitation_ratio: 0.35
+  archive_selection_strategy: fitness
+  island_selection_strategy: weighted
+
+job:
+  eval_program_path: evaluate.py
+
+max_evaluation_jobs: 4
+max_proposal_jobs: 4
+max_db_workers: 2
+verbose: true
