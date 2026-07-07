@@ -6,7 +6,7 @@ import instructor
 from shinka.env import load_shinka_dotenv
 from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
 from shinka.local_openai_config import resolve_local_openai_api_key
-from .constants import TIMEOUT
+from .constants import OPENAI_MAX_RETRIES, TIMEOUT
 from .providers.model_resolver import resolve_model_backend
 
 load_shinka_dotenv()
@@ -40,7 +40,7 @@ def get_client_llm(
     api_model_name = resolved.api_model_name
 
     if provider == "anthropic":
-        client = anthropic.Anthropic(timeout=TIMEOUT)  # 20 minutes
+        client = anthropic.Anthropic(timeout=TIMEOUT)
         if structured_output:
             client = instructor.from_anthropic(
                 client, mode=instructor.mode.Mode.ANTHROPIC_JSON
@@ -50,14 +50,14 @@ def get_client_llm(
             aws_access_key=os.getenv("AWS_ACCESS_KEY_ID"),
             aws_secret_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
             aws_region=os.getenv("AWS_REGION_NAME"),
-            timeout=TIMEOUT,  # 20 minutes
+            timeout=TIMEOUT,
         )
         if structured_output:
             client = instructor.from_anthropic(
                 client, mode=instructor.mode.Mode.ANTHROPIC_JSON
             )
     elif provider == "openai":
-        client = openai.OpenAI(timeout=TIMEOUT)  # 20 minutes
+        client = openai.OpenAI(timeout=TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
     elif provider == "azure_openai":
@@ -66,7 +66,8 @@ def get_client_llm(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version=os.getenv("AZURE_API_VERSION"),
             azure_endpoint=_build_azure_endpoint(),
-            timeout=TIMEOUT,  # 20 minutes
+            timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
@@ -74,7 +75,8 @@ def get_client_llm(
         client = openai.OpenAI(
             api_key=os.environ["DEEPSEEK_API_KEY"],
             base_url="https://api.deepseek.com",
-            timeout=TIMEOUT,  # 20 minutes
+            timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
@@ -89,7 +91,8 @@ def get_client_llm(
         client = openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
-            timeout=TIMEOUT,  # 20 minutes
+            timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
@@ -98,6 +101,7 @@ def get_client_llm(
             api_key=resolve_local_openai_api_key(resolved.api_key_env_name),
             base_url=resolved.base_url,
             timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
     elif provider == "headless":
         client = None
@@ -143,7 +147,7 @@ def get_async_client_llm(
                 client, mode=instructor.mode.Mode.ANTHROPIC_JSON
             )
     elif provider == "openai":
-        client = openai.AsyncOpenAI(timeout=TIMEOUT)
+        client = openai.AsyncOpenAI(timeout=TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
     elif provider == "azure_openai":
@@ -152,6 +156,7 @@ def get_async_client_llm(
             api_version=os.getenv("AZURE_API_VERSION"),
             azure_endpoint=_build_azure_endpoint(),
             timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
@@ -160,6 +165,7 @@ def get_async_client_llm(
             api_key=os.environ["DEEPSEEK_API_KEY"],
             base_url="https://api.deepseek.com",
             timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
@@ -172,6 +178,7 @@ def get_async_client_llm(
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
             timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
@@ -180,6 +187,7 @@ def get_async_client_llm(
             api_key=resolve_local_openai_api_key(resolved.api_key_env_name),
             base_url=resolved.base_url,
             timeout=TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
         )
     elif provider == "headless":
         client = None
