@@ -47,6 +47,18 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. Also supports `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding endpoints, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `init_program_path` | `Optional[str]` | `'initial.py'` | Initial program path. |
 | `results_dir` | `Optional[str]` | `None` | Results directory; auto-assigned when `None`. |
+| `logging_methods` | `List[str]` | `['webui']` | User-facing logging sinks: `webui`, `wandb`, or both. SQLite persistence remains enabled because evolution uses it as state. |
+| `enable_webui_logging` | `Optional[bool]` | `None` | Optional boolean override for the `webui` logging sink. |
+| `enable_wandb_logging` | `Optional[bool]` | `None` | Optional boolean override for the `wandb` logging sink. |
+| `wandb_project` | `Optional[str]` | `'shinka-evolve'` | W&B project used when wandb logging is enabled. |
+| `wandb_entity` | `Optional[str]` | `None` | Optional W&B entity/team. |
+| `wandb_group` | `Optional[str]` | `None` | Optional W&B run group. |
+| `wandb_name` | `Optional[str]` | `None` | Optional W&B run name; defaults to the results directory name. |
+| `wandb_mode` | `Optional[str]` | `None` | Optional W&B mode, e.g. `offline` or `disabled`. |
+| `wandb_tags` | `List[str]` | `[]` | Optional W&B tags. |
+| `wandb_notes` | `Optional[str]` | `None` | Optional W&B run notes. |
+| `wandb_dir` | `Optional[str]` | `None` | Optional local W&B directory; defaults to `results_dir`. |
+| `wandb_config` | `Dict[str, Any]` | `{}` | Extra W&B config values merged into the run config. |
 | `max_novelty_attempts` | `int` | `3` | Max novelty loops per generation. |
 | `code_embed_sim_threshold` | `float` | `0.99` | Similarity threshold used by novelty checks. |
 | `novelty_llm_models` | `Optional[List[str]]` | `None` | Optional novelty-judge model pool. |
@@ -72,6 +84,19 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `prompt_epsilon` | `float` | `0.1` | Epsilon-greedy exploration for prompt sampler. |
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
+
+W&B logging examples:
+
+```bash
+# WebUI database + W&B metrics/tables/artifacts
+shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb --num_generations 20 \
+  --set evo.logging_methods='["webui","wandb"]' \
+  --set evo.wandb_project=shinka-evolve
+
+# W&B user-facing logging only. Internal SQLite state is still written for evolution.
+shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb_only --num_generations 20 \
+  --set evo.logging_methods='["wandb"]'
+```
 
 ### DatabaseConfig (`shinka.database.DatabaseConfig`)
 
