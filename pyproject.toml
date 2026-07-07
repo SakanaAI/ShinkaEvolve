@@ -47,7 +47,8 @@ dependencies = [
     "aiofiles",
     "google-genai",
     "psutil",
-    "httpx==0.27"
+    "httpx==0.27",
+    "wandb"
 ]
 
 [project.scripts]
@@ -97,6 +98,11 @@ docs = [
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
+norecursedirs = [
+    "results",
+    "results*",
+    "shinka_scale*",
+]
 markers = [
     "integration: live external/provider integration coverage",
     "requires_secrets: tests that need CI secrets or private credentials",

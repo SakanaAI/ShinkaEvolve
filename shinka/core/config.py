@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
+
+from shinka.llm import BanditBase
 from shinka.defaults import (
     DEFAULT_TASK_SYS_MSG,
     default_llm_dynamic_selection_kwargs,
@@ -51,6 +53,23 @@ class EvolutionConfig:
     sample_single_meta_rec: bool = True
     embedding_model: Optional[str] = "text-embedding-3-small"
     results_dir: Optional[str] = None
+
+    # User-facing logging sinks. The WebUI uses the run database that is also
+    # needed for evolution state, so disabling "webui" only disables explicit
+    # WebUI logging semantics; internal persistence remains on.
+    logging_methods: List[str] = field(default_factory=lambda: ["webui"])
+    enable_webui_logging: Optional[bool] = None
+    enable_wandb_logging: Optional[bool] = None
+    wandb_project: Optional[str] = "shinka-evolve"
+    wandb_entity: Optional[str] = None
+    wandb_group: Optional[str] = None
+    wandb_name: Optional[str] = None
+    wandb_mode: Optional[str] = None
+    wandb_tags: List[str] = field(default_factory=list)
+    wandb_notes: Optional[str] = None
+    wandb_dir: Optional[str] = None
+    wandb_config: Dict[str, Any] = field(default_factory=dict)
+
     max_novelty_attempts: int = 3
     code_embed_sim_threshold: float = 0.99
     novelty_llm_models: Optional[List[str]] = None

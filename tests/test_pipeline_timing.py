@@ -223,6 +223,7 @@ def test_process_single_job_safely_persists_timing_metadata():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         await runner.evaluation_slot_pool.acquire()
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
@@ -301,6 +302,7 @@ def test_process_single_job_uses_completion_detection_time_for_eval_finish():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         runner._completed_job_batch_tasks = set()
         runner._completed_jobs_pending = 0
         await runner.evaluation_slot_pool.acquire()
@@ -362,6 +364,7 @@ def test_process_single_job_safely_flushes_metadata_once_after_side_effects():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
         runner._record_oversubscription_timing_sample = lambda metadata: None
@@ -422,6 +425,7 @@ def test_process_single_job_safely_skips_duplicate_source_job():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
         runner._persist_program_metadata_async = lambda program: asyncio.sleep(0, result=None)
@@ -485,6 +489,7 @@ def test_process_single_job_safely_reuses_existing_row_when_duplicate_matches():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
         runner._persist_program_metadata_async = lambda program: asyncio.sleep(
@@ -567,6 +572,7 @@ def test_process_single_job_safely_ignores_duplicate_marker_on_existing_row():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
         runner._persist_program_metadata_async = lambda program: asyncio.sleep(
@@ -643,6 +649,7 @@ def test_process_single_job_safely_reuses_initial_eval_finish_time_on_retry():
         runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         await runner.evaluation_slot_pool.acquire()
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
@@ -720,6 +727,7 @@ def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
         runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
         runner.running_jobs = []
         runner.submitted_jobs = {}
+        runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
         runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
         runner._persist_program_metadata_async = lambda program: asyncio.sleep(
             0, result=None

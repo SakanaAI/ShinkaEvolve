@@ -89,6 +89,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "cc": "cpp",
             "cxx": "cpp",
             "cu": "cuda",
+            "go": "go",
             "f90": "fortran",
             "f95": "fortran",
             "f03": "fortran",
@@ -145,6 +146,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "typescript": ".ts",
             "cpp": ".cpp",
             "cuda": ".cu",
+            "go": ".go",
             "fortran": ".f90",
         }.get(language)
         if preferred_suffix:

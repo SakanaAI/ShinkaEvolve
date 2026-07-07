@@ -2,6 +2,6 @@
 
 from .env import load_shinka_dotenv
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
 load_shinka_dotenv()

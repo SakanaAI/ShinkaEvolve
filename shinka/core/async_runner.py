@@ -62,7 +62,17 @@ from shinka.core.prompt_evolver import (
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
-from shinka.utils import get_language_extension, parse_time_to_seconds
+from shinka.wandb_logging import (
+    LOGGING_METHOD_WANDB,
+    LOGGING_METHOD_WEBUI,
+    ShinkaWandbLogger,
+    resolve_logging_methods,
+)
+from shinka.utils import (
+    get_language_extension,
+    parse_time_to_seconds,
+    truncate_log_tail,
+)
 from shinka.utils.languages import get_evolve_comment_prefix
 from shinka.repo import (
     RepoWorktree,
@@ -280,6 +290,11 @@ class ShinkaEvolveRunner:
         self.evo_config = evo_config
         self.job_config = job_config
         self.db_config = db_config
+        self.logging_methods = resolve_logging_methods(evo_config)
+        self.webui_logging_enabled = LOGGING_METHOD_WEBUI in self.logging_methods
+        self.wandb_logger = ShinkaWandbLogger(
+            enabled=LOGGING_METHOD_WANDB in self.logging_methods
+        )
         self.banner_style = banner_style
         self.enable_deadlock_debugging = debug
         log_filename = f"{self.results_dir}/evolution_run.log"
@@ -357,6 +372,12 @@ class ShinkaEvolveRunner:
         logger.info(f"Language: {self.evo_config.language}")
         logger.info(f"Results directory: {self.results_dir}")
         logger.info(f"Log file: {log_filename}")
+        logger.info(f"Logging methods: {sorted(self.logging_methods)}")
+        if not self.webui_logging_enabled:
+            logger.info(
+                "WebUI logging disabled; SQLite persistence remains enabled "
+                "because the evolutionary loop uses it as state."
+            )
         if self.evo_config.max_api_costs is not None:
             logger.info(f"Max API costs: ${self.evo_config.max_api_costs:.2f}")
         logger.info("=" * 80)
@@ -1184,6 +1205,13 @@ class ShinkaEvolveRunner:
         if self.evo_config.evolve_prompts:
             await self._setup_prompt_evolution()
 
+        self.wandb_logger.start(
+            evo_config=self.evo_config,
+            db_config=self.db_config,
+            job_config=self.job_config,
+            results_dir=Path(self.results_dir),
+        )
+
         # Check if we're resuming from an existing database
         resuming_run = db_path.exists() and self.db.last_iteration > 0
 
@@ -1596,14 +1624,18 @@ class ShinkaEvolveRunner:
         if self.verbose and code_embedding:
             logger.info(f"Initial repo embedding computed (cost: ${e_cost:.4f})")
 
-        correct_val = results.get("correct", {}).get("correct", False)
-        metrics_val = results.get("metrics", {})
-        combined_score = metrics_val.get("combined_score", 0.0)
-        public_metrics = metrics_val.get("public", {})
-        private_metrics = metrics_val.get("private", {})
-        text_feedback = metrics_val.get("text_feedback", "")
-        stdout_log = results.get("stdout_log", "")
-        stderr_log = results.get("stderr_log", "")
+            # Extract metrics properly like the sync version
+            correct_val = results.get("correct", {}).get("correct", False)
+            metrics_val = results.get("metrics", {})
+            combined_score = metrics_val.get("combined_score", 0.0)
+            public_metrics = metrics_val.get("public", {})
+            private_metrics = metrics_val.get("private", {})
+            text_feedback = metrics_val.get("text_feedback", "")
+            stdout_log = truncate_log_tail(
+                results.get("stdout_log", ""),
+                self.db_config.max_stdout_log_chars,
+            )
+            stderr_log = results.get("stderr_log", "")
 
         metadata = with_pipeline_timing(
             {
@@ -1723,6 +1755,7 @@ class ShinkaEvolveRunner:
             postprocess_finished_at=postprocess_finished_at,
         )
         await self._persist_program_metadata_async(initial_program)
+        self._log_program_to_wandb(initial_program)
 
         if self.verbose:
             logger.info(f"Setup initial repo: {initial_program.id}")
@@ -3010,6 +3043,7 @@ class ShinkaEvolveRunner:
             "cc": "cpp",
             "cxx": "cpp",
             "cu": "cuda",
+            "go": "go",
             "f90": "fortran",
             "f95": "fortran",
             "f03": "fortran",
@@ -3858,6 +3892,7 @@ Required constraints:
             await self._update_completed_generations()
             self._record_progress()
             self.slot_available.set()
+            self._log_program_to_wandb(program)
             logger.info(
                 "Persisted failed generation %s as incorrect program %s (%s)",
                 generation,
@@ -3929,7 +3964,10 @@ Required constraints:
                 public_metrics = metrics_val.get("public", {})
                 private_metrics = metrics_val.get("private", {})
                 text_feedback = metrics_val.get("text_feedback", "")
-                stdout_log = results.get("stdout_log", "")
+                stdout_log = truncate_log_tail(
+                    results.get("stdout_log", ""),
+                    self.db_config.max_stdout_log_chars,
+                )
                 stderr_log = results.get("stderr_log", "")
 
                 logger.info(
@@ -4389,6 +4427,7 @@ Required constraints:
                         f"Apply-stage metadata persistence error for {job.job_id}: {e}"
                     )
 
+        self._log_program_to_wandb(program)
         logger.info(
             "✅ JOB COMPLETE: Finished processing %s - program %s added (gen %s)",
             job.job_id,
@@ -5401,6 +5440,7 @@ Required constraints:
                     logger.warning(f"Failed to recompute prompt percentiles: {e}")
 
             # Cleanup database
+            self._finish_wandb_logging()
             await self.async_db.close_async()
 
             # Cleanup scheduler
@@ -5408,6 +5448,23 @@ Required constraints:
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")
+
+    def _log_program_to_wandb(self, program: Program) -> None:
+        self.wandb_logger.log_program(
+            program=program,
+            db=self.db,
+            prompt_db=self.prompt_db,
+        )
+
+    def _finish_wandb_logging(self) -> None:
+        self.wandb_logger.log_final(
+            db=self.db,
+            prompt_db=self.prompt_db,
+            results_dir=Path(self.results_dir),
+            total_proposals_generated=self.total_proposals_generated,
+            total_api_cost=self.total_api_cost,
+        )
+        self.wandb_logger.finish()
 
     async def _print_final_summary(self):
         """Print final evolution summary."""

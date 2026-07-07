@@ -167,6 +167,18 @@ def test_shinka_run_uses_explicit_seed_repo_path(tmp_path, monkeypatch):
     assert evo_config.seed_repo_path == str(explicit_seed.resolve())
 
 
+def test_shinka_run_prefers_python_over_go_initial(tmp_path):
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "initial.go").write_text(
+        "// EVOLVE-BLOCK-START\n"
+        "func run() int { return 0 }\n"
+        "// EVOLVE-BLOCK-END\n",
+        encoding="utf-8",
+    )
+
+    assert cli_run._detect_initial_program(task_dir) == task_dir / "initial.py"
+
+
 def test_shinka_run_parses_json_overrides(tmp_path, monkeypatch):
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)

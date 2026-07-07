@@ -30,6 +30,30 @@ def _validate_activation_config(
         raise ValueError("conda_env and activate_script are mutually exclusive")
 
 
+def _numeric_thread_env(numeric_threads: Optional[int]) -> Dict[str, str]:
+    """Numeric-library thread-cap env vars for a given per-process thread limit.
+
+    Returns an empty dict when ``numeric_threads`` is None (no capping).
+    """
+    if numeric_threads is None:
+        return {}
+    thread_value = str(max(1, int(numeric_threads)))
+    return {
+        "OMP_NUM_THREADS": thread_value,
+        "OMP_THREAD_LIMIT": thread_value,
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_WAIT_POLICY": "PASSIVE",
+        "OPENBLAS_NUM_THREADS": thread_value,
+        "MKL_NUM_THREADS": thread_value,
+        "MKL_DYNAMIC": "FALSE",
+        "NUMEXPR_NUM_THREADS": thread_value,
+        "NUMEXPR_MAX_THREADS": thread_value,
+        "VECLIB_MAXIMUM_THREADS": thread_value,
+        "BLIS_NUM_THREADS": thread_value,
+        "GOTO_NUM_THREADS": thread_value,
+    }
+
+
 @dataclass
 class JobConfig:
     """Base job configuration"""
@@ -52,7 +76,6 @@ class LocalJobConfig(JobConfig):
     conda_env: Optional[str] = None
     activate_script: Optional[str] = None
     python_executable: Optional[str] = None
-    numeric_threads_per_job: Optional[int] = None
 
     def __post_init__(self) -> None:
         _validate_activation_config(self.conda_env, self.activate_script)
@@ -184,31 +207,24 @@ class JobScheduler:
 
         return python_cmd
 
+    def _build_eval_env(self) -> Dict[str, str]:
+        """Environment for the eval subprocess: verbosity + numeric-thread caps.
+
+        Shared by both the local path (Popen env overrides) and the SLURM path
+        (exported inside the batch script), so behaviour is identical across
+        job types.
+        """
+        env: Dict[str, str] = {
+            "SHINKA_EVAL_VERBOSE": "1" if self.config.eval_verbose else "0",
+        }
+        env.update(_numeric_thread_env(self.config.numeric_threads_per_job))
+        return env
+
     def _build_local_env_overrides(self) -> Optional[Dict[str, str]]:
         """Build environment overrides for local evaluation subprocesses."""
         if self.job_type != "local" or not isinstance(self.config, LocalJobConfig):
             return None
-
-        numeric_threads = self.config.numeric_threads_per_job
-        if numeric_threads is None:
-            return None
-
-        normalized_threads = max(1, int(numeric_threads))
-        thread_value = str(normalized_threads)
-        return {
-            "OMP_NUM_THREADS": thread_value,
-            "OMP_THREAD_LIMIT": thread_value,
-            "OMP_DYNAMIC": "FALSE",
-            "OMP_WAIT_POLICY": "PASSIVE",
-            "OPENBLAS_NUM_THREADS": thread_value,
-            "MKL_NUM_THREADS": thread_value,
-            "MKL_DYNAMIC": "FALSE",
-            "NUMEXPR_NUM_THREADS": thread_value,
-            "NUMEXPR_MAX_THREADS": thread_value,
-            "VECLIB_MAXIMUM_THREADS": thread_value,
-            "BLIS_NUM_THREADS": thread_value,
-            "GOTO_NUM_THREADS": thread_value,
-        }
+        return self._build_eval_env()
 
     def run(
         self, exec_fname_t: str, results_dir_t: str, repo_path_t: Optional[str] = None
@@ -244,6 +260,7 @@ class JobScheduler:
                 self.config.image,
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
+                eval_env=self._build_eval_env(),
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -259,6 +276,7 @@ class JobScheduler:
                 self.config.activate_script,
                 self.config.modules,
                 verbose=self.verbose,
+                eval_env=self._build_eval_env(),
             )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
@@ -309,6 +327,7 @@ class JobScheduler:
                 self.config.image,
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
+                eval_env=self._build_eval_env(),
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -324,6 +343,7 @@ class JobScheduler:
                 self.config.activate_script,
                 self.config.modules,
                 verbose=self.verbose,
+                eval_env=self._build_eval_env(),
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 

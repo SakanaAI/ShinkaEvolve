@@ -60,6 +60,24 @@ harness in Python.
 
 ---
 
+## Go Collatz Steps
+
+| | |
+|-|-|
+| **Path** | [`examples/go_collatz_steps`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/go_collatz_steps) |
+| **Language** | Go candidate + Python evaluator |
+| **Focus** | Cross-language evolution, strict correctness scoring |
+
+```bash
+cd examples/go_collatz_steps
+python evaluate.py --program_path initial.go --results_dir results/manual_eval
+```
+
+Use this for a compact compiled-language task where Go candidates compute
+Collatz stopping times and `evaluate.py` owns `go run` validation and scoring.
+
+---
+
 ## Fortran Heat Diffusion
 
 | | |
@@ -73,6 +91,24 @@ against `initial.f90` and write to `results/manual_eval`.
 
 Use this when candidates should be compiled with `gfortran` before
 floating-point correctness and runtime scoring.
+
+---
+
+## Wolfram GCD Sum
+
+| | |
+|-|-|
+| **Path** | [`examples/wolfram_gcd_sum`](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_gcd_sum) |
+| **Language** | Wolfram Language candidate + Python evaluator |
+| **Focus** | Program optimization against an auto-calibrated baseline |
+
+```bash
+cd examples/wolfram_gcd_sum
+python evaluate.py --program_path initial.wl --results_dir results/manual_eval
+```
+
+Use this when candidates run through `wolframscript` and are scored by
+speedup over a deoptimized seed.
 
 ---
 
@@ -103,5 +139,6 @@ before moving into full CLI or API workflows.
 | Best default choice | Circle Packing |
 | Cross-language evolution | Julia Prime Counting |
 | Compiled numerical stencil | Fortran Heat Diffusion |
+| Program optimization | Wolfram GCD Sum |
 | Game / control optimization | Game 2048 |
 | Creative / open-ended | Novelty Generator |
