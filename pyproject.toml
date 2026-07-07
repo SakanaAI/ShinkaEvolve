@@ -50,6 +50,9 @@ dependencies = [
     "httpx==0.27"
 ]
 
+[project.optional-dependencies]
+wandb = ["wandb"]
+
 [project.scripts]
 shinka_launch = "shinka.cli.launch:main"
 shinka_models = "shinka.cli.models:main"

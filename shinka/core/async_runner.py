@@ -68,6 +68,7 @@ from shinka.pricing.catalog import (
     refresh_model_catalog,
     write_run_pricing_snapshot,
 )
+from shinka.wandb_logging import ShinkaWandbLogger
 from shinka.utils import (
     get_language_extension,
     parse_time_to_seconds,
@@ -280,6 +281,7 @@ class ShinkaEvolveRunner:
         self.evo_config = evo_config
         self.job_config = job_config
         self.db_config = db_config
+        self.wandb_logger = ShinkaWandbLogger(enabled=evo_config.enable_wandb_logging)
         self.banner_style = banner_style
         self.enable_deadlock_debugging = debug
         log_filename = f"{self.results_dir}/evolution_run.log"
@@ -1181,6 +1183,13 @@ class ShinkaEvolveRunner:
         if self.evo_config.evolve_prompts:
             await self._setup_prompt_evolution()
 
+        self.wandb_logger.start(
+            evo_config=self.evo_config,
+            db_config=self.db_config,
+            job_config=self.job_config,
+            results_dir=Path(self.results_dir),
+        )
+
         # Check if we're resuming from an existing database
         resuming_run = db_path.exists() and self.db.last_iteration > 0
 
@@ -1796,6 +1805,7 @@ class ShinkaEvolveRunner:
             postprocess_finished_at=postprocess_finished_at,
         )
         await self._persist_program_metadata_async(initial_program)
+        self._log_program_to_wandb(initial_program)
 
         if self.verbose:
             logger.info(f"Setup initial program: {initial_program.id}")
@@ -4013,6 +4023,7 @@ class ShinkaEvolveRunner:
             await self._update_completed_generations()
             self._record_progress()
             self.slot_available.set()
+            self._log_program_to_wandb(program)
             logger.info(
                 "Persisted failed generation %s as incorrect program %s (%s)",
                 generation,
@@ -4531,6 +4542,7 @@ class ShinkaEvolveRunner:
                         f"Apply-stage metadata persistence error for {job.job_id}: {e}"
                     )
 
+        self._log_program_to_wandb(program)
         logger.info(
             "✅ JOB COMPLETE: Finished processing %s - program %s added (gen %s)",
             job.job_id,
@@ -5512,6 +5524,7 @@ class ShinkaEvolveRunner:
                     logger.warning(f"Failed to recompute prompt percentiles: {e}")
 
             # Cleanup database
+            self._finish_wandb_logging()
             await self.async_db.close_async()
 
             # Cleanup scheduler
@@ -5519,6 +5532,22 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")
+
+    def _log_program_to_wandb(self, program: Program) -> None:
+        wandb_logger = getattr(self, "wandb_logger", None)
+        if wandb_logger is not None:
+            wandb_logger.log_program(program)
+
+    def _finish_wandb_logging(self) -> None:
+        wandb_logger = getattr(self, "wandb_logger", None)
+        if wandb_logger is None:
+            return
+        wandb_logger.log_final(
+            db=getattr(self, "db", None),
+            total_proposals_generated=getattr(self, "total_proposals_generated", None),
+            total_api_cost=getattr(self, "total_api_cost", None),
+        )
+        wandb_logger.finish()
 
     async def _print_final_summary(self):
         """Print final evolution summary."""

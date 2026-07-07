@@ -174,6 +174,32 @@ Set `SHINKA_PRICING_MODE=offline` to skip the network check, or
 validated. Run `shinka_models --verbose` to inspect catalog provenance and the
 models available for configured provider credentials.
 
+### Weights & Biases logging
+
+Install the optional W&B integration and enable it for a run:
+
+```bash
+pip install 'shinka-evolve[wandb]'
+
+# Authenticate online runs. In CI, provide this through a secret manager.
+export WANDB_API_KEY=<your-api-key>
+
+shinka_run --task-dir examples/circle_packing \
+  --results_dir results/circle_wandb \
+  --num_generations 20 \
+  --set evo.enable_wandb_logging=true \
+  --set evo.wandb_project=shinka-evolve
+```
+
+W&B logging is additive: the existing SQLite database and WebUI logging remain
+enabled. Each evaluated individual logs `score/individual` against `generation`,
+along with compact evaluation, cost, and timing metrics. Resuming the same
+results directory reuses its persisted W&B run ID by default. Online mode uses
+the credentials from `wandb login` or `WANDB_API_KEY`; use `wandb_mode=offline`
+to record locally without uploading. See
+[Configuration](docs/configuration.md#evolutionconfig-shinkacoreconfigevolutionconfig)
+for all W&B options.
+
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
 
@@ -201,6 +227,18 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings. Also accepts `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding servers, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `init_program_path` | `"initial.py"` | `Optional[str]` | Path to initial program to evolve |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
+| `enable_wandb_logging` | `False` | `bool` | Mirror evolution metrics to W&B without disabling SQLite or WebUI logging |
+| `wandb_project` | `"shinka-evolve"` | `Optional[str]` | W&B project used when logging is enabled |
+| `wandb_entity` | `None` | `Optional[str]` | Optional W&B entity or team |
+| `wandb_group` | `None` | `Optional[str]` | Optional W&B run group |
+| `wandb_name` | `None` | `Optional[str]` | Optional run name; defaults to the results directory name |
+| `wandb_mode` | `None` | `Optional[str]` | Optional W&B mode such as `offline` or `disabled` |
+| `wandb_tags` | `[]` | `List[str]` | Optional W&B tags |
+| `wandb_notes` | `None` | `Optional[str]` | Optional W&B run notes |
+| `wandb_dir` | `None` | `Optional[str]` | Optional local W&B directory; defaults to `results_dir` |
+| `wandb_run_id` | `None` | `Optional[str]` | Optional W&B run ID; otherwise generated and persisted in the results directory |
+| `wandb_resume` | `"allow"` | `str` | W&B resume policy used with the persisted run ID |
+| `wandb_config` | `{}` | `Dict[str, Any]` | Extra values merged into the W&B run config |
 | `max_novelty_attempts` | `3` | `int` | Max attempts for novelty generation |
 | `code_embed_sim_threshold` | `0.99` | `float` | Similarity threshold for code embeddings |
 | `novelty_llm_models` | `None` | `Optional[List[str]]` | LLM models for novelty judgment |

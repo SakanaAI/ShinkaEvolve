@@ -47,6 +47,18 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. Also supports `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding endpoints, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `init_program_path` | `Optional[str]` | `'initial.py'` | Initial program path. |
 | `results_dir` | `Optional[str]` | `None` | Results directory; auto-assigned when `None`. |
+| `enable_wandb_logging` | `bool` | `False` | Mirror evolution metrics to W&B. Existing SQLite and WebUI logging remains enabled. Install the `wandb` extra first. |
+| `wandb_project` | `Optional[str]` | `'shinka-evolve'` | W&B project used when wandb logging is enabled. |
+| `wandb_entity` | `Optional[str]` | `None` | Optional W&B entity/team. |
+| `wandb_group` | `Optional[str]` | `None` | Optional W&B run group. |
+| `wandb_name` | `Optional[str]` | `None` | Optional W&B run name; defaults to the results directory name. |
+| `wandb_mode` | `Optional[str]` | `None` | Optional W&B mode, e.g. `offline` or `disabled`. |
+| `wandb_tags` | `List[str]` | `[]` | Optional W&B tags. |
+| `wandb_notes` | `Optional[str]` | `None` | Optional W&B run notes. |
+| `wandb_dir` | `Optional[str]` | `None` | Optional local W&B directory; defaults to `results_dir`. |
+| `wandb_run_id` | `Optional[str]` | `None` | Optional W&B run ID; otherwise generated and persisted in the results directory. |
+| `wandb_resume` | `str` | `'allow'` | W&B resume policy used with the persisted run ID. |
+| `wandb_config` | `Dict[str, Any]` | `{}` | Extra W&B config values merged into the run config. |
 | `max_novelty_attempts` | `int` | `3` | Max novelty loops per generation. |
 | `code_embed_sim_threshold` | `float` | `0.99` | Similarity threshold used by novelty checks. |
 | `novelty_llm_models` | `Optional[List[str]]` | `None` | Optional novelty-judge model pool. |
@@ -72,6 +84,28 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `prompt_epsilon` | `float` | `0.1` | Epsilon-greedy exploration for prompt sampler. |
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
+
+W&B logging examples:
+
+```bash
+# Install the optional integration.
+pip install 'shinka-evolve[wandb]'
+
+# Authenticate online runs. In CI, provide this through a secret manager.
+export WANDB_API_KEY=<your-api-key>
+
+# Add W&B metrics and a compact individuals table alongside the WebUI database.
+shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb --num_generations 20 \
+  --set evo.enable_wandb_logging=true \
+  --set evo.wandb_project=shinka-evolve
+```
+
+Each evaluated individual logs `score/individual` against `generation`. When a
+results directory is resumed, its `.wandb_run_id` is reused with
+`wandb_resume='allow'` by default. Online mode uses the credentials from
+`wandb login` or `WANDB_API_KEY`; set `wandb_mode=offline` to record locally
+without uploading. W&B failures are non-fatal and do not alter the existing
+database or WebUI path.
 
 ### DatabaseConfig (`shinka.database.DatabaseConfig`)
 
