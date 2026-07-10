@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from shinka.llm.constants import (
     BACKOFF_MAX_TIME,
     BACKOFF_MAX_TRIES,
@@ -94,3 +96,44 @@ print(json.dumps({
 
 def test_openai_sdk_retries_default_to_single_shinka_retry_layer():
     assert OPENAI_MAX_RETRIES == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "minimum"),
+    [
+        ("SHINKA_LLM_TIMEOUT", "0", 1),
+        ("SHINKA_LLM_MAX_RETRIES", "0", 1),
+        ("SHINKA_LLM_BACKOFF_MAX_TRIES", "0", 1),
+        ("SHINKA_LLM_BACKOFF_MAX_VALUE", "-1", 1),
+        ("SHINKA_LLM_BACKOFF_MAX_TIME_MULTIPLIER", "0", 1),
+        ("SHINKA_LLM_BACKOFF_MAX_TIME", "0", 1),
+        ("SHINKA_OPENAI_MAX_RETRIES", "-1", 0),
+    ],
+)
+def test_llm_retry_env_rejects_invalid_bounds(name: str, value: str, minimum: int):
+    env = {**os.environ, name: value}
+    result = subprocess.run(
+        [sys.executable, "-c", "import shinka.llm.constants"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert f"{name} must be >= {minimum}, got {value}" in result.stderr
+
+
+def test_openai_sdk_retries_allows_zero_override():
+    env = {**os.environ, "SHINKA_OPENAI_MAX_RETRIES": "0"}
+    code = (
+        "from shinka.llm.constants import OPENAI_MAX_RETRIES; print(OPENAI_MAX_RETRIES)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "0"
