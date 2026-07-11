@@ -164,6 +164,7 @@ class AsyncRunningJob:
     completion_detected_at: Optional[float] = None
     discard_if_completed: bool = False
     evaluation_slot_released: bool = False
+    cleanup_cancel_attempted: bool = False
 
 
 @dataclass
@@ -5471,6 +5472,44 @@ class ShinkaEvolveRunner:
 
         logger.info("Meta summarizer task exited")
 
+    async def _cancel_running_jobs_for_cleanup(self) -> None:
+        """Cancel each evaluator still owned by the runner exactly once."""
+        surviving_jobs: List[AsyncRunningJob] = []
+        cancelled_count = 0
+
+        for job in list(self.running_jobs):
+            if job.cleanup_cancel_attempted:
+                surviving_jobs.append(job)
+                continue
+
+            job.cleanup_cancel_attempted = True
+            try:
+                cancelled = await self.scheduler.cancel_job_async(job.job_id)
+            except Exception as e:
+                logger.warning(
+                    f"Error cancelling active job {job.job_id} "
+                    f"(gen {job.generation}) during cleanup: {e}"
+                )
+                surviving_jobs.append(job)
+                continue
+
+            if cancelled:
+                self.submitted_jobs.pop(str(job.job_id), None)
+                await self._release_evaluation_slot_once(job)
+                cancelled_count += 1
+            else:
+                logger.warning(
+                    f"Failed to cancel active job {job.job_id} "
+                    f"(gen {job.generation}) during cleanup; keeping it tracked"
+                )
+                surviving_jobs.append(job)
+
+        self.running_jobs = surviving_jobs
+        if cancelled_count:
+            logger.info(
+                f"Cancelled {cancelled_count} active evaluation job(s) during cleanup"
+            )
+
     async def _cleanup_async(self):
         """Cleanup async resources."""
         try:
@@ -5484,6 +5523,8 @@ class ShinkaEvolveRunner:
                 await asyncio.gather(
                     *self.active_proposal_tasks.values(), return_exceptions=True
                 )
+
+            await self._cancel_running_jobs_for_cleanup()
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:

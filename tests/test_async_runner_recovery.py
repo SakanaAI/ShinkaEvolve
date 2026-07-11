@@ -1348,6 +1348,75 @@ def test_cancel_surplus_inflight_work_cancels_backlog_once_target_hit():
     asyncio.run(_run())
 
 
+def test_cleanup_cancels_active_jobs_before_scheduler_shutdown(caplog):
+    async def _run():
+        events = []
+
+        class _CleanupScheduler:
+            async def cancel_job_async(self, job_id):
+                events.append(f"cancel:{job_id}")
+                return job_id == "job-cancelled"
+
+            def shutdown(self):
+                events.append("scheduler.shutdown")
+
+        class _CleanupAsyncDB(_FakeAsyncDB):
+            async def close_async(self):
+                events.append("db.close")
+
+        now = time.time()
+        cancelled_job = AsyncRunningJob(
+            job_id="job-cancelled",
+            exec_fname="program_1.py",
+            results_dir="results_1",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=51,
+            evaluation_worker_id=3,
+        )
+        failed_job = AsyncRunningJob(
+            job_id="job-failed",
+            exec_fname="program_2.py",
+            results_dir="results_2",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=52,
+            evaluation_worker_id=4,
+        )
+        evaluation_slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            async_db=_CleanupAsyncDB(total_programs=0),
+            scheduler=_CleanupScheduler(),
+            running_jobs=[cancelled_job, failed_job],
+            submitted_jobs={
+                "job-cancelled": cancelled_job,
+                "job-failed": failed_job,
+            },
+            evaluation_slot_pool=evaluation_slot_pool,
+        )
+
+        await runner._cleanup_async()
+        await runner._cancel_running_jobs_for_cleanup()
+
+        assert events == [
+            "cancel:job-cancelled",
+            "cancel:job-failed",
+            "db.close",
+            "scheduler.shutdown",
+        ]
+        assert runner.running_jobs == [failed_job]
+        assert runner.submitted_jobs == {"job-failed": failed_job}
+        assert evaluation_slot_pool.released == [3]
+        assert cancelled_job.evaluation_slot_released is True
+        assert failed_job.evaluation_slot_released is False
+
+    asyncio.run(_run())
+
+    assert "Failed to cancel active job job-failed" in caplog.text
+
+
 def test_process_single_job_skips_persistence_for_discarded_surplus_job():
     async def _run():
         async_db = _FakeAsyncDBWithGuard()

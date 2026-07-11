@@ -2,6 +2,7 @@ import subprocess
 import time
 import threading
 import os
+import signal
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
 from shinka.utils import load_results, parse_time_to_seconds
@@ -18,10 +19,12 @@ class ProcessWithLogging:
         process: subprocess.Popen,
         log_files: Tuple[TextIO, TextIO],
         log_threads: Tuple[threading.Thread, threading.Thread],
+        process_group: Optional[int] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
+        self._process_group = process_group
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -34,6 +37,30 @@ class ProcessWithLogging:
     def __repr__(self):
         """Return a detailed string representation."""
         return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.process.returncode})"
+
+    def _signal_process_group(self, process_group: int, sig: int) -> None:
+        if self.process.poll() is not None:
+            return
+        try:
+            os.killpg(process_group, sig)
+        except ProcessLookupError:
+            pass
+
+    def kill(self) -> None:
+        """Kill the process group on POSIX, or only the direct child elsewhere."""
+        process_group = self._process_group
+        if process_group is None:
+            self.process.kill()
+            return
+        self._signal_process_group(process_group, signal.SIGKILL)
+
+    def terminate(self) -> None:
+        """Terminate the process group on POSIX, or only the direct child elsewhere."""
+        process_group = self._process_group
+        if process_group is None:
+            self.process.terminate()
+            return
+        self._signal_process_group(process_group, signal.SIGTERM)
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
@@ -110,6 +137,7 @@ def submit(
         bufsize=1,  # Line buffered
         universal_newlines=True,
         env=env,
+        start_new_session=os.name == "posix",
     )
 
     # Open log files for writing with line buffering
@@ -133,7 +161,10 @@ def submit(
 
     # Create wrapper with logging capabilities
     wrapped_process = ProcessWithLogging(
-        process, (stdout_file, stderr_file), (stdout_thread, stderr_thread)
+        process,
+        (stdout_file, stderr_file),
+        (stdout_thread, stderr_thread),
+        process_group=process.pid if os.name == "posix" else None,
     )
 
     if verbose:

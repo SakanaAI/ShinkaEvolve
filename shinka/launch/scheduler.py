@@ -1,4 +1,5 @@
 import logging
+import subprocess
 import time
 import asyncio
 import shlex
@@ -446,8 +447,6 @@ class JobScheduler:
                 if self.job_type in ["slurm_docker", "slurm_conda"]:
                     if isinstance(job_id, str):
                         # For SLURM jobs, use scancel command
-                        import subprocess
-
                         result = subprocess.run(
                             ["scancel", job_id], capture_output=True, text=True
                         )
@@ -456,6 +455,15 @@ class JobScheduler:
                     # For local jobs, kill the process
                     if isinstance(job_id, ProcessWithLogging):
                         job_id.kill()
+                        try:
+                            job_id.wait(timeout=5.0)
+                        except subprocess.TimeoutExpired:
+                            logger.error(
+                                f"Timed out waiting for local job {job_id} "
+                                "to exit after cancellation"
+                            )
+                            return False
+                        job_id.cleanup_logging()
                         return True
                 return False
             except Exception as e:
