@@ -10,8 +10,7 @@ from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
 from .providers.model_resolver import resolve_model_backend
-
-MAX_RETRIES = 3
+from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 

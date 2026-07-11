@@ -55,6 +55,7 @@ def test_get_async_client_llm_openai_sets_timeout(monkeypatch):
     assert provider == "openai"
     assert model_name == "gpt-5.4-mini"
     assert captured_kwargs["timeout"] == llm_client_module.TIMEOUT
+    assert captured_kwargs["max_retries"] == llm_client_module.OPENAI_MAX_RETRIES
 
 
 def test_get_client_llm_gemini_sets_timeout(monkeypatch):
@@ -120,6 +121,7 @@ def test_get_client_llm_local_openai_uses_api_key_env_query_param(monkeypatch):
     assert model_name == "dummy-model"
     assert str(client.base_url).startswith("https://api.example.test/v1")
     assert captured_kwargs["api_key"] == "test-custom-key"
+    assert captured_kwargs["max_retries"] == llm_client_module.OPENAI_MAX_RETRIES
 
 
 def test_get_async_client_llm_local_openai_missing_api_key_env_raises(monkeypatch):
