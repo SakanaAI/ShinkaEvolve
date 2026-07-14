@@ -33,15 +33,15 @@ evo_config:
   job_type: local
   language: verilog           # .sv, // EVOLVE-BLOCK markers
   llm_models:
-    - openrouter/deepseek/deepseek-v4-flash
+    - openrouter/qwen/qwen3-coder
     - openrouter/qwen/qwen3-235b-a22b-2507
     - openrouter/openai/gpt-oss-120b
   llm_dynamic_selection: ucb
   llm_kwargs:
     temperatures: [0.3, 0.7]
     max_tokens: 6144
-  # Novelty/diversity via code embeddings (OpenRouter; needs prepaid credits).
-  embedding_model: openrouter/openai/text-embedding-3-small
+  # Set a catalog-backed embedding model to enable novelty filtering.
+  embedding_model: null
   code_embed_sim_threshold: 0.99
   use_text_feedback: true      # feed PPA numbers back to the LLM
   meta_rec_interval: null      # set to 10 to enable meta-recommendations
