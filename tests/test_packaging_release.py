@@ -66,6 +66,7 @@ def test_project_metadata_targets_pypi_release():
             "configs/*.yaml",
             "configs/*/*.yaml",
             "favicon.png",
+            "tools/pricing/*.json",
             "embed/providers/*.csv",
             "llm/providers/*.csv",
             "webui/*.html",

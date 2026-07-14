@@ -71,6 +71,7 @@ shinka = [
     "configs/*.yaml",
     "configs/*/*.yaml",
     "favicon.png",
+    "tools/pricing/*.json",
     "embed/providers/*.csv",
     "llm/providers/*.csv",
     "webui/*.html",
@@ -99,5 +100,6 @@ docs = [
 addopts = "--strict-markers"
 markers = [
     "integration: live external/provider integration coverage",
+    "models_dev_live: live models.dev catalog contract coverage",
     "requires_secrets: tests that need CI secrets or private credentials",
 ]
