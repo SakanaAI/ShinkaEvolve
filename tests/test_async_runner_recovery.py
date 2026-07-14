@@ -257,6 +257,12 @@ def test_get_failure_language_infers_go_from_generated_filename():
     assert runner._get_failure_language(Path("main.go")) == "go"
 
 
+def test_get_failure_language_infers_verilog_from_generated_filename():
+    runner = _build_runner(evo_config=SimpleNamespace(language=None))
+
+    assert runner._get_failure_language(Path("main.sv")) == "verilog"
+
+
 def test_job_monitor_stops_when_target_reached_with_no_running_jobs():
     async def _run():
         runner = _build_runner(

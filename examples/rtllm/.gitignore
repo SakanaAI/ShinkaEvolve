@@ -1,0 +1,27 @@
+# Standard-cell liberty downloaded from OpenROAD (do not commit the PDK)
+pdk/
+
+# Temp working notes
+WORKLOG.md
+
+# Generated locally from a RTLLM clone (do not commit RTLLM's files)
+problems/*.jsonl
+problems/.ppa_ref_cache.json
+problems/.golden_meta.json
+seeds/
+# Evolution outputs and scratch
+results/
+results_*/
+*.log
+_smoke/
+_t/
+# Generated artifacts (regenerable; site is deployed to Vercel, HF export uploaded to HF)
+hf_export/
+hf_export_overnight/
+site/
+# Study meta / scratch (not part of the reusable example)
+GIST.md
+PR_DESCRIPTION.md
+make_gist.py
+_satdemo/
+_scope_*/

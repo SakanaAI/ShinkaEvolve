@@ -6,6 +6,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added Verilog/SystemVerilog as a first-class evolution target in PR #137,
+  including `.sv` task detection, syntax validation, EVOLVE-BLOCK marker support,
+  failure-artifact rendering, and a self-contained RTLLM example. Thanks @Tyronita.
 - Added startup pricing refresh from models.dev with conditional HTTP caching,
   validated offline fallback, provider-qualified model discovery, and per-run
   pricing snapshots in PR #141. The tutorial now includes a no-cost catalog

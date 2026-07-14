@@ -90,6 +90,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "cxx": "cpp",
             "cu": "cuda",
             "go": "go",
+            "sv": "verilog",
             "f90": "fortran",
             "f95": "fortran",
             "f03": "fortran",
@@ -147,6 +148,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "cpp": ".cpp",
             "cuda": ".cu",
             "go": ".go",
+            "verilog": ".sv",
             "fortran": ".f90",
         }.get(language)
         if preferred_suffix:

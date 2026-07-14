@@ -3179,6 +3179,7 @@ class ShinkaEvolveRunner:
             "cxx": "cpp",
             "cu": "cuda",
             "go": "go",
+            "sv": "verilog",
             "f90": "fortran",
             "f95": "fortran",
             "f03": "fortran",

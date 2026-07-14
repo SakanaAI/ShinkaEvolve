@@ -107,6 +107,7 @@ For detailed installation instructions and usage examples, see the [Getting Star
 | 🧮 [Wolfram GCD Sum](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/wolfram_gcd_sum) | Optimize a Wolfram Language GCD-sum solver. | `LocalJobConfig` |
 | ✨ [Novelty Generator](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/novelty_generator) | Generate creative, surprising outputs (e.g., ASCII art). | `LocalJobConfig` |
 | ∿ [Sine Approx Headless](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/sine_approx_headless) | Evolve a bounded sine approximation using Headless subscription-backed mutation calls. | `LocalJobConfig` |
+| ⚡ [RTLLM PPA](https://github.com/SakanaAI/ShinkaEvolve/tree/main/examples/rtllm) | Evolve Verilog RTL for power/performance/area under a fixed spec (RTLLM v2.0). Requires `iverilog` + `yosys` + `OpenSTA`. | `LocalJobConfig` |
 
 
 ## `shinka` Run with Python API 🐍
