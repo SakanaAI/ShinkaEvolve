@@ -71,7 +71,7 @@ def resolve_embedding_backend(model_name: str) -> ResolvedEmbeddingModel:
 
     raise ValueError(
         f"Embedding model {model_name} not supported. "
-        "Use a known pricing.csv model, 'openrouter/<model>', "
+        "Use a model from the refreshed pricing catalog, 'openrouter/<model>', "
         "or 'local/<model>@http(s)://host[:port]/v1'."
     )
 

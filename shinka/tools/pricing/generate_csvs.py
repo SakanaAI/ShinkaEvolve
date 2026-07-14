@@ -1,7 +1,7 @@
-"""Generate committed pricing CSVs from the models.dev API payload.
+"""Generate the bundled offline pricing fallback from models.dev.
 
-Runtime pricing consumers intentionally keep reading the generated CSV files.
-This module is a maintainer refresh tool, not a runtime dependency on models.dev.
+Runtime startup uses the same upstream catalog directly. This maintainer tool
+keeps release artifacts current for offline and outage fallback behavior.
 """
 
 from __future__ import annotations
@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
+
+from shinka.pricing.catalog import PricingCatalog, catalog_from_models_dev_payload
+from shinka.pricing.rendering import render_embedding_row, render_llm_row
 
 
 MODELS_DEV_API_URL = "https://models.dev/api.json"
@@ -215,7 +218,9 @@ def _generate_llm_row(
 
     cost = upstream_model.get("cost") or {}
     input_price = _override_or_default(llm_override, "input_price", cost.get("input"))
-    output_price = _override_or_default(llm_override, "output_price", cost.get("output"))
+    output_price = _override_or_default(
+        llm_override, "output_price", cost.get("output")
+    )
     if input_price is None or output_price is None:
         if llm_override is None:
             raise ValueError(
@@ -232,9 +237,7 @@ def _generate_llm_row(
         "think_temp_fixed",
         _requires_fixed_temperature(target, upstream_model, is_reasoning, overlay),
     )
-    requires_reasoning = _override_or_default(
-        llm_override, "requires_reasoning", False
-    )
+    requires_reasoning = _override_or_default(llm_override, "requires_reasoning", False)
 
     return {
         "model_name": target.model_name,
@@ -362,7 +365,9 @@ def _requires_fixed_temperature(
 
 def _llm_override_row(target: TargetModel, override: LLMOverride) -> dict[str, str]:
     if override.input_price is None or override.output_price is None:
-        raise ValueError(f"Missing manual prices for {target.provider}/{target.model_name}")
+        raise ValueError(
+            f"Missing manual prices for {target.provider}/{target.model_name}"
+        )
 
     return {
         "model_name": target.model_name,
@@ -451,10 +456,25 @@ def main(argv: list[str] | None = None) -> int:
     payload = load_models_dev_payload(args.api_json)
     overlay = load_pricing_overlay(args.overlay_json)
     llm_targets = read_targets(args.llm_output, "llm", LLM_HEADERS)
-    embedding_targets = read_targets(args.embedding_output, "embedding", EMBEDDING_HEADERS)
-    llm_csv = render_csv(LLM_HEADERS, generate_llm_rows(payload, llm_targets, overlay))
+    embedding_targets = read_targets(
+        args.embedding_output, "embedding", EMBEDDING_HEADERS
+    )
+    catalog = catalog_from_models_dev_payload(
+        payload, args.overlay_json, include_bundled=False
+    )
+    llm_csv = render_csv(
+        LLM_HEADERS,
+        [
+            _generated_llm_row(catalog, payload, target, overlay)
+            for target in llm_targets
+        ],
+    )
     embedding_csv = render_csv(
-        EMBEDDING_HEADERS, generate_embedding_rows(payload, embedding_targets, overlay)
+        EMBEDDING_HEADERS,
+        [
+            _generated_embedding_row(catalog, payload, target, overlay)
+            for target in embedding_targets
+        ],
     )
 
     if args.check:
@@ -474,6 +494,30 @@ def main(argv: list[str] | None = None) -> int:
     args.llm_output.write_text(llm_csv, encoding="utf-8")
     args.embedding_output.write_text(embedding_csv, encoding="utf-8")
     return 0
+
+
+def _generated_llm_row(
+    catalog: PricingCatalog,
+    payload: dict[str, Any],
+    target: TargetModel,
+    overlay: PricingOverlay,
+) -> dict[str, str]:
+    try:
+        return render_llm_row(catalog, target.model_name, target.provider)
+    except KeyError:
+        return _generate_llm_row(payload, target, overlay)
+
+
+def _generated_embedding_row(
+    catalog: PricingCatalog,
+    payload: dict[str, Any],
+    target: TargetModel,
+    overlay: PricingOverlay,
+) -> dict[str, str]:
+    try:
+        return render_embedding_row(catalog, target.model_name, target.provider)
+    except KeyError:
+        return _generate_embedding_row(payload, target, overlay)
 
 
 if __name__ == "__main__":

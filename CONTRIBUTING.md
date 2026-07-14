@@ -53,7 +53,10 @@ uv run python -m shinka.tools.pricing.generate_csvs --check
 uv run pytest tests/test_pricing_csv_generation.py tests/test_model_resolver.py tests/test_embedding_model_resolver.py tests/test_shinka_models_cli.py -q
 ```
 
-The refresh keeps runtime consumers on the committed CSV files. Provider/model aliases, temporary manual entries, and Shinka-specific booleans live in `shinka/tools/pricing/models_dev_overlay.json`.
+The CSVs are the packaged offline fallback. Normal runs conditionally refresh
+`models.dev` at startup and keep the last validated response in the user cache.
+Provider/model aliases, temporary manual entries, and Shinka-specific booleans
+live in `shinka/tools/pricing/models_dev_overlay.json`.
 
 9. Commit your change with a clear message, sync with the latest `main`, then push your branch:
 

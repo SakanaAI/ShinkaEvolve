@@ -276,6 +276,62 @@
       "requires_reasoning": true
     },
     {
+      "provider": "anthropic",
+      "model_name": "claude-3-5-sonnet-20241022",
+      "input_price": 3.0,
+      "output_price": 15.0
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "input_price": 3.0,
+      "output_price": 15.0
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-3-opus-20240229",
+      "input_price": 15.0,
+      "output_price": 75.0
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-opus-20240229-v1:0",
+      "input_price": 15.0,
+      "output_price": 75.0
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-3-7-sonnet-20250219",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-4-sonnet-20250514",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
       "provider": "openrouter",
       "model_name": "openai/gpt-oss-120b",
       "requires_reasoning": true

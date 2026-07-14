@@ -66,9 +66,9 @@ gemini-2.5-flash-lite-preview-09-2025,google,0.1,0.4,,,,True,0,0
 x-ai/grok-4,openrouter,N/A,N/A,,,,True,1,1
 x-ai/grok-4-fast,openrouter,N/A,N/A,,,,True,1,1
 qwen/qwen3-coder,openrouter,0.22,1.8,,,,False,0,0
-qwen/qwen3-235b-a22b-2507,openrouter,0.09,0.1,,,,False,0,0
+qwen/qwen3-235b-a22b-2507,openrouter,0.09,0.55,,,,False,0,0
 qwen/qwen3-32b,openrouter,0.08,0.28,,,,True,1,0
-openai/gpt-oss-120b,openrouter,0.03,0.15,,,,True,1,1
-z-ai/glm-4.6,openrouter,0.43,1.74,,,,True,1,0
+openai/gpt-oss-120b,openrouter,0.036,0.18,,,,True,1,1
+z-ai/glm-4.6,openrouter,0.43,1.75,,,,True,1,0
 moonshotai/kimi-k2-0905,openrouter,0.6,2.5,,,,False,0,0
 moonshotai/kimi-k2-thinking,openrouter,0.6,2.5,,,,True,1,1

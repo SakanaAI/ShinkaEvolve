@@ -33,6 +33,17 @@ def resolve_model_backend(model_name: str) -> ResolvedModel:
             base_url=None,
         )
 
+    if model_name.startswith(_OPENROUTER_PREFIX):
+        api_model_name = model_name.split(_OPENROUTER_PREFIX, 1)[-1]
+        if not api_model_name:
+            raise ValueError("OpenRouter model name is missing after 'openrouter/'.")
+        return ResolvedModel(
+            original_model_name=model_name,
+            api_model_name=api_model_name,
+            provider="openrouter",
+            base_url=None,
+        )
+
     provider = get_provider(model_name)
     if provider is not None:
         return ResolvedModel(
@@ -53,17 +64,6 @@ def resolve_model_backend(model_name: str) -> ResolvedModel:
             base_url=None,
         )
 
-    if model_name.startswith(_OPENROUTER_PREFIX):
-        api_model_name = model_name.split(_OPENROUTER_PREFIX, 1)[-1]
-        if not api_model_name:
-            raise ValueError("OpenRouter model name is missing after 'openrouter/'.")
-        return ResolvedModel(
-            original_model_name=model_name,
-            api_model_name=api_model_name,
-            provider="openrouter",
-            base_url=None,
-        )
-
     local_match = parse_local_openai_model(model_name)
     if local_match:
         return ResolvedModel(
@@ -76,6 +76,6 @@ def resolve_model_backend(model_name: str) -> ResolvedModel:
 
     raise ValueError(
         f"Model '{model_name}' is not supported. "
-        "Use a known pricing.csv model, 'openrouter/<model>', "
+        "Use a model from the refreshed pricing catalog, 'openrouter/<model>', "
         "or 'local/<model>@http(s)://host[:port]/v1'."
     )

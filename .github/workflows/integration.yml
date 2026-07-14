@@ -50,3 +50,7 @@ jobs:
             exit 0
           fi
           exit "$status"
+
+      - name: Verify live models.dev catalog
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run pytest -q -m "models_dev_live"

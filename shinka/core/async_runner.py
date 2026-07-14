@@ -62,6 +62,12 @@ from shinka.core.prompt_evolver import (
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
+from shinka.pricing.catalog import (
+    activate_model_catalog,
+    load_run_pricing_snapshot,
+    refresh_model_catalog,
+    write_run_pricing_snapshot,
+)
 from shinka.utils import (
     get_language_extension,
     parse_time_to_seconds,
@@ -255,6 +261,12 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
+        pricing_snapshot = (
+            load_run_pricing_snapshot(Path(evo_config.results_dir))
+            if evo_config.results_dir is not None
+            else None
+        )
+        pricing_snapshot = pricing_snapshot or refresh_model_catalog()
         _validate_evo_config_model_env_access(evo_config)
 
         self.verbose = verbose
@@ -296,6 +308,16 @@ class ShinkaEvolveRunner:
         else:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
+
+        self.pricing_snapshot = pricing_snapshot
+        write_run_pricing_snapshot(pricing_snapshot, Path(self.results_dir))
+        logger.info(
+            "Pricing catalog: source=%s fetched_at=%s stale=%s sha256=%s",
+            pricing_snapshot.source,
+            pricing_snapshot.fetched_at,
+            pricing_snapshot.stale,
+            pricing_snapshot.sha256,
+        )
 
         _print_gradient_logo_and_mirror(
             Path(log_filename), banner_style=self.banner_style
@@ -972,6 +994,7 @@ class ShinkaEvolveRunner:
 
     async def run_async(self):
         """Main async evolution loop."""
+        activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError

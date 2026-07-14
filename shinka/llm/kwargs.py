@@ -110,21 +110,26 @@ def sample_model_kwargs(
         return kwargs_dict
 
     # 2. SAMPLE: reasoning effort
-    if is_reasoning_model(api_model_name):
+    if is_reasoning_model(model_name):
         r_effort = random.choice(reasoning_efforts)
     else:
         r_effort = "disabled"
 
     # Some opennrouter models only support running with reasoning effort
-    if requires_reasoning(api_model_name) and r_effort == "disabled":
+    if requires_reasoning(model_name) and r_effort == "disabled":
         r_effort = "low"
 
     # 3. SAMPLE: temperature with possible reasoning restrictions
     include_temperature = api_model_name not in NO_TEMPERATURE_MODELS and not (
-        provider in ("openai", "azure_openai") and is_reasoning_model(api_model_name)
+        provider in ("openai", "azure_openai") and is_reasoning_model(model_name)
     )
-    if include_temperature and has_fixed_temperature(api_model_name) and (
-        r_effort != "disabled" or provider in ("openai", "openrouter", "azure_openai")
+    if (
+        include_temperature
+        and has_fixed_temperature(model_name)
+        and (
+            r_effort != "disabled"
+            or provider in ("openai", "openrouter", "azure_openai")
+        )
     ):
         kwargs_dict["temperature"] = 1.0
     elif include_temperature:
@@ -132,7 +137,7 @@ def sample_model_kwargs(
 
     # 4.a) SET: max_output_tokens for OpenAI reasoning effort
     if provider in ("openai", "openrouter", "azure_openai") and is_reasoning_model(
-        api_model_name
+        model_name
     ):
         kwargs_dict["max_output_tokens"] = random.choice(max_tokens)
         if r_effort == "disabled":
@@ -149,7 +154,7 @@ def sample_model_kwargs(
             kwargs_dict["reasoning"]["summary"] = "auto"
 
     # 4.b) SET: max_tokens for Google reasoning effort
-    elif provider == "google" and is_reasoning_model(api_model_name):
+    elif provider == "google" and is_reasoning_model(model_name):
         kwargs_dict["max_tokens"] = random.choice(max_tokens)
         think_bool = r_effort != "disabled"
         if think_bool:
@@ -163,7 +168,7 @@ def sample_model_kwargs(
                 kwargs_dict["thinking_budget"] = 0
 
     # 4.c) SET: max_tokens for Anthropic or Bedrock reasoning effort
-    elif provider in ("anthropic", "bedrock") and is_reasoning_model(api_model_name):
+    elif provider in ("anthropic", "bedrock") and is_reasoning_model(model_name):
         kwargs_dict["max_tokens"] = min(random.choice(max_tokens), 64000)
         think_bool = r_effort != "disabled"
         if think_bool:
@@ -178,7 +183,7 @@ def sample_model_kwargs(
             }
 
     # 4.d) SET: max_tokens and thinking mode for DeepSeek reasoning models
-    elif provider == "deepseek" and is_reasoning_model(api_model_name):
+    elif provider == "deepseek" and is_reasoning_model(model_name):
         kwargs_dict["max_tokens"] = random.choice(max_tokens)
         if r_effort == "disabled":
             kwargs_dict["extra_body"] = {"thinking": {"type": "disabled"}}
