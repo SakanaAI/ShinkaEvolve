@@ -1,0 +1,73 @@
+{
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-catalog-test": {
+        "id": "gpt-catalog-test",
+        "name": "GPT Catalog Test",
+        "cost": {
+          "input": 2.0,
+          "output": 8.0
+        },
+        "reasoning": true,
+        "temperature": false
+      },
+      "gpt-tiered-test": {
+        "id": "gpt-tiered-test",
+        "name": "GPT Tiered Test",
+        "cost": {
+          "input": 1.25,
+          "output": 10.0,
+          "tiers": [
+            {
+              "input": 2.5,
+              "output": 15.0,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ]
+        },
+        "reasoning": true,
+        "temperature": true
+      },
+      "gpt-missing-output-test": {
+        "id": "gpt-missing-output-test",
+        "name": "GPT Missing Output Test",
+        "cost": {
+          "input": 1.0
+        }
+      },
+      "gpt-image-test": {
+        "id": "gpt-image-test",
+        "name": "Unsupported image output",
+        "modalities": {
+          "input": ["text"],
+          "output": ["image"]
+        },
+        "cost": {
+          "input": 1.0,
+          "output": 2.0
+        }
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "models": {
+      "openai/gpt-catalog-test": {
+        "id": "openai/gpt-catalog-test",
+        "name": "GPT Catalog Test via OpenRouter",
+        "cost": {
+          "input": 0.5,
+          "output": 0.75
+        },
+        "reasoning": false,
+        "temperature": true
+      }
+    }
+  }
+}

@@ -84,6 +84,7 @@ def save_json_results(
     metrics: Dict[str, Any],
     correct: bool,
     error: Optional[str] = None,
+    verbose: bool = True,
 ) -> None:
     """Saves metrics and correctness status to JSON files."""
     os.makedirs(results_dir, exist_ok=True)
@@ -92,12 +93,14 @@ def save_json_results(
     correct_file = os.path.join(results_dir, "correct.json")
     with open(correct_file, "w") as f:
         json.dump(correct_payload, f, indent=4)
-    print(f"Correctness and error status saved to {correct_file}")
+    if verbose:
+        print(f"Correctness and error status saved to {correct_file}")
 
     metrics_file = os.path.join(results_dir, "metrics.json")
     with open(metrics_file, "w") as f:
         json.dump(metrics, f, indent=4)
-    print(f"Metrics saved to {metrics_file}")
+    if verbose:
+        print(f"Metrics saved to {metrics_file}")
 
 
 def run_shinka_eval(
@@ -118,6 +121,8 @@ def run_shinka_eval(
     # Parallel execution parameters
     run_workers: int = 1,
     max_workers_cap: Optional[int] = None,
+    # Output verbosity
+    verbose: Optional[bool] = None,
 ) -> Tuple[Dict[str, Any], bool, Optional[str]]:
     """
     Runs an experiment multiple times, collects results, optionally validates,
@@ -155,10 +160,18 @@ def run_shinka_eval(
         max_workers_cap: Optional upper bound on effective worker count.
                         Applied after `run_workers` and `num_runs`.
                         Useful for externally constraining CPU use.
+        verbose: Whether to print per-run progress banners to stdout. If None
+                 (default), resolved from the `SHINKA_EVAL_VERBOSE` env var
+                 ("0" disables, anything else enables), which the launcher sets
+                 from `JobConfig.eval_verbose`. An explicit value takes
+                 precedence over the env var.
 
     Returns:
         A tuple: (metrics, overall_correct_flag, first_error_message)
     """
+    if verbose is None:
+        verbose = os.environ.get("SHINKA_EVAL_VERBOSE", "1") != "0"
+
     effective_default_metrics = (
         default_metrics_on_error.copy()
         if default_metrics_on_error
@@ -237,9 +250,10 @@ def run_shinka_eval(
 
             with ProcessPoolExecutor(max_workers=effective_run_workers) as executor:
                 for i in range(num_runs):
-                    print(
-                        f"{10 * '='}Running program evaluation {i + 1}/{num_runs}...{10 * '='}"
-                    )
+                    if verbose:
+                        print(
+                            f"{10 * '='}Running program evaluation {i + 1}/{num_runs}...{10 * '='}"
+                        )
                     kwargs: Dict[str, Any] = (
                         get_experiment_kwargs(i)
                         if get_experiment_kwargs
@@ -308,15 +322,17 @@ def run_shinka_eval(
                     else:
                         num_valid_runs += 1
 
-                print(
-                    f"{10 * '='}Run {i + 1}/{num_runs} completed in "
-                    f"{run_time:.2f} seconds{10 * '='}"
-                )
+                if verbose:
+                    print(
+                        f"{10 * '='}Run {i + 1}/{num_runs} completed in "
+                        f"{run_time:.2f} seconds{10 * '='}"
+                    )
         else:
             for i in range(num_runs):
-                print(
-                    f"{10 * '='}Running program evaluation {i + 1}/{num_runs}...{10 * '='}"
-                )
+                if verbose:
+                    print(
+                        f"{10 * '='}Running program evaluation {i + 1}/{num_runs}...{10 * '='}"
+                    )
                 run_kwargs: Dict[str, Any] = {}
                 if get_experiment_kwargs:
                     run_kwargs = get_experiment_kwargs(i)
@@ -344,9 +360,10 @@ def run_shinka_eval(
                                 all_validation_errors_list.append(validation_err_msg)
                     else:
                         num_valid_runs += 1
-                print(
-                    f"{10 * '='}Run {i + 1}/{num_runs} completed in {end_time - start_time:.2f} seconds{10 * '='}"
-                )
+                if verbose:
+                    print(
+                        f"{10 * '='}Run {i + 1}/{num_runs} completed in {end_time - start_time:.2f} seconds{10 * '='}"
+                    )
 
                 # Early stopping check
                 if early_stopper is not None and early_stop_threshold is not None:
@@ -480,5 +497,11 @@ def run_shinka_eval(
             except Exception as e:
                 print(f"Error generating plots: {e}")
 
-    save_json_results(results_dir, metrics, overall_correct_flag, first_error_message)
+    save_json_results(
+        results_dir,
+        metrics,
+        overall_correct_flag,
+        first_error_message,
+        verbose=verbose,
+    )
     return metrics, overall_correct_flag, first_error_message

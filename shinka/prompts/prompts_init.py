@@ -4,7 +4,7 @@ Your goal is to write an initial program that solves a given task.
 
 INIT_USER_MSG = """Please write an initial program for the task. The program should be written in {language}.
 
-You MUST repond using a short summary name, description and the full code:
+You MUST respond using a short summary name, description, and the full code:
 
 <NAME>
 A shortened name summarizing the code you are proposing. Lowercase, no spaces, underscores allowed.

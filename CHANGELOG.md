@@ -6,7 +6,36 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added startup pricing refresh from models.dev with conditional HTTP caching,
+  validated offline fallback, provider-qualified model discovery, and per-run
+  pricing snapshots in PR #141. The tutorial now includes a no-cost catalog
+  preflight. Thanks @rodmarkun.
+- Added DeepSeek V4 Flash and V4 Pro pricing entries to the DeepSeek LLM pricing catalog.
+- Added controls to reduce evaluation stdout bloat: `JobConfig.eval_verbose` suppresses framework evaluation progress output, and `DatabaseConfig.max_stdout_log_chars` can persist only the tail of `stdout_log` metadata while keeping full logs on disk. Thanks @marcopirazzini.
+- Added SLURM support for `numeric_threads_per_job`, applying numeric-library thread caps consistently across local and SLURM evaluation jobs. Thanks @marcopirazzini.
+
+### Changed
+
+- Removed the automatic Claude Code Review pull-request workflow.
+
+### Fixed
+
+- Fixed OpenAI retry handling so ShinkaEvolve respects provider `retry_after` hints from transient Cloudflare/API 5xx responses.
+- Fixed DeepSeek V4 kwargs so ShinkaEvolve omits `temperature` for thinking-mode calls and includes model kwargs in retry error logs.
+- Fixed Claude Opus 4.8 kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for Anthropic and Bedrock calls.
+- Fixed OpenAI reasoning model kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for GPT-5-series Responses API calls.
+- Fixed DeepSeek reasoning model kwargs so ShinkaEvolve passes DeepSeek thinking-mode controls and `reasoning_effort` for V4 models.
+- Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google API hosts and prefer IPv4 when needed.
+- Fixed LLM pricing boolean metadata normalization so reasoning-model flags handle whitespace and mixed CSV value types.
+- Fixed OpenAI Responses parsing to find assistant text by content type while ignoring reasoning/tool text when no message output exists.
+- Fixed quiet evaluation mode so `run_shinka_eval(..., verbose=False)` also suppresses result-save framework stdout while preserving the default verbose behavior.
+
+## 0.0.7 - 2026-06-02
+
+### Added
+
 - Added Gemini 3.5 Flash pricing to the Google LLM pricing catalog.
+- Added Claude Opus 4.8 pricing entries for the Anthropic API and Amazon Bedrock (`us.anthropic.claude-opus-4-8`) in the LLM pricing catalog.
 - Added Wolfram Language as a first-class evolution target: registry entries (`wolfram`, `wl`, `wls`, `mathematica`), code-fence and EVOLVE-BLOCK marker support, and end-to-end coverage in `apply_diff` / `apply_full`.
 - Added EVOLVE-BLOCK marker validation in `shinka.edit.marker_validation`, catching the LLM failure mode where a block-comment-language marker is emitted without its closing delimiter (Wolfram, Markdown), which would silently trap the candidate body inside a comment.
 - Added the `examples/wolfram_gcd_sum` task: deoptimized seed for `S(N) = sum_{i,j in 1..N} GCD(i,j)`. The evaluator calibrates the baseline on every run by timing the seed through the same `RepeatedTiming` harness as the candidate, and the Wolfram-side timeout is configurable via `WOLFRAM_GCD_MAX_SECONDS`.

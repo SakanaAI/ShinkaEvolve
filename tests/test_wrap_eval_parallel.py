@@ -108,6 +108,54 @@ def test_run_shinka_eval_parallel_worker_error_surfaces(tmp_path: Path) -> None:
     assert metrics["combined_score"] == 0.0
 
 
+def test_run_shinka_eval_keeps_default_save_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    program_path = _write_program(
+        tmp_path,
+        """
+        def run_experiment(seed):
+            return seed
+        """,
+    )
+
+    run_shinka_eval(
+        program_path=program_path,
+        results_dir=_results_dir(tmp_path, "default_output"),
+        experiment_fn_name="run_experiment",
+        num_runs=1,
+    )
+
+    stdout = capsys.readouterr().out
+    assert "Running program evaluation 1/1" in stdout
+    assert "Correctness and error status saved to" in stdout
+    assert "Metrics saved to" in stdout
+
+
+def test_run_shinka_eval_verbose_false_suppresses_framework_stdout(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    program_path = _write_program(
+        tmp_path,
+        """
+        def run_experiment(seed):
+            return seed
+        """,
+    )
+
+    run_shinka_eval(
+        program_path=program_path,
+        results_dir=_results_dir(tmp_path, "quiet_output"),
+        experiment_fn_name="run_experiment",
+        num_runs=1,
+        verbose=False,
+    )
+
+    assert capsys.readouterr().out == ""
+
+
 def test_parallel_mode_rejects_early_stop(tmp_path: Path) -> None:
     program_path = _write_program(
         tmp_path,

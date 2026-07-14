@@ -8,6 +8,7 @@ import pytest
 
 import shinka.cli.models as cli_models
 from shinka.env import load_shinka_dotenv as real_load_shinka_dotenv
+from shinka.pricing.catalog import PricingConfig, PricingMode, refresh_model_catalog
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,16 @@ PROVIDER_ENV_VARS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _use_bundled_pricing_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    snapshot = refresh_model_catalog(
+        PricingConfig(mode=PricingMode.OFFLINE, cache_dir=tmp_path)
+    )
+    monkeypatch.setattr(cli_models, "refresh_model_catalog", lambda: snapshot)
+
+
 def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for env_var_names in PROVIDER_ENV_VARS.values():
         for env_var_name in env_var_names:
@@ -38,11 +49,14 @@ def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _models_for_provider(provider: str, pricing_csv: Path) -> list[str]:
     with pricing_csv.open(newline="", encoding="utf-8") as handle:
         rows = csv.DictReader(handle)
-        return sorted(
+        model_names = [
             row["model_name"].strip()
             for row in rows
             if row["provider"].strip() == provider
-        )
+        ]
+        if provider == "openrouter":
+            model_names = [f"openrouter/{model_name}" for model_name in model_names]
+        return sorted(model_names)
 
 
 def _llm_models_for_provider(provider: str) -> list[str]:
@@ -55,13 +69,16 @@ def _embedding_models_for_provider(provider: str) -> list[str]:
 
 def _all_models_for_provider(provider: str) -> list[str]:
     return sorted(
-        set(_llm_models_for_provider(provider) + _embedding_models_for_provider(provider))
+        set(
+            _llm_models_for_provider(provider)
+            + _embedding_models_for_provider(provider)
+        )
     )
 
 
 def _run_cli(
     capsys: pytest.CaptureFixture[str], argv: list[str] | None = None
-) -> tuple[int, list[str] | dict]:
+) -> tuple[int, list[str] | dict[str, object]]:
     exit_code = cli_models.main([] if argv is None else argv)
     output = capsys.readouterr().out
     return exit_code, json.loads(output)
@@ -73,7 +90,9 @@ def test_shinka_models_help_describes_json_output(capsys: pytest.CaptureFixture[
 
     assert exc_info.value.code == 0
     help_output = capsys.readouterr().out
-    assert "Inspect current environment variables and discovered .env files" in help_output
+    assert (
+        "Inspect current environment variables and discovered .env files" in help_output
+    )
     assert "available_providers" in help_output
     assert '"embedding": [...]' in help_output
     assert '"llm": [...]' in help_output
@@ -113,6 +132,10 @@ def test_shinka_models_verbose_prints_full_payload(
     expected_llm_models = _llm_models_for_provider("google")
     expected_embedding_models = _embedding_models_for_provider("google")
     assert exit_code == 0
+    assert isinstance(payload, dict)
+    pricing_catalog = payload.pop("pricing_catalog")
+    assert isinstance(pricing_catalog, dict)
+    assert pricing_catalog["source"] == "bundled"
     assert payload == {
         "available_providers": [
             {
@@ -161,6 +184,10 @@ def test_shinka_models_verbose_uses_vertex_requirements_in_vertex_mode(
     expected_llm_models = _llm_models_for_provider("google")
     expected_embedding_models = _embedding_models_for_provider("google")
     assert exit_code == 0
+    assert isinstance(payload, dict)
+    pricing_catalog = payload.pop("pricing_catalog")
+    assert isinstance(pricing_catalog, dict)
+    assert pricing_catalog["source"] == "bundled"
     assert payload == {
         "available_providers": [
             {

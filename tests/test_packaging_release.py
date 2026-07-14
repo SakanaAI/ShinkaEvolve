@@ -66,6 +66,7 @@ def test_project_metadata_targets_pypi_release():
             "configs/*.yaml",
             "configs/*/*.yaml",
             "favicon.png",
+            "tools/pricing/*.json",
             "embed/providers/*.csv",
             "llm/providers/*.csv",
             "webui/*.html",
@@ -88,7 +89,7 @@ def test_readme_documents_package_install():
 def test_changelog_tracks_current_package_version():
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert shinka.__version__ == "0.0.6"
+    assert shinka.__version__ == "0.0.7"
     assert "# Changelog" in changelog
     assert f"## {shinka.__version__} -" in changelog
 

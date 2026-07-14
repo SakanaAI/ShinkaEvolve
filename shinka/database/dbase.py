@@ -54,6 +54,9 @@ class DatabaseConfig:
     db_path: Optional[str] = None  # Path to SQLite database file
     num_islands: int = 2
     archive_size: int = 40
+    # Max chars of stdout_log persisted to program metadata (tail kept).
+    # None = no truncation (full stdout stored). Full log always stays on disk.
+    max_stdout_log_chars: Optional[int] = None
 
     # Inspiration parameters
     elite_selection_ratio: float = 0.3  # Prop of elites inspirations

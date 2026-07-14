@@ -160,6 +160,20 @@ runner = ShinkaEvolveRunner(
 runner.run()
 ```
 
+### Live model pricing
+
+Shinka refreshes supported model metadata and token prices from
+[`models.dev`](https://models.dev) when a new run starts. Requests use HTTP
+cache validation, then fall back to the last validated user-cache response or
+the packaged snapshot when offline. The exact catalog used by a run is written
+to `pricing_snapshot.json` in its results directory and reused when that run is
+resumed.
+
+Set `SHINKA_PRICING_MODE=offline` to skip the network check, or
+`SHINKA_PRICING_MODE=required` to fail startup when live pricing cannot be
+validated. Run `shinka_models --verbose` to inspect catalog provenance and the
+models available for configured provider credentials.
+
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>
 

@@ -1,79 +1,57 @@
-# Available embedding models and pricing - loaded from pricing.csv as DataFrame
-# OpenAI: https://platform.openai.com/docs/pricing
-# Gemini: https://ai.google.dev/gemini-api/docs/pricing
+"""Embedding pricing compatibility API backed by the runtime model catalog."""
 
-import pandas as pd
-from pathlib import Path
+from __future__ import annotations
+
 from typing import Optional
 
-# Load pricing data from CSV
-_pricing_csv_path = Path(__file__).parent / "pricing.csv"
-# Utility constant
-M = 1_000_000
+from shinka.pricing.catalog import ModelPrice, get_catalog
 
 
-def _load_pricing_dataframe() -> pd.DataFrame:
-    """Load pricing data from CSV file as a pandas DataFrame."""
-    df = pd.read_csv(_pricing_csv_path)
-
-    # Strip whitespace from string columns only
-    for col in df.columns:
-        if df[col].dtype == "object":  # Only strip string columns
-            df[col] = df[col].str.strip()
-
-    # Strip column names
-    df.columns = df.columns.str.strip()
-
-    # Convert price column to numeric (handling N/A as 0)
-    df["input_price"] = pd.to_numeric(
-        df["input_price"].replace("N/A", "0"), errors="coerce"
-    )
-
-    # Convert prices from per-1M-tokens to per-token
-    df["input_price"] = df["input_price"] / M
-
-    # Set index to model_name for fast lookups
-    df = df.set_index("model_name")
-
-    return df
-
-
-# Load pricing dataframe
-_PRICING_DF = _load_pricing_dataframe()
+def _entry(model_name: str) -> ModelPrice:
+    try:
+        return get_catalog().catalog.get_by_name(model_name, kind="embedding")
+    except KeyError:
+        try:
+            return get_catalog().catalog.find_by_api_name(model_name, kind="embedding")
+        except KeyError as exc:
+            raise ValueError(
+                f"Embedding model {model_name} not found in pricing data"
+            ) from exc
 
 
 def get_model_price(model_name: str) -> float:
-    """Get the input price per token for a model.
-
-    Returns the input price (embeddings only have input costs).
-    """
-    if model_name not in _PRICING_DF.index:
-        raise ValueError(f"Embedding model {model_name} not found in pricing data")
-    return _PRICING_DF.loc[model_name, "input_price"]
+    price = _entry(model_name).input_price
+    if price is None:
+        raise ValueError(f"Embedding model {model_name} has no pricing data")
+    return price
 
 
 def model_exists(model_name: str) -> bool:
-    """Check if an embedding model exists in pricing data."""
-    return model_name in _PRICING_DF.index
+    try:
+        entry = _entry(model_name)
+    except ValueError:
+        return False
+    return entry.input_price is not None
 
 
 def get_provider(model_name: str) -> Optional[str]:
-    """Get the provider for a given embedding model."""
-    if model_name not in _PRICING_DF.index:
+    try:
+        return _entry(model_name).provider
+    except ValueError:
         return None
-    return _PRICING_DF.loc[model_name, "provider"]
 
 
-def get_all_models() -> list:
-    """Get list of all available embedding model names."""
-    return _PRICING_DF.index.tolist()
+def get_all_models() -> list[str]:
+    return [
+        entry.model_name
+        for entry in get_catalog().catalog.entries
+        if entry.kind == "embedding"
+    ]
 
 
-def get_all_providers() -> list:
-    """Get the distinct providers represented in pricing data."""
-    return _PRICING_DF["provider"].drop_duplicates().tolist()
+def get_all_providers() -> list[str]:
+    return get_catalog().catalog.providers(kind="embedding")
 
 
-def get_models_by_provider(provider: str) -> list:
-    """Get list of embedding models for a given provider."""
-    return _PRICING_DF[_PRICING_DF["provider"] == provider].index.tolist()
+def get_models_by_provider(provider: str) -> list[str]:
+    return get_catalog().catalog.models(provider, kind="embedding")

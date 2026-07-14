@@ -1,9 +1,27 @@
 import json
 from pathlib import Path
 import logging
+from typing import Optional
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def truncate_log_tail(text: str, max_chars: Optional[int] = None) -> str:
+    """Return only the last ``max_chars`` characters of ``text``.
+
+    Tail-biased because the end of a captured log holds the final results /
+    error context. ``max_chars`` of None or <= 0 returns ``text`` unchanged. On
+    truncation, a one-line marker noting how many characters were dropped is
+    prepended so consumers can tell the log is partial.
+    """
+    if not text or max_chars is None or max_chars <= 0:
+        return text
+    if len(text) <= max_chars:
+        return text
+    dropped = len(text) - max_chars
+    marker = f"... [truncated {dropped} chars of stdout; full log on disk] ...\n"
+    return marker + text[-max_chars:]
 
 
 def load_configs_from_yaml(config_path: str):

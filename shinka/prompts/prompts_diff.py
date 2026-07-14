@@ -1,5 +1,5 @@
 DIFF_SYS_FORMAT = """
-You MUST repond using a edit name, description and the exact SEARCH/REPLACE diff format shown below to indicate changes:
+You MUST respond using an edit name, description, and the exact SEARCH/REPLACE diff format shown below to indicate changes:
 
 <NAME>
 A shortened name summarizing the edit you are proposing. Lowercase, no spaces, underscores allowed.
@@ -38,7 +38,7 @@ for i in range(m):
 
 * You may only modify text that lies below a line containing "EVOLVE-BLOCK-START" and above the next "EVOLVE-BLOCK-END". Everything outside those markers is read-only.
 * Do not repeat the markers "EVOLVE-BLOCK-START" and "EVOLVE-BLOCK-END" in the SEARCH/REPLACE blocks.  
-* Every block’s SEARCH section must be copied **verbatim** from the current file.  Including indentation.
+* Every block’s SEARCH section must be copied **verbatim** from the current file, including indentation.
 * You can propose multiple independent edits. SEARCH/REPLACE blocks follow one after another. DO NOT ADD ANY OTHER TEXT BETWEEN THESE BLOCKS.
 * Make sure the file still runs after your changes.
 """.rstrip()
