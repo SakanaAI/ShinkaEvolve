@@ -333,60 +333,61 @@ class JobScheduler:
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 
-    def check_job_status(self, job) -> bool:
-        """Check if job is running. Returns True if running, False if done."""
+    def check_job_id_status(self, job_id: Union[str, ProcessWithLogging]) -> bool:
+        """Check whether a raw scheduler job ID is still running."""
         if self.job_type in ["slurm_docker", "slurm_conda"]:
             from .slurm import get_job_status
 
-            if isinstance(job.job_id, str):
-                status = get_job_status(job.job_id)
-                return status != ""
-            return False  # Should not happen with slurm
-        else:
-            if isinstance(job.job_id, ProcessWithLogging):
-                if (
-                    isinstance(self.config, LocalJobConfig)
-                    and self.config.time
-                    and job.start_time
-                ):
-                    timeout = parse_time_to_seconds(self.config.time)
-                    if time.time() - job.start_time > timeout:
-                        if self.verbose:
-                            logger.warning(
-                                f"Process {job.job_id.pid} exceeded "
-                                f"timeout of {self.config.time}. Killing. "
-                                f"=> Gen. {job.generation}"
-                            )
-                        job.job_id.kill()
-                        return False
-
-                # More robust status checking with exception handling
-                try:
-                    return job.job_id.poll() is None
-                except Exception as e:
-                    # If poll() fails, try alternative methods to determine if process is running
-                    logger.warning(f"poll() failed for PID {job.job_id.pid}: {e}")
-                    try:
-                        # Try using psutil as fallback if available
-                        import psutil
-
-                        return psutil.pid_exists(job.job_id.pid)
-                    except ImportError:
-                        # Fallback: check if PID exists using os.kill with signal 0
-                        try:
-                            import os
-
-                            os.kill(job.job_id.pid, 0)
-                            return True  # Process exists
-                        except (OSError, ProcessLookupError):
-                            return False  # Process doesn't exist
-                    except Exception as e2:
-                        logger.warning(
-                            f"All status check methods failed for PID {job.job_id.pid}: {e2}"
-                        )
-                        # If all methods fail, assume process is dead
-                        return False
+            if isinstance(job_id, str):
+                return get_job_status(job_id) != ""
             return False
+
+        if not isinstance(job_id, ProcessWithLogging):
+            return False
+
+        try:
+            return job_id.poll() is None
+        except Exception as e:
+            logger.warning(f"poll() failed for PID {job_id.pid}: {e}")
+            try:
+                import psutil
+
+                return psutil.pid_exists(job_id.pid)
+            except ImportError:
+                try:
+                    import os
+
+                    os.kill(job_id.pid, 0)
+                    return True
+                except (OSError, ProcessLookupError):
+                    return False
+            except Exception as e2:
+                logger.warning(
+                    f"All status check methods failed for PID {job_id.pid}: {e2}"
+                )
+                return False
+
+    def check_job_status(self, job) -> bool:
+        """Check if job is running. Returns True if running, False if done."""
+        if (
+            self.job_type == "local"
+            and isinstance(job.job_id, ProcessWithLogging)
+            and isinstance(self.config, LocalJobConfig)
+            and self.config.time
+            and job.start_time
+        ):
+            timeout = parse_time_to_seconds(self.config.time)
+            if time.time() - job.start_time > timeout:
+                if self.verbose:
+                    logger.warning(
+                        f"Process {job.job_id.pid} exceeded "
+                        f"timeout of {self.config.time}. Killing. "
+                        f"=> Gen. {job.generation}"
+                    )
+                job.job_id.kill()
+                return False
+
+        return self.check_job_id_status(job.job_id)
 
     def get_job_results(
         self, job_id: Union[str, ProcessWithLogging], results_dir: str
@@ -421,6 +422,16 @@ class JobScheduler:
         loop = asyncio.get_event_loop()
 
         return await loop.run_in_executor(self.executor, self.check_job_status, job)
+
+    async def check_job_id_status_async(
+        self, job_id: Union[str, ProcessWithLogging]
+    ) -> bool:
+        """Async version of raw scheduler job-ID status checking."""
+        loop = asyncio.get_event_loop()
+
+        return await loop.run_in_executor(
+            self.executor, self.check_job_id_status, job_id
+        )
 
     async def get_job_results_async(
         self, job_id: Union[str, ProcessWithLogging], results_dir: str

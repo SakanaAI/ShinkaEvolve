@@ -39,6 +39,36 @@ grandchild = subprocess.Popen(
 grandchild.wait()
 """
 
+_TERM_RESISTANT_CODE = """
+from pathlib import Path
+import signal
+import sys
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path(sys.argv[1]).touch()
+signal.pause()
+"""
+
+
+_LEADER_EXITS_CODE = """
+import subprocess
+from pathlib import Path
+import sys
+import time
+
+ready_path = Path(sys.argv[1])
+subprocess.Popen(
+    [sys.executable, "-c", sys.argv[2], sys.argv[1]],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+deadline = time.monotonic() + 5
+while not ready_path.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError("grandchild did not become ready")
+    time.sleep(0.01)
+"""
+
 
 class _ExpiredClock:
     def __init__(self) -> None:
@@ -125,7 +155,27 @@ def test_direct_child_signals_delegate_to_popen() -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
-def test_completed_process_ignores_repeated_group_signals(
+def test_scheduler_raw_status_api_accepts_process_wrapper(tmp_path: Path) -> None:
+    process = local.submit(
+        str(tmp_path),
+        [sys.executable, "-c", "import signal; signal.pause()"],
+    )
+    scheduler = JobScheduler("local", LocalJobConfig())
+
+    try:
+        assert asyncio.run(scheduler.check_job_id_status_async(process)) is True
+
+        process.kill()
+        process.wait(timeout=5)
+
+        assert asyncio.run(scheduler.check_job_id_status_async(process)) is False
+    finally:
+        process.cleanup_logging()
+        scheduler.shutdown()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_completed_process_relinquishes_group_during_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -136,6 +186,7 @@ def test_completed_process_ignores_repeated_group_signals(
 
     def record_group_signal(process_group: int, sig: int) -> None:
         group_signals.append((process_group, sig))
+        raise ProcessLookupError
 
     monkeypatch.setattr(local.os, "killpg", record_group_signal)
 
@@ -144,6 +195,66 @@ def test_completed_process_ignores_repeated_group_signals(
     process.kill()
 
     assert group_signals == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_terminate_can_escalate_when_evaluator_ignores_signal(tmp_path: Path) -> None:
+    ready_path = tmp_path / "ready"
+    process = local.submit(
+        str(tmp_path / "logs"),
+        [sys.executable, "-c", _TERM_RESISTANT_CODE, str(ready_path)],
+    )
+    deadline = time.monotonic() + 5
+    while not ready_path.exists():
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError("evaluator did not signal readiness")
+        time.sleep(0.01)
+
+    try:
+        process.terminate()
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.1)
+        assert process._process_group == process.pid
+
+        process.kill()
+        process.wait(timeout=5)
+        assert process._process_group is None
+    finally:
+        process.cleanup_logging()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_group_signal_reaps_descendant_after_leader_exits(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    ready_path = tmp_path / "grandchild.ready"
+    process = local.submit(
+        str(log_dir),
+        [
+            sys.executable,
+            "-c",
+            _LEADER_EXITS_CODE,
+            str(ready_path),
+            _GRANDCHILD_CODE,
+        ],
+    )
+    grandchild_pid = _wait_for_ready_pid(ready_path, process)
+
+    try:
+        process.wait(timeout=5)
+        assert process.returncode == 0
+        assert process.process.poll() is None
+        assert os.getpgid(process.pid) == process.pid
+        assert os.getpgid(grandchild_pid) == process.pid
+
+        process.kill()
+
+        _wait_for_process_exit(grandchild_pid)
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.cleanup_logging()
 
 
 def test_scheduler_cancellation_reaps_process_tree(

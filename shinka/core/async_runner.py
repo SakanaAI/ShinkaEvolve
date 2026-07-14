@@ -535,6 +535,7 @@ class ShinkaEvolveRunner:
         self.finalization_complete = asyncio.Event()
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
+        self._submission_cleanup_tasks: Set[asyncio.Task] = set()
 
         # Performance tracking
         self.total_proposals_generated = 0
@@ -5052,6 +5053,76 @@ class ShinkaEvolveRunner:
         await self.evaluation_slot_pool.release(job.evaluation_worker_id)
         job.evaluation_slot_released = True
 
+    def _track_submission_cleanup_task(self, task: asyncio.Task) -> None:
+        """Keep late-submission cleanup owned by the runner until it finishes."""
+        tasks = getattr(self, "_submission_cleanup_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._submission_cleanup_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _cleanup_late_evaluation_submission(
+        self,
+        submission_task: asyncio.Task,
+        results_dir: str,
+        evaluation_worker_id: int,
+    ) -> None:
+        """Drain a late submission and retain its slot until it is reaped."""
+        try:
+            job_id = await submission_task
+        except Exception as e:
+            logger.warning(f"Evaluation submission failed after cancellation: {e}")
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+            return
+
+        retry_delay = 0.05
+        while True:
+            try:
+                cancelled = await self.scheduler.cancel_job_async(job_id)
+            except Exception as e:
+                logger.warning(
+                    "Error cancelling evaluation submitted after proposal "
+                    f"cancellation: {e}"
+                )
+            else:
+                if cancelled:
+                    await self.evaluation_slot_pool.release(evaluation_worker_id)
+                    return
+
+                try:
+                    still_running = await self.scheduler.check_job_id_status_async(
+                        job_id
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Could not confirm the state of an evaluation submitted "
+                        f"after proposal cancellation: {e}"
+                    )
+                else:
+                    if not still_running:
+                        try:
+                            await self.scheduler.get_job_results_async(
+                                job_id, results_dir
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Could not reap an evaluation submitted after "
+                                f"proposal cancellation: {e}"
+                            )
+                        else:
+                            await self.evaluation_slot_pool.release(
+                                evaluation_worker_id
+                            )
+                            return
+
+            logger.warning(
+                "Evaluation submitted after proposal cancellation remains owned; "
+                "retrying cleanup"
+            )
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(1.0, retry_delay * 2)
+
     async def _submit_evaluation_job_with_slot(
         self,
         exec_fname: str,
@@ -5063,10 +5134,22 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        submission_task = asyncio.create_task(
+            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
+        )
         try:
-            job_id = await self.scheduler.submit_async_nonblocking(
-                exec_fname, results_dir
+            job_id = await asyncio.shield(submission_task)
+        except asyncio.CancelledError:
+            cleanup_task = asyncio.create_task(
+                self._cleanup_late_evaluation_submission(
+                    submission_task,
+                    results_dir,
+                    evaluation_worker_id,
+                )
             )
+            self._track_submission_cleanup_task(cleanup_task)
+            await asyncio.shield(cleanup_task)
+            raise
         except Exception:
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
@@ -5522,6 +5605,14 @@ class ShinkaEvolveRunner:
             if self.active_proposal_tasks:
                 await asyncio.gather(
                     *self.active_proposal_tasks.values(), return_exceptions=True
+                )
+
+            submission_cleanup_tasks = list(
+                getattr(self, "_submission_cleanup_tasks", set())
+            )
+            if submission_cleanup_tasks:
+                await asyncio.gather(
+                    *submission_cleanup_tasks, return_exceptions=True
                 )
 
             await self._cancel_running_jobs_for_cleanup()

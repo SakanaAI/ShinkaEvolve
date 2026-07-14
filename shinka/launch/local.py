@@ -3,11 +3,31 @@ import time
 import threading
 import os
 import signal
+import sys
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
 from shinka.utils import load_results, parse_time_to_seconds
 import logging
 
+_SUPERVISOR_CODE = """
+import os
+import signal
+import subprocess
+import sys
+
+def ignore_termination(_signum, _frame):
+    pass
+
+
+result_fd = int(sys.argv[1])
+signal.signal(signal.SIGTERM, ignore_termination)
+child = subprocess.Popen(sys.argv[2:])
+return_code = child.wait()
+os.write(result_fd, f"{return_code}\\n".encode("ascii"))
+os.close(result_fd)
+while True:
+    signal.pause()
+"""
 logger = logging.getLogger(__name__)
 
 
@@ -20,11 +40,15 @@ class ProcessWithLogging:
         log_files: Tuple[TextIO, TextIO],
         log_threads: Tuple[threading.Thread, threading.Thread],
         process_group: Optional[int] = None,
+        completion_fd: Optional[int] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
         self._process_group = process_group
+        self._completion_fd = completion_fd
+        self._completion_buffer = b""
+        self._returncode: Optional[int] = None
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -36,15 +60,84 @@ class ProcessWithLogging:
 
     def __repr__(self):
         """Return a detailed string representation."""
-        return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.process.returncode})"
+        return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.returncode})"
+
+    @property
+    def returncode(self) -> Optional[int]:
+        """Return the evaluator's exit code rather than the supervisor's."""
+        if self._returncode is not None:
+            return self._returncode
+        if self._completion_fd is None:
+            return self.process.returncode
+        self._read_completion()
+        return self._returncode
+
+    def _read_completion(self) -> None:
+        """Read an evaluator exit code from the supervisor without blocking."""
+        if self._completion_fd is None or self._returncode is not None:
+            return
+
+        try:
+            chunk = os.read(self._completion_fd, 64)
+        except BlockingIOError:
+            return
+
+        if chunk:
+            self._completion_buffer += chunk
+            if b"\n" in self._completion_buffer:
+                line, _, _ = self._completion_buffer.partition(b"\n")
+                self._returncode = int(line)
+                os.close(self._completion_fd)
+                self._completion_fd = None
+            return
+
+        os.close(self._completion_fd)
+        self._completion_fd = None
+        supervisor_returncode = self.process.poll()
+        if supervisor_returncode is not None:
+            self._returncode = supervisor_returncode
+
+    def poll(self) -> Optional[int]:
+        """Poll the evaluator while a supervisor keeps its process group alive."""
+        if self._completion_fd is None and self._returncode is None:
+            return self.process.poll()
+
+        self._read_completion()
+        if self._returncode is not None:
+            return self._returncode
+
+        supervisor_returncode = self.process.poll()
+        if supervisor_returncode is not None:
+            self._read_completion()
+            if self._returncode is None:
+                self._returncode = supervisor_returncode
+        return self._returncode
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        """Wait for the evaluator, leaving its supervisor alive for cleanup."""
+        if self._completion_fd is None and self._returncode is None:
+            return self.process.wait(timeout=timeout)
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            returncode = self.poll()
+            if returncode is not None:
+                return returncode
+            if deadline is not None and time.monotonic() >= deadline:
+                assert timeout is not None
+                raise subprocess.TimeoutExpired(self.process.args, timeout)
+            time.sleep(0.01)
 
     def _signal_process_group(self, process_group: int, sig: int) -> None:
-        if self.process.poll() is not None:
-            return
         try:
             os.killpg(process_group, sig)
         except ProcessLookupError:
-            pass
+            self._process_group = None
+        else:
+            # SIGTERM leaves the supervisor alive so callers can escalate. Once
+            # SIGKILL releases it, never retain a PGID the kernel may reuse.
+            if sig == signal.SIGKILL:
+                self._process_group = None
 
     def kill(self) -> None:
         """Kill the process group on POSIX, or only the direct child elsewhere."""
@@ -64,6 +157,18 @@ class ProcessWithLogging:
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
+        if self._completion_fd is not None or self._returncode is not None:
+            if self.process.poll() is None:
+                self.kill()
+            try:
+                self.process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5.0)
+            if self._completion_fd is not None:
+                os.close(self._completion_fd)
+                self._completion_fd = None
+
         # Wait for logging threads to finish
         for thread in self.log_threads:
             thread.join(timeout=1.0)
@@ -128,17 +233,45 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    # Use PIPE to capture output and redirect to files in real-time
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # Line buffered
-        universal_newlines=True,
-        env=env,
-        start_new_session=os.name == "posix",
-    )
+    # A live supervisor keeps the process group allocated after the evaluator
+    # exits, so descendants can still be signalled without risking PGID reuse.
+    completion_fd = None
+    if os.name == "posix":
+        completion_fd, completion_write_fd = os.pipe()
+        os.set_blocking(completion_fd, False)
+        try:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    _SUPERVISOR_CODE,
+                    str(completion_write_fd),
+                    *cmd,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
+                env=env,
+                start_new_session=True,
+                pass_fds=(completion_write_fd,),
+            )
+        except Exception:
+            os.close(completion_fd)
+            raise
+        finally:
+            os.close(completion_write_fd)
+    else:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # Line buffered
+            universal_newlines=True,
+            env=env,
+        )
 
     # Open log files for writing with line buffering
     stdout_file = open(stdout_path, "w", buffering=1)
@@ -165,6 +298,7 @@ def submit(
         (stdout_file, stderr_file),
         (stdout_thread, stderr_thread),
         process_group=process.pid if os.name == "posix" else None,
+        completion_fd=completion_fd,
     )
 
     if verbose:
