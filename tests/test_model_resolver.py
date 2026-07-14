@@ -69,6 +69,29 @@ def test_gemini_3_5_flash_pricing_is_registered():
     }
 
 
+@pytest.mark.parametrize(
+    ("model_name", "input_price", "output_price"),
+    [
+        ("deepseek-v4-flash", 0.14, 0.28),
+        ("deepseek-v4-pro", 0.435, 0.87),
+    ],
+)
+def test_deepseek_v4_pricing_is_registered(
+    model_name: str,
+    input_price: float,
+    output_price: float,
+):
+    resolved = resolve_model_backend(model_name)
+    assert resolved.provider == "deepseek"
+    assert resolved.api_model_name == model_name
+
+    prices = get_model_prices(model_name)
+    assert prices == {
+        "input_price": input_price / 1_000_000,
+        "output_price": output_price / 1_000_000,
+    }
+
+
 def test_resolve_openrouter_dynamic_model():
     resolved = resolve_model_backend("openrouter/qwen/qwen3-coder")
     assert resolved.provider == "openrouter"

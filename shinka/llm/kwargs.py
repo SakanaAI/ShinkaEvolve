@@ -18,6 +18,13 @@ THINKING_TOKENS = {
     "max": 16384,
 }
 
+NO_TEMPERATURE_MODELS = {
+    "claude-opus-4-8",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "us.anthropic.claude-opus-4-8",
+}
+
 
 def sample_batch_kwargs(
     num_samples: int,
@@ -113,11 +120,14 @@ def sample_model_kwargs(
         r_effort = "low"
 
     # 3. SAMPLE: temperature with possible reasoning restrictions
-    if has_fixed_temperature(api_model_name) and (
+    include_temperature = api_model_name not in NO_TEMPERATURE_MODELS and not (
+        provider in ("openai", "azure_openai") and is_reasoning_model(api_model_name)
+    )
+    if include_temperature and has_fixed_temperature(api_model_name) and (
         r_effort != "disabled" or provider in ("openai", "openrouter", "azure_openai")
     ):
         kwargs_dict["temperature"] = 1.0
-    else:
+    elif include_temperature:
         kwargs_dict["temperature"] = random.choice(temperatures)
 
     # 4.a) SET: max_output_tokens for OpenAI reasoning effort
@@ -167,7 +177,16 @@ def sample_model_kwargs(
                 "budget_tokens": thinking_tokens,
             }
 
-    # 4.d) SET: max_tokens for all other models
+    # 4.d) SET: max_tokens and thinking mode for DeepSeek reasoning models
+    elif provider == "deepseek" and is_reasoning_model(api_model_name):
+        kwargs_dict["max_tokens"] = random.choice(max_tokens)
+        if r_effort == "disabled":
+            kwargs_dict["extra_body"] = {"thinking": {"type": "disabled"}}
+        else:
+            kwargs_dict["reasoning_effort"] = "max" if r_effort == "max" else "high"
+            kwargs_dict["extra_body"] = {"thinking": {"type": "enabled"}}
+
+    # 4.e) SET: max_tokens for all other models
     else:
         # Non-reasoning models or other providers
         if provider in ("anthropic", "bedrock", "deepseek", "local_openai"):

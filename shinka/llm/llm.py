@@ -10,8 +10,7 @@ from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
 from .providers.model_resolver import resolve_model_backend
-
-MAX_RETRIES = 3
+from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +323,11 @@ class LLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
-                logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                model_name = llm_kwargs.get("model_name", "<unknown>")
+                logger.error(
+                    f"{try_count + 1}/{MAX_RETRIES} Error in query "
+                    f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
+                )
                 try_count += 1
         return None
 
