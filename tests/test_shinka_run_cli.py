@@ -188,6 +188,37 @@ def test_shinka_run_infers_go_initial_extension(tmp_path, monkeypatch):
     assert evo_config.init_program_path.endswith("initial.go")
 
 
+def test_shinka_run_infers_verilog_initial_extension(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "initial.py").unlink()
+    (task_dir / "initial.sv").write_text(
+        "// EVOLVE-BLOCK-START\n"
+        "module main;\n"
+        "endmodule\n"
+        "// EVOLVE-BLOCK-END\n",
+        encoding="utf-8",
+    )
+    results_dir = tmp_path / "results_verilog"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    exit_code = cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0
+    evo_config = _DummyRunner.last_kwargs["evo_config"]
+    assert evo_config.language == "verilog"
+    assert evo_config.init_program_path.endswith("initial.sv")
+
+
 def test_shinka_run_prefers_python_over_fortran_initial(tmp_path):
     task_dir = _make_task_dir(tmp_path)
     (task_dir / "initial.f90").write_text(
