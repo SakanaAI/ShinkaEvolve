@@ -127,11 +127,11 @@ def process_tree(
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         try:
             os.kill(grandchild_pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         if process.poll() is None:
             process.process.kill()
@@ -252,7 +252,7 @@ def test_group_signal_reaps_descendant_after_leader_exits(tmp_path: Path) -> Non
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         process.cleanup_logging()
 
@@ -344,6 +344,7 @@ def test_abnormal_supervisor_exit_relinquishes_process_group(
     )
     evaluator_pid = _wait_for_ready_pid(ready_path, process)
     group_signals: list[tuple[int, int]] = []
+    killpg = os.killpg
 
     try:
         process.process.kill()
@@ -351,6 +352,7 @@ def test_abnormal_supervisor_exit_relinquishes_process_group(
 
         assert process.poll() == -signal.SIGKILL
         assert process._process_group is None
+        _wait_for_process_exit(evaluator_pid)
 
         monkeypatch.setattr(
             local.os,
@@ -361,8 +363,8 @@ def test_abnormal_supervisor_exit_relinquishes_process_group(
         assert group_signals == []
     finally:
         try:
-            os.kill(evaluator_pid, signal.SIGKILL)
-        except ProcessLookupError:
+            killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
             pass
         process.cleanup_logging()
 

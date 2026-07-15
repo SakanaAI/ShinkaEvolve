@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _SLURM_CANCEL_TIMEOUT_SECONDS = 5.0
 _SLURM_CANCEL_POLL_INTERVAL_SECONDS = 0.1
+_SLURM_COMMAND_TIMEOUT_SECONDS = 5.0
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -340,8 +341,6 @@ class JobScheduler:
     def check_job_id_status(self, job_id: Union[str, ProcessWithLogging]) -> bool:
         """Check whether a raw scheduler job ID is still running."""
         if self.job_type in ["slurm_docker", "slurm_conda"]:
-            from .slurm import get_job_status
-
             if isinstance(job_id, str):
                 return get_job_status(job_id) != ""
             return False
@@ -462,16 +461,21 @@ class JobScheduler:
                 if self.job_type in ["slurm_docker", "slurm_conda"]:
                     if isinstance(job_id, str):
                         # For SLURM jobs, use scancel command
+                        deadline = time.monotonic() + _SLURM_CANCEL_TIMEOUT_SECONDS
+                        remaining = deadline - time.monotonic()
                         result = subprocess.run(
-                            ["scancel", job_id], capture_output=True, text=True
+                            ["scancel", job_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=max(
+                                0.001,
+                                min(_SLURM_COMMAND_TIMEOUT_SECONDS, remaining),
+                            ),
                         )
                         if result.returncode != 0:
                             return False
 
-                        deadline = time.monotonic() + _SLURM_CANCEL_TIMEOUT_SECONDS
                         while True:
-                            if get_job_status(job_id) == "":
-                                return True
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
                                 logger.warning(
@@ -479,6 +483,20 @@ class JobScheduler:
                                     "to leave the queue after scancel"
                                 )
                                 return False
+                            if (
+                                get_job_status(
+                                    job_id,
+                                    timeout=max(
+                                        0.001,
+                                        min(
+                                            _SLURM_COMMAND_TIMEOUT_SECONDS,
+                                            remaining,
+                                        ),
+                                    ),
+                                )
+                                == ""
+                            ):
+                                return True
                             time.sleep(
                                 min(_SLURM_CANCEL_POLL_INTERVAL_SECONDS, remaining)
                             )
@@ -506,3 +524,7 @@ class JobScheduler:
     def shutdown(self):
         """Shutdown the thread pool executor."""
         self.executor.shutdown(wait=True)
+
+    def shutdown_nowait(self):
+        """Stop accepting work without waiting for in-flight scheduler commands."""
+        self.executor.shutdown(wait=False, cancel_futures=True)

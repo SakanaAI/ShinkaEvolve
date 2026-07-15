@@ -108,10 +108,7 @@ class ProcessWithLogging:
         self._completion_fd = None
         supervisor_returncode = self.process.poll()
         if supervisor_returncode is not None:
-            # Once the supervisor exits it no longer reserves the PGID. Do not
-            # retain an identifier that the kernel may subsequently reuse.
-            self._process_group = None
-            self._returncode = supervisor_returncode
+            self._handle_supervisor_exit(supervisor_returncode)
 
     def poll(self) -> Optional[int]:
         """Poll the evaluator while a supervisor keeps its process group alive."""
@@ -126,8 +123,7 @@ class ProcessWithLogging:
         if supervisor_returncode is not None:
             self._read_completion()
             if self._returncode is None:
-                self._process_group = None
-                self._returncode = supervisor_returncode
+                self._handle_supervisor_exit(supervisor_returncode)
         return self._returncode
 
     def wait(self, timeout: Optional[float] = None) -> int:
@@ -150,11 +146,23 @@ class ProcessWithLogging:
             os.killpg(process_group, sig)
         except ProcessLookupError:
             self._process_group = None
+        except PermissionError as e:
+            logger.error(f"Unable to signal process group {process_group}: {e}")
+            self._process_group = None
         else:
             # SIGTERM leaves the supervisor alive so callers can escalate. Once
             # SIGKILL releases it, never retain a PGID the kernel may reuse.
             if sig == signal.SIGKILL:
                 self._process_group = None
+
+    def _handle_supervisor_exit(self, returncode: int) -> None:
+        """Kill remaining group members before relinquishing a dead supervisor's PGID."""
+        process_group = self._process_group
+        if process_group is not None:
+            self._signal_process_group(process_group, signal.SIGKILL)
+            self._process_group = None
+        if self._returncode is None:
+            self._returncode = returncode
 
     def kill(self) -> None:
         """Kill the process group on POSIX, or only the direct child elsewhere."""
@@ -183,10 +191,11 @@ class ProcessWithLogging:
     def cleanup_logging(self):
         """Clean up logging threads and files."""
         if self._completion_fd is not None or self._returncode is not None:
-            if self.process.poll() is None:
+            supervisor_returncode = self.process.poll()
+            if supervisor_returncode is None:
                 self.kill()
             else:
-                self._process_group = None
+                self._handle_supervisor_exit(supervisor_returncode)
             try:
                 self.process.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
