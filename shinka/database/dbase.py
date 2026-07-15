@@ -11,7 +11,7 @@ import math
 from .complexity import analyze_code_metrics
 from .parents import CombinedParentSelector
 from .inspirations import CombinedContextSelector
-from .islands import CombinedIslandManager
+from .islands import CombinedIslandManager, DefaultIslandAssignmentStrategy
 from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
 from shinka.embed import EmbeddingClient
@@ -71,6 +71,11 @@ class DatabaseConfig:
         True  # Enforce full island separation for inspirations
     )
     island_selection_strategy: str = "uniform"  # Island sampling strategy: "uniform"/"equal"/"proportional"/"weighted"
+    # How generation-0 program(s) seed the islands:
+    #   "copy"       -> clone the single initial program onto every island (default; legacy behavior)
+    #   "distribute" -> place each distinct initial program on its own island (multi-seed init;
+    #                   pair with EvolutionConfig.init_program_paths and num_islands == #seeds)
+    island_assignment_strategy: str = "copy"
 
     # Dynamic island spawning parameters (stagnation-based)
     enable_dynamic_islands: bool = False  # Enable stagnation-based island spawning
@@ -351,11 +356,19 @@ class ProgramDatabase:
             self._create_tables()
         self._load_metadata_from_db()
 
-        # Initialize island manager now that database is ready
+        # Initialize island manager now that database is ready. "distribute" swaps in the
+        # DefaultIslandAssignmentStrategy so distinct gen-0 seeds spread one-per-island (and
+        # the copy-to-all-islands path is never triggered); "copy" keeps the legacy default.
+        assignment_strategy = None
+        if getattr(self.config, "island_assignment_strategy", "copy") == "distribute":
+            assignment_strategy = DefaultIslandAssignmentStrategy(
+                self.cursor, self.conn, self.config
+            )
         self.island_manager = CombinedIslandManager(
             cursor=self.cursor,
             conn=self.conn,
             config=self.config,
+            assignment_strategy=assignment_strategy,
         )
 
         # Initialize island sampler with configured strategy

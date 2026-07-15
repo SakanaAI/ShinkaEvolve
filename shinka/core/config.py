@@ -39,6 +39,11 @@ class EvolutionConfig:
     sample_single_meta_rec: bool = True
     embedding_model: Optional[str] = "text-embedding-3-small"
     init_program_path: Optional[str] = "initial.py"
+    # Optional list of DISTINCT initial programs, one per island (multi-seed init). When set
+    # (>= 2 paths), it supersedes `init_program_path`: each path is evaluated and inserted as
+    # its own generation-0 program. Pair with DatabaseConfig.island_assignment_strategy =
+    # "distribute" and num_islands == len(init_program_paths) so seed i lands on island i.
+    init_program_paths: Optional[List[str]] = None
     results_dir: Optional[str] = None
     max_novelty_attempts: int = 3
     code_embed_sim_threshold: float = 0.99

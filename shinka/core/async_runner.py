@@ -1205,7 +1205,32 @@ class ShinkaEvolveRunner:
             await self._restore_resume_progress()
         else:
             # Generate or copy initial program only if NOT resuming
-            if (
+            init_program_paths = getattr(
+                self.evo_config, "init_program_paths", None
+            )
+            if init_program_paths:
+                # Multi-seed init: insert each DISTINCT seed as its own generation-0 program.
+                # With DatabaseConfig.island_assignment_strategy="distribute", each correct
+                # seed lands on the first uninitialized island (seed i -> island i), so
+                # num_islands should equal len(init_program_paths).
+                if self.verbose:
+                    logger.info(
+                        f"Multi-seed init: seeding {len(init_program_paths)} distinct "
+                        f"initial program(s), one per island."
+                    )
+                for i, seed_path in enumerate(init_program_paths):
+                    if not Path(seed_path).exists():
+                        raise FileNotFoundError(
+                            f"init_program_paths[{i}] does not exist: {seed_path}"
+                        )
+                    if self.verbose:
+                        logger.info(
+                            f"Seeding island {i} from initial program {seed_path}"
+                        )
+                    seed_code = await self._read_file_async(seed_path)
+                    if seed_code:
+                        await self._setup_initial_program(seed_code, seed_index=i)
+            elif (
                 self.evo_config.init_program_path
                 and Path(self.evo_config.init_program_path).exists()
             ):
@@ -1534,10 +1559,14 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.error(f"Error during prompt evolution: {e}")
 
-    async def _setup_initial_program(self, code: str):
-        """Setup initial program in database."""
+    async def _setup_initial_program(self, code: str, seed_index: int = 0):
+        """Setup initial program in database.
+
+        seed_index disambiguates gen-0 artifacts when multiple distinct seeds are inserted
+        (multi-seed init); index 0 keeps the legacy single-seed filenames.
+        """
         await self._setup_initial_program_with_metadata(
-            code, "initial_program", "Initial program setup", 0.0
+            code, "initial_program", "Initial program setup", 0.0, seed_index=seed_index
         )
 
     async def _setup_initial_program_with_metadata(
@@ -1547,19 +1576,23 @@ class ShinkaEvolveRunner:
         patch_description: Optional[str],
         api_cost: float,
         llm_metadata: Optional[Dict[str, Any]] = None,
+        seed_index: int = 0,
     ):
         """Setup initial program in database with metadata."""
         pipeline_started_at = time.time()
-        # Create generation 0 directory structure first
+        # Create generation 0 directory structure first. When several distinct seeds are
+        # inserted (multi-seed init), suffix the per-seed artifacts so they don't collide;
+        # seed_index 0 keeps the legacy names to preserve single-seed behavior.
         gen_dir = f"{self.results_dir}/{FOLDER_PREFIX}_0"
-        results_dir = f"{gen_dir}/results"
+        seed_suffix = f"_{seed_index}" if seed_index else ""
+        results_dir = f"{gen_dir}/results{seed_suffix}"
 
         # Create directories synchronously to avoid race conditions
         Path(gen_dir).mkdir(parents=True, exist_ok=True)
         Path(results_dir).mkdir(parents=True, exist_ok=True)
 
         # Write the initial program file
-        exec_fname = f"{gen_dir}/main.{self.lang_ext}"
+        exec_fname = f"{gen_dir}/main{seed_suffix}.{self.lang_ext}"
         await write_file_async(exec_fname, code)
 
         # Run initial evaluation to get proper metrics
