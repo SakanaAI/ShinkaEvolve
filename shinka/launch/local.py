@@ -31,6 +31,19 @@ while True:
 logger = logging.getLogger(__name__)
 
 
+def _move_fd_above_standard_streams(fd: int) -> int:
+    """Return a close-on-exec duplicate whose descriptor is at least 3."""
+    if fd >= 3:
+        os.set_inheritable(fd, False)
+        return fd
+
+    import fcntl
+
+    moved_fd = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+    os.close(fd)
+    return moved_fd
+
+
 class ProcessWithLogging:
     """Wrapper for subprocess.Popen with real-time logging capabilities."""
 
@@ -95,6 +108,9 @@ class ProcessWithLogging:
         self._completion_fd = None
         supervisor_returncode = self.process.poll()
         if supervisor_returncode is not None:
+            # Once the supervisor exits it no longer reserves the PGID. Do not
+            # retain an identifier that the kernel may subsequently reuse.
+            self._process_group = None
             self._returncode = supervisor_returncode
 
     def poll(self) -> Optional[int]:
@@ -110,6 +126,7 @@ class ProcessWithLogging:
         if supervisor_returncode is not None:
             self._read_completion()
             if self._returncode is None:
+                self._process_group = None
                 self._returncode = supervisor_returncode
         return self._returncode
 
@@ -147,6 +164,14 @@ class ProcessWithLogging:
             return
         self._signal_process_group(process_group, signal.SIGKILL)
 
+    def send_signal(self, sig: int) -> None:
+        """Signal the owned process group, or the direct child when ungrouped."""
+        process_group = self._process_group
+        if process_group is None:
+            self.process.send_signal(sig)
+            return
+        self._signal_process_group(process_group, sig)
+
     def terminate(self) -> None:
         """Terminate the process group on POSIX, or only the direct child elsewhere."""
         process_group = self._process_group
@@ -160,11 +185,14 @@ class ProcessWithLogging:
         if self._completion_fd is not None or self._returncode is not None:
             if self.process.poll() is None:
                 self.kill()
+            else:
+                self._process_group = None
             try:
                 self.process.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=5.0)
+            self._process_group = None
             if self._completion_fd is not None:
                 os.close(self._completion_fd)
                 self._completion_fd = None
@@ -238,8 +266,12 @@ def submit(
     completion_fd = None
     if os.name == "posix":
         completion_fd, completion_write_fd = os.pipe()
-        os.set_blocking(completion_fd, False)
         try:
+            completion_fd = _move_fd_above_standard_streams(completion_fd)
+            completion_write_fd = _move_fd_above_standard_streams(
+                completion_write_fd
+            )
+            os.set_blocking(completion_fd, False)
             process = subprocess.Popen(
                 [
                     sys.executable,

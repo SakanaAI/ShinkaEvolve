@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
 from .slurm import (
+    get_job_status,
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
     monitor as monitor_slurm,
@@ -17,6 +18,9 @@ from .slurm import (
 from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
+
+_SLURM_CANCEL_TIMEOUT_SECONDS = 5.0
+_SLURM_CANCEL_POLL_INTERVAL_SECONDS = 0.1
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -461,7 +465,23 @@ class JobScheduler:
                         result = subprocess.run(
                             ["scancel", job_id], capture_output=True, text=True
                         )
-                        return result.returncode == 0
+                        if result.returncode != 0:
+                            return False
+
+                        deadline = time.monotonic() + _SLURM_CANCEL_TIMEOUT_SECONDS
+                        while True:
+                            if get_job_status(job_id) == "":
+                                return True
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                logger.warning(
+                                    f"Timed out waiting for Slurm job {job_id} "
+                                    "to leave the queue after scancel"
+                                )
+                                return False
+                            time.sleep(
+                                min(_SLURM_CANCEL_POLL_INTERVAL_SECONDS, remaining)
+                            )
                 else:
                     # For local jobs, kill the process
                     if isinstance(job_id, ProcessWithLogging):

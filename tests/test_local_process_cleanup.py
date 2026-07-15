@@ -305,3 +305,99 @@ def test_terminate_cancellation_kills_descendant_processes(
     process.wait(timeout=5)
     process.cleanup_logging()
     _wait_for_process_exit(grandchild_pid)
+
+
+def test_send_signal_sigterm_reaches_process_group(
+    process_tree: tuple[local.ProcessWithLogging, int, Path],
+) -> None:
+    process, grandchild_pid, _log_dir = process_tree
+
+    process.send_signal(signal.SIGTERM)
+
+    process.wait(timeout=5)
+    process.cleanup_logging()
+    _wait_for_process_exit(grandchild_pid)
+
+
+def test_send_signal_sigkill_reaches_process_group(
+    process_tree: tuple[local.ProcessWithLogging, int, Path],
+) -> None:
+    process, grandchild_pid, _log_dir = process_tree
+
+    process.send_signal(signal.SIGKILL)
+
+    process.wait(timeout=5)
+    assert process._process_group is None
+    process.cleanup_logging()
+    _wait_for_process_exit(grandchild_pid)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_abnormal_supervisor_exit_relinquishes_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_path = tmp_path / "evaluator.ready"
+    process = local.submit(
+        str(tmp_path / "logs"),
+        [sys.executable, "-c", _GRANDCHILD_CODE, str(ready_path)],
+    )
+    evaluator_pid = _wait_for_ready_pid(ready_path, process)
+    group_signals: list[tuple[int, int]] = []
+
+    try:
+        process.process.kill()
+        process.process.wait(timeout=5)
+
+        assert process.poll() == -signal.SIGKILL
+        assert process._process_group is None
+
+        monkeypatch.setattr(
+            local.os,
+            "killpg",
+            lambda process_group, sig: group_signals.append((process_group, sig)),
+        )
+        process.cleanup_logging()
+        assert group_signals == []
+    finally:
+        try:
+            os.kill(evaluator_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.cleanup_logging()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file descriptors are required")
+def test_completion_pipe_avoids_closed_standard_fds(tmp_path: Path) -> None:
+    result_path = tmp_path / "returncode"
+    harness = f"""
+import os
+from pathlib import Path
+import sys
+from shinka.launch import local
+
+os.close(0)
+os.close(1)
+process = local.submit(
+    {str(tmp_path / "logs")!r},
+    [sys.executable, "-c", "raise SystemExit(7)"],
+)
+completion_fd = process._completion_fd
+completion_fd_inheritable = os.get_inheritable(completion_fd)
+returncode = process.wait(timeout=5)
+process.cleanup_logging()
+Path({str(result_path)!r}).write_text(
+    f"{{completion_fd}},{{completion_fd_inheritable}},{{returncode}}",
+    encoding="ascii",
+)
+"""
+
+    completed = subprocess.run([sys.executable, "-c", harness], timeout=10)
+
+    assert completed.returncode == 0
+    completion_fd, inheritable, returncode = result_path.read_text(
+        encoding="ascii"
+    ).split(",")
+    assert int(completion_fd) >= 3
+    assert inheritable == "False"
+    assert returncode == "7"
