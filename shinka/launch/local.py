@@ -62,6 +62,7 @@ class ProcessWithLogging:
         self._completion_fd = completion_fd
         self._completion_buffer = b""
         self._returncode: Optional[int] = None
+        self._supervisor_exit_pending = False
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -80,10 +81,9 @@ class ProcessWithLogging:
         """Return the evaluator's exit code rather than the supervisor's."""
         if self._returncode is not None:
             return self._returncode
-        if self._completion_fd is None:
+        if self._completion_fd is None and not self._supervisor_exit_pending:
             return self.process.returncode
-        self._read_completion()
-        return self._returncode
+        return self.poll()
 
     def _read_completion(self) -> None:
         """Read an evaluator exit code from the supervisor without blocking."""
@@ -106,13 +106,18 @@ class ProcessWithLogging:
 
         os.close(self._completion_fd)
         self._completion_fd = None
+        self._supervisor_exit_pending = True
         supervisor_returncode = self.process.poll()
         if supervisor_returncode is not None:
             self._handle_supervisor_exit(supervisor_returncode)
 
     def poll(self) -> Optional[int]:
         """Poll the evaluator while a supervisor keeps its process group alive."""
-        if self._completion_fd is None and self._returncode is None:
+        if (
+            self._completion_fd is None
+            and self._returncode is None
+            and not self._supervisor_exit_pending
+        ):
             return self.process.poll()
 
         self._read_completion()
@@ -128,7 +133,11 @@ class ProcessWithLogging:
 
     def wait(self, timeout: Optional[float] = None) -> int:
         """Wait for the evaluator, leaving its supervisor alive for cleanup."""
-        if self._completion_fd is None and self._returncode is None:
+        if (
+            self._completion_fd is None
+            and self._returncode is None
+            and not self._supervisor_exit_pending
+        ):
             return self.process.wait(timeout=timeout)
 
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -163,6 +172,7 @@ class ProcessWithLogging:
             self._process_group = None
         if self._returncode is None:
             self._returncode = returncode
+        self._supervisor_exit_pending = False
 
     def kill(self) -> None:
         """Kill the process group on POSIX, or only the direct child elsewhere."""
@@ -190,17 +200,23 @@ class ProcessWithLogging:
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
-        if self._completion_fd is not None or self._returncode is not None:
+        if (
+            self._completion_fd is not None
+            or self._returncode is not None
+            or self._supervisor_exit_pending
+        ):
             supervisor_returncode = self.process.poll()
             if supervisor_returncode is None:
                 self.kill()
             else:
                 self._handle_supervisor_exit(supervisor_returncode)
             try:
-                self.process.wait(timeout=5.0)
+                supervisor_returncode = self.process.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait(timeout=5.0)
+                supervisor_returncode = self.process.wait(timeout=5.0)
+            if self._supervisor_exit_pending:
+                self._handle_supervisor_exit(supervisor_returncode)
             self._process_group = None
             if self._completion_fd is not None:
                 os.close(self._completion_fd)

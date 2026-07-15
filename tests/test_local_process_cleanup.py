@@ -332,6 +332,44 @@ def test_send_signal_sigkill_reaches_process_group(
     _wait_for_process_exit(grandchild_pid)
 
 
+@pytest.mark.parametrize("exit_accessor", ["poll", "returncode"])
+def test_completion_eof_preserves_supervisor_ownership_until_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    exit_accessor: str,
+) -> None:
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    process_mock = Mock(spec=subprocess.Popen)
+    process_mock.poll.side_effect = [None, None, -signal.SIGKILL]
+    process_mock.returncode = -signal.SIGKILL
+    process = local.ProcessWithLogging(
+        cast(subprocess.Popen[str], process_mock),
+        cast(tuple[TextIO, TextIO], (Mock(), Mock())),
+        cast(tuple[threading.Thread, threading.Thread], (Mock(), Mock())),
+        process_group=4321,
+        completion_fd=read_fd,
+    )
+    group_signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        local.os,
+        "killpg",
+        lambda process_group, sig: group_signals.append((process_group, sig)),
+    )
+
+    assert process.poll() is None
+    assert process._completion_fd is None
+    assert process._supervisor_exit_pending is True
+
+    returncode = (
+        process.poll() if exit_accessor == "poll" else process.returncode
+    )
+
+    assert returncode == -signal.SIGKILL
+    assert group_signals == [(4321, signal.SIGKILL)]
+    assert process._process_group is None
+    assert process._supervisor_exit_pending is False
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
 def test_abnormal_supervisor_exit_relinquishes_process_group(
     tmp_path: Path,
@@ -348,11 +386,10 @@ def test_abnormal_supervisor_exit_relinquishes_process_group(
 
     try:
         process.process.kill()
-        process.process.wait(timeout=5)
-
+        process.cleanup_logging()
+        _wait_for_process_exit(evaluator_pid)
         assert process.poll() == -signal.SIGKILL
         assert process._process_group is None
-        _wait_for_process_exit(evaluator_pid)
 
         monkeypatch.setattr(
             local.os,
