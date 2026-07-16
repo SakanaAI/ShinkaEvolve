@@ -84,9 +84,7 @@ def build_provider_availability_entry(provider: str) -> dict[str, Any] | None:
     if llm_env_var_names is None and embedding_env_var_names is None:
         return None
 
-    llm_models = _available_models(
-        get_models_by_provider(provider), llm_env_var_names
-    )
+    llm_models = _available_models(get_models_by_provider(provider), llm_env_var_names)
     embedding_models = _available_models(
         get_embedding_models_by_provider(provider), embedding_env_var_names
     )

@@ -112,9 +112,7 @@ def test_validate_model_env_access_requires_api_version_for_azure_embedding(
     )
 
     with pytest.raises(ValueError, match="AZURE_API_VERSION"):
-        validate_model_env_access(
-            embedding_models=["azure-text-embedding-3-small"]
-        )
+        validate_model_env_access(embedding_models=["azure-text-embedding-3-small"])
 
 
 def test_validate_model_env_access_rejects_incomplete_vertex_env(

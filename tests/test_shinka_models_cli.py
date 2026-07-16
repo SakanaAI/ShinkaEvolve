@@ -100,9 +100,7 @@ def test_shinka_models_help_describes_json_output(capsys: pytest.CaptureFixture[
     assert "--verbose" in help_output
     assert "current environment" in help_output
     assert ".env" in help_output
-    assert (
-        "azure LLM: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT" in help_output
-    )
+    assert "azure LLM: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT" in help_output
     assert (
         "azure embedding: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT + "
         "AZURE_API_VERSION" in help_output
