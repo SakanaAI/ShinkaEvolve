@@ -422,14 +422,11 @@ class AsyncEmbeddingClient:
             import asyncio
 
             try:
-                loop = asyncio.get_event_loop()
-                embeddings, cost = await loop.run_in_executor(
-                    None,
-                    lambda: _get_google_embeddings_and_cost(
-                        client=self.async_client,
-                        model_name=self.model,
-                        texts=code,
-                    ),
+                embeddings, cost = await asyncio.to_thread(
+                    _get_google_embeddings_and_cost,
+                    client=self.async_client,
+                    model_name=self.model,
+                    texts=code,
                 )
                 if single_code:
                     return embeddings[0] if embeddings else [], cost

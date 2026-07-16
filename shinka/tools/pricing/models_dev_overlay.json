@@ -1,0 +1,357 @@
+{
+  "provider_aliases": {
+    "bedrock": "amazon-bedrock"
+  },
+  "strip_prefix_aliases": [
+    {
+      "kind": "embedding",
+      "provider": "azure",
+      "prefix": "azure-"
+    }
+  ],
+  "model_aliases": [
+    {
+      "kind": "llm",
+      "provider": "anthropic",
+      "model_name": "claude-4-sonnet-20250514",
+      "source_provider": "anthropic",
+      "source_model_name": "claude-sonnet-4-20250514"
+    },
+    {
+      "kind": "llm",
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "source_provider": "anthropic",
+      "source_model_name": "claude-3-5-sonnet-20241022"
+    },
+    {
+      "kind": "llm",
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-opus-20240229-v1:0",
+      "source_provider": "anthropic",
+      "source_model_name": "claude-3-opus-20240229"
+    },
+    {
+      "kind": "llm",
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+      "source_provider": "anthropic",
+      "source_model_name": "claude-3-7-sonnet-20250219"
+    },
+    {
+      "kind": "llm",
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "source_provider": "anthropic",
+      "source_model_name": "claude-sonnet-4-20250514"
+    },
+    {
+      "kind": "llm",
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-4-6-v1:0",
+      "source_provider": "amazon-bedrock",
+      "source_model_name": "us.anthropic.claude-sonnet-4-6"
+    },
+    {
+      "kind": "llm",
+      "provider": "openai",
+      "model_name": "o3-mini-2025-01-31",
+      "source_provider": "openai",
+      "source_model_name": "o3-mini"
+    },
+    {
+      "kind": "llm",
+      "provider": "openai",
+      "model_name": "o3-2025-04-16",
+      "source_provider": "openai",
+      "source_model_name": "o3"
+    },
+    {
+      "kind": "llm",
+      "provider": "openai",
+      "model_name": "o4-mini-2025-04-16",
+      "source_provider": "openai",
+      "source_model_name": "o4-mini"
+    },
+    {
+      "kind": "llm",
+      "provider": "google",
+      "model_name": "gemini-2.5-flash-lite-preview-09-2025",
+      "source_provider": "google",
+      "source_model_name": "gemini-2.5-flash-lite"
+    }
+  ],
+  "llm_overrides": [
+    {
+      "provider": "anthropic",
+      "model_name": "claude-3-5-haiku-20241022",
+      "input_price": 0.8,
+      "output_price": 4.0,
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-5-haiku-20241022-v1:0",
+      "input_price": 0.8,
+      "output_price": 4.0,
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-4.5-preview-2025-02-27",
+      "input_price": 75.0,
+      "output_price": 150.0,
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "openrouter",
+      "model_name": "x-ai/grok-4",
+      "input_price": "N/A",
+      "output_price": "N/A",
+      "is_reasoning": true,
+      "think_temp_fixed": true,
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openrouter",
+      "model_name": "x-ai/grok-4-fast",
+      "input_price": "N/A",
+      "output_price": "N/A",
+      "is_reasoning": true,
+      "think_temp_fixed": true,
+      "requires_reasoning": true
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-opus-4-8",
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-opus-4-8",
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-opus-4-7",
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-opus-4-7",
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-sonnet-4-5-20250929",
+      "input_price_tier2": 6.0,
+      "output_price_tier2": 22.5,
+      "tier_threshold": 200000
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "input_price_tier2": 6.0,
+      "output_price_tier2": 22.5,
+      "tier_threshold": 200000
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-opus-4-6",
+      "input_price_tier2": 10.0,
+      "output_price_tier2": 37.5,
+      "tier_threshold": 200000
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "global.anthropic.claude-opus-4-6-v1",
+      "input_price_tier2": 10.0,
+      "output_price_tier2": 37.5,
+      "tier_threshold": 200000
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-sonnet-4-6",
+      "input_price_tier2": 6.0,
+      "output_price_tier2": 22.5,
+      "tier_threshold": 200000
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-4-6-v1:0",
+      "input_price_tier2": 6.0,
+      "output_price_tier2": 22.5,
+      "tier_threshold": 200000
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.5",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.5-pro",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.4",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.4-pro",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.4-mini",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.4-nano",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.2",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.1",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5-mini",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5-nano",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.1-codex",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.1-codex-max",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.1-codex-mini",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.2-codex",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.3-codex",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-5.2-pro",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-3-5-sonnet-20241022",
+      "input_price": 3.0,
+      "output_price": 15.0
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "input_price": 3.0,
+      "output_price": 15.0
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-3-opus-20240229",
+      "input_price": 15.0,
+      "output_price": 75.0
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "anthropic.claude-3-opus-20240229-v1:0",
+      "input_price": 15.0,
+      "output_price": 75.0
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-3-7-sonnet-20250219",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-4-sonnet-20250514",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "bedrock",
+      "model_name": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
+      "provider": "openrouter",
+      "model_name": "openai/gpt-oss-120b",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openrouter",
+      "model_name": "moonshotai/kimi-k2-thinking",
+      "requires_reasoning": true
+    }
+  ],
+  "embedding_overrides": [
+    {
+      "provider": "google",
+      "model_name": "gemini-embedding-exp-03-07",
+      "input_price": 0.0
+    },
+    {
+      "provider": "google",
+      "model_name": "gemini-embedding-2-preview",
+      "input_price": 0.2
+    }
+  ]
+}

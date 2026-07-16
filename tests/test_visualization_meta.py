@@ -26,6 +26,28 @@ def _make_handler(search_root: Path):
     return handler
 
 
+def test_failed_node_language_infers_verilog_from_suffix(tmp_path):
+    handler = _make_handler(tmp_path)
+
+    assert handler._language_from_suffix(".sv") == "verilog"
+
+
+def test_failed_node_code_path_prefers_verilog_extension(tmp_path):
+    handler = _make_handler(tmp_path)
+    failure_dir = tmp_path / "results" / "gen_1"
+    failure_dir.mkdir(parents=True)
+    expected_path = failure_dir / "main.sv"
+    expected_path.write_text("module main; endmodule\n", encoding="utf-8")
+    (failure_dir / "main.py").write_text("print('fallback')\n", encoding="utf-8")
+
+    code_path = handler._resolve_failed_node_code_path(
+        {"failure_json_path": "results/gen_1/failure.json"},
+        {"language": "verilog"},
+    )
+
+    assert code_path == expected_path
+
+
 def test_handle_get_meta_files_returns_processed_counts(tmp_path):
     results_dir = tmp_path / "results"
     meta_dir = results_dir / "meta"

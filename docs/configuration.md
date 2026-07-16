@@ -30,8 +30,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `task_sys_msg` | `Optional[str]` | `"You are an expert optimization and algorithm design assistant. Improve the program while preserving correctness and immutable regions."` | Task-specific system prompt. |
 | `patch_types` | `List[str]` | `['diff', 'full', 'cross']` | Patch formats; supports `diff`, `full`, `cross`. |
 | `patch_type_probs` | `List[float]` | `[0.6, 0.3, 0.1]` | Sampling probabilities for `patch_types` (must sum to 1). |
-| `num_generations` | `int` | `50` | Target count interpreted by `generation_target_mode`. |
-| `generation_target_mode` | `str` | `'evaluated_candidates'` | `evaluated_candidates` keeps proposing until this many repositories are evaluated; `proposal_ids` preserves the legacy ID budget. |
+| `num_generations` | `int` | `50` | Target number of generations. |
 | `max_patch_resamples` | `int` | `3` | Max patch resample loops per novelty attempt. |
 | `max_patch_attempts` | `int` | `1` | Max attempts to produce a syntactically valid patch. |
 | `job_type` | `str` | `'local'` | Job backend: `local`, `slurm_docker`, `slurm_conda`. |
@@ -46,26 +45,9 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `meta_max_recommendations` | `int` | `5` | Max recommendations produced per meta step. |
 | `sample_single_meta_rec` | `bool` | `True` | Whether to sample one recommendation when multiple exist. |
 | `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. Also supports `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding endpoints, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
-| `seed_repo_path` | `Optional[str]` | `None` | Required seed git repository path for repo-mode runs. |
-| `worktree_root` | `Optional[str]` | `None` | Directory used for generated child worktrees. |
-| `mutable_paths` | `List[str]` | `[]` | Empty/omitted gives the agent the whole repository; a non-empty list is an explicit allow-list. |
-| `immutable_paths` | `List[str]` | `[]` | Read-only paths in the agent view; changes are rejected during policy validation. |
-| `agent_hidden_paths` | `List[str]` | `[]` | Paths omitted from the agent generation view, for private tests/evaluator artifacts. Repo-relative `job.eval_program_path` is hidden automatically. |
-| `allow_deletions` | `bool` | `True` | Allow normal repository file deletion. |
-| `allow_lockfile_changes` | `bool` | `True` | Allow dependency lockfile updates. |
-| `allow_binary_files` | `bool` | `True` | Allow binary repository artifacts. |
-| `max_file_bytes` | `Optional[int]` | `None` | Optional per-file size cap; `None` means no task-policy cap. |
-| `headless_proposal_timeout_seconds` | `float` | `7200` | Inner Headless coding-agent budget. |
-| `headless_cleanup_grace_seconds` | `float` | `60` | Extra outer grace for Headless shutdown and owned process-group cleanup. |
-| `headless_output_mode` | `str` | `'json'` | Machine output mode; `json` does not require final prose extraction. |
-| `headless_model_timeouts` | `Dict[str, float]` | `{}` | Optional exact-route or agent timeout overrides. |
-| `llm_rate_limits` | `Dict[str, Dict]` | `{}` | Provider/model/request-class limits such as `google:meta`. |
-| `llm_daily_quotas` | `Dict[str, int]` | `{}` | Known daily quotas used for pre-launch feasibility checks. |
-| `summary_filename` | `str` | `'.shinka/individual.md'` | Required per-individual summary artifact. |
+| `init_program_path` | `Optional[str]` | `'initial.py'` | Initial program path. |
 | `results_dir` | `Optional[str]` | `None` | Results directory; auto-assigned when `None`. |
-| `logging_methods` | `List[str]` | `['webui']` | User-facing logging sinks: `webui`, `wandb`, or both. SQLite persistence remains enabled because evolution uses it as state. |
-| `enable_webui_logging` | `Optional[bool]` | `None` | Optional boolean override for the `webui` logging sink. |
-| `enable_wandb_logging` | `Optional[bool]` | `None` | Optional boolean override for the `wandb` logging sink. |
+| `enable_wandb_logging` | `bool` | `False` | Mirror evolution metrics to W&B. Existing SQLite and WebUI logging remains enabled. Install the `wandb` extra first. |
 | `wandb_project` | `Optional[str]` | `'shinka-evolve'` | W&B project used when wandb logging is enabled. |
 | `wandb_entity` | `Optional[str]` | `None` | Optional W&B entity/team. |
 | `wandb_group` | `Optional[str]` | `None` | Optional W&B run group. |
@@ -74,8 +56,8 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `wandb_tags` | `List[str]` | `[]` | Optional W&B tags. |
 | `wandb_notes` | `Optional[str]` | `None` | Optional W&B run notes. |
 | `wandb_dir` | `Optional[str]` | `None` | Optional local W&B directory; defaults to `results_dir`. |
-| `wandb_run_id` | `Optional[str]` | `None` | Stable logical run ID; generated into `.wandb_run_id` and reused on resume. |
-| `wandb_resume` | `str` | `'allow'` | W&B resume policy. |
+| `wandb_run_id` | `Optional[str]` | `None` | Optional W&B run ID; otherwise generated and persisted in the results directory. |
+| `wandb_resume` | `str` | `'allow'` | W&B resume policy used with the persisted run ID. |
 | `wandb_config` | `Dict[str, Any]` | `{}` | Extra W&B config values merged into the run config. |
 | `max_novelty_attempts` | `int` | `3` | Max novelty loops per generation. |
 | `code_embed_sim_threshold` | `float` | `0.99` | Similarity threshold used by novelty checks. |
@@ -106,24 +88,24 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 W&B logging examples:
 
 ```bash
-# WebUI database + W&B metrics/tables/artifacts
-shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb --num_generations 20 \
-  --set evo.logging_methods='["webui","wandb"]' \
-  --set evo.wandb_project=shinka-evolve
+# Install the optional integration.
+pip install 'shinka-evolve[wandb]'
 
-# W&B user-facing logging only. Internal SQLite state is still written for evolution.
-shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb_only --num_generations 20 \
-  --set evo.logging_methods='["wandb"]'
+# Authenticate online runs. In CI, provide this through a secret manager.
+export WANDB_API_KEY=<your-api-key>
+
+# Add W&B metrics and a compact individuals table alongside the WebUI database.
+shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb --num_generations 20 \
+  --set evo.enable_wandb_logging=true \
+  --set evo.wandb_project=shinka-evolve
 ```
 
-Every run writes `run_manifest.json` with framework/config/evaluator hashes,
-Headless and native CLI versions, effective workers, proposal timeouts, quotas,
-minimum request demand, and the W&B identity.
-
-Headless mutation ignores API-style temperature and max-token fields because
-the native coding-agent CLI owns those controls. Cursor creates named sessions
-through its native `create-chat` flow; Antigravity resumes from its transcript
-store. Shinka reuses one session name for proposal repairs.
+Each evaluated individual logs `score/individual` against `generation`. When a
+results directory is resumed, its `.wandb_run_id` is reused with
+`wandb_resume='allow'` by default. Online mode uses the credentials from
+`wandb login` or `WANDB_API_KEY`; set `wandb_mode=offline` to record locally
+without uploading. W&B failures are non-fatal and do not alter the existing
+database or WebUI path.
 
 ### DatabaseConfig (`shinka.database.DatabaseConfig`)
 
@@ -168,8 +150,6 @@ store. Shinka reuses one session name for proposal repairs.
 | `time` | `Optional[str]` | `None` | Optional timeout (`HH:MM:SS`). |
 | `conda_env` | `Optional[str]` | `None` | Optional conda env for local execution. |
 | `activate_script` | `Optional[str]` | `None` | Optional sourceable env script, e.g. `.venv/bin/activate`. |
-| `numeric_threads_per_job` | `Optional[int]` | `None` | Per-evaluation BLAS/OpenMP numeric thread cap. |
-| `eval_verbose` | `bool` | `True` | Forward verbose evaluation logging. |
 
 `SlurmDockerJobConfig` adds:
 
@@ -279,7 +259,7 @@ evo_config:
     - "gpt-4.1"
     - "gpt-4.1-mini"
     - "gpt-4.1-nano"
-    - "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    - "us.anthropic.claude-sonnet-4-6-v1:0"
     - "o4-mini"
   llm_dynamic_selection: ucb
   llm_kwargs:

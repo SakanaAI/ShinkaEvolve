@@ -8,7 +8,7 @@ evaluate_function:
     _target_: examples.novelty_generator.lm_judge_prompt.make_lm_input_and_output_processors
     number_of_samples: ${novelty_generator_number_of_samples}
   llm_judge_names:
-    - "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
+    - "us.anthropic.claude-sonnet-4-6-v1:0"
   llm_judge_kwargs:
     temperatures: 0.0
     max_tokens: 8196

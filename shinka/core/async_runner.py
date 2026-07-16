@@ -67,12 +67,13 @@ from shinka.core.prompt_evolver import (
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
-from shinka.wandb_logging import (
-    LOGGING_METHOD_WANDB,
-    LOGGING_METHOD_WEBUI,
-    ShinkaWandbLogger,
-    resolve_logging_methods,
+from shinka.pricing.catalog import (
+    activate_model_catalog,
+    load_run_pricing_snapshot,
+    refresh_model_catalog,
+    write_run_pricing_snapshot,
 )
+from shinka.wandb_logging import ShinkaWandbLogger
 from shinka.utils import (
     get_language_extension,
     parse_time_to_seconds,
@@ -282,6 +283,12 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
+        pricing_snapshot = (
+            load_run_pricing_snapshot(Path(evo_config.results_dir))
+            if evo_config.results_dir is not None
+            else None
+        )
+        pricing_snapshot = pricing_snapshot or refresh_model_catalog()
         _validate_evo_config_model_env_access(evo_config)
 
         self.verbose = verbose
@@ -295,11 +302,7 @@ class ShinkaEvolveRunner:
         self.evo_config = evo_config
         self.job_config = job_config
         self.db_config = db_config
-        self.logging_methods = resolve_logging_methods(evo_config)
-        self.webui_logging_enabled = LOGGING_METHOD_WEBUI in self.logging_methods
-        self.wandb_logger = ShinkaWandbLogger(
-            enabled=LOGGING_METHOD_WANDB in self.logging_methods
-        )
+        self.wandb_logger = ShinkaWandbLogger(enabled=evo_config.enable_wandb_logging)
         self.banner_style = banner_style
         self.enable_deadlock_debugging = debug
         log_filename = f"{self.results_dir}/evolution_run.log"
@@ -328,6 +331,16 @@ class ShinkaEvolveRunner:
         else:
             # Ensure results directory exists even when not verbose
             Path(self.results_dir).mkdir(parents=True, exist_ok=True)
+
+        self.pricing_snapshot = pricing_snapshot
+        write_run_pricing_snapshot(pricing_snapshot, Path(self.results_dir))
+        logger.info(
+            "Pricing catalog: source=%s fetched_at=%s stale=%s sha256=%s",
+            pricing_snapshot.source,
+            pricing_snapshot.fetched_at,
+            pricing_snapshot.stale,
+            pricing_snapshot.sha256,
+        )
 
         _print_gradient_logo_and_mirror(
             Path(log_filename), banner_style=self.banner_style
@@ -378,12 +391,6 @@ class ShinkaEvolveRunner:
         logger.info(f"Language: {self.evo_config.language}")
         logger.info(f"Results directory: {self.results_dir}")
         logger.info(f"Log file: {log_filename}")
-        logger.info(f"Logging methods: {sorted(self.logging_methods)}")
-        if not self.webui_logging_enabled:
-            logger.info(
-                "WebUI logging disabled; SQLite persistence remains enabled "
-                "because the evolutionary loop uses it as state."
-            )
         if self.evo_config.max_api_costs is not None:
             logger.info(f"Max API costs: ${self.evo_config.max_api_costs:.2f}")
         logger.info("=" * 80)
@@ -1057,6 +1064,7 @@ class ShinkaEvolveRunner:
 
     async def run_async(self):
         """Main async evolution loop."""
+        activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
@@ -3161,6 +3169,7 @@ class ShinkaEvolveRunner:
             "cxx": "cpp",
             "cu": "cuda",
             "go": "go",
+            "sv": "verilog",
             "f90": "fortran",
             "f95": "fortran",
             "f03": "fortran",
@@ -5652,21 +5661,20 @@ Required constraints:
             logger.error(f"Error in async cleanup: {e}")
 
     def _log_program_to_wandb(self, program: Program) -> None:
-        self.wandb_logger.log_program(
-            program=program,
-            db=self.db,
-            prompt_db=self.prompt_db,
-        )
+        wandb_logger = getattr(self, "wandb_logger", None)
+        if wandb_logger is not None:
+            wandb_logger.log_program(program=program)
 
     def _finish_wandb_logging(self) -> None:
-        self.wandb_logger.log_final(
+        wandb_logger = getattr(self, "wandb_logger", None)
+        if wandb_logger is None:
+            return
+        wandb_logger.log_final(
             db=self.db,
-            prompt_db=self.prompt_db,
-            results_dir=Path(self.results_dir),
             total_proposals_generated=self.total_proposals_generated,
             total_api_cost=self.total_api_cost,
         )
-        self.wandb_logger.finish()
+        wandb_logger.finish()
 
     async def _print_final_summary(self):
         """Print final evolution summary."""

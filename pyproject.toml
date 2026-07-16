@@ -51,6 +51,9 @@ dependencies = [
     "wandb"
 ]
 
+[project.optional-dependencies]
+wandb = ["wandb"]
+
 [project.scripts]
 shinka_launch = "shinka.cli.launch:main"
 shinka_models = "shinka.cli.models:main"
@@ -72,6 +75,7 @@ shinka = [
     "configs/*.yaml",
     "configs/*/*.yaml",
     "favicon.png",
+    "tools/pricing/*.json",
     "embed/providers/*.csv",
     "llm/providers/*.csv",
     "webui/*.html",
@@ -105,5 +109,6 @@ norecursedirs = [
 ]
 markers = [
     "integration: live external/provider integration coverage",
+    "models_dev_live: live models.dev catalog contract coverage",
     "requires_secrets: tests that need CI secrets or private credentials",
 ]

@@ -72,12 +72,8 @@ class EvolutionConfig:
     embedding_model: Optional[str] = "text-embedding-3-small"
     results_dir: Optional[str] = None
 
-    # User-facing logging sinks. The WebUI uses the run database that is also
-    # needed for evolution state, so disabling "webui" only disables explicit
-    # WebUI logging semantics; internal persistence remains on.
-    logging_methods: List[str] = field(default_factory=lambda: ["webui"])
-    enable_webui_logging: Optional[bool] = None
-    enable_wandb_logging: Optional[bool] = None
+    # Optional W&B logging is additive to the existing database/WebUI logging.
+    enable_wandb_logging: bool = False
     wandb_project: Optional[str] = "shinka-evolve"
     wandb_entity: Optional[str] = None
     wandb_group: Optional[str] = None

@@ -6,6 +6,16 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added optional Weights & Biases logging with resumable run IDs, per-individual
+  scores, timing and cost metrics, and final run summaries in PR #149. Thanks
+  @anantgar.
+- Added Verilog/SystemVerilog as a first-class evolution target in PR #137,
+  including `.sv` task detection, syntax validation, EVOLVE-BLOCK marker support,
+  failure-artifact rendering, and a self-contained RTLLM example. Thanks @Tyronita.
+- Added startup pricing refresh from models.dev with conditional HTTP caching,
+  validated offline fallback, provider-qualified model discovery, and per-run
+  pricing snapshots in PR #141. The tutorial now includes a no-cost catalog
+  preflight. Thanks @rodmarkun.
 - Added DeepSeek V4 Flash and V4 Pro pricing entries to the DeepSeek LLM pricing catalog.
 - Added controls to reduce evaluation stdout bloat: `JobConfig.eval_verbose` suppresses framework evaluation progress output, and `DatabaseConfig.max_stdout_log_chars` can persist only the tail of `stdout_log` metadata while keeping full logs on disk. Thanks @marcopirazzini.
 - Added SLURM support for `numeric_threads_per_job`, applying numeric-library thread caps consistently across local and SLURM evaluation jobs. Thanks @marcopirazzini.
@@ -16,6 +26,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed Azure OpenAI LLM client construction to use the v1 base URL contract,
+  avoiding doubled `/openai/v1/openai` request paths and 404 responses reported
+  in issue #147.
 - Fixed OpenAI retry handling so ShinkaEvolve respects provider `retry_after` hints from transient Cloudflare/API 5xx responses.
 - Fixed DeepSeek V4 kwargs so ShinkaEvolve omits `temperature` for thinking-mode calls and includes model kwargs in retry error logs.
 - Fixed Claude Opus 4.8 kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for Anthropic and Bedrock calls.

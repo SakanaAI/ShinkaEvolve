@@ -24,6 +24,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION_NAME: ${{ secrets.AWS_REGION_NAME }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
     steps:
       - name: Checkout
@@ -38,7 +39,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install project
-        run: uv sync --dev
+        run: uv sync --dev --extra wandb
 
       - name: Run secret-backed integration tests
         run: |
@@ -50,3 +51,7 @@ jobs:
             exit 0
           fi
           exit "$status"
+
+      - name: Verify live models.dev catalog
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run pytest -q -m "models_dev_live"

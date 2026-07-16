@@ -11,8 +11,7 @@ from .kwargs import sample_model_kwargs
 from .providers import QueryResult, LLMRouteError
 from .providers.model_resolver import resolve_model_backend
 from .rate_limit import AsyncProviderRateLimiter
-
-MAX_RETRIES = 3
+from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 

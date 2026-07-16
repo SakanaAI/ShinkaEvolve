@@ -1,9 +1,16 @@
+import httpx
 import pytest
 
 import shinka.llm.client as llm_client_module
 from shinka.google_genai import _google_genai_timeout_ms
 from shinka.llm.client import get_async_client_llm, get_client_llm
 from shinka.llm.constants import TIMEOUT
+
+
+def _set_azure_env(monkeypatch, endpoint: str) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv("AZURE_API_ENDPOINT", endpoint)
+    monkeypatch.delenv("AZURE_API_VERSION", raising=False)
 
 
 def test_google_genai_timeout_is_in_milliseconds():
@@ -55,6 +62,93 @@ def test_get_async_client_llm_openai_sets_timeout(monkeypatch):
     assert provider == "openai"
     assert model_name == "gpt-5.4-mini"
     assert captured_kwargs["timeout"] == llm_client_module.TIMEOUT
+    assert captured_kwargs["max_retries"] == llm_client_module.OPENAI_MAX_RETRIES
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "https://example-resource.openai.azure.com",
+        "https://example-resource.openai.azure.com/",
+        "https://example-resource.openai.azure.com/openai/v1",
+        "https://example-resource.openai.azure.com/openai/v1/",
+    ),
+)
+def test_get_client_llm_azure_uses_v1_base_url(monkeypatch, endpoint):
+    _set_azure_env(monkeypatch, endpoint)
+
+    client, model_name, provider = get_client_llm("azure-gpt-5-mini")
+
+    assert type(client) is llm_client_module.openai.OpenAI
+    assert str(client.base_url) == (
+        "https://example-resource.openai.azure.com/openai/v1/"
+    )
+    assert model_name == "gpt-5-mini"
+    assert provider == "azure_openai"
+
+
+def test_get_async_client_llm_azure_uses_v1_base_url(monkeypatch):
+    _set_azure_env(monkeypatch, "https://example-resource.openai.azure.com")
+
+    client, model_name, provider = get_async_client_llm("azure-gpt-5-mini")
+
+    assert type(client) is llm_client_module.openai.AsyncOpenAI
+    assert str(client.base_url) == (
+        "https://example-resource.openai.azure.com/openai/v1/"
+    )
+    assert model_name == "gpt-5-mini"
+    assert provider == "azure_openai"
+
+
+@pytest.mark.parametrize("azure_api_key", (None, "   "))
+def test_get_client_llm_azure_requires_azure_api_key(monkeypatch, azure_api_key):
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com"
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    if azure_api_key is None:
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", azure_api_key)
+
+    with pytest.raises(ValueError, match="AZURE_OPENAI_API_KEY"):
+        get_client_llm("azure-gpt-5-mini")
+
+
+def test_get_client_llm_azure_responses_request_uses_v1_url(monkeypatch):
+    request_urls = []
+    real_openai = llm_client_module.openai.OpenAI
+
+    def capture_request(request):
+        request_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "response-test",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "model": "gpt-5-mini",
+                "output": [],
+            },
+        )
+
+    def build_client(**kwargs):
+        kwargs["http_client"] = httpx.Client(
+            transport=httpx.MockTransport(capture_request)
+        )
+        return real_openai(**kwargs)
+
+    _set_azure_env(monkeypatch, "https://example-resource.openai.azure.com")
+    monkeypatch.setattr(llm_client_module.openai, "OpenAI", build_client)
+    client, _, _ = get_client_llm("azure-gpt-5-mini")
+
+    client.responses.create(model="gpt-5-mini", input="test")
+
+    assert request_urls == [
+        "https://example-resource.openai.azure.com/openai/v1/responses"
+    ]
 
 
 def test_get_client_llm_gemini_sets_timeout(monkeypatch):
@@ -120,6 +214,7 @@ def test_get_client_llm_local_openai_uses_api_key_env_query_param(monkeypatch):
     assert model_name == "dummy-model"
     assert str(client.base_url).startswith("https://api.example.test/v1")
     assert captured_kwargs["api_key"] == "test-custom-key"
+    assert captured_kwargs["max_retries"] == llm_client_module.OPENAI_MAX_RETRIES
 
 
 def test_get_async_client_llm_local_openai_missing_api_key_env_raises(monkeypatch):

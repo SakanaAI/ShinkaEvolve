@@ -45,7 +45,20 @@ If your change touches provider integrations or other secret-backed paths and yo
 uv run pytest -q -m "requires_secrets"
 ```
 
-8. Commit your change with a clear message, sync with the latest `main`, then push your branch:
+8. If you need to refresh provider pricing data, regenerate the committed CSVs from `models.dev` instead of editing them by hand:
+
+```bash
+uv run python -m shinka.tools.pricing.generate_csvs
+uv run python -m shinka.tools.pricing.generate_csvs --check
+uv run pytest tests/test_pricing_csv_generation.py tests/test_model_resolver.py tests/test_embedding_model_resolver.py tests/test_shinka_models_cli.py -q
+```
+
+The CSVs are the packaged offline fallback. Normal runs conditionally refresh
+`models.dev` at startup and keep the last validated response in the user cache.
+Provider/model aliases, temporary manual entries, and Shinka-specific booleans
+live in `shinka/tools/pricing/models_dev_overlay.json`.
+
+9. Commit your change with a clear message, sync with the latest `main`, then push your branch:
 
 ```bash
 git add path/to/file.py

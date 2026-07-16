@@ -1,25 +1,19 @@
 import sys
-from dataclasses import dataclass, field
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from shinka.core.config import EvolutionConfig
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.wandb_logging import (
+    INDIVIDUAL_SCORE_METRIC,
     PROGRAM_TABLE_COLUMNS,
+    PROGRAM_TABLE_KEY,
     ShinkaWandbLogger,
     build_program_log_payload,
-    compute_database_stats,
-    program_table_row,
-    resolve_logging_methods,
+    build_run_summary,
+    ensure_wandb_run_id,
 )
-
-
-@dataclass
-class LoggingConfig:
-    logging_methods: list[str] = field(default_factory=lambda: ["webui"])
-    enable_webui_logging: bool | None = None
-    enable_wandb_logging: bool | None = None
 
 
 def _make_db(tmp_path):
@@ -30,7 +24,11 @@ def _make_db(tmp_path):
         generation=0,
         correct=True,
         combined_score=1.0,
-        public_metrics={"score": 1.0, "nested": {"accuracy": 0.5}},
+        public_metrics={
+            "score": 1.0,
+            "nested": {"accuracy": 0.5},
+            "bulky_text": "not a chart metric",
+        },
         private_metrics={"hidden": 2.0},
         metadata={
             "api_costs": 0.10,
@@ -38,9 +36,8 @@ def _make_db(tmp_path):
             "novelty_cost": 0.02,
             "meta_cost": 0.03,
             "patch_type": "init",
-            "patch_name": "initial",
-            "pipeline_started_at": 10.0,
-            "postprocess_finished_at": 12.0,
+            "pipeline_seconds": 2.0,
+            "evaluation_seconds": 1.5,
             "model_name": "test-model",
         },
     )
@@ -58,8 +55,6 @@ def _make_db(tmp_path):
             "novelty_cost": 0.03,
             "meta_cost": 0.04,
             "patch_type": "diff",
-            "pipeline_started_at": 13.0,
-            "postprocess_finished_at": 16.0,
             "llm_result": {"model": "fallback-model"},
         },
     )
@@ -68,83 +63,96 @@ def _make_db(tmp_path):
     return db, first, second
 
 
-def test_resolve_logging_methods_supports_list_and_bool_overrides():
-    assert resolve_logging_methods(LoggingConfig()) == {"webui"}
-    assert resolve_logging_methods(
-        LoggingConfig(logging_methods=["webui"], enable_wandb_logging=True)
-    ) == {"webui", "wandb"}
-    assert resolve_logging_methods(
-        LoggingConfig(
-            logging_methods=["webui", "wandb"],
-            enable_webui_logging=False,
-        )
-    ) == {"wandb"}
+def test_wandb_logging_is_opt_in_and_does_not_configure_webui():
+    config = EvolutionConfig()
+
+    assert config.enable_wandb_logging is False
+    assert config.wandb_run_id is None
+    assert config.wandb_resume == "allow"
+    assert not hasattr(config, "enable_webui_logging")
 
 
-def test_resolve_logging_methods_rejects_unknown_method():
-    with pytest.raises(ValueError, match="Unknown logging method"):
-        resolve_logging_methods(LoggingConfig(logging_methods=["webui", "tensorboard"]))
+def test_wandb_run_id_is_reused_and_can_be_overridden(tmp_path):
+    first_run_id = ensure_wandb_run_id(tmp_path)
+
+    assert first_run_id
+    assert ensure_wandb_run_id(tmp_path) == first_run_id
+    assert ensure_wandb_run_id(tmp_path, "configured-id") == "configured-id"
+    assert (tmp_path / ".wandb_run_id").read_text(encoding="utf-8") == (
+        "configured-id\n"
+    )
 
 
-def test_compute_database_stats_matches_run_aggregate_fields(tmp_path):
-    db, _, _ = _make_db(tmp_path)
+def test_program_payload_logs_one_compact_event_per_individual(tmp_path):
+    _, _, second = _make_db(tmp_path)
 
-    stats = compute_database_stats(db)
-
-    assert stats["program_count"] == 2
-    assert stats["generation_count"] == 2
-    assert stats["correct_count"] == 1
-    assert stats["best_score"] == 1.0
-    assert stats["best_generation"] == 0
-    assert stats["max_generation"] == 1
-    assert stats["gens_since_improvement"] == 1
-    assert stats["total_cost"] == pytest.approx(0.45)
-    assert stats["total_runtime_seconds"] == pytest.approx(6.0)
-    assert stats["patch_type_counts"] == {"init": 1, "diff": 1}
-
-
-def test_program_payload_logs_public_private_metadata_and_costs(tmp_path):
-    db, _, second = _make_db(tmp_path)
-
-    payload = build_program_log_payload(second, db)
+    payload = build_program_log_payload(second)
 
     assert payload["generation"] == 1
-    assert payload["program/combined_score"] == 0.25
-    assert payload["program/model_name"] == "fallback-model"
-    assert payload["public_metrics/score"] == 0.25
-    assert payload["metadata/patch_type"] == "diff"
-    assert payload["cost/total"] == pytest.approx(0.29)
-    assert not any(key.startswith("webui/") for key in payload)
+    assert payload[INDIVIDUAL_SCORE_METRIC] == 0.25
+    assert payload["individual/model_name"] == "fallback-model"
+    assert "public_metrics/score" not in payload
+    assert payload["cost/api"] == pytest.approx(0.20)
+    assert "program/combined_score" not in payload
+    assert not any(key.startswith("metadata/") for key in payload)
+    assert not any("latest" in key for key in payload)
 
 
-def test_program_table_serializes_heterogeneous_nested_metadata():
-    first = Program(id="a", generation=1, metadata={"nested": {"a": 1}})
-    second = Program(id="b", generation=2, metadata={"nested": [1, 2, 3]})
+def test_program_payload_skips_bulky_values_and_duplicate_timing(tmp_path):
+    _, first, _ = _make_db(tmp_path)
 
-    first_row = program_table_row(first)
-    second_row = program_table_row(second)
-    metadata_index = PROGRAM_TABLE_COLUMNS.index("metadata")
+    payload = build_program_log_payload(first)
 
-    assert isinstance(first_row[metadata_index], str)
-    assert isinstance(second_row[metadata_index], str)
-    assert '"a": 1' in first_row[metadata_index]
+    assert payload["public_metrics/nested/accuracy"] == 0.5
+    assert payload["private_metrics/hidden"] == 2.0
+    assert "public_metrics/bulky_text" not in payload
+    assert payload["timing/pipeline_seconds"] == 2.0
+    assert "metadata/pipeline_seconds" not in payload
 
 
-def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
-    db, first, _ = _make_db(tmp_path)
-    plot_dir = tmp_path / "gen_1" / "results" / "plots"
-    plot_dir.mkdir(parents=True)
-    (plot_dir / "score.png").write_bytes(b"png")
-    (tmp_path / "gen_1" / "failure.json").write_text("{}", encoding="utf-8")
+def test_run_summary_uses_correct_programs_for_best_score(tmp_path):
+    db, _, _ = _make_db(tmp_path)
+
+    summary = build_run_summary(
+        db.get_all_programs(),
+        total_proposals_generated=2,
+        total_api_cost=0.5,
+    )
+
+    assert summary["run/program_count"] == 2
+    assert summary["run/correct_rate"] == 0.5
+    assert summary["run/best_score"] == 1.0
+    assert summary["run/max_generation"] == 1
+    assert summary["run/total_proposals_generated"] == 2
+    assert summary["run/total_api_cost"] == 0.5
+
+
+def test_invalid_wandb_config_is_non_fatal(tmp_path, monkeypatch, caplog):
+    fake_wandb = ModuleType("wandb")
+    fake_wandb.init = lambda **kwargs: pytest.fail("wandb.init should not be called")
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    logger = ShinkaWandbLogger(enabled=True)
+
+    logger.start(
+        evo_config=SimpleNamespace(wandb_config="invalid"),
+        db_config=SimpleNamespace(),
+        job_config=SimpleNamespace(),
+        results_dir=tmp_path,
+    )
+
+    assert logger.active is False
+    assert "Failed to initialize W&B logging" in caplog.text
+
+
+def test_wandb_logger_dry_run_and_resume_use_fake_wandb(tmp_path, monkeypatch):
+    db, first, second = _make_db(tmp_path)
     logged_payloads = []
-    artifacts = []
     init_kwargs = {}
 
     class FakeRun:
-        name = "fake-run"
-
         def __init__(self):
             self.defined = []
+            self.summary = {}
             self.finished = False
 
         def define_metric(self, *args, **kwargs):
@@ -152,9 +160,6 @@ def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
 
         def log(self, payload):
             logged_payloads.append(payload)
-
-        def log_artifact(self, artifact):
-            artifacts.append(artifact)
 
         def finish(self):
             self.finished = True
@@ -164,63 +169,123 @@ def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
             self.columns = columns
             self.data = data
 
-    class FakeArtifact:
-        def __init__(self, name, type):
-            self.name = name
-            self.type = type
-            self.files = []
-
-        def add_file(self, path, name=None):
-            self.files.append((path, name))
-
     fake_run = FakeRun()
     fake_wandb = ModuleType("wandb")
+
     def fake_init(**kwargs):
         init_kwargs.update(kwargs)
         return fake_run
 
     fake_wandb.init = fake_init
     fake_wandb.Table = FakeTable
-    fake_wandb.Artifact = FakeArtifact
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
+    evo_config = EvolutionConfig(
+        wandb_project="project",
+        wandb_name="name",
+        wandb_mode="offline",
+    )
     logger = ShinkaWandbLogger(enabled=True)
     logger.start(
-        evo_config=SimpleNamespace(
-            wandb_project="project",
-            wandb_entity=None,
-            wandb_group=None,
-            wandb_name="name",
-            wandb_mode="offline",
-            wandb_tags=[],
-            wandb_notes=None,
-            wandb_dir=None,
-            wandb_config={},
-            wandb_run_id="stable-run-id",
-            wandb_resume="allow",
-        ),
+        evo_config=evo_config,
         db_config=SimpleNamespace(),
         job_config=SimpleNamespace(),
         results_dir=tmp_path,
     )
-    logger.log_program(program=first, db=db)
-    logger.log_final(db=db, results_dir=tmp_path, total_proposals_generated=2)
+    logger.log_program(first)
+    logger.log_program(first)
+    logger.log_program(second)
+    logger.log_final(
+        db=db,
+        total_proposals_generated=2,
+        total_api_cost=0.5,
+    )
     logger.finish()
 
-    assert fake_run.finished is True
-    assert init_kwargs["id"] == "stable-run-id"
+    assert init_kwargs["project"] == "project"
+    assert init_kwargs["mode"] == "offline"
+    assert init_kwargs["id"]
     assert init_kwargs["resume"] == "allow"
-    assert logged_payloads[0]["program/id"] == "p0"
-    assert isinstance(logged_payloads[0]["program/latest"], FakeTable)
-    assert logged_payloads[0]["program/latest"].columns == PROGRAM_TABLE_COLUMNS
-    final_payload = logged_payloads[1]
-    assert final_payload["final/program_count"] == 2
-    assert final_payload["final/total_cost"] == pytest.approx(0.45)
-    assert not any(key.startswith("webui/") for key in final_payload)
-    assert not any(key.startswith("final/webui/") for key in final_payload)
-    assert isinstance(final_payload["program/all"], FakeTable)
-    assert artifacts
-    artifact_names = {name for _, name in artifacts[0].files}
-    assert "programs.sqlite" in artifact_names
-    assert "gen_1/results/plots/score.png" in artifact_names
-    assert "gen_1/failure.json" in artifact_names
+    assert (tmp_path / ".wandb_run_id").read_text(encoding="utf-8").strip() == (
+        init_kwargs["id"]
+    )
+    assert init_kwargs["config"]["evolution"]["wandb_run_id"] == init_kwargs["id"]
+    assert fake_run.finished is True
+    assert [payload[INDIVIDUAL_SCORE_METRIC] for payload in logged_payloads[:2]] == [
+        1.0,
+        0.25,
+    ]
+    assert len(logged_payloads) == 3
+    table = logged_payloads[-1][PROGRAM_TABLE_KEY]
+    assert isinstance(table, FakeTable)
+    assert table.columns == PROGRAM_TABLE_COLUMNS
+    assert len(table.data) == 2
+    assert "code" not in table.columns
+    assert "embedding" not in table.columns
+    assert fake_run.summary["run/best_score"] == 1.0
+    score_definition = next(
+        item for item in fake_run.defined if item[0] == (INDIVIDUAL_SCORE_METRIC,)
+    )
+    assert score_definition[1] == {"step_metric": "generation"}
+
+    first_run_id = init_kwargs["id"]
+    resumed_config = EvolutionConfig(
+        wandb_project="project",
+        wandb_mode="offline",
+        wandb_resume="must",
+    )
+    resumed_logger = ShinkaWandbLogger(enabled=True)
+    resumed_logger.start(
+        evo_config=resumed_config,
+        db_config=SimpleNamespace(),
+        job_config=SimpleNamespace(),
+        results_dir=tmp_path,
+    )
+
+    assert init_kwargs["id"] == first_run_id
+    assert init_kwargs["resume"] == "must"
+    assert resumed_config.wandb_run_id == first_run_id
+    resumed_logger.finish()
+
+
+@pytest.mark.requires_secrets
+def test_wandb_online_logging_with_authenticated_sdk(tmp_path, monkeypatch, caplog):
+    import wandb
+
+    db, first, second = _make_db(tmp_path)
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    wandb.login(verify=True)
+
+    config = EvolutionConfig(
+        enable_wandb_logging=True,
+        wandb_project="shinka-evolve-integration",
+        wandb_name=f"authenticated-smoke-{tmp_path.name}",
+        wandb_mode="online",
+        wandb_tags=["integration-test"],
+    )
+    logger = ShinkaWandbLogger(enabled=True)
+    logger.start(
+        evo_config=config,
+        db_config=DatabaseConfig(db_path=str(tmp_path / "programs.sqlite")),
+        job_config=SimpleNamespace(),
+        results_dir=tmp_path,
+    )
+
+    try:
+        assert logger.active, caplog.text
+        logger.log_program(first)
+        logger.log_program(second)
+        logger.log_final(
+            db=db,
+            total_proposals_generated=2,
+            total_api_cost=0.5,
+        )
+    finally:
+        logger.finish()
+
+    integration_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "shinka.wandb_logging" and record.levelno >= 30
+    ]
+    assert integration_warnings == []

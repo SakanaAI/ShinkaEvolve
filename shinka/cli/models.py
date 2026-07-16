@@ -14,12 +14,13 @@ from shinka.model_availability import (
     env_var_status,
     provider_env_requirements as get_provider_env_requirements,
 )
+from shinka.pricing.catalog import refresh_model_catalog
 
 
 def _build_parser() -> argparse.ArgumentParser:
     description = (
         "Inspect current environment variables and discovered .env files, then "
-        "emit JSON for pricing.csv LLM and embedding models that are usable in the "
+        "emit JSON for catalog LLM and embedding models that are usable in the "
         "current environment."
     )
     epilog = (
@@ -39,7 +40,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "  }\n\n"
         "Readiness checks are strict and provider-specific:\n"
         "  anthropic: ANTHROPIC_API_KEY\n"
-        "  azure: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT + AZURE_API_VERSION\n"
+        "  azure LLM: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT\n"
+        "  azure embedding: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT + AZURE_API_VERSION\n"
         "  bedrock: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION_NAME\n"
         "  deepseek: DEEPSEEK_API_KEY\n"
         "  google: GEMINI_API_KEY or GOOGLE_GENAI_USE_VERTEXAI + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION\n"
@@ -86,11 +88,17 @@ def main(argv: list[str] | None = None) -> int:
     load_shinka_dotenv()
     parser = _build_parser()
     args = parser.parse_args(argv)
+    pricing_snapshot = refresh_model_catalog()
     payload = _build_payload()
-    output = payload if args.verbose else {
-        "embedding": payload["embedding"],
-        "llm": payload["llm"],
-    }
+    payload["pricing_catalog"] = pricing_snapshot.metadata()
+    output = (
+        payload
+        if args.verbose
+        else {
+            "embedding": payload["embedding"],
+            "llm": payload["llm"],
+        }
+    )
     print(json.dumps(output, indent=2))
     return 0
 
