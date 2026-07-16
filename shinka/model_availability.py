@@ -219,7 +219,7 @@ def _model_env_access_issues(
     api_key_env_name: str | None,
 ) -> list[ModelEnvAccessIssue]:
     env_var_names = model_env_requirements(provider, model_kind)
-    missing_env_vars = ()
+    missing_env_vars: tuple[str, ...] = ()
     if env_var_names is not None:
         missing_env_vars = _missing_env_vars(env_var_names)
 
