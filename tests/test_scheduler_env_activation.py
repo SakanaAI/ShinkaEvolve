@@ -7,6 +7,13 @@ import sys
 import pytest
 
 from shinka.launch import JobScheduler, LocalJobConfig, SlurmCondaJobConfig
+
+
+def test_local_job_config_exposes_runtime_thread_and_verbosity_fields():
+    config = LocalJobConfig(numeric_threads_per_job=3, eval_verbose=False)
+
+    assert config.numeric_threads_per_job == 3
+    assert config.eval_verbose is False
 from shinka.launch.scheduler import SlurmEnvJobConfig
 from shinka.launch.slurm import submit_conda, submit_local_conda
 

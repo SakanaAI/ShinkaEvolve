@@ -5,6 +5,14 @@ from .gemini import query_gemini, query_gemini_async
 from .headless import query_headless, query_headless_async
 from .local_openai import query_local_openai, query_local_openai_async
 from .result import QueryResult
+from .errors import (
+    LLMRouteError,
+    LLMAuthenticationError,
+    LLMModelUnavailableError,
+    LLMTimeoutError,
+    LLMExtractionError,
+    LLMProcessError,
+)
 
 __all__ = [
     "query_anthropic",
@@ -20,4 +28,10 @@ __all__ = [
     "query_headless_async",
     "query_local_openai_async",
     "QueryResult",
+    "LLMRouteError",
+    "LLMAuthenticationError",
+    "LLMModelUnavailableError",
+    "LLMTimeoutError",
+    "LLMExtractionError",
+    "LLMProcessError",
 ]

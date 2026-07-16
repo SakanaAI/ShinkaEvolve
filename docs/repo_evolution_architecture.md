@@ -199,7 +199,7 @@ Repo-level evolution increases the attack surface. The system should treat path 
 
 Minimum enforcement:
 
-1. Require explicit `mutable_paths` in repo mode, unless the user intentionally opts into whole-repo mutation.
+1. Treat omitted or empty `mutable_paths` as whole-repository mutation. A non-empty list is an explicit user allow-list.
 2. Keep evaluation code outside mutable paths.
 3. Mark scoring scripts, datasets, expected outputs, `.git`, and `.shinka` as immutable or ignored as appropriate.
 4. Check changed files before evaluation and again before commit.
@@ -376,7 +376,7 @@ To compare fairly:
 2. Whether the codebase should remain dual-mode or become repo-only.
 3. Which headless agent providers have real session/resume support.
 4. How aggressively to clean old worktrees and branches.
-5. Whether `mutable_paths` should be required in all repo-mode configs.
+5. Which task-specific repository paths should be immutable or hidden; whole-repository mutation is the default.
 6. How prompt evolution maps onto repo-agent context templates.
 7. How much evaluator isolation is required for reward-hacking-sensitive benchmarks.
 8. How to store large logs, diffs, and artifacts without bloating the main SQLite database.

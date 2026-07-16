@@ -1,0 +1,105 @@
+evo:
+  seed_repo_path: seed_repo
+  # Empty means the whole repository is mutable except protected/immutable paths.
+  mutable_paths: []
+  immutable_paths: []
+  ignore_paths:
+    - .git
+    - .shinka
+    - "__pycache__"
+    - "src/__pycache__"
+    - "*.pyc"
+  allow_deletions: true
+  allow_lockfile_changes: true
+  allow_binary_files: true
+  max_file_bytes: null
+  headless_proposal_timeout_seconds: 14400
+  headless_cleanup_grace_seconds: 120
+  headless_output_mode: json
+  llm_rate_limits:
+    google:meta:
+      requests_per_minute: 5
+      max_concurrency: 1
+  llm_daily_quotas:
+    google:meta: 20
+  language: python
+  generation_target_mode: evaluated_candidates
+  llm_models:
+    - "headless/antigravity@Gemini 3.5 Flash (High)"
+    - "headless/antigravity@Gemini 3.1 Pro (High)"
+    - "headless/antigravity@Claude Opus 4.6 (Thinking)"
+    - "headless/cursor@gpt-5.4?effort=xhigh"
+    # Headless 0.4.0 has no xhigh variant mapping for gpt-5.1-nano.
+    - "headless/cursor@gpt-5.1-nano"
+  llm_dynamic_selection: ucb1
+  llm_dynamic_selection_kwargs:
+    exploration_coef: 1.0
+  llm_kwargs:
+    temperatures: [0.0, 0.5, 1.0]
+    max_tokens: 16384
+    reasoning_efforts: [high]
+  patch_types: [diff, full, cross]
+  patch_type_probs: [0.45, 0.45, 0.1]
+  max_patch_resamples: 3
+  max_patch_attempts: 3
+  max_novelty_attempts: 3
+  meta_rec_interval: 10
+  meta_max_recommendations: 5
+  meta_llm_models:
+    - gemini-3.5-flash
+  meta_llm_kwargs:
+    temperatures: [0.0]
+    max_tokens: 16384
+    reasoning_efforts: [high]
+  novelty_llm_models:
+    - gemini-3.5-flash
+  novelty_llm_kwargs:
+    temperatures: [0.0]
+    max_tokens: 16384
+    reasoning_efforts: [high]
+  embedding_model: gemini-embedding-2-preview
+  code_embed_sim_threshold: 0.95
+  logging_methods: [webui, wandb]
+  enable_wandb_logging: true
+  wandb_project: shinka-evolve
+  wandb_group: circle-packing-repo
+  wandb_name: circle-packing-requested
+  wandb_tags: [circle-packing, repo-mode, requested-config]
+  task_sys_msg: |
+    Improve the 26-circle packing implementation in src/packing.py. The evaluator
+    is outside the repository and maximizes the validated sum of circle radii
+    inside the unit square.
+
+    Preserve the public contract run_packing() -> (centers, radii, sum_radii).
+    Return exactly 26 circles. Centers must be shape (26, 2), radii shape (26,),
+    every radius must be non-negative, all circles must stay inside [0, 1]^2,
+    circles must not overlap, and sum_radii must equal sum(radii).
+
+    You control the repository and may inspect it, add or remove files, write
+    tests and tools, run terminal commands, and perform numerical searches. Keep
+    the final repository deterministic and self-contained, and remove temporary
+    artifacts that are not part of the candidate.
+    Complete .shinka/individual.md and replace every TODO_AGENT_SUMMARY placeholder.
+
+db:
+  num_islands: 2
+  archive_size: 40
+  elite_selection_ratio: 0.3
+  num_archive_inspirations: 4
+  num_top_k_inspirations: 2
+  migration_interval: 10
+  migration_rate: 0.0
+  island_elitism: true
+  parent_selection_strategy: weighted
+  parent_selection_lambda: 10.0
+  archive_selection_strategy: crowding
+  island_selection_strategy: equal
+
+job:
+  eval_program_path: evaluate.py
+
+max_evaluation_jobs: 5
+max_proposal_jobs: 5
+max_db_workers: 2
+verbose: true
+debug: true

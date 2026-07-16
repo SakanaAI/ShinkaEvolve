@@ -215,10 +215,10 @@ class WorktreeManager:
         hidden_paths: Optional[list[str]] = None,
         ignore_paths: Optional[list[str]] = None,
         base_ref: str = "HEAD",
-        max_file_bytes: int = 1_000_000,
-        allow_binary_files: bool = False,
-        allow_deletions: bool = False,
-        allow_lockfile_changes: bool = False,
+        max_file_bytes: Optional[int] = None,
+        allow_binary_files: bool = True,
+        allow_deletions: bool = True,
+        allow_lockfile_changes: bool = True,
     ):
         self.seed_repo_path = Path(seed_repo_path).resolve()
         self.worktree_root = Path(worktree_root).resolve()
@@ -511,7 +511,7 @@ class WorktreeManager:
                     violations.append(f"{rel_path}: symlink target escapes worktree")
                 continue
             size = path.stat().st_size
-            if size > self.max_file_bytes:
+            if self.max_file_bytes is not None and size > self.max_file_bytes:
                 violations.append(f"{rel_path}: file exceeds max size {self.max_file_bytes}")
                 continue
             if not self.allow_binary_files and _looks_binary(path):

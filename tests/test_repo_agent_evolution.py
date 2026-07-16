@@ -173,6 +173,40 @@ def test_worktree_manager_enforces_immutable_paths(tmp_path):
         manager.validate_snapshot(bad_worktree, bad_snapshot)
 
 
+def test_empty_mutable_paths_allow_whole_repo_and_high_control_changes(tmp_path):
+    seed_repo = _make_seed_repo(tmp_path)
+    manager = WorktreeManager(
+        seed_repo_path=str(seed_repo),
+        worktree_root=str(tmp_path / "worktrees"),
+        mutable_paths=[],
+        immutable_paths=["README.md"],
+    )
+    parent = manager.initialize_seed_repo()
+    worktree = manager.create_child_worktree(
+        parent_commit=parent,
+        generation=1,
+        individual_id="whole123",
+    )
+
+    (worktree.path / "src" / "app.py").unlink()
+    (worktree.path / "tools").mkdir()
+    (worktree.path / "tools" / "optimize.py").write_text(
+        "print('optimize')\n", encoding="utf-8"
+    )
+    (worktree.path / "best.npy").write_bytes(b"NUMPY\0DATA")
+    (worktree.path / "package-lock.json").write_text("{}\n", encoding="utf-8")
+
+    snapshot = manager.diff_parent(worktree.path, parent)
+    manager.validate_snapshot(worktree, snapshot)
+
+    assert set(snapshot.changed_files) == {
+        "best.npy",
+        "package-lock.json",
+        "src/app.py",
+        "tools/optimize.py",
+    }
+
+
 def test_agent_worktree_view_hides_evaluator_and_freezes_immutable_paths(tmp_path):
     seed_repo = _make_seed_repo(tmp_path)
     _add_seed_evaluator(seed_repo)
@@ -272,6 +306,7 @@ def test_worktree_manager_rejects_deleted_files(tmp_path):
         worktree_root=str(tmp_path / "worktrees"),
         mutable_paths=["src"],
         immutable_paths=["README.md"],
+        allow_deletions=False,
     )
     parent = manager.initialize_seed_repo()
     worktree = manager.create_child_worktree(
@@ -293,6 +328,7 @@ def test_worktree_manager_rejects_binary_files(tmp_path):
         worktree_root=str(tmp_path / "worktrees"),
         mutable_paths=["src"],
         immutable_paths=["README.md"],
+        allow_binary_files=False,
     )
     parent = manager.initialize_seed_repo()
     worktree = manager.create_child_worktree(

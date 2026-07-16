@@ -340,7 +340,14 @@ def program_table_rows(programs: Sequence[Program]) -> List[List[Any]]:
 
 def program_table_row(program: Program) -> List[Any]:
     program_dict = json_safe(program.to_dict())
-    return [program_dict.get(column) for column in PROGRAM_TABLE_COLUMNS]
+    return [_table_cell(program_dict.get(column)) for column in PROGRAM_TABLE_COLUMNS]
+
+
+def _table_cell(value: Any) -> Any:
+    safe_value = json_safe(value, max_string_length=12000)
+    if _is_scalar(safe_value):
+        return safe_value
+    return json.dumps(safe_value, sort_keys=True, default=str)
 
 
 class ShinkaWandbLogger:
@@ -387,12 +394,15 @@ class ShinkaWandbLogger:
             "tags": getattr(evo_config, "wandb_tags", None) or None,
             "notes": getattr(evo_config, "wandb_notes", None),
             "dir": getattr(evo_config, "wandb_dir", None) or str(results_dir),
+            "id": getattr(evo_config, "wandb_run_id", None),
+            "resume": getattr(evo_config, "wandb_resume", "allow"),
             "config": {
                 "evo_config": json_safe(evo_config),
                 "db_config": json_safe(db_config),
                 "job_config": json_safe(job_config),
                 "results_dir": str(results_dir),
                 **json_safe(getattr(evo_config, "wandb_config", {}) or {}),
+                "run_manifest": _load_run_manifest(results_dir),
             },
             "reinit": True,
         }
@@ -549,6 +559,16 @@ def _aggregate_costs(programs: Sequence[Program]) -> Dict[str, float]:
             totals[key] += costs[key]
     totals["total"] = sum(totals.values())
     return totals
+
+
+def _load_run_manifest(results_dir: Path) -> Dict[str, Any]:
+    path = results_dir / "run_manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _prompt_stats(prompt_db: Optional[Any]) -> Dict[str, Any]:

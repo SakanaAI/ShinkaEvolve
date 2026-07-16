@@ -26,8 +26,25 @@ class EvolutionConfig:
     immutable_paths: List[str] = field(default_factory=list)
     agent_hidden_paths: List[str] = field(default_factory=list)
     ignore_paths: List[str] = field(default_factory=lambda: [".git", ".shinka"])
+    allow_deletions: bool = True
+    allow_lockfile_changes: bool = True
+    allow_binary_files: bool = True
+    max_file_bytes: Optional[int] = None
     summary_filename: str = ".shinka/individual.md"
     summary_max_chars: int = 12000
+
+    # Headless proposal execution. Coding agents may legitimately inspect,
+    # test, and optimize for a long time before producing a candidate.
+    headless_proposal_timeout_seconds: float = 7200.0
+    headless_cleanup_grace_seconds: float = 60.0
+    headless_output_mode: str = "json"
+    headless_model_timeouts: Dict[str, float] = field(default_factory=dict)
+
+    # Provider controls are independent from the model-quality bandit.
+    route_failure_threshold: int = 3
+    route_cooldown_seconds: float = 900.0
+    llm_rate_limits: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    llm_daily_quotas: Dict[str, int] = field(default_factory=dict)
 
     # Headless coding-agent model used for repo-backed evolution.
     agent_model: Optional[str] = None
@@ -36,6 +53,7 @@ class EvolutionConfig:
     patch_types: List[str] = field(default_factory=default_patch_types)
     patch_type_probs: List[float] = field(default_factory=default_patch_type_probs)
     num_generations: int = 50
+    generation_target_mode: str = "evaluated_candidates"
     max_patch_resamples: int = 3
     max_patch_attempts: int = 1
     job_type: str = "local"
@@ -68,6 +86,8 @@ class EvolutionConfig:
     wandb_tags: List[str] = field(default_factory=list)
     wandb_notes: Optional[str] = None
     wandb_dir: Optional[str] = None
+    wandb_run_id: Optional[str] = None
+    wandb_resume: str = "allow"
     wandb_config: Dict[str, Any] = field(default_factory=dict)
 
     max_novelty_attempts: int = 3

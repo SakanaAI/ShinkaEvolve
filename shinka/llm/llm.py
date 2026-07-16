@@ -8,8 +8,9 @@ from pydantic import BaseModel
 import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
-from .providers import QueryResult
+from .providers import QueryResult, LLMRouteError
 from .providers.model_resolver import resolve_model_backend
+from .rate_limit import AsyncProviderRateLimiter
 
 MAX_RETRIES = 3
 
@@ -27,6 +28,10 @@ class LLMClient:
         output_model: Optional[BaseModel] = None,
         verbose: bool = True,
         headless_work_dir: Optional[str] = None,
+        headless_timeout_seconds: Optional[float] = None,
+        headless_cleanup_grace_seconds: Optional[float] = None,
+        headless_output_mode: Optional[str] = None,
+        headless_model_timeouts: Optional[Dict[str, float]] = None,
     ):
         self.temperatures = temperatures
         self.max_tokens = max_tokens
@@ -39,16 +44,38 @@ class LLMClient:
         self.structured_output = output_model is not None
         self.verbose = verbose
         self.headless_work_dir = headless_work_dir
+        self.headless_timeout_seconds = headless_timeout_seconds
+        self.headless_cleanup_grace_seconds = headless_cleanup_grace_seconds
+        self.headless_output_mode = headless_output_mode
+        self.headless_model_timeouts = dict(headless_model_timeouts or {})
+
+    def _headless_timeout_for_model(self, model_name: str) -> Optional[float]:
+        if model_name in self.headless_model_timeouts:
+            return float(self.headless_model_timeouts[model_name])
+        agent_route = model_name.split("?", 1)[0].split("@", 1)[0]
+        agent_name = agent_route.removeprefix("headless/")
+        for key in (agent_route, agent_name):
+            if key in self.headless_model_timeouts:
+                return float(self.headless_model_timeouts[key])
+        return self.headless_timeout_seconds
 
     def _attach_headless_work_dir(self, llm_kwargs: Dict) -> Dict:
         model_name = llm_kwargs.get("model_name")
-        if not model_name or self.headless_work_dir is None:
-            return llm_kwargs
-        if "headless_work_dir" in llm_kwargs:
+        if not model_name:
             return llm_kwargs
         if resolve_model_backend(model_name).provider != "headless":
             return llm_kwargs
-        return {**llm_kwargs, "headless_work_dir": self.headless_work_dir}
+        defaults = {
+            "headless_timeout_seconds": self._headless_timeout_for_model(model_name),
+            "headless_cleanup_grace_seconds": self.headless_cleanup_grace_seconds,
+            "headless_output_mode": self.headless_output_mode,
+        }
+        if self.headless_work_dir is not None:
+            defaults["headless_work_dir"] = self.headless_work_dir
+        return {
+            **{key: value for key, value in defaults.items() if value is not None},
+            **llm_kwargs,
+        }
 
     def batch_query(
         self,
@@ -346,6 +373,13 @@ class AsyncLLMClient:
         output_model: Optional[BaseModel] = None,
         verbose: bool = True,
         headless_work_dir: Optional[str] = None,
+        headless_timeout_seconds: Optional[float] = None,
+        headless_cleanup_grace_seconds: Optional[float] = None,
+        headless_output_mode: Optional[str] = None,
+        headless_model_timeouts: Optional[Dict[str, float]] = None,
+        propagate_route_errors: bool = False,
+        rate_limiter: Optional[AsyncProviderRateLimiter] = None,
+        request_class: str = "general",
     ):
         self.temperatures = temperatures
         self.max_tokens = max_tokens
@@ -358,16 +392,52 @@ class AsyncLLMClient:
         self.structured_output = output_model is not None
         self.verbose = verbose
         self.headless_work_dir = headless_work_dir
+        self.headless_timeout_seconds = headless_timeout_seconds
+        self.headless_cleanup_grace_seconds = headless_cleanup_grace_seconds
+        self.headless_output_mode = headless_output_mode
+        self.headless_model_timeouts = dict(headless_model_timeouts or {})
+        self.propagate_route_errors = propagate_route_errors
+        self.rate_limiter = rate_limiter or AsyncProviderRateLimiter()
+        self.request_class = request_class
+
+    def _headless_timeout_for_model(self, model_name: str) -> Optional[float]:
+        if model_name in self.headless_model_timeouts:
+            return float(self.headless_model_timeouts[model_name])
+        agent_route = model_name.split("?", 1)[0].split("@", 1)[0]
+        agent_name = agent_route.removeprefix("headless/")
+        for key in (agent_route, agent_name):
+            if key in self.headless_model_timeouts:
+                return float(self.headless_model_timeouts[key])
+        return self.headless_timeout_seconds
 
     def _attach_headless_work_dir(self, llm_kwargs: Dict) -> Dict:
         model_name = llm_kwargs.get("model_name")
-        if not model_name or self.headless_work_dir is None:
-            return llm_kwargs
-        if "headless_work_dir" in llm_kwargs:
+        if not model_name:
             return llm_kwargs
         if resolve_model_backend(model_name).provider != "headless":
             return llm_kwargs
-        return {**llm_kwargs, "headless_work_dir": self.headless_work_dir}
+        defaults = {
+            "headless_timeout_seconds": self._headless_timeout_for_model(model_name),
+            "headless_cleanup_grace_seconds": self.headless_cleanup_grace_seconds,
+            "headless_output_mode": self.headless_output_mode,
+        }
+        if self.headless_work_dir is not None:
+            defaults["headless_work_dir"] = self.headless_work_dir
+        return {
+            **{key: value for key, value in defaults.items() if value is not None},
+            **llm_kwargs,
+        }
+
+    async def _gather_batch_tasks(self, task_factories):
+        return await asyncio.gather(
+            *(factory() for factory in task_factories),
+            return_exceptions=True,
+        )
+
+    async def _query_with_limit(self, **kwargs):
+        model_name = kwargs.get("model_name", "")
+        async with self.rate_limiter.limit(model_name, self.request_class):
+            return await query_async(**kwargs)
 
     async def batch_query(
         self,
@@ -393,12 +463,12 @@ class AsyncLLMClient:
         elif isinstance(msg_history[0], dict):
             msg_history = [msg_history] * num_samples
 
-        # Create async tasks
-        tasks = []
+        # Create async task factories
+        task_factories = []
         for i in range(len(msg)):
             query_kwargs = self._attach_headless_work_dir(llm_kwargs[i])
-            tasks.append(
-                self._query_async_with_retry(
+            task_factories.append(
+                lambda i=i, query_kwargs=query_kwargs: self._query_async_with_retry(
                     i,
                     msg[i],
                     system_msg[i],
@@ -408,8 +478,7 @@ class AsyncLLMClient:
                 )
             )
 
-        # Execute all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await self._gather_batch_tasks(task_factories)
 
         # Process results and filter out exceptions
         final_results = []
@@ -475,11 +544,11 @@ class AsyncLLMClient:
                 lines.append(f"  {name:<30} {prob:>8.4f}")
             logger.info("\n".join(lines))
 
-        # Create async tasks
-        tasks = []
+        # Create async task factories
+        task_factories = []
         for i in range(len(msg)):
-            tasks.append(
-                self._sample_kwargs_query_async_with_retry(
+            task_factories.append(
+                lambda i=i: self._sample_kwargs_query_async_with_retry(
                     i,
                     msg[i],
                     system_msg[i],
@@ -489,8 +558,7 @@ class AsyncLLMClient:
                 )
             )
 
-        # Execute all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await self._gather_batch_tasks(task_factories)
 
         # Process results and filter out exceptions
         final_results = []
@@ -607,7 +675,7 @@ class AsyncLLMClient:
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
-                result = await query_async(
+                result = await self._query_with_limit(
                     msg=msg,
                     system_msg=system_msg,
                     output_model=self.output_model,
@@ -620,6 +688,10 @@ class AsyncLLMClient:
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
+                if isinstance(e, LLMRouteError):
+                    if self.propagate_route_errors:
+                        raise
+                    break
                 if try_count < MAX_RETRIES:
                     await asyncio.sleep(1)
         return None
@@ -640,7 +712,7 @@ class AsyncLLMClient:
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
-                result = await query_async(
+                result = await self._query_with_limit(
                     msg=msg,
                     system_msg=system_msg,
                     output_model=self.output_model,
@@ -650,6 +722,10 @@ class AsyncLLMClient:
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
+                if isinstance(e, LLMRouteError):
+                    if self.propagate_route_errors:
+                        raise
+                    return idx, None
                 if try_count == MAX_RETRIES:
                     return idx, None
                 await asyncio.sleep(1)  # Add delay between retries
@@ -660,6 +736,7 @@ class AsyncLLMClient:
         idx: int,
         msg: str,
         system_msg: str,
+        msg_history: List[Dict] = [],
         model_sample_probs: Optional[List[float]] = None,
         total_samples: int = 1,
     ) -> tuple[int, Optional[QueryResult]]:
@@ -685,7 +762,7 @@ class AsyncLLMClient:
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
-                result = await query_async(
+                result = await self._query_with_limit(
                     msg=msg,
                     system_msg=system_msg,
                     msg_history=msg_history,
@@ -697,6 +774,10 @@ class AsyncLLMClient:
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
+                if isinstance(e, LLMRouteError):
+                    if self.propagate_route_errors:
+                        raise
+                    return idx, None
                 if try_count == MAX_RETRIES:
                     return idx, None
                 await asyncio.sleep(1)  # Add delay between retries

@@ -76,6 +76,8 @@ class LocalJobConfig(JobConfig):
     conda_env: Optional[str] = None
     activate_script: Optional[str] = None
     python_executable: Optional[str] = None
+    numeric_threads_per_job: Optional[int] = None
+    eval_verbose: bool = True
 
     def __post_init__(self) -> None:
         _validate_activation_config(self.conda_env, self.activate_script)

@@ -272,6 +272,14 @@ def _build_runner(**overrides):
     runner.meta_summarizer = overrides.get("meta_summarizer")
     runner.results_dir = overrides.get("results_dir", ".")
     runner.prompt_db = overrides.get("prompt_db")
+    runner.wandb_logger = overrides.get(
+        "wandb_logger",
+        SimpleNamespace(
+            log_program=lambda **_kwargs: None,
+            log_final=lambda **_kwargs: None,
+            finish=lambda: None,
+        ),
+    )
     runner._prompt_percentile_recompute_task = overrides.get(
         "_prompt_percentile_recompute_task"
     )
@@ -415,6 +423,33 @@ def test_get_remaining_generation_slots_uses_hard_generation_budget():
     )
 
     assert runner._get_remaining_generation_slots() == 1
+
+
+def test_evaluated_candidate_target_allows_generation_ids_beyond_target():
+    async def _run():
+        runner = _build_runner(
+            evo_config=SimpleNamespace(
+                num_generations=5,
+                generation_target_mode="evaluated_candidates",
+                max_api_costs=None,
+            ),
+            completed_generations=2,
+            next_generation_to_submit=10,
+            active_proposal_tasks={},
+            assigned_generations=set(),
+            max_proposal_jobs=1,
+        )
+
+        async def fake_generate(generation, task_id):
+            return generation, task_id
+
+        runner._generate_proposal_async = fake_generate
+        assert runner._get_remaining_generation_slots() == 3
+        await runner._start_proposals(1)
+        assert runner.next_generation_to_submit == 11
+        await asyncio.gather(*runner.active_proposal_tasks.values())
+
+    asyncio.run(_run())
 
 
 def test_persist_failed_generation_stores_incorrect_program(tmp_path):

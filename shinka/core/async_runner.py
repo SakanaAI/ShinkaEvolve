@@ -35,9 +35,14 @@ from shinka.llm import (
     FixedSampler,
     AsymmetricUCB,
     ThompsonSampler,
+    RouteHealthCircuitBreaker,
+    AsyncProviderRateLimiter,
+    validate_daily_quota_feasibility,
 )
+from shinka.llm.providers import LLMRouteError
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
+from shinka.run_manifest import ensure_wandb_run_id, write_run_manifest
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_text_embedding_async,
@@ -369,6 +374,7 @@ class ShinkaEvolveRunner:
         logger.info(f"Max evaluation jobs: {self.max_evaluation_jobs}")
         logger.info(f"Max proposal jobs: {self.max_proposal_jobs}")
         logger.info(f"Target generations: {self.evo_config.num_generations}")
+        logger.info(f"Generation target mode: {self.evo_config.generation_target_mode}")
         logger.info(f"Language: {self.evo_config.language}")
         logger.info(f"Results directory: {self.results_dir}")
         logger.info(f"Log file: {log_filename}")
@@ -409,6 +415,23 @@ class ShinkaEvolveRunner:
             )
         else:
             raise ValueError("Invalid llm_dynamic_selection")
+        self.route_health = RouteHealthCircuitBreaker(
+            failure_threshold=evo_config.route_failure_threshold,
+            cooldown_seconds=evo_config.route_cooldown_seconds,
+        )
+        self.minimum_request_demand = validate_daily_quota_feasibility(evo_config)
+        if evo_config.generation_target_mode not in {
+            "evaluated_candidates",
+            "proposal_ids",
+        }:
+            raise ValueError(
+                "generation_target_mode must be 'evaluated_candidates' or "
+                "'proposal_ids'"
+            )
+        self.llm_rate_limiter = AsyncProviderRateLimiter(
+            limits=evo_config.llm_rate_limits,
+            daily_quotas=evo_config.llm_daily_quotas,
+        )
 
         # Store db_config for later initialization (after results_dir is set)
         # Database will be initialized in _setup_async()
@@ -423,6 +446,13 @@ class ShinkaEvolveRunner:
             )
         self.llm = AsyncLLMClient(
             model_names=evo_config.llm_models,
+            headless_timeout_seconds=evo_config.headless_proposal_timeout_seconds,
+            headless_cleanup_grace_seconds=evo_config.headless_cleanup_grace_seconds,
+            headless_output_mode=evo_config.headless_output_mode,
+            headless_model_timeouts=evo_config.headless_model_timeouts,
+            propagate_route_errors=True,
+            rate_limiter=self.llm_rate_limiter,
+            request_class="mutation",
             **_llm_kwargs_with_headless_work_dir(
                 evo_config.llm_kwargs,
                 Path(self.results_dir),
@@ -447,8 +477,6 @@ class ShinkaEvolveRunner:
         seed_repo_path = evo_config.seed_repo_path
         if seed_repo_path is None:
             raise ValueError("seed_repo_path must be specified")
-        if not evo_config.mutable_paths:
-            raise ValueError("mutable_paths must be specified for repo-only runs")
         worktree_root = evo_config.worktree_root or str(Path(self.results_dir) / "worktrees")
         self.repo_worktree_manager = WorktreeManager(
             seed_repo_path=seed_repo_path,
@@ -458,6 +486,10 @@ class ShinkaEvolveRunner:
             hidden_paths=getattr(evo_config, "agent_hidden_paths", []),
             ignore_paths=evo_config.ignore_paths,
             base_ref=evo_config.base_ref,
+            max_file_bytes=evo_config.max_file_bytes,
+            allow_binary_files=evo_config.allow_binary_files,
+            allow_deletions=evo_config.allow_deletions,
+            allow_lockfile_changes=evo_config.allow_lockfile_changes,
         )
 
         # Prompt sampler
@@ -475,6 +507,8 @@ class ShinkaEvolveRunner:
             # Create async LLM client for meta analysis
             async_meta_llm = AsyncLLMClient(
                 model_names=evo_config.meta_llm_models or evo_config.llm_models,
+                rate_limiter=self.llm_rate_limiter,
+                request_class="meta",
                 **_llm_kwargs_with_headless_work_dir(
                     evo_config.meta_llm_kwargs,
                     Path(self.results_dir),
@@ -500,6 +534,8 @@ class ShinkaEvolveRunner:
         if evo_config.novelty_llm_models:
             novelty_llm = AsyncLLMClient(
                 model_names=evo_config.novelty_llm_models,
+                rate_limiter=self.llm_rate_limiter,
+                request_class="novelty",
                 **_llm_kwargs_with_headless_work_dir(
                     evo_config.novelty_llm_kwargs,
                     Path(self.results_dir),
@@ -535,6 +571,8 @@ class ShinkaEvolveRunner:
             prompt_llm_models = evo_config.prompt_llm_models or evo_config.llm_models
             self.prompt_llm = AsyncLLMClient(
                 model_names=prompt_llm_models,
+                rate_limiter=self.llm_rate_limiter,
+                request_class="prompt",
                 **_llm_kwargs_with_headless_work_dir(
                     evo_config.prompt_llm_kwargs,
                     Path(self.results_dir),
@@ -1205,6 +1243,22 @@ class ShinkaEvolveRunner:
         if self.evo_config.evolve_prompts:
             await self._setup_prompt_evolution()
 
+        self.evo_config.wandb_run_id = ensure_wandb_run_id(
+            Path(self.results_dir),
+            self.evo_config.wandb_run_id,
+        )
+        write_run_manifest(
+            evo_config=self.evo_config,
+            db_config=self.db_config,
+            job_config=self.job_config,
+            results_dir=Path(self.results_dir),
+            effective_workers={
+                "proposal": self.max_proposal_jobs,
+                "evaluation": self.max_evaluation_jobs,
+                "database": self.max_db_workers,
+            },
+            minimum_request_demand=self.minimum_request_demand,
+        )
         self.wandb_logger.start(
             evo_config=self.evo_config,
             db_config=self.db_config,
@@ -1550,8 +1604,12 @@ class ShinkaEvolveRunner:
         """Get text embedding asynchronously."""
         if not self.embedding_client or not text:
             return None, 0.0
-        
-        return await get_text_embedding_async(text, self.embedding_client)
+
+        async with self.llm_rate_limiter.limit(
+            self.evo_config.embedding_model,
+            "embedding",
+        ):
+            return await get_text_embedding_async(text, self.embedding_client)
 
     async def _setup_initial_repo(self):
         """Setup generation 0 for repo-backed evolution."""
@@ -1624,18 +1682,18 @@ class ShinkaEvolveRunner:
         if self.verbose and code_embedding:
             logger.info(f"Initial repo embedding computed (cost: ${e_cost:.4f})")
 
-            # Extract metrics properly like the sync version
-            correct_val = results.get("correct", {}).get("correct", False)
-            metrics_val = results.get("metrics", {})
-            combined_score = metrics_val.get("combined_score", 0.0)
-            public_metrics = metrics_val.get("public", {})
-            private_metrics = metrics_val.get("private", {})
-            text_feedback = metrics_val.get("text_feedback", "")
-            stdout_log = truncate_log_tail(
-                results.get("stdout_log", ""),
-                self.db_config.max_stdout_log_chars,
-            )
-            stderr_log = results.get("stderr_log", "")
+        # Extract metrics properly like the sync version.
+        correct_val = results.get("correct", {}).get("correct", False)
+        metrics_val = results.get("metrics", {})
+        combined_score = metrics_val.get("combined_score", 0.0)
+        public_metrics = metrics_val.get("public", {})
+        private_metrics = metrics_val.get("private", {})
+        text_feedback = metrics_val.get("text_feedback", "")
+        stdout_log = truncate_log_tail(
+            results.get("stdout_log", ""),
+            self.db_config.max_stdout_log_chars,
+        )
+        stderr_log = results.get("stderr_log", "")
 
         metadata = with_pipeline_timing(
             {
@@ -2309,7 +2367,10 @@ class ShinkaEvolveRunner:
             # Assign generation atomically to prevent duplicates
             generation = self.next_generation_to_submit
 
-            if generation >= self.evo_config.num_generations:
+            if (
+                self._generation_target_mode() == "proposal_ids"
+                and generation >= self.evo_config.num_generations
+            ):
                 break
 
             # Double-check this generation hasn't been assigned already
@@ -2496,7 +2557,12 @@ class ShinkaEvolveRunner:
         model_sample_probs = None
         model_posterior = None
         if getattr(self, "llm_selection", None) is not None:
-            model_sample_probs, model_posterior = self.llm_selection.select_llm()
+            healthy_routes = self.route_health.selectable_routes(
+                self.evo_config.llm_models
+            )
+            model_sample_probs, model_posterior = self.llm_selection.select_llm(
+                subset=healthy_routes
+            )
 
         for attempt in range(self.evo_config.max_novelty_attempts):
             try:
@@ -2589,6 +2655,8 @@ class ShinkaEvolveRunner:
                         or meta_patch_data.get("error_attempt")
                         or "Patch generation failed before evaluation"
                     )
+                    if meta_patch_data.get("terminal_model_failure"):
+                        break
                     continue
 
                 # We have a successful patch, continue novelty check
@@ -2883,6 +2951,7 @@ class ShinkaEvolveRunner:
         patch_name: Optional[str],
         patch_description: Optional[str],
         success: bool,
+        headless_artifacts: Optional[Dict[str, str]] = None,
     ):
         """Save patch attempt data to disk asynchronously for debugging and analysis."""
         # Create attempt directory structure
@@ -2907,6 +2976,7 @@ class ShinkaEvolveRunner:
             await write_file_async(str(response_file), response.content)
 
         response_kwargs = getattr(response, "kwargs", {}) if response else {}
+        response_kwargs = {**(headless_artifacts or {}), **response_kwargs}
         headless_prompt_path = response_kwargs.get("headless_prompt_path")
         if headless_prompt_path:
             prompt_source = Path(headless_prompt_path)
@@ -2915,6 +2985,19 @@ class ShinkaEvolveRunner:
                 await write_file_async(
                     str(prompt_file),
                     prompt_source.read_text(encoding="utf-8"),
+                )
+        for source_key, destination_name in (
+            ("headless_stdout_path", "headless_stdout.log"),
+            ("headless_stderr_path", "headless_stderr.log"),
+        ):
+            source_value = response_kwargs.get(source_key)
+            if not source_value:
+                continue
+            source_path = Path(source_value)
+            if source_path.is_file():
+                await write_file_async(
+                    str(attempt_dir / destination_name),
+                    source_path.read_text(encoding="utf-8", errors="replace"),
                 )
 
         # Save patch text if available
@@ -2968,11 +3051,36 @@ class ShinkaEvolveRunner:
         )
 
         if (
+            (meta_patch_data or {}).get("route_failure_class")
+        ):
+            return str((meta_patch_data or {})["route_failure_class"])
+        if (
             "could not extract code" in combined
             or "llm response content was none" in combined
             or "no evolve-block regions found" in combined
         ):
             return "llm_output_invalid"
+        if "did not apply any changes" in combined or "no repository changes" in combined:
+            return "no_diff"
+        if "summary" in combined and any(
+            marker in combined
+            for marker in ("missing", "empty", "placeholder", "schema", "heading")
+        ):
+            return "invalid_summary"
+        if any(
+            marker in combined
+            for marker in (
+                "immutable path",
+                "outside mutable paths",
+                "protected path",
+                "policy file",
+                "binary files are not allowed",
+                "deletions are not allowed",
+                "lockfile changes are not allowed",
+                "symlink target escapes",
+            )
+        ):
+            return "policy_violation"
         if (
             "search text not found" in combined
             or "no changes applied" in combined
@@ -3025,6 +3133,15 @@ class ShinkaEvolveRunner:
                 add_if_exists("attempt_metadata_path", attempt_dir / "metadata.json")
                 add_if_exists("llm_response_path", attempt_dir / "llm_response.txt")
                 add_if_exists("attempt_patch_path", attempt_dir / "patch.txt")
+                add_if_exists(
+                    "headless_stdout_path", attempt_dir / "headless_stdout.log"
+                )
+                add_if_exists(
+                    "headless_stderr_path", attempt_dir / "headless_stderr.log"
+                )
+                add_if_exists(
+                    "headless_prompt_path", attempt_dir / "headless_prompt.md"
+                )
 
         return artifacts
 
@@ -3226,6 +3343,16 @@ class ShinkaEvolveRunner:
                 "downstream_eval_submitted": False,
             },
         )
+        model_name = (meta_patch_data or {}).get("model_name")
+        route_failure_class = (meta_patch_data or {}).get("route_failure_class")
+        if model_name and route_failure_class:
+            self.route_health.record_failure(model_name, route_failure_class)
+            logger.warning(
+                "Route health failure for %s: %s; state=%s",
+                model_name,
+                route_failure_class,
+                self.route_health.snapshot().get(model_name),
+            )
 
     async def _run_patch_async(
         self,
@@ -3278,6 +3405,7 @@ class ShinkaEvolveRunner:
         last_diff_summary: Dict[str, Any] = {}
         last_summary_version: Optional[str] = None
         last_error_msg: Optional[str] = None
+        terminal_model_failure = False
 
         try:
             if not fix_mode:
@@ -3318,12 +3446,15 @@ class ShinkaEvolveRunner:
             repo_contract = f"""
 # Repository Mode Contract
 
-The active Headless working directory is a generation view. Shinka imports only
+The proposal repository root is `{agent_target_worktree.path.resolve() if agent_target_worktree else '<headless work directory>'}`.
+Begin every filesystem and terminal operation in that exact directory. Never put
+candidate files in a provider scratch directory. Shinka imports only
 validated mutable-path changes from that view into the candidate evaluation
 worktree.
 
 Required constraints:
-- Modify only configured mutable paths, plus the summary file at `{required_summary_display}`.
+- If the mutable-path list is empty, the whole repository is mutable. Otherwise,
+  modify only configured mutable paths, plus the summary file at `{required_summary_display}`.
 - Immutable paths are read-only in the generation view; do not chmod, chown,
   edit, delete, or touch them.
 - Evaluation code, private tests, and hidden paths are deliberately unavailable during generation.
@@ -3403,20 +3534,54 @@ Required constraints:
                 summary_path = None
                 last_diff = None
                 response_kwargs = {}
+                response = None
 
-                response = await self.llm.query(
-                    msg=patch_msg,
-                    system_msg=patch_sys,
-                    llm_kwargs=llm_kwargs,
-                    model_sample_probs=model_sample_probs,
-                    model_posterior=model_posterior,
-                )
+                try:
+                    response = await self.llm.query(
+                        msg=patch_msg,
+                        system_msg=patch_sys,
+                        llm_kwargs=llm_kwargs,
+                        model_sample_probs=model_sample_probs,
+                        model_posterior=model_posterior,
+                    )
+                except LLMRouteError as exc:
+                    last_error_msg = str(exc)
+                    terminal_model_failure = True
+                    route_failure_class = exc.failure_class
+                    response_kwargs = dict(exc.artifacts)
+                    if agent_target_worktree is not None:
+                        failed_snapshot = self.repo_worktree_manager.diff_parent(
+                            agent_target_worktree.path,
+                            agent_target_worktree.parent_commit,
+                        )
+                        last_diff = failed_snapshot.diff or None
+                        last_diff_summary = {
+                            "changed_files": failed_snapshot.changed_files,
+                            "diff_stat": failed_snapshot.diff_stat.strip(),
+                            "status": failed_snapshot.status,
+                        }
+                    await self._save_patch_attempt_async(
+                        generation=generation,
+                        novelty_attempt=novelty_attempt,
+                        resample_attempt=resample_attempt,
+                        patch_attempt=patch_attempt + 1,
+                        response=None,
+                        error_msg=str(exc),
+                        patch_text=last_diff,
+                        num_applied=len(last_diff_summary.get("changed_files", [])),
+                        patch_name=patch_name,
+                        patch_description=patch_description,
+                        success=False,
+                        headless_artifacts=exc.artifacts,
+                    )
+                    break
 
                 if not response:
                     error_str = "Agent response was None."
                     last_error_msg = error_str
                     last_diff_summary = {}
                     last_summary_version = None
+                    terminal_model_failure = True
 
                     await self._save_patch_attempt_async(
                         generation=generation,
@@ -3432,7 +3597,10 @@ Required constraints:
                         success=False,
                     )
 
-                    if patch_attempt < self.evo_config.max_patch_attempts - 1:
+                    if (
+                        patch_attempt < self.evo_config.max_patch_attempts - 1
+                        and not terminal_model_failure
+                    ):
                         continue
                     break
 
@@ -3546,6 +3714,7 @@ Required constraints:
                 last_error_msg = error_str
 
                 if error_str is None:
+                    self.route_health.record_success(model_name)
                     await self._save_patch_attempt_async(
                         generation=generation,
                         novelty_attempt=novelty_attempt,
@@ -3650,9 +3819,13 @@ Required constraints:
                 if "patch_description" in locals()
                 else None,
                 "error_attempt": (
-                    "Max fix attempts reached without success."
-                    if fix_mode
-                    else "Max attempts reached without successful patch"
+                    "Agent returned no response after model retries."
+                    if terminal_model_failure
+                    else (
+                        "Max fix attempts reached without success."
+                        if fix_mode
+                        else "Max attempts reached without successful patch"
+                    )
                 ),
                 "last_error_msg": last_error_msg,
                 "diff_summary": last_diff_summary,
@@ -3660,7 +3833,13 @@ Required constraints:
                 "summary_version": last_summary_version,
                 "novelty_attempt": novelty_attempt,
                 "resample_attempt": resample_attempt,
-                "patch_attempt": self.evo_config.max_patch_attempts,
+                "patch_attempt": patch_attempt + 1,
+                "terminal_model_failure": terminal_model_failure,
+                "route_failure_class": (
+                    route_failure_class
+                    if "route_failure_class" in locals()
+                    else None
+                ),
                 "headless_session_name": response_kwargs.get(
                     "headless_session_name",
                     llm_kwargs.get("headless_session_name") if "llm_kwargs" in locals() else None,
@@ -4859,8 +5038,13 @@ Required constraints:
         completed_generations = max(0, total_programs - island_copies)
         return min(completed_generations, self.evo_config.num_generations)
 
+    def _generation_target_mode(self) -> str:
+        return getattr(self.evo_config, "generation_target_mode", "proposal_ids")
+
     async def _get_missing_persisted_generations(self) -> List[int]:
         """Return budgeted generations that do not yet have persisted rows."""
+        if self._generation_target_mode() != "proposal_ids":
+            return []
         persisted_generations = await self.async_db.get_persisted_generation_ids_async()
         budgeted_generations = set(range(self.evo_config.num_generations))
         return sorted(budgeted_generations - set(persisted_generations))
@@ -4868,7 +5052,19 @@ Required constraints:
     async def _restore_resume_progress(self) -> None:
         """Restore progress counters from persisted database state."""
         self.completed_generations = await self._count_completed_generations_from_db()
-        self.next_generation_to_submit = max(self.db.last_iteration + 1, 1)
+        max_attempt_generation = -1
+        try:
+            self.db.cursor.execute("SELECT MAX(generation) FROM attempt_log")
+            row = self.db.cursor.fetchone()
+            if row and row[0] is not None:
+                max_attempt_generation = int(row[0])
+        except Exception as exc:
+            logger.debug("Could not restore max attempted generation: %s", exc)
+        self.next_generation_to_submit = max(
+            self.db.last_iteration + 1,
+            max_attempt_generation + 1,
+            1,
+        )
 
     def _get_in_flight_work_count(self) -> int:
         """Return work that is expected to complete without new proposals."""
@@ -4898,6 +5094,8 @@ Required constraints:
 
     def _get_remaining_generation_slots(self) -> int:
         """Return how many proposal generations can still be assigned."""
+        if self._generation_target_mode() == "evaluated_candidates":
+            return max(0, self.evo_config.num_generations - self.completed_generations)
         return max(0, self.evo_config.num_generations - self.next_generation_to_submit)
 
     def _mark_surplus_completed_jobs_for_discard(
@@ -5082,7 +5280,11 @@ Required constraints:
         # Limit the check to reasonable range to avoid infinite database queries
         target_gens = self.evo_config.num_generations
         next_gen = self.next_generation_to_submit
-        max_check_gen = min(target_gens, next_gen + 10)
+        max_check_gen = (
+            min(target_gens, next_gen + 10)
+            if self._generation_target_mode() == "proposal_ids"
+            else next_gen + 10
+        )
 
         for gen in range(max_check_gen):
             if gen not in running_generations:

@@ -149,7 +149,7 @@ job_conf = LocalJobConfig(eval_program_path="examples/inference_pipeline_repo/ev
 db_conf = DatabaseConfig()
 evo_conf = EvolutionConfig(
     seed_repo_path="examples/inference_pipeline_repo/seed_repo",
-    mutable_paths=["src"],
+    mutable_paths=[],  # whole repository except immutable/hidden/protected paths
     immutable_paths=[],
     agent_hidden_paths=["private_tests", "fixtures/private"],
     llm_models=["headless/codex@gpt-5.5?effort=high"],
@@ -193,7 +193,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `embedding_model` | `"text-embedding-3-small"` | `Optional[str]` | Model for code embeddings. Also accepts `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding servers, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `seed_repo_path` | `None` | `Optional[str]` | Required path to the seed git repository. |
 | `worktree_root` | `None` | `Optional[str]` | Directory where child worktrees are created. |
-| `mutable_paths` | `[]` | `List[str]` | Required allow-list of paths the agent may edit. |
+| `mutable_paths` | `[]` | `List[str]` | Empty means whole-repository mutation; non-empty is a user allow-list. |
 | `immutable_paths` | `[]` | `List[str]` | Read-only paths in the agent view; changes are rejected during policy validation. |
 | `agent_hidden_paths` | `[]` | `List[str]` | Paths omitted from the agent generation view, for private tests/evaluator artifacts. Repo-relative `job.eval_program_path` is hidden automatically. |
 | `summary_filename` | `".shinka/individual.md"` | `str` | Per-individual summary file required in every child worktree. |
@@ -304,7 +304,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 
 ### Evaluation Setup & Initial Solution 🏃
 
-To use `ShinkaEvolveRunner`, you need two key files: The **`evaluate.py`** script defines how to test and score your programs - it runs multiple evaluations, validates results, and aggregates them into metrics that guide the `shinka` evolution loop. The **`initial.py`** file contains your starting solution with the core algorithm that will be iteratively improved by LLMs across generations.
+Repo evolution uses an external **`evaluate.py`** plus a git-backed **`seed_repo/`**. Each individual is a repository commit edited by a Headless coding agent in an isolated worktree. Unless `mutable_paths` is explicitly non-empty, the agent may add, modify, rename, and delete normal repository files; evaluator/private paths remain hidden.
 
 <table>
 <tr>
@@ -350,24 +350,17 @@ if __name__ == "__main__":
 </td>
 <td width="50%">
 
-**`initial.py` - Starting Solution**
+**`seed_repo/` - Starting Repository**
 
 ```python
-# EVOLVE-BLOCK-START
-def advanced_algo():
-    # This will be evolved
-    return solution
-# EVOLVE-BLOCK-END
-
+# seed_repo/src/solution.py
 def run_experiment(**kwargs):
-    """Main called by evaluator"""
-    result = solve_problem(kwargs)
-    return result
-
-def solve_problem(params):
-    solution = advanced_algo()
-    return solution
+    return solve_problem(kwargs)
 ```
+
+Initialize and commit `seed_repo/` before launching. Coding agents may add
+normal repository files and use terminal tools unless the user supplies a
+narrow `mutable_paths` policy.
 
 **Key Points:**
 - Eval name matches `experiment_fn_name`
@@ -444,7 +437,7 @@ Precedence: config YAML < `--set` < authoritative flags.
 
 ### Headless Agent Models
 
-Use `headless/<agent>` model strings to route mutation calls through the local Headless CLI instead of provider API clients. Shinka uses `npx -y @roberttlange/headless` by default and runs `headless --check` before evolution starts.
+Use `headless/<agent>` model strings to route mutation calls through the local Headless CLI instead of provider API clients. Shinka uses `npx -y @roberttlange/headless` by default. A real authenticated worktree/session canary is required before a controlled run; `headless --check` alone only validates installation and credential signals.
 
 ```bash
 shinka_run \

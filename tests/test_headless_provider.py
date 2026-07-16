@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import stat
 import sys
@@ -18,6 +19,7 @@ from shinka.llm.providers.headless import (
     query_headless,
     query_headless_async,
 )
+from shinka.llm.providers import LLMAuthenticationError, LLMTimeoutError
 from shinka.llm.providers.model_resolver import resolve_model_backend
 from shinka.model_availability import validate_model_env_access
 
@@ -38,10 +40,14 @@ def _make_fake_headless(tmp_path: Path) -> Path:
                 "prompt_path = Path(sys.argv[sys.argv.index('--prompt-file') + 1])",
                 "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
                 "allow_mode = sys.argv[sys.argv.index('--allow') + 1]",
+                "timeout_value = sys.argv[sys.argv.index('--timeout') + 1]",
                 "assert prompt_path.exists(), prompt_path",
                 "assert prompt_path.parent == work_dir / '.shinka', prompt_path",
                 "assert work_dir.exists(), work_dir",
                 "assert allow_mode == 'yolo', allow_mode",
+                "assert timeout_value == '10', timeout_value",
+                "assert '--json' in sys.argv",
+                "assert '--usage' not in sys.argv",
                 "if not (work_dir / '.git').exists():",
                 "    (work_dir / 'generated.txt').write_text('mutated by headless\\n')",
                 "src_file = work_dir / 'src' / 'app.py'",
@@ -307,6 +313,109 @@ def test_query_headless_parses_appended_usage(tmp_path, monkeypatch):
     assert '"usage"' in stdout_path.read_text(encoding="utf-8")
 
 
+def test_query_headless_reuses_named_session_in_json_mode(tmp_path, monkeypatch):
+    script = tmp_path / "session_headless.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "from pathlib import Path",
+                "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
+                "session = sys.argv[sys.argv.index('--session') + 1]",
+                "assert '--json' in sys.argv and '--usage' not in sys.argv",
+                "with (work_dir / 'sessions.txt').open('a') as handle:",
+                "    handle.write(session + '\\n')",
+                "print('{}')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHINKA_HEADLESS_COMMAND", _fake_headless_command(script))
+
+    for _ in range(2):
+        query_headless(
+            None,
+            "headless/cursor@test",
+            "request",
+            "system",
+            [],
+            output_model=None,
+            headless_work_dir=str(tmp_path),
+            headless_session_name="proposal-session",
+            headless_timeout_seconds=10,
+            headless_cleanup_grace_seconds=0.1,
+        )
+
+    assert (tmp_path / "sessions.txt").read_text().splitlines() == [
+        "proposal-session",
+        "proposal-session",
+    ]
+
+
+def test_headless_authentication_failure_is_typed(tmp_path, monkeypatch):
+    script = tmp_path / "auth_headless.py"
+    script.write_text(
+        "import sys\nprint('Authentication required. Run agent login', file=sys.stderr)\nraise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHINKA_HEADLESS_COMMAND", _fake_headless_command(script))
+
+    with pytest.raises(LLMAuthenticationError):
+        query_headless(
+            None,
+            "headless/cursor@test",
+            "request",
+            "system",
+            [],
+            output_model=None,
+            headless_work_dir=str(tmp_path),
+            headless_timeout_seconds=10,
+            headless_cleanup_grace_seconds=0.1,
+        )
+
+
+def test_headless_timeout_kills_only_owned_process_group(tmp_path, monkeypatch):
+    script = tmp_path / "timeout_headless.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import subprocess",
+                "import sys",
+                "import time",
+                "from pathlib import Path",
+                "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
+                "child = subprocess.Popen(['sleep', '30'])",
+                "(work_dir / 'child.pid').write_text(str(child.pid))",
+                "time.sleep(30)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHINKA_HEADLESS_COMMAND", _fake_headless_command(script))
+    unrelated = subprocess.Popen(["sleep", "30"])
+    try:
+        with pytest.raises(LLMTimeoutError):
+            query_headless(
+                None,
+                "headless/cursor@test",
+                "request",
+                "system",
+                [],
+                output_model=None,
+                headless_work_dir=str(tmp_path),
+                headless_timeout_seconds=0.1,
+                headless_cleanup_grace_seconds=0.1,
+            )
+
+        child_pid = int((tmp_path / "child.pid").read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        assert unrelated.poll() is None
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+
+
 def test_query_headless_serializes_claude_async_calls(tmp_path, monkeypatch):
     active = 0
     max_active = 0
@@ -416,6 +525,10 @@ def test_shinka_run_full_headless_cli_mutation_succeeds(tmp_path, monkeypatch):
             "evo.max_novelty_attempts=1",
             "--set",
             "evo.max_patch_attempts=1",
+            "--set",
+            "evo.headless_proposal_timeout_seconds=10",
+            "--set",
+            "evo.generation_target_mode=proposal_ids",
             "--set",
             "db.num_islands=1",
             "--set",

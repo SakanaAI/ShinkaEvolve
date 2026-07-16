@@ -1,6 +1,6 @@
 ---
 name: shinka-run
-description: Run existing ShinkaEvolve tasks with the `shinka_run` CLI from a task directory (`evaluate.py` + `initial.<ext>`). Use when an agent needs to launch async evolution runs quickly with required `--results_dir`, generation count, and strict namespaced keyword overrides.
+description: Run repo-backed ShinkaEvolve tasks with `shinka_run` from a task directory (`evaluate.py` + committed `seed_repo/`) using provider canaries, frozen manifests, and strict namespaced overrides.
 ---
 
 # Shinka Run CLI Skill
@@ -8,7 +8,7 @@ Run a batch of program mutations using ShinkaEvolve's CLI interface.
 
 ## When to Use
 Use this skill when:
-- `evaluate.py` and `initial.<ext>` already exist
+- `evaluate.py` and a committed `seed_repo/` already exist
 - The user wants to run code evolution using the ShinkaEvolve/Shinka library
 - You want configurable program evolution runs using explicit CLI args
 
@@ -27,18 +27,33 @@ Paper: https://arxiv.org/abs/2212.04180
 ```bash
 ls -la <task_dir>
 ```
-Confirm `evaluate.py` and `initial.<ext>` exist.
+Confirm `evaluate.py` and a clean, committed `seed_repo/` exist. Empty or omitted
+`mutable_paths` means whole-repository mutation; do not invent a narrow allow-list.
 
 2. Inspect CLI reference quickly
 ```bash
 shinka_run --help
 ```
 
-3. Check model availability before proposing a run
+3. Run framework and prompt-integrity preflight
+```bash
+git diff --check
+! rg -n '^(<<<<<<<|=======|>>>>>>>)' shinka tests docs skills
+pytest -q
+```
+Then run the two-generation fake-Headless end-to-end test.
+
+4. Check model availability before proposing a run
 ```bash
 shinka_models
 shinka_models --verbose
 ```
+
+Validate the exact run config against `shinka_models`, then run a real
+authenticated throwaway-worktree canary for every Headless route. The canary
+must mutate the requested worktree, complete a named session, resume that same
+session once, and leave no owned processes after cleanup. `headless --check`
+alone is insufficient; validate the native CLI authentication/model listing too.
 
 Validate the exact run config against `shinka_models`:
 - Mutation models: every entry in `evo.llm_models` must appear in the `llm` list.
@@ -53,13 +68,20 @@ Important runtime rules:
 - Treat `local/<model>@http(s)://host[:port]/v1` values as an explicit exception to the `shinka_models` membership check. Instead, confirm the local endpoint URL and serving status separately before running.
 - If any required model is missing from `shinka_models`, stop and ask the user to either change the config or set the missing credentials first.
 
-4. Confirm first-batch configuration with the user
+5. Validate feasibility and freeze the run
+- Confirm `generation_target_mode` and whether the target means evaluated candidates.
+- Confirm proposal timeouts are long enough for coding work; two hours is the default.
+- Compute minimum meta/novelty/embedding demand and reject known daily-quota overruns.
+- Run a 5-10 evaluated-candidate multi-agent/W&B canary.
+- Freeze the framework commit, config, evaluator, Headless/native versions, and run manifest.
+
+6. Confirm first-batch configuration with the user
 - Minimum: budget scope, generation count, critical overrides.
 - Explicitly confirm the mutation LLMs, meta recommendation LLMs, prompt evolution LLMs, and embedding model after checking them against `shinka_models`.
 - If unclear, ask before running.
 - Do not override any non-confirmed arguments.
 
-5. Launch main run with explicit knobs
+7. Launch main run with explicit knobs
 ```bash
 shinka_run \
   --task-dir <task_dir> \
@@ -78,13 +100,15 @@ shinka_run \
   --max-db-workers 2
 ```
 
-6. Verify outputs before handoff
+8. Verify outputs before handoff
 ```bash
 ls -la <results_dir>
 ```
-Expect artifacts like run log, generation folders, and SQLite DBs.
+Expect the run log, `run_manifest.json`, `.wandb_run_id`, generation folders,
+attempt artifacts, and SQLite DBs. Do not patch the framework during a
+controlled run; stop and label it diagnostic if a framework defect appears.
 
-7. Between-batch handoff (unless explicitly autonomous)
+9. Between-batch handoff (unless explicitly autonomous)
 - Summarize outcomes from the finished batch.
 - Ask user for the next batch config before running again.
 - Explicitly ask: "What new directions should we push next batch? Please include algorithm ideas, constraints, and failure modes to avoid."

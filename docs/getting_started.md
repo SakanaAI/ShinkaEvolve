@@ -191,7 +191,7 @@ evo_config = EvolutionConfig(
     num_generations=50,
     llm_models=["headless/codex@gpt-5.5?effort=high"],
     seed_repo_path="examples/inference_pipeline_repo/seed_repo",
-    mutable_paths=["src"],
+    mutable_paths=[],  # whole repository unless the user supplies an allow-list
     immutable_paths=[],
     agent_hidden_paths=["private_tests", "fixtures/private"],
     language="python",
@@ -402,7 +402,7 @@ runner.run()
 ### Creating custom tasks
 
 1. **Define the problem** — task config in `shinka/configs/task/my_task.yaml`
-2. **Initial solution** — `initial.py` with `EVOLVE-BLOCK` markers
+2. **Initial solution** — a committed `seed_repo/`
 3. **Evaluation script** — `evaluate.py` with validation logic
 4. **Variant config** — combine settings in `shinka/configs/variant/my_variant.yaml`
 

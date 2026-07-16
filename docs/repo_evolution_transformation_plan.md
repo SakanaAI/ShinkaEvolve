@@ -66,7 +66,7 @@ Tasks:
 1. Standardize the summary path as `.shinka/individual.md`.
 2. Remove hardcoded `summary.md` expectations from active code.
 3. Make `seed_repo_path` required.
-4. Make `mutable_paths` required unless explicit whole-repository mutation is introduced later.
+4. Define omitted or empty `mutable_paths` as whole-repository mutation except protected, immutable, and hidden paths.
 5. Decide whether `agent_model` is real or redundant with `llm_models`.
 6. Store `repo_summary` as the main text used by embeddings and compatibility `code`.
 7. Add database-level handling on `Program` rows for:

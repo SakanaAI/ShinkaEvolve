@@ -6,6 +6,8 @@ from .prioritization import (
     FixedSampler,
     ThompsonSampler,
 )
+from .route_health import RouteHealthCircuitBreaker
+from .rate_limit import AsyncProviderRateLimiter, validate_daily_quota_feasibility
 
 __all__ = [
     "LLMClient",
@@ -18,4 +20,7 @@ __all__ = [
     "AsymmetricUCB",
     "FixedSampler",
     "ThompsonSampler",
+    "RouteHealthCircuitBreaker",
+    "AsyncProviderRateLimiter",
+    "validate_daily_quota_feasibility",
 ]

@@ -11,6 +11,18 @@ from shinka.core.pipeline_timing import (
     with_side_effect_timing,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+
+
+def _bare_runner_with_disabled_wandb():
+    runner = object.__new__(ShinkaEvolveRunner)
+    runner.wandb_logger = SimpleNamespace(
+        log_program=lambda **_kwargs: None,
+        log_final=lambda **_kwargs: None,
+        finish=lambda: None,
+    )
+    runner.db = None
+    runner.prompt_db = None
+    return runner
 from shinka.database import Program
 from shinka.launch import LocalJobConfig
 
@@ -62,7 +74,7 @@ def test_with_pipeline_timing_clamps_negative_stage_durations():
 
 
 def test_configure_local_job_runtime_sets_numeric_thread_cap_from_eval_concurrency():
-    runner = object.__new__(ShinkaEvolveRunner)
+    runner = _bare_runner_with_disabled_wandb()
     runner.job_config = LocalJobConfig()
     runner.max_evaluation_jobs = 10
     runner.verbose = False
@@ -202,7 +214,7 @@ def test_logical_slot_pool_reuses_slots():
 def test_process_single_job_safely_persists_timing_metadata():
     async def _run():
         now = time.time()
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = _FakeAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
@@ -281,7 +293,7 @@ def test_process_single_job_safely_persists_timing_metadata():
 def test_process_single_job_uses_completion_detection_time_for_eval_finish():
     async def _run():
         now = time.time()
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _SlowFakeScheduler()
         runner.async_db = _FakeAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
@@ -343,7 +355,7 @@ def test_process_single_job_uses_completion_detection_time_for_eval_finish():
 
 def test_process_single_job_safely_flushes_metadata_once_after_side_effects():
     async def _run():
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = _FakeAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
@@ -404,7 +416,7 @@ def test_process_single_job_safely_flushes_metadata_once_after_side_effects():
 
 def test_process_single_job_safely_skips_duplicate_source_job():
     async def _run():
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = _FakeAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
@@ -468,7 +480,7 @@ def test_process_single_job_safely_reuses_existing_row_when_duplicate_matches():
             return False
 
     async def _run():
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = _FakeAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=5)
@@ -551,7 +563,7 @@ def test_process_single_job_safely_ignores_duplicate_marker_on_existing_row():
             return False
 
     async def _run():
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = _FakeAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=5)
@@ -628,7 +640,7 @@ def test_process_single_job_safely_ignores_duplicate_marker_on_existing_row():
 def test_process_single_job_safely_reuses_initial_eval_finish_time_on_retry():
     async def _run():
         now = time.time()
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = _FailOnceAsyncDB()
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
@@ -705,7 +717,7 @@ def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
     async def _run():
         now = time.time()
         async_db = _ConcurrentRecordingAsyncDB()
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.scheduler = _FakeScheduler()
         runner.async_db = async_db
         runner.evo_config = SimpleNamespace(evolve_prompts=False, meta_rec_interval=None)
@@ -782,7 +794,7 @@ def test_process_completed_jobs_safely_persists_completed_jobs_concurrently():
 
 def test_process_completed_jobs_safely_waits_for_slow_side_effects():
     async def _run():
-        runner = object.__new__(ShinkaEvolveRunner)
+        runner = _bare_runner_with_disabled_wandb()
         runner.running_jobs = []
         runner.active_proposal_tasks = {}
         runner.failed_jobs_for_retry = {}

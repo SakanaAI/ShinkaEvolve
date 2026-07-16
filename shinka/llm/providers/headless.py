@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
+import signal
 import shlex
 import subprocess
 import threading
@@ -18,10 +20,22 @@ from pydantic import BaseModel
 from shinka.llm.constants import TIMEOUT
 
 from .result import QueryResult
+from .errors import (
+    LLMAuthenticationError,
+    LLMExtractionError,
+    LLMModelUnavailableError,
+    LLMProcessError,
+    LLMTimeoutError,
+)
 
 DEFAULT_HEADLESS_COMMAND = "npx -y @roberttlange/headless"
 HEADLESS_COMMAND_ENV = "SHINKA_HEADLESS_COMMAND"
 HEADLESS_TIMEOUT_ENV = "SHINKA_HEADLESS_TIMEOUT"
+HEADLESS_AGENT_TIMEOUT_ENV_PREFIX = "SHINKA_HEADLESS_TIMEOUT_"
+HEADLESS_CLEANUP_GRACE_ENV = "SHINKA_HEADLESS_CLEANUP_GRACE"
+HEADLESS_OUTPUT_MODE_ENV = "SHINKA_HEADLESS_OUTPUT_MODE"
+DEFAULT_HEADLESS_PROPOSAL_TIMEOUT = 7200.0
+DEFAULT_HEADLESS_CLEANUP_GRACE = 60.0
 
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh"}
 _THREAD_LOCK = threading.Lock()
@@ -43,14 +57,62 @@ def headless_command_prefix() -> list[str]:
     return shlex.split(raw_command)
 
 
-def headless_timeout() -> float:
-    raw_timeout = os.getenv(HEADLESS_TIMEOUT_ENV)
-    if raw_timeout is None:
-        return float(TIMEOUT)
+def _parse_timeout_env(*, env_name: str, raw_timeout: str) -> float:
     timeout = float(raw_timeout)
     if timeout <= 0:
-        raise ValueError(f"{HEADLESS_TIMEOUT_ENV} must be > 0.")
+        raise ValueError(f"{env_name} must be > 0.")
     return timeout
+
+
+def _agent_timeout_env_name(model: HeadlessModel | None) -> str | None:
+    if model is None:
+        return None
+    agent_key = "".join(
+        char.upper() if char.isalnum() else "_" for char in model.agent
+    )
+    return f"{HEADLESS_AGENT_TIMEOUT_ENV_PREFIX}{agent_key}"
+
+
+def headless_timeout(
+    model: HeadlessModel | None = None,
+    configured_timeout: float | None = None,
+) -> float:
+    if configured_timeout is not None:
+        if float(configured_timeout) <= 0:
+            raise ValueError("headless proposal timeout must be > 0.")
+        return float(configured_timeout)
+    agent_timeout_env = _agent_timeout_env_name(model)
+    if agent_timeout_env:
+        raw_agent_timeout = os.getenv(agent_timeout_env)
+        if raw_agent_timeout is not None:
+            return _parse_timeout_env(
+                env_name=agent_timeout_env,
+                raw_timeout=raw_agent_timeout,
+            )
+
+    raw_timeout = os.getenv(HEADLESS_TIMEOUT_ENV)
+    if raw_timeout is None:
+        return max(float(TIMEOUT), DEFAULT_HEADLESS_PROPOSAL_TIMEOUT)
+    return _parse_timeout_env(env_name=HEADLESS_TIMEOUT_ENV, raw_timeout=raw_timeout)
+
+
+def headless_cleanup_grace(configured_grace: float | None = None) -> float:
+    if configured_grace is not None:
+        grace = float(configured_grace)
+    else:
+        grace = float(
+            os.getenv(HEADLESS_CLEANUP_GRACE_ENV, DEFAULT_HEADLESS_CLEANUP_GRACE)
+        )
+    if grace <= 0:
+        raise ValueError("headless cleanup grace must be > 0.")
+    return grace
+
+
+def headless_output_mode(configured_mode: str | None = None) -> str:
+    mode = (configured_mode or os.getenv(HEADLESS_OUTPUT_MODE_ENV, "json")).lower()
+    if mode not in {"json", "usage"}:
+        raise ValueError("headless output mode must be 'json' or 'usage'.")
+    return mode
 
 
 def _thread_cli_lock() -> threading.Lock:
@@ -119,12 +181,18 @@ def check_headless_available() -> None:
 
 def _render_prompt(
     *,
+    work_dir: Path,
     msg: str,
     system_msg: str,
     msg_history: list[dict],
 ) -> str:
     history_text = json.dumps(msg_history, indent=2, ensure_ascii=False)
     return (
+        "# Active Repository\n\n"
+        f"The proposal repository is `{work_dir}`. Begin every filesystem and "
+        "terminal operation in this exact directory. Do not place candidate "
+        "files in a provider scratch directory; only changes under this path "
+        "are captured by Shinka.\n\n"
         "# System Instructions\n\n"
         f"{system_msg}\n\n"
         "# Previous Messages\n\n"
@@ -146,7 +214,12 @@ def _write_prompt_file(
     prompt_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = prompt_dir / f"headless_prompt_{uuid.uuid4().hex[:8]}.md"
     prompt_path.write_text(
-        _render_prompt(msg=msg, system_msg=system_msg, msg_history=msg_history),
+        _render_prompt(
+            work_dir=resolved_work_dir,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+        ),
         encoding="utf-8",
     )
     return prompt_path
@@ -168,6 +241,8 @@ def _build_headless_command(
     prompt_path: Path,
     work_dir: str | None,
     session_name: str | None = None,
+    proposal_timeout: float | None = None,
+    output_mode: str | None = None,
 ) -> list[str]:
     resolved_work_dir = str(Path(work_dir or os.getcwd()).absolute())
     cmd = [
@@ -179,8 +254,13 @@ def _build_headless_command(
         resolved_work_dir,
         "--allow",
         "yolo",
-        "--usage",
+        "--timeout",
+        str(max(1, math.ceil(headless_timeout(model, proposal_timeout)))),
     ]
+    if headless_output_mode(output_mode) == "json":
+        cmd.append("--json")
+    else:
+        cmd.append("--usage")
     if model.agent_model:
         cmd.extend(["--model", model.agent_model])
     if model.effort:
@@ -214,40 +294,153 @@ def _is_transient_claude_credit_error(
     return "Credit balance is too low" in output and '"pricingSource":"models.dev"' in output
 
 
+def _headless_failure(*, completed: subprocess.CompletedProcess) -> RuntimeError:
+    detail = (completed.stderr.strip() or completed.stdout.strip()).strip()
+    normalized = detail.lower()
+    if any(
+        marker in normalized
+        for marker in (
+            "authentication required",
+            "not authenticated",
+            "unauthorized",
+            "could not create cursor session",
+            "run 'agent login'",
+        )
+    ):
+        return LLMAuthenticationError(detail or "Headless authentication failed")
+    if any(
+        marker in normalized
+        for marker in ("model not found", "unknown model", "model unavailable")
+    ):
+        return LLMModelUnavailableError(detail or "Headless model unavailable")
+    if "could not extract final message" in normalized:
+        return LLMExtractionError(detail)
+    if completed.returncode == 124 or "timed out" in normalized:
+        return LLMTimeoutError(detail or "Headless proposal timed out")
+    return LLMProcessError(detail or f"Headless exited {completed.returncode}")
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _terminate_process_group_sync(
+    process: subprocess.Popen,
+    *,
+    grace_seconds: float,
+) -> None:
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline and _process_group_exists(process_group_id):
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if process.poll() is None:
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+async def _terminate_process_group_async(
+    process: asyncio.subprocess.Process,
+    *,
+    grace_seconds: float,
+) -> None:
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline and _process_group_exists(process_group_id):
+        await asyncio.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if process.returncode is None:
+        await process.wait()
+
+
+def _run_subprocess_with_timeout(
+    *,
+    model: HeadlessModel,
+    command: list[str],
+    stdout_file,
+    stderr_file,
+    proposal_timeout: float,
+    cleanup_grace: float,
+) -> subprocess.CompletedProcess:
+    if _uses_shell_invocation(model):
+        popen_args = {
+            "args": shlex.join(command),
+            "shell": True,
+            "executable": "/bin/sh",
+        }
+    else:
+        popen_args = {"args": command}
+
+    process = subprocess.Popen(
+        stdout=stdout_file,
+        stderr=stderr_file,
+        text=True,
+        env=_subprocess_env(model),
+        start_new_session=True,
+        **popen_args,
+    )
+    try:
+        process.wait(timeout=proposal_timeout + cleanup_grace)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group_sync(process, grace_seconds=cleanup_grace)
+        raise
+    if process.returncode != 0:
+        _terminate_process_group_sync(process, grace_seconds=cleanup_grace)
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=process.returncode,
+    )
+
+
 def _run_headless_command_sync(
     *,
     model: HeadlessModel,
     command: list[str],
     stdout_path: Path,
     stderr_path: Path,
+    proposal_timeout: float,
+    cleanup_grace: float,
 ) -> subprocess.CompletedProcess:
     attempts = _CLAUDE_TRANSIENT_RETRIES + 1
     for attempt in range(attempts):
         with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
             "w", encoding="utf-8"
         ) as stderr_file:
-            if _uses_shell_invocation(model):
-                completed = subprocess.run(
-                    shlex.join(command),
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    text=True,
-                    timeout=headless_timeout(),
-                    check=False,
-                    shell=True,
-                    executable="/bin/sh",
-                    env=_subprocess_env(model),
-                )
-            else:
-                completed = subprocess.run(
-                    command,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    text=True,
-                    timeout=headless_timeout(),
-                    check=False,
-                    env=_subprocess_env(model),
-                )
+            completed = _run_subprocess_with_timeout(
+                model=model,
+                command=command,
+                stdout_file=stdout_file,
+                stderr_file=stderr_file,
+                proposal_timeout=proposal_timeout,
+                cleanup_grace=cleanup_grace,
+            )
         completed.stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
         completed.stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
 
@@ -264,6 +457,8 @@ async def _run_headless_command_async(
     command: list[str],
     stdout_path: Path,
     stderr_path: Path,
+    proposal_timeout: float,
+    cleanup_grace: float,
 ):
     attempts = _CLAUDE_TRANSIENT_RETRIES + 1
     for attempt in range(attempts):
@@ -277,6 +472,7 @@ async def _run_headless_command_async(
                     stderr=stderr_file,
                     executable="/bin/sh",
                     env=_subprocess_env(model),
+                    start_new_session=True,
                 )
             else:
                 process = await asyncio.create_subprocess_exec(
@@ -284,15 +480,24 @@ async def _run_headless_command_async(
                     stdout=stdout_file,
                     stderr=stderr_file,
                     env=_subprocess_env(model),
+                    start_new_session=True,
                 )
             try:
                 await asyncio.wait_for(
                     process.communicate(),
-                    timeout=headless_timeout(),
+                    timeout=proposal_timeout + cleanup_grace,
                 )
             except asyncio.TimeoutError:
-                process.kill()
-                await process.communicate()
+                await _terminate_process_group_async(
+                    process,
+                    grace_seconds=cleanup_grace,
+                )
+                raise
+            except asyncio.CancelledError:
+                await _terminate_process_group_async(
+                    process,
+                    grace_seconds=cleanup_grace,
+                )
                 raise
         finally:
             stdout_file.close()
@@ -303,6 +508,11 @@ async def _run_headless_command_async(
             stdout=stdout_path.read_text(encoding="utf-8", errors="replace"),
             stderr=stderr_path.read_text(encoding="utf-8", errors="replace"),
         )
+        if completed.returncode != 0:
+            await _terminate_process_group_async(
+                process,
+                grace_seconds=cleanup_grace,
+            )
         if not _is_transient_claude_credit_error(model=model, completed=completed):
             return completed
         if attempt < attempts - 1:
@@ -556,7 +766,12 @@ def query_headless(
     headless_session_name = kwargs.pop("headless_session", None) or kwargs.pop(
         "headless_session_name", None
     )
+    configured_timeout = kwargs.pop("headless_timeout_seconds", None)
+    configured_grace = kwargs.pop("headless_cleanup_grace_seconds", None)
+    configured_output_mode = kwargs.pop("headless_output_mode", None)
     parsed_model = parse_headless_model(model)
+    proposal_timeout = headless_timeout(parsed_model, configured_timeout)
+    cleanup_grace = headless_cleanup_grace(configured_grace)
     resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
     prompt_path = _write_prompt_file(
         work_dir=str(resolved_work_dir),
@@ -569,6 +784,8 @@ def query_headless(
         prompt_path=prompt_path,
         work_dir=str(resolved_work_dir),
         session_name=headless_session_name,
+        proposal_timeout=proposal_timeout,
+        output_mode=configured_output_mode,
     )
     stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
@@ -584,18 +801,33 @@ def query_headless(
                 command=command,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
+                proposal_timeout=proposal_timeout,
+                cleanup_grace=cleanup_grace,
             )
         finally:
             if lock_acquired:
                 _THREAD_LOCK.release()
     except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(
-            f"Headless query timed out after {headless_timeout()}s."
+        raise LLMTimeoutError(
+            f"Headless query timed out after {proposal_timeout}s "
+            f"with {cleanup_grace}s cleanup grace.",
+            artifacts={
+                "headless_prompt_path": str(prompt_path),
+                "headless_stdout_path": str(stdout_path),
+                "headless_stderr_path": str(stderr_path),
+            },
         ) from exc
 
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"Headless query failed: {detail}")
+        failure = _headless_failure(completed=completed)
+        failure.artifacts.update(
+            {
+                "headless_prompt_path": str(prompt_path),
+                "headless_stdout_path": str(stdout_path),
+                "headless_stderr_path": str(stderr_path),
+            }
+        )
+        raise failure
 
     headless_usage = _extract_headless_usage(completed.stdout)
     query_usage = _query_usage_from_headless(headless_usage)
@@ -611,6 +843,9 @@ def query_headless(
         "headless_session_id": headless_session_name,
         "headless_usage": headless_usage or None,
         "headless_usage_unknown": not bool(headless_usage),
+        "headless_timeout_seconds": proposal_timeout,
+        "headless_cleanup_grace_seconds": cleanup_grace,
+        "headless_output_mode": headless_output_mode(configured_output_mode),
     }
     return _query_result(
         content=content,
@@ -641,7 +876,12 @@ async def query_headless_async(
     headless_session_name = kwargs.pop("headless_session", None) or kwargs.pop(
         "headless_session_name", None
     )
+    configured_timeout = kwargs.pop("headless_timeout_seconds", None)
+    configured_grace = kwargs.pop("headless_cleanup_grace_seconds", None)
+    configured_output_mode = kwargs.pop("headless_output_mode", None)
     parsed_model = parse_headless_model(model)
+    proposal_timeout = headless_timeout(parsed_model, configured_timeout)
+    cleanup_grace = headless_cleanup_grace(configured_grace)
     resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
     prompt_path = _write_prompt_file(
         work_dir=str(resolved_work_dir),
@@ -654,6 +894,8 @@ async def query_headless_async(
         prompt_path=prompt_path,
         work_dir=str(resolved_work_dir),
         session_name=headless_session_name,
+        proposal_timeout=proposal_timeout,
+        output_mode=configured_output_mode,
     )
     stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
@@ -668,18 +910,33 @@ async def query_headless_async(
                 command=command,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
+                proposal_timeout=proposal_timeout,
+                cleanup_grace=cleanup_grace,
             )
         except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"Headless query timed out after {headless_timeout()}s."
+            raise LLMTimeoutError(
+                f"Headless query timed out after {proposal_timeout}s "
+                f"with {cleanup_grace}s cleanup grace.",
+                artifacts={
+                    "headless_prompt_path": str(prompt_path),
+                    "headless_stdout_path": str(stdout_path),
+                    "headless_stderr_path": str(stderr_path),
+                },
             ) from exc
     finally:
         if lock_acquired:
             _THREAD_LOCK.release()
 
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"Headless query failed: {detail}")
+        failure = _headless_failure(completed=completed)
+        failure.artifacts.update(
+            {
+                "headless_prompt_path": str(prompt_path),
+                "headless_stdout_path": str(stdout_path),
+                "headless_stderr_path": str(stderr_path),
+            }
+        )
+        raise failure
 
     headless_usage = _extract_headless_usage(completed.stdout)
     query_usage = _query_usage_from_headless(headless_usage)
@@ -695,6 +952,9 @@ async def query_headless_async(
         "headless_session_id": headless_session_name,
         "headless_usage": headless_usage or None,
         "headless_usage_unknown": not bool(headless_usage),
+        "headless_timeout_seconds": proposal_timeout,
+        "headless_cleanup_grace_seconds": cleanup_grace,
+        "headless_output_mode": headless_output_mode(configured_output_mode),
     }
     return _query_result(
         content=content,

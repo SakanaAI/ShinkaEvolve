@@ -31,7 +31,7 @@ hide:
 ShinkaEvolve combines LLM mutation operators with an evolutionary archive,
 parallel evaluation, and a reproducible task contract. The repository gives you
 both the framework primitives and runnable examples — start from a simple
-`evaluate.py` + `initial.py` task and scale up to async runs or cluster
+`evaluate.py` + committed `seed_repo/` task and scale up to async runs or cluster
 workflows.
 
 <div class="feature-grid">
@@ -119,7 +119,7 @@ from shinka.launch import LocalJobConfig
 runner = ShinkaEvolveRunner(
     evo_config=EvolutionConfig(
         seed_repo_path="examples/inference_pipeline_repo/seed_repo",
-        mutable_paths=["src"],
+        mutable_paths=[],  # whole repository by default
         immutable_paths=[],
         agent_hidden_paths=["private_tests", "fixtures/private"],
         llm_models=["headless/codex@gpt-5.5?effort=high"],

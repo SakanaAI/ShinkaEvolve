@@ -10,6 +10,7 @@ from shinka.wandb_logging import (
     ShinkaWandbLogger,
     build_program_log_payload,
     compute_database_stats,
+    program_table_row,
     resolve_logging_methods,
 )
 
@@ -116,6 +117,19 @@ def test_program_payload_logs_public_private_metadata_and_costs(tmp_path):
     assert not any(key.startswith("webui/") for key in payload)
 
 
+def test_program_table_serializes_heterogeneous_nested_metadata():
+    first = Program(id="a", generation=1, metadata={"nested": {"a": 1}})
+    second = Program(id="b", generation=2, metadata={"nested": [1, 2, 3]})
+
+    first_row = program_table_row(first)
+    second_row = program_table_row(second)
+    metadata_index = PROGRAM_TABLE_COLUMNS.index("metadata")
+
+    assert isinstance(first_row[metadata_index], str)
+    assert isinstance(second_row[metadata_index], str)
+    assert '"a": 1' in first_row[metadata_index]
+
+
 def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
     db, first, _ = _make_db(tmp_path)
     plot_dir = tmp_path / "gen_1" / "results" / "plots"
@@ -124,6 +138,7 @@ def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
     (tmp_path / "gen_1" / "failure.json").write_text("{}", encoding="utf-8")
     logged_payloads = []
     artifacts = []
+    init_kwargs = {}
 
     class FakeRun:
         name = "fake-run"
@@ -160,7 +175,11 @@ def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
 
     fake_run = FakeRun()
     fake_wandb = ModuleType("wandb")
-    fake_wandb.init = lambda **kwargs: fake_run
+    def fake_init(**kwargs):
+        init_kwargs.update(kwargs)
+        return fake_run
+
+    fake_wandb.init = fake_init
     fake_wandb.Table = FakeTable
     fake_wandb.Artifact = FakeArtifact
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
@@ -177,6 +196,8 @@ def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
             wandb_notes=None,
             wandb_dir=None,
             wandb_config={},
+            wandb_run_id="stable-run-id",
+            wandb_resume="allow",
         ),
         db_config=SimpleNamespace(),
         job_config=SimpleNamespace(),
@@ -187,6 +208,8 @@ def test_wandb_logger_uses_fake_wandb_without_network(tmp_path, monkeypatch):
     logger.finish()
 
     assert fake_run.finished is True
+    assert init_kwargs["id"] == "stable-run-id"
+    assert init_kwargs["resume"] == "allow"
     assert logged_payloads[0]["program/id"] == "p0"
     assert isinstance(logged_payloads[0]["program/latest"], FakeTable)
     assert logged_payloads[0]["program/latest"].columns == PROGRAM_TABLE_COLUMNS
