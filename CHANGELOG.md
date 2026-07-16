@@ -6,6 +6,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added optional Weights & Biases logging with resumable run IDs, per-individual
+  scores, timing and cost metrics, and final run summaries in PR #149. Thanks
+  @anantgar.
 - Added Verilog/SystemVerilog as a first-class evolution target in PR #137,
   including `.sv` task detection, syntax validation, EVOLVE-BLOCK marker support,
   failure-artifact rendering, and a self-contained RTLLM example. Thanks @Tyronita.
