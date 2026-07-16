@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import shinka.cli.models as cli_models
+import shinka.model_availability as model_availability
 from shinka.env import load_shinka_dotenv as real_load_shinka_dotenv
 from shinka.pricing.catalog import PricingConfig, PricingMode, refresh_model_catalog
 
@@ -99,6 +100,11 @@ def test_shinka_models_help_describes_json_output(capsys: pytest.CaptureFixture[
     assert "--verbose" in help_output
     assert "current environment" in help_output
     assert ".env" in help_output
+    assert "azure LLM: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT" in help_output
+    assert (
+        "azure embedding: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT + "
+        "AZURE_API_VERSION" in help_output
+    )
     assert "--api-key" not in help_output
 
 
@@ -118,6 +124,36 @@ def test_shinka_models_lists_google_models_when_gemini_key_present(
         "embedding": expected_embedding_models,
         "llm": expected_llm_models,
     }
+
+
+def test_shinka_models_lists_azure_llms_without_embedding_api_version(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(cli_models, "load_shinka_dotenv", lambda: ())
+    monkeypatch.setattr(model_availability, "get_all_providers", lambda: ["azure"])
+    monkeypatch.setattr(
+        model_availability, "get_all_embedding_providers", lambda: ["azure"]
+    )
+    monkeypatch.setattr(
+        model_availability,
+        "get_models_by_provider",
+        lambda provider: ["azure-gpt-5-mini"],
+    )
+    monkeypatch.setattr(
+        model_availability,
+        "get_embedding_models_by_provider",
+        lambda provider: ["azure-text-embedding-3-small"],
+    )
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com"
+    )
+
+    exit_code, payload = _run_cli(capsys)
+
+    assert exit_code == 0
+    assert payload == {"embedding": [], "llm": ["azure-gpt-5-mini"]}
 
 
 def test_shinka_models_verbose_prints_full_payload(

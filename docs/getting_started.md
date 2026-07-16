@@ -78,6 +78,22 @@ LOCAL_OPENAI_API_KEY=local                             # Optional
 CUSTOM_API_KEY=...                                     # Optional
 ```
 
+For Azure OpenAI v1 LLM deployments, use the resource root as the endpoint and
+prefix the deployment name with `azure-` in `llm_models`:
+
+```bash
+AZURE_OPENAI_API_KEY=your-azure-key
+AZURE_API_ENDPOINT=https://your-resource.openai.azure.com
+```
+
+```python
+evo_config = EvolutionConfig(llm_models=["azure-gpt-5-mini"])
+```
+
+Azure v1 LLM calls do not require `AZURE_API_VERSION`. Azure embedding models
+still use the versioned Azure API client and additionally require, for example,
+`AZURE_API_VERSION=2024-02-01`.
+
 ### Verify installation
 
 ```bash

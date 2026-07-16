@@ -3,6 +3,7 @@ import os
 import anthropic
 import openai
 import instructor
+from shinka.azure_openai_config import azure_openai_api_key, azure_v1_base_url
 from shinka.env import load_shinka_dotenv
 from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
 from shinka.local_openai_config import resolve_local_openai_api_key
@@ -10,15 +11,6 @@ from .constants import OPENAI_MAX_RETRIES, TIMEOUT
 from .providers.model_resolver import resolve_model_backend
 
 load_shinka_dotenv()
-
-
-def _build_azure_endpoint() -> str:
-    endpoint = os.getenv("AZURE_API_ENDPOINT")
-    if not endpoint:
-        raise ValueError("AZURE_API_ENDPOINT is required for Azure OpenAI models.")
-    if not endpoint.endswith("/"):
-        endpoint += "/"
-    return endpoint + "openai/v1/"
 
 
 def get_client_llm(
@@ -61,11 +53,9 @@ def get_client_llm(
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
     elif provider == "azure_openai":
-        # https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle?view=foundry-classic&tabs=python#api-evolution
-        client = openai.AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_API_VERSION"),
-            azure_endpoint=_build_azure_endpoint(),
+        client = openai.OpenAI(
+            api_key=azure_openai_api_key(),
+            base_url=azure_v1_base_url(),
             timeout=TIMEOUT,
             max_retries=OPENAI_MAX_RETRIES,
         )
@@ -151,10 +141,9 @@ def get_async_client_llm(
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.TOOLS_STRICT)
     elif provider == "azure_openai":
-        client = openai.AsyncAzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_API_VERSION"),
-            azure_endpoint=_build_azure_endpoint(),
+        client = openai.AsyncOpenAI(
+            api_key=azure_openai_api_key(),
+            base_url=azure_v1_base_url(),
             timeout=TIMEOUT,
             max_retries=OPENAI_MAX_RETRIES,
         )
