@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict
 from pydantic import BaseModel
 from .client import get_client_llm, get_async_client_llm
+from .image_input import ImageInputs, load_image_inputs
 from .providers import (
     query_anthropic,
     query_openai,
@@ -28,12 +29,20 @@ def query(
     msg_history: List = [],
     output_model: Optional[BaseModel] = None,
     model_posteriors: Optional[Dict[str, float]] = None,
+    images: ImageInputs = None,
     **kwargs,
 ) -> QueryResult:
     """Query the LLM."""
     client, model_name, provider = get_client_llm(
         model_name, structured_output=output_model is not None
     )
+    if images and provider != "google":
+        raise ValueError(
+            "Image input is currently only supported for Gemini models."
+        )
+    image_payload = load_image_inputs(images)
+    if image_payload:
+        kwargs["images"] = image_payload
     if provider in ("anthropic", "bedrock"):
         query_fn = query_anthropic
     elif provider in ("openai", "azure_openai", "openrouter"):
@@ -68,12 +77,20 @@ async def query_async(
     msg_history: List = [],
     output_model: Optional[BaseModel] = None,
     model_posteriors: Optional[Dict[str, float]] = None,
+    images: ImageInputs = None,
     **kwargs,
 ) -> QueryResult:
     """Query the LLM asynchronously."""
     client, model_name, provider = get_async_client_llm(
         model_name, structured_output=output_model is not None
     )
+    if images and provider != "google":
+        raise ValueError(
+            "Image input is currently only supported for Gemini models."
+        )
+    image_payload = load_image_inputs(images)
+    if image_payload:
+        kwargs["images"] = image_payload
     if provider in ("anthropic", "bedrock"):
         query_fn = query_anthropic_async
     elif provider in ("openai", "azure_openai", "openrouter"):
