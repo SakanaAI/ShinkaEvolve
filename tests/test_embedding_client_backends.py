@@ -51,6 +51,21 @@ def test_get_async_client_embed_local_openai_inline_url(monkeypatch):
     assert str(client.base_url).startswith("http://localhost:8080")
 
 
+def test_get_client_embed_azure_v1_endpoint_uses_resource_root(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv("AZURE_API_VERSION", "test-api-version")
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT",
+        "https://example-resource.openai.azure.com/openai/v1/",
+    )
+
+    client, model_name = get_client_embed("azure-text-embedding-3-small")
+
+    assert type(client) is openai.AzureOpenAI
+    assert str(client.base_url) == "https://example-resource.openai.azure.com/openai/"
+    assert model_name == "text-embedding-3-small"
+
+
 def test_get_client_embed_gemini_sets_timeout(monkeypatch):
     captured_kwargs = {}
     fake_client = object()

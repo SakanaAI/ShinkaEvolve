@@ -90,6 +90,33 @@ def test_validate_model_env_access_rejects_missing_embedding_provider_key(
     assert "OPENAI_API_KEY" in error
 
 
+def test_validate_model_env_access_allows_azure_v1_llm_without_api_version(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com"
+    )
+
+    validate_model_env_access(llm_models=["azure-gpt-5-mini"])
+
+
+def test_validate_model_env_access_requires_api_version_for_azure_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv(
+        "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com"
+    )
+
+    with pytest.raises(ValueError, match="AZURE_API_VERSION"):
+        validate_model_env_access(
+            embedding_models=["azure-text-embedding-3-small"]
+        )
+
+
 def test_validate_model_env_access_rejects_incomplete_vertex_env(
     monkeypatch: pytest.MonkeyPatch,
 ):
