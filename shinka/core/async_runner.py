@@ -7,6 +7,7 @@ import json
 import asyncio
 import logging
 import shutil
+import signal
 import time
 import uuid
 import os
@@ -534,6 +535,9 @@ class ShinkaEvolveRunner:
         self.slot_available = asyncio.Event()
         self.should_stop = asyncio.Event()
         self.finalization_complete = asyncio.Event()
+        # Set when shutdown was triggered by a signal (SIGINT/SIGTERM) so we skip
+        # slow optional finalization work and head straight to job cancellation.
+        self._interrupted = False
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
 
@@ -994,12 +998,46 @@ class ShinkaEvolveRunner:
                 raise
         asyncio.run(self.run_async())
 
+    def _request_stop(self, sig=None) -> None:
+        """Trigger a graceful shutdown (used by the SIGINT/SIGTERM handlers).
+
+        Sets the stop/finalization events so ``run_async`` unblocks and reaches
+        its cleanup, which cancels every running evaluation job. Idempotent, so a
+        repeated signal is a no-op rather than a crash.
+        """
+        if self.should_stop.is_set():
+            return
+        self._interrupted = True
+        logger.warning(f"Received signal {sig}; shutting down gracefully...")
+        self.should_stop.set()
+        self.slot_available.set()
+        self.finalization_complete.set()
+
+    def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> list:
+        """Install SIGINT/SIGTERM handlers on the running loop; return the set."""
+        installed = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self._request_stop, sig)
+                installed.append(sig)
+            except (NotImplementedError, RuntimeError, ValueError):
+                # Unavailable off the main thread or on some platforms; there we
+                # simply fall back to the default (KeyboardInterrupt) behaviour.
+                pass
+        return installed
+
     async def run_async(self):
         """Main async evolution loop."""
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
+        try:
+            signal_handlers = self._install_signal_handlers(
+                asyncio.get_running_loop()
+            )
+        except RuntimeError:
+            signal_handlers = []
 
         try:
             # Setup initial program (results_dir now set)
@@ -1049,8 +1087,9 @@ class ShinkaEvolveRunner:
                     "🔄 Performing final embedding recomputation and meta summary..."
                 )
 
-            # Force final embedding recomputation before shutdown
-            if self.embedding_client:
+            # Force final embedding recomputation before shutdown (skipped on a
+            # signal-triggered stop so Ctrl-C doesn't block for minutes).
+            if self.embedding_client and not self._interrupted:
                 try:
                     if self.verbose:
                         logger.info("Starting final PCA/embedding recomputation...")
@@ -1087,7 +1126,8 @@ class ShinkaEvolveRunner:
                     )
 
             # Perform final meta summary for any remaining unprocessed programs
-            if self.meta_summarizer:
+            # (skipped on a signal-triggered stop for a prompt shutdown).
+            if self.meta_summarizer and not self._interrupted:
                 try:
                     if self.verbose:
                         logger.info("Starting final meta summary generation...")
@@ -1147,6 +1187,12 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
+            loop = asyncio.get_running_loop()
+            for sig in signal_handlers:
+                try:
+                    loop.remove_signal_handler(sig)
+                except (NotImplementedError, RuntimeError, ValueError):
+                    pass
             await self._cancel_completed_job_batches()
             await self._cancel_background_side_effect_worker()
             # Ensure all tasks are cancelled on exit
@@ -1190,8 +1236,17 @@ class ShinkaEvolveRunner:
             results_dir=Path(self.results_dir),
         )
 
-        # Check if we're resuming from an existing database
-        resuming_run = db_path.exists() and self.db.last_iteration > 0
+        # Resume if the database already holds any persisted programs. Gating on
+        # last_iteration > 0 missed the case where only the generation-0 initial
+        # cohort was persisted before the process died: that mis-detected a fresh
+        # start, duplicated the initial cohort, skipped bandit/cost restore, and
+        # inflated the completed-generation count into a premature stop.
+        program_count = (
+            await self.async_db.get_total_program_count_async()
+            if db_path.exists()
+            else 0
+        )
+        resuming_run = program_count > 0
 
         # Load bandit state if resuming
         if resuming_run:
@@ -1199,7 +1254,6 @@ class ShinkaEvolveRunner:
             logger.info("RESUMING PREVIOUS ASYNC EVOLUTION RUN")
             logger.info("=" * 80)
             logger.info(f"Resuming from generation {self.db.last_iteration}")
-            program_count = await self.async_db.get_total_program_count_async()
             logger.info(f"Found {program_count} programs in database")
 
             # Load existing API costs from database
@@ -2049,15 +2103,7 @@ class ShinkaEvolveRunner:
                             logger.debug(
                                 f"Running jobs: {len(self.running_jobs)}, Active proposals: {len(self.active_proposal_tasks)}"
                             )
-                    still_running = []
-                    current_running_jobs = list(self.running_jobs)
-                    current_job_ids = {id(job) for job in current_running_jobs}
-                    monitored_job_ids = {id(job) for job in monitored_jobs}
-                    concurrently_added_jobs = [
-                        job
-                        for job in current_running_jobs
-                        if id(job) not in monitored_job_ids
-                    ]
+                    current_job_ids = {id(job) for job in self.running_jobs}
 
                     for job, is_running in zip(monitored_jobs, status_results):
                         if id(job) not in current_job_ids:
@@ -2066,7 +2112,6 @@ class ShinkaEvolveRunner:
                             logger.warning(
                                 f"Error checking job {job.job_id}: {is_running}"
                             )
-                            still_running.append(job)
                         elif not is_running:
                             completed_jobs.append(job)
                             runtime = time.time() - job.start_time
@@ -2092,13 +2137,21 @@ class ShinkaEvolveRunner:
                                     f"Failed to cancel hung job {job.job_id} "
                                     f"(gen {job.generation}); keeping it running"
                                 )
-                                still_running.append(job)
                                 continue
                             completed_jobs.append(job)
-                        else:
-                            still_running.append(job)
+                        # else: still running -> retained by the rebuild below.
 
-                    self.running_jobs = still_running + concurrently_added_jobs
+                    # Rebuild running_jobs from a *fresh* read, dropping only the
+                    # jobs just resolved as completed. Using a snapshot taken
+                    # before the cancel_job_async await above would silently drop
+                    # any job a proposal task appended during that await, leaking
+                    # its evaluation slot (and eventually deadlocking the pool).
+                    completed_ids = {id(job) for job in completed_jobs}
+                    self.running_jobs = [
+                        job
+                        for job in list(self.running_jobs)
+                        if id(job) not in completed_ids
+                    ]
 
                 if completed_jobs:
                     if self.verbose:
@@ -5486,6 +5539,23 @@ class ShinkaEvolveRunner:
     async def _cleanup_async(self):
         """Cleanup async resources."""
         try:
+            # Cancel any still-running evaluation jobs first, so we never orphan
+            # local subprocesses or leave Slurm jobs occupying the cluster on
+            # exit (normal completion, exception, or SIGINT/SIGTERM).
+            running_jobs = list(self.running_jobs)
+            if running_jobs:
+                logger.info(
+                    f"Cancelling {len(running_jobs)} running job(s) during shutdown"
+                )
+                await asyncio.gather(
+                    *(
+                        self.scheduler.cancel_job_async(job.job_id)
+                        for job in running_jobs
+                    ),
+                    return_exceptions=True,
+                )
+                self.running_jobs = []
+
             # Cancel remaining proposal tasks
             for task in self.active_proposal_tasks.values():
                 if not task.done():
