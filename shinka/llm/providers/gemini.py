@@ -13,6 +13,26 @@ MAX_TRIES = BACKOFF_MAX_TRIES
 MAX_VALUE = BACKOFF_MAX_VALUE
 MAX_TIME = BACKOFF_MAX_TIME
 
+# Single source of truth for the thinking-token budget when the caller omits it.
+# Sync and async must share this so an omitted arg does not make one path
+# "think" while the other does not.
+DEFAULT_THINKING_BUDGET = 1024
+
+
+class GeminiStructuredOutputError(ValueError):
+    """Raised when structured output is requested but unsupported.
+
+    A dedicated ``ValueError`` subclass so the retry decorator can give up on it
+    immediately (see ``_giveup_gemini``): it is deterministic and can never
+    succeed on retry, unlike the transient errors the backoff wrapper exists to
+    absorb.
+    """
+
+
+def _giveup_gemini(exc: Exception) -> bool:
+    """Give up (do not retry) on the deterministic structured-output error only."""
+    return isinstance(exc, GeminiStructuredOutputError)
+
 
 def build_gemini_thinking_config(thinking_budget: int):
     """Build Gemini ThinkingConfig across SDK versions.
@@ -184,6 +204,7 @@ def validate_gemini_response(response, content: str) -> None:
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
+    giveup=_giveup_gemini,
 )
 def query_gemini(
     client,
@@ -200,7 +221,9 @@ def query_gemini(
     Based on: https://ai.google.dev/gemini-api/docs/text-generation
     """
     if output_model is not None:
-        raise ValueError("Gemini does not support structured output.")
+        raise GeminiStructuredOutputError(
+            "Gemini does not support structured output."
+        )
 
     # Build structured contents
     contents = gemini_build_contents(msg_history, msg)
@@ -209,7 +232,7 @@ def query_gemini(
     temperature = kwargs.get("temperature", 0.8)
     top_p = kwargs.get("top_p", 1.0)
     max_tokens = kwargs.get("max_tokens", 2048)
-    thinking_budget = kwargs.get("thinking_budget", 1024)
+    thinking_budget = kwargs.get("thinking_budget", DEFAULT_THINKING_BUDGET)
 
     generation_config = types.GenerateContentConfig(
         temperature=float(temperature),
@@ -263,6 +286,7 @@ def query_gemini(
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
+    giveup=_giveup_gemini,
 )
 async def query_gemini_async(
     client,
@@ -279,7 +303,9 @@ async def query_gemini_async(
     Based on: https://ai.google.dev/gemini-api/docs/text-generation
     """
     if output_model is not None:
-        raise ValueError("Gemini does not support structured output.")
+        raise GeminiStructuredOutputError(
+            "Gemini does not support structured output."
+        )
 
     # Build structured contents
     contents = gemini_build_contents(msg_history, msg)
@@ -288,7 +314,7 @@ async def query_gemini_async(
     temperature = kwargs.get("temperature", 0.8)
     top_p = kwargs.get("top_p", 1.0)
     max_tokens = kwargs.get("max_tokens", 2048)
-    thinking_budget = kwargs.get("thinking_budget", 0)
+    thinking_budget = kwargs.get("thinking_budget", DEFAULT_THINKING_BUDGET)
 
     generation_config = types.GenerateContentConfig(
         temperature=float(temperature),
