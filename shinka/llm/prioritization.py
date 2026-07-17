@@ -635,9 +635,10 @@ class AsymmetricUCB(BanditBase):
                     # apply cost_power to amplify cost differences
                     # power > 1 more aggressively favors cheap models
                     cost_ratio_scaled = np.power(cost_ratio_norm, self.cost_power)
-                    # additive blend: at k=1, only cost matters; at k=0, only reward
-                    k = self.cost_aware_coefficient
-                    scores = (1.0 - k) * scores + k * cost_ratio_scaled
+                    # additive blend: at blend=1, only cost matters; at
+                    # blend=0, only reward.
+                    blend = self.cost_aware_coefficient
+                    scores = (1.0 - blend) * scores + blend * cost_ratio_scaled
 
             winners = np.where(scores == scores.max())[0]
             rem = idx.size - winners.size
@@ -709,9 +710,11 @@ class AsymmetricUCB(BanditBase):
                     # apply cost_power to amplify cost differences
                     # power > 1 more aggressively favors cheap models
                     cost_ratio_scaled = np.power(cost_ratio_norm, self.cost_power)
-                    # additive blend: at k=1, only cost matters; at k=0, only reward
-                    k = self.cost_aware_coefficient
-                    scores = (1.0 - k) * scores + k * cost_ratio_scaled
+                    # additive blend: at blend=1, only cost matters; at
+                    # blend=0, only reward. Use a distinct name so it does not
+                    # clobber the virtual-pull loop counter `k`.
+                    blend = self.cost_aware_coefficient
+                    scores = (1.0 - blend) * scores + blend * cost_ratio_scaled
 
             winners = np.where(scores == scores.max())[0]
             p = np.zeros(A, dtype=np.float64)

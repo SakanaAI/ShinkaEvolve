@@ -141,14 +141,35 @@ class ProportionalIslandSampler(IslandSampler):
         """Sample island proportional to best fitness."""
         fitness_dict = self._get_island_best_fitness(initialized_islands)
 
-        # Extract fitness values in the same order as initialized_islands
+        # Extract fitness values in the same order as initialized_islands.
+        # dtype=float coerces missing/NULL scores (None) to NaN, handled below.
         fitness_values = np.array(
-            [fitness_dict.get(island_idx, 0.0) for island_idx in initialized_islands]
+            [fitness_dict.get(island_idx, 0.0) for island_idx in initialized_islands],
+            dtype=np.float64,
         )
 
-        # Apply Boltzmann distribution: exp(fitness / temperature)
-        exp_values = np.exp(fitness_values / self.temperature)
-        probabilities = exp_values / np.sum(exp_values)
+        n_islands = len(initialized_islands)
+        # Replace non-finite fitness (NaN/inf from NULL or overflow) with the
+        # smallest finite fitness so it neither dominates nor breaks the softmax.
+        finite_mask = np.isfinite(fitness_values)
+        if not finite_mask.any():
+            # No usable fitness information: fall back to uniform sampling.
+            probabilities = np.ones(n_islands) / n_islands
+        else:
+            fitness_values = np.where(
+                finite_mask, fitness_values, fitness_values[finite_mask].min()
+            )
+            # Numerically stable Boltzmann softmax: subtract the max before
+            # exponentiating so large-magnitude scores cannot overflow to inf
+            # (inf / inf -> NaN would make np.random.choice raise). Subtracting
+            # a constant is invariant, so the distribution is unchanged.
+            logits = fitness_values / self.temperature
+            exp_values = np.exp(logits - logits.max())
+            total = exp_values.sum()
+            if not np.isfinite(total) or total <= 0.0:
+                probabilities = np.ones(n_islands) / n_islands
+            else:
+                probabilities = exp_values / total
 
         # Sample according to probabilities
         sampled_idx = np.random.choice(len(initialized_islands), p=probabilities)
@@ -185,24 +206,57 @@ class WeightedIslandSampler(IslandSampler):
         counts = self._get_island_program_counts(initialized_islands)
         fitness_dict = self._get_island_best_fitness(initialized_islands)
 
-        # Calculate weights for each island
-        weights = []
-        for island_idx in initialized_islands:
-            count = counts.get(island_idx, 1)
-            fitness = fitness_dict.get(island_idx, 0.0)
+        n_islands = len(initialized_islands)
+        # dtype=float coerces missing/NULL scores (None) to NaN, handled below.
+        fitness_values = np.array(
+            [fitness_dict.get(island_idx, 0.0) for island_idx in initialized_islands],
+            dtype=np.float64,
+        )
+        count_values = np.array(
+            [counts.get(island_idx, 0) for island_idx in initialized_islands],
+            dtype=np.float64,
+        )
 
-            # Weight = fitness^fitness_weight / count^count_weight
-            # More fitness -> higher weight, more programs -> lower weight
-            weight = (fitness**self.fitness_weight) / (count**self.count_weight)
-            weights.append(weight)
+        # Replace non-finite fitness with the smallest finite fitness (or 0.0).
+        finite_mask = np.isfinite(fitness_values)
+        if finite_mask.any():
+            fitness_values = np.where(
+                finite_mask, fitness_values, fitness_values[finite_mask].min()
+            )
+        else:
+            fitness_values = np.zeros_like(fitness_values)
+
+        # Shift fitness so weights stay non-negative and monotonic (higher
+        # fitness -> higher weight) even when fitness is negative. For the
+        # normal all-positive case we leave fitness untouched to preserve the
+        # original weighting; otherwise we subtract the minimum and add a small
+        # epsilon so the lowest-fitness island keeps a nonzero (but smallest)
+        # probability instead of being dropped or producing negative weights.
+        min_fitness = fitness_values.min()
+        if min_fitness <= 0.0:
+            fitness_values = fitness_values - min_fitness + 1e-9
+
+        # Guard against zero/negative counts before exponentiating.
+        safe_counts = np.maximum(count_values, 1.0)
+
+        # Weight = fitness^fitness_weight / count^count_weight
+        # More fitness -> higher weight, more programs -> lower weight
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            weights = np.power(fitness_values, self.fitness_weight) / np.power(
+                safe_counts, self.count_weight
+            )
+
+        # Guard non-finite/negative weights that would break np.random.choice.
+        weights = np.where(np.isfinite(weights), weights, 0.0)
+        weights = np.clip(weights, 0.0, None)
 
         # Normalize to probabilities
-        weights = np.array(weights)
-        if np.sum(weights) == 0:
-            # Fallback to uniform if all weights are zero
-            probabilities = np.ones(len(weights)) / len(weights)
+        total = weights.sum()
+        if total <= 0.0 or not np.isfinite(total):
+            # Fallback to uniform if all weights are zero/invalid
+            probabilities = np.ones(n_islands) / n_islands
         else:
-            probabilities = weights / np.sum(weights)
+            probabilities = weights / total
 
         # Sample according to probabilities
         sampled_idx = np.random.choice(len(initialized_islands), p=probabilities)
