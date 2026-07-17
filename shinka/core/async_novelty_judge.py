@@ -208,6 +208,7 @@ class AsyncNoveltyJudge:
             response = await self.async_llm_client.query(
                 msg=user_msg,
                 system_msg=NOVELTY_SYSTEM_MSG,
+                llm_kwargs=self.async_llm_client.get_kwargs(),
             )
 
             if response is None or response.content is None:
@@ -231,40 +232,6 @@ class AsyncNoveltyJudge:
         except Exception as e:
             logger.error(f"Error in novelty LLM check: {e}")
             return True, f"Error in novelty check: {e}", 0.0
-
-    async def _single_novelty_check_async(
-        self, code_content: str, similar_program: Program, parent_program: Program
-    ) -> Tuple[bool, float, str]:
-        """Perform a single async novelty check against a similar program.
-
-        Returns:
-            Tuple of (is_novel, cost, explanation)
-        """
-        try:
-            # Construct novelty prompt
-            novelty_prompt = self._construct_novelty_prompt(
-                code_content, similar_program, parent_program
-            )
-
-            # Query LLM asynchronously
-            response = await self.async_llm_client.query(
-                msg=novelty_prompt,
-                system_msg="You are a code novelty assessor. Determine if the new code is sufficiently different from the existing code.",
-            )
-
-            if not response or not response.content:
-                # Fail CLOSED on empty response (is_novel=False => reject).
-                return False, 0.0, "No response from LLM (failing closed)"
-
-            # Parse response for novelty decision
-            is_novel = self._parse_novelty_response(response.content)
-            cost = response.cost if hasattr(response, "cost") else 0.0
-
-            return is_novel, cost, response.content[:200]  # Truncate explanation
-
-        except Exception as e:
-            logger.warning(f"Single novelty check failed: {e}")
-            return True, 0.0, f"Error: {str(e)}"
 
     def _read_code_file(self, exec_fname: str) -> Optional[str]:
         """Read code file content."""
