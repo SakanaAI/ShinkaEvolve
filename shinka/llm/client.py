@@ -1,5 +1,8 @@
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
+import asyncio
+import hashlib
 import os
+import weakref
 import anthropic
 import openai
 import instructor
@@ -9,29 +12,156 @@ from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_cli
 from shinka.local_openai_config import resolve_local_openai_api_key
 from .constants import OPENAI_MAX_RETRIES, TIMEOUT
 from .providers.errors import StructuredOutputNotSupportedError
-from .providers.model_resolver import resolve_model_backend
+from .providers.model_resolver import ResolvedModel, resolve_model_backend
 
 load_shinka_dotenv()
 
 
-def get_client_llm(
-    model_name: str, structured_output: bool = False
-) -> Tuple[Any, str, str]:
-    """Get the client and model for the given model name.
+# Constructing an SDK client (anthropic.Anthropic, openai.OpenAI, ...) spins up
+# a fresh httpx connection pool and pays TLS + pool setup on first use. Building
+# a brand-new client on every query — and every retry — throws that pool away
+# immediately, so sequential queries never share HTTP keep-alive. We memoize the
+# constructed clients so repeated queries with identical parameters reuse one
+# client (and its pool).
+#
+# Sync clients live in a plain dict. Async clients (httpx.AsyncClient) bind to
+# the event loop that first drives them, so they are cached per running loop in
+# a WeakKeyDictionary keyed on the loop object: when a loop is garbage-collected
+# its cached clients are dropped and never handed to a different loop.
+_SYNC_CLIENT_CACHE: dict = {}
+_ASYNC_CLIENT_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
-    Args:
-        model_name (str): The name of the model to get the client.
 
-    Raises:
-        ValueError: If the model is not supported.
+class _NoRunningLoop:
+    """Weak-referenceable sentinel bucket for calls made outside a loop."""
 
-    Returns:
-        Tuple[Any, str, str]: (client, API model name, resolved provider).
+
+_NO_RUNNING_LOOP = _NoRunningLoop()
+
+
+def _fingerprint(secret: Optional[str]) -> Optional[str]:
+    """Stable, non-reversible fingerprint of a secret for use in a cache key.
+
+    Different secrets map to different fingerprints (so two callers with
+    distinct keys never share a client), while the raw secret never enters the
+    key itself.
     """
-    resolved = resolve_model_backend(model_name)
-    provider = resolved.provider
-    api_model_name = resolved.api_model_name
+    if not secret:
+        return None
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
+
+def _client_identity_extras(provider: str, resolved: ResolvedModel) -> Tuple:
+    """Dynamic, env-derived config that changes which client gets built.
+
+    Everything here is beyond (provider, api_model_name, structured_output):
+    the base URL and API key(s) a provider reads at construction time. Secrets
+    are fingerprinted, not stored raw. Two calls that would build clients
+    talking to different endpoints or authenticating with different keys land
+    on different cache entries.
+    """
+    if provider == "anthropic":
+        return (_fingerprint(os.getenv("ANTHROPIC_API_KEY")),)
+    if provider == "bedrock":
+        return (
+            _fingerprint(os.getenv("AWS_ACCESS_KEY_ID")),
+            _fingerprint(os.getenv("AWS_SECRET_ACCESS_KEY")),
+            os.getenv("AWS_REGION_NAME"),
+        )
+    if provider == "openai":
+        return (_fingerprint(os.getenv("OPENAI_API_KEY")),)
+    if provider == "azure_openai":
+        # Azure endpoint + key come from the environment, not from `resolved`.
+        return (azure_v1_base_url(), _fingerprint(azure_openai_api_key()))
+    if provider == "deepseek":
+        return (_fingerprint(os.getenv("DEEPSEEK_API_KEY")),)
+    if provider == "google":
+        return (
+            _fingerprint(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+        )
+    if provider == "openrouter":
+        return (_fingerprint(os.getenv("OPENROUTER_API_KEY")),)
+    if provider == "local_openai":
+        return (
+            resolved.base_url,
+            resolved.api_key_env_name,
+            _fingerprint(resolve_local_openai_api_key(resolved.api_key_env_name)),
+        )
+    return ()
+
+
+def _sync_client_builder(provider: str) -> Any:
+    """The constructor a sync client is built from, resolved at call time.
+
+    Read live from the module globals so a monkeypatched constructor (e.g. a
+    test swapping ``openai.OpenAI``) is a different object and never collides in
+    the cache with the real one.
+    """
+    return {
+        "anthropic": anthropic.Anthropic,
+        "bedrock": anthropic.AnthropicBedrock,
+        "openai": openai.OpenAI,
+        "azure_openai": openai.OpenAI,
+        "deepseek": openai.OpenAI,
+        "openrouter": openai.OpenAI,
+        "local_openai": openai.OpenAI,
+        "google": build_google_genai_client,
+    }.get(provider)
+
+
+def _async_client_builder(provider: str) -> Any:
+    """The constructor an async client is built from, resolved at call time."""
+    return {
+        "anthropic": anthropic.AsyncAnthropic,
+        "bedrock": anthropic.AsyncAnthropicBedrock,
+        "openai": openai.AsyncOpenAI,
+        "azure_openai": openai.AsyncOpenAI,
+        "deepseek": openai.AsyncOpenAI,
+        "openrouter": openai.AsyncOpenAI,
+        "local_openai": openai.AsyncOpenAI,
+        "google": build_google_genai_client,
+    }.get(provider)
+
+
+def _client_cache_key(
+    provider: str,
+    structured_output: bool,
+    resolved: ResolvedModel,
+    builder: Any,
+) -> Tuple:
+    """Key that uniquely identifies a client's construction parameters.
+
+    Distinct clients are forced apart by: provider (openai vs azure share a
+    constructor but hit different endpoints), api_model_name, the
+    structured_output flag (instructor-wrapped clients must never be handed to
+    plain callers), the actual constructor object (guards against monkeypatched
+    builders), and the env-derived base URL / key fingerprints.
+    """
+    return (
+        provider,
+        resolved.api_model_name,
+        bool(structured_output),
+        builder,
+        _client_identity_extras(provider, resolved),
+    )
+
+
+def _running_loop_key() -> Any:
+    """The event loop bucket for async client caching.
+
+    Returns the running loop when one exists, else a shared sentinel for calls
+    made outside any loop (e.g. constructing a client eagerly in sync code).
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return _NO_RUNNING_LOOP
+
+
+def _build_sync_client(
+    provider: str, structured_output: bool, resolved: ResolvedModel
+) -> Any:
+    """Construct a fresh sync client for the resolved provider."""
     if provider == "anthropic":
         client = anthropic.Anthropic(timeout=TIMEOUT)
         if structured_output:
@@ -97,29 +227,15 @@ def get_client_llm(
     elif provider == "headless":
         client = None
     else:
-        raise ValueError(f"Model {model_name} not supported.")
+        raise ValueError(f"Model {resolved.original_model_name} not supported.")
 
-    return client, api_model_name, provider
+    return client
 
 
-def get_async_client_llm(
-    model_name: str, structured_output: bool = False
-) -> Tuple[Any, str, str]:
-    """Get the async client and model for the given model name.
-
-    Args:
-        model_name (str): The name of the model to get the client.
-
-    Raises:
-        ValueError: If the model is not supported.
-
-    Returns:
-        Tuple[Any, str, str]: (async client, API model name, resolved provider).
-    """
-    resolved = resolve_model_backend(model_name)
-    provider = resolved.provider
-    api_model_name = resolved.api_model_name
-
+def _build_async_client(
+    provider: str, structured_output: bool, resolved: ResolvedModel
+) -> Any:
+    """Construct a fresh async client for the resolved provider."""
     if provider == "anthropic":
         client = anthropic.AsyncAnthropic(timeout=TIMEOUT)
         if structured_output:
@@ -184,6 +300,68 @@ def get_async_client_llm(
     elif provider == "headless":
         client = None
     else:
-        raise ValueError(f"Model {model_name} not supported.")
+        raise ValueError(f"Model {resolved.original_model_name} not supported.")
 
-    return client, api_model_name, provider
+    return client
+
+
+def get_client_llm(
+    model_name: str, structured_output: bool = False
+) -> Tuple[Any, str, str]:
+    """Get the client and model for the given model name.
+
+    Clients are memoized: repeated calls with identical parameters reuse one
+    client (and its connection pool) instead of rebuilding it per query.
+
+    Args:
+        model_name (str): The name of the model to get the client.
+
+    Raises:
+        ValueError: If the model is not supported.
+
+    Returns:
+        Tuple[Any, str, str]: (client, API model name, resolved provider).
+    """
+    resolved = resolve_model_backend(model_name)
+    provider = resolved.provider
+    builder = _sync_client_builder(provider)
+    cache_key = _client_cache_key(provider, structured_output, resolved, builder)
+    if cache_key not in _SYNC_CLIENT_CACHE:
+        _SYNC_CLIENT_CACHE[cache_key] = _build_sync_client(
+            provider, structured_output, resolved
+        )
+    return _SYNC_CLIENT_CACHE[cache_key], resolved.api_model_name, provider
+
+
+def get_async_client_llm(
+    model_name: str, structured_output: bool = False
+) -> Tuple[Any, str, str]:
+    """Get the async client and model for the given model name.
+
+    Async clients are memoized per running event loop, so repeated queries on
+    the same loop reuse one client (and its connection pool), while a client is
+    never shared across event loops.
+
+    Args:
+        model_name (str): The name of the model to get the client.
+
+    Raises:
+        ValueError: If the model is not supported.
+
+    Returns:
+        Tuple[Any, str, str]: (async client, API model name, resolved provider).
+    """
+    resolved = resolve_model_backend(model_name)
+    provider = resolved.provider
+    builder = _async_client_builder(provider)
+    cache_key = _client_cache_key(provider, structured_output, resolved, builder)
+    loop_key = _running_loop_key()
+    per_loop = _ASYNC_CLIENT_CACHE.get(loop_key)
+    if per_loop is None:
+        per_loop = {}
+        _ASYNC_CLIENT_CACHE[loop_key] = per_loop
+    if cache_key not in per_loop:
+        per_loop[cache_key] = _build_async_client(
+            provider, structured_output, resolved
+        )
+    return per_loop[cache_key], resolved.api_model_name, provider
