@@ -100,19 +100,16 @@ def _local_response(content, *, finish_reason="stop", reasoning_content=None):
 
 class _FakeLocalClient:
     def __init__(self, response, *, is_async=False):
-        if is_async:
+        # Distinct names (not a conditional redefinition of one name) so mypy
+        # doesn't flag mismatched sync/async signatures.
+        async def _acreate(**kwargs):
+            return response
 
-            async def _create(**kwargs):
-                return response
+        def _create(**kwargs):
+            return response
 
-        else:
-
-            def _create(**kwargs):
-                return response
-
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=_create)
-        )
+        create = _acreate if is_async else _create
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
 
 
 def test_extract_local_openai_content_raises_on_empty():
