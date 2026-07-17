@@ -23,6 +23,10 @@ def load_shinka_dotenv(
         env_paths.append(launch_env)
 
     for env_path in env_paths:
-        load_dotenv(dotenv_path=env_path, override=True)
+        # The package-dir .env fills gaps only (override=False) so a stray or
+        # shipped .env cannot silently shadow the operator's real environment.
+        # The launch-dir .env keeps its intended precedence (override=True).
+        override = env_path == launch_env
+        load_dotenv(dotenv_path=env_path, override=override)
 
     return tuple(env_paths)
