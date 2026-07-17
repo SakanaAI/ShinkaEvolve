@@ -1,4 +1,5 @@
 import subprocess
+import signal
 import time
 import threading
 import os
@@ -26,6 +27,24 @@ class ProcessWithLogging:
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
         return getattr(self.process, name)
+
+    def kill(self):
+        """Kill the whole process group, not just the direct child.
+
+        Eval commands are often wrappers (``conda run -n env python …`` or
+        ``bash -lc "… docker run …"``) that fork the real worker; killing only
+        the direct child would orphan a GPU-holding process. The child is
+        started with ``start_new_session=True`` so it leads its own group.
+        """
+        pid = self.process.pid
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            # Group already gone or not a group leader; fall back to the child.
+            try:
+                self.process.kill()
+            except Exception as e:  # pragma: no cover - best effort
+                logger.error(f"Error killing process {pid}: {e}")
 
     def __str__(self):
         """Return a string representation showing the PID."""
@@ -101,7 +120,9 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    # Use PIPE to capture output and redirect to files in real-time
+    # Use PIPE to capture output and redirect to files in real-time.
+    # start_new_session=True puts the child in its own process group so a
+    # timeout/cancel can kill the whole tree (see ProcessWithLogging.kill).
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -110,6 +131,7 @@ def submit(
         bufsize=1,  # Line buffered
         universal_newlines=True,
         env=env,
+        start_new_session=True,
     )
 
     # Open log files for writing with line buffering

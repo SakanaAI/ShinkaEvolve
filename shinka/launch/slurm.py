@@ -404,7 +404,9 @@ def launch_local_subprocess(
                     free.append(idx)
             if len(free) >= gpus:
                 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(free[:gpus])
-                proc = subprocess.Popen(cmd)
+                # New session so the whole tree (bash -lc … docker/conda …)
+                # can be signalled as a group rather than orphaning children.
+                proc = subprocess.Popen(cmd, start_new_session=True)
                 LOCAL_JOBS[job_id]["popen"] = proc
                 break
             time.sleep(5)
@@ -496,14 +498,63 @@ def submit_local_conda(
     return job_id
 
 
+# Slurm states that mean the job has left the queue for good.
+_SLURM_TERMINAL_STATES = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "TIMEOUT",
+        "CANCELLED",
+        "OUT_OF_MEMORY",
+        "NODE_FAIL",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "PREEMPTED",
+        "REVOKED",
+        "SPECIAL_EXIT",
+    }
+)
+
+
+def _query_sacct_state(job_id: str) -> Optional[str]:
+    """Return the primary Slurm state for a job via ``sacct``, or None.
+
+    Used to disambiguate a ``squeue`` failure (which several Slurm builds emit
+    for a departed/unknown job id) from a genuinely transient controller error.
+    """
+    try:
+        result = subprocess.run(
+            ["sacct", "-j", str(job_id), "-o", "State", "-n", "-P", "-X"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    for line in result.stdout.splitlines():
+        state = line.strip().split()[0] if line.strip() else ""
+        if state:
+            # sacct can annotate states, e.g. "CANCELLED by 12345".
+            return state
+    return None
+
+
 def get_job_status(job_id: str) -> Optional[str]:
-    """Get status for Slurm or local jobs."""
+    """Get status for Slurm or local jobs.
+
+    Returns a non-empty string while the job is still active, ``""`` when it has
+    finished, and ``None`` only when the status is genuinely unknown (a
+    transient error) so callers keep polling instead of declaring completion.
+    """
     if job_id.startswith("local-"):
         job = LOCAL_JOBS.get(job_id)
         if not job:
             return None
         proc = job.get("popen")
-        if proc and proc.poll() is None:
+        if proc is None:
+            # Still waiting for a free GPU: not started, and definitely not done.
+            return job_id
+        if proc.poll() is None:
             return job_id
         return ""
     try:
@@ -515,6 +566,14 @@ def get_job_status(job_id: str) -> Optional[str]:
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError:
+        # squeue can exit non-zero for a job that has already left the queue.
+        # Confirm with sacct: a known terminal state (or an unknown job) means
+        # the job is done; otherwise treat it as a transient, unknown status.
+        state = _query_sacct_state(job_id)
+        if state is None:
+            return None
+        return ""
+    except FileNotFoundError:
         return None
 
 
@@ -532,16 +591,29 @@ def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
     if verbose:
         logger.info(f"Monitoring job {job_id}...")
 
-    # Monitor job status
+    # Monitor job status. ``None`` means the status is transiently unknown;
+    # bound how long we keep polling on it so a persistent lookup failure can't
+    # hang the monitor forever (the old code looped indefinitely on None).
+    max_unknown_polls = 30
+    unknown_polls = 0
     while True:
         status = get_job_status(job_id)
         if status == "":
             if verbose:
                 logger.info("Job completed!")
             break
-
-        if verbose:
-            logger.info(f"\rJob status: {status}", end="", flush=True)
+        if status is None:
+            unknown_polls += 1
+            if unknown_polls >= max_unknown_polls:
+                logger.warning(
+                    f"Job {job_id} status unknown after "
+                    f"{unknown_polls} polls; assuming it has finished."
+                )
+                break
+        else:
+            unknown_polls = 0
+            if verbose:
+                logger.info(f"\rJob status: {status}", end="", flush=True)
         time.sleep(poll_interval)
 
     if results_dir is not None:
