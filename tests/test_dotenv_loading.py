@@ -61,3 +61,23 @@ def test_load_shinka_dotenv_prefers_launch_directory_over_package_env(
     load_shinka_dotenv(package_root=package_root, cwd=launch_dir)
 
     assert os.getenv(env_key) == "from-launch-dir"
+
+
+def test_package_env_does_not_shadow_real_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A package-dir .env must not override a variable set in the real env."""
+    from shinka.env import load_shinka_dotenv
+
+    env_key = "SHINKA_TEST_SHELL_PRECEDENCE_KEY"
+    package_root = tmp_path / "package-root"
+    launch_dir = tmp_path / "launch-dir"
+    package_root.mkdir()
+    launch_dir.mkdir()
+    (package_root / ".env").write_text(f"{env_key}=from-package\n", encoding="utf-8")
+    # No launch-dir .env; the real environment already sets the key.
+    monkeypatch.setenv(env_key, "from-shell")
+
+    load_shinka_dotenv(package_root=package_root, cwd=launch_dir)
+
+    assert os.getenv(env_key) == "from-shell"
