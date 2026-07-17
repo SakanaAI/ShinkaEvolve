@@ -88,7 +88,15 @@ def load_results(results_dir: str):
     correct_file_path = results_dir_path / "correct.json"
     if correct_file_path.exists():
         with open(correct_file_path, "r") as f:
-            loaded_results["correct"] = json.load(f)
+            try:
+                loaded_results["correct"] = json.load(f)
+            except json.JSONDecodeError:
+                # A truncated/partial correct.json (e.g. process killed mid-write)
+                # must not crash job postprocessing; treat it as a failed run.
+                file_path_str = str(correct_file_path)
+                warning_msg = f"Could not decode JSON from {file_path_str}"
+                logger.warning(warning_msg)
+                loaded_results["correct"] = {"correct": False}
     else:
         loaded_results["correct"] = {"correct": False}
 
