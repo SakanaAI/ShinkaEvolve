@@ -463,6 +463,14 @@ class ProgramDatabase:
             "programs(island_idx)",
             "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
             "programs(system_prompt_id)",
+            # combined_score and correct are the two most-filtered/sorted columns
+            # (top-N, elites, island aggregates). These composite indexes turn
+            # the per-generation "WHERE correct=1 ORDER BY combined_score" scans
+            # into index range scans and cover the island-sampler aggregates.
+            "CREATE INDEX IF NOT EXISTS idx_programs_correct_score ON "
+            "programs(correct, combined_score)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_island_correct_score ON "
+            "programs(island_idx, correct, combined_score)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
