@@ -2071,17 +2071,22 @@
                 </div>
             </div>
             
-    <!-- Place all external script tags here, before the main inline script -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/python.min.js"></script>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Place all external script tags here, before the main inline script.
+         All are pinned to exact versions with Subresource Integrity (SRI)
+         hashes and crossorigin=anonymous, so a CDN compromise or a silent
+         version bump cannot inject arbitrary JS into the page (which handles
+         the local evolution database). DOMPurify sanitizes rendered markdown. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js" integrity="sha384-9MhbyIRcBVQiiC7FSd7T38oJNj2Zh+EfxS7/vjhBi4OOT78NlHSnzM31EZRWR1LZ" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js" integrity="sha384-su5kReKyYlIFrI62mbQRKXHzFobMa7BHp1cK6julLPbnYcCW9NIZKJiTODjLPeDh" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" integrity="sha384-zbcZAIxlvJtNE3Dp5nxLXdXtXyxwOdnILY1TDPVmKFhl4r4nSUG1r8bcFXGVa4Te" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js" integrity="sha384-vdScihEZCfbPnBQf+lc7LgXUdJVYyhC3yWHUW5C5P5GpHRqVnaM6HJELJxT6IqwM" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js" integrity="sha384-Yv5O+t3uE3hunW8uyrbpPW3iw6/5/Y7HitWJBLgqfMoA36NogMmy+8wWZMpn3HWc" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" integrity="sha384-JcnsjUPPylna1s1fvi1u12X5qjY5OL56iySh75FdtrwhO/SWXgMjoVqcKyIIWOLk" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.8.0/highlight.min.js" integrity="sha384-g4mRvs7AO0/Ol5LxcGyz4Doe21pVhGNnC3EQw5shw+z+aXDN86HqUdwXWO+Gz2zI" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js" integrity="sha384-kfJm1UHujU89hXr0VHT0u0t4lqavqaoomP6wix8D9fhzTeFvC9DYyaT36//Qd144" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.8.0/languages/python.min.js" integrity="sha384-0EkvOvPJDe7t47eSkiz1pp/B1WWuqLqcrGPJKePN+rZ3d50pFtcIqsBUgCMLUoMu" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/plotly.js@2.27.1/dist/plotly.min.js" integrity="sha384-CfdUumYc8S2dvFy54M+E85yISHkahaJKY7Z8fFtHiyO/mLGSmDaGwiA4VfQufhNR" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
 
     <!-- Add our script after all external dependencies -->
     <script>
@@ -2865,11 +2870,11 @@ ${'='.repeat(80)}
                     if (!inSection) {
                         // Content before first section - treat as introduction
                         html += `<div style="margin-bottom: 20px; padding: 15px; background-color: #f9f9f9; border-radius: 5px;">`;
-                        html += marked.parse(section);
+                        html += renderMarkdown(section);
                         html += `</div>`;
                     } else {
                         // Content within a section - just use regular markdown parsing
-                        html += marked.parse(section);
+                        html += renderMarkdown(section);
                     }
                 }
             }
@@ -3070,10 +3075,10 @@ ${'='.repeat(80)}
                     sections.individualPrograms = formatProgramSummaries(sectionContent.trim());
                 } else if (sectionTitle === 'GLOBAL INSIGHTS SCRATCHPAD') {
                     rawSections.globalInsights = sectionContent.trim();
-                    sections.globalInsights = marked.parse(sectionContent.trim());
+                    sections.globalInsights = renderMarkdown(sectionContent.trim());
                 } else if (sectionTitle === 'META RECOMMENDATIONS') {
                     rawSections.metaRecommendations = sectionContent.trim();
-                    sections.metaRecommendations = marked.parse(sectionContent.trim());
+                    sections.metaRecommendations = renderMarkdown(sectionContent.trim());
                 }
             }
             
@@ -3131,7 +3136,7 @@ ${'='.repeat(80)}
         function generateSimpleDiffHTML(oldText, newText) {
             if (typeof Diff === 'undefined') {
                 console.warn("[WARN] Diff library not loaded, showing markdown");
-                return marked.parse(newText);
+                return renderMarkdown(newText);
             }
             
             try {
@@ -3145,11 +3150,11 @@ ${'='.repeat(80)}
                         if (line.trim() === '' && index === lines.length - 1) return; // Skip final empty line
                         
                         if (part.added) {
-                            result += `<div class="diff-added" style="display: block; margin: 2px 0;">${marked.parseInline(line)}</div>\n`;
+                            result += `<div class="diff-added" style="display: block; margin: 2px 0;">${renderMarkdownInline(line)}</div>\n`;
                         } else if (part.removed) {
-                            result += `<div class="diff-removed" style="display: block; margin: 2px 0;">${marked.parseInline(line)}</div>\n`;
+                            result += `<div class="diff-removed" style="display: block; margin: 2px 0;">${renderMarkdownInline(line)}</div>\n`;
                         } else {
-                            result += `${marked.parseInline(line)}<br>\n`;
+                            result += `${renderMarkdownInline(line)}<br>\n`;
                         }
                     });
                 });
@@ -3157,7 +3162,7 @@ ${'='.repeat(80)}
                 return result;
             } catch (e) {
                 console.error("[ERROR] Failed to generate simple diff:", e);
-                return marked.parse(newText);
+                return renderMarkdown(newText);
             }
         }
         
@@ -3202,11 +3207,36 @@ ${'='.repeat(80)}
         
         // Helper function to escape HTML
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            if (text === null || text === undefined) return '';
+            return String(text)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
-        
+
+        // Render LLM/DB-sourced markdown safely. The content is attacker-
+        // influenced (program code, thoughts, meta text come from model output),
+        // so marked's HTML output is passed through DOMPurify before it reaches
+        // innerHTML. If DOMPurify failed to load, fall back to escaped plain
+        // text rather than emitting unsanitized HTML.
+        function renderMarkdown(text) {
+            const src = (text === null || text === undefined) ? '' : String(text);
+            if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+                return escapeHtml(src);
+            }
+            return DOMPurify.sanitize(marked.parse(src));
+        }
+
+        function renderMarkdownInline(text) {
+            const src = (text === null || text === undefined) ? '' : String(text);
+            if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+                return escapeHtml(src);
+            }
+            return DOMPurify.sanitize(marked.parseInline(src));
+        }
+
         // Helper function to show meta error message
         function showMetaError(message) {
             const metaContent = document.getElementById('meta-content');
@@ -4768,7 +4798,7 @@ console.error("[DEBUG] Error in processData:", error);
                         
                         if (d.data.isUnifiedRoot) {
                             tooltip.html(`
-                                <strong style="color: #9b59b6; font-size: 13px;">⭐ ${patchName}</strong><br>
+                                <strong style="color: #9b59b6; font-size: 13px;">⭐ ${escapeHtml(patchName)}</strong><br>
                                 <strong>Type:</strong> Unified Root<br>
                                 <strong>Score:</strong> ${score}<br>
                                 <em>Common origin for all islands</em>
@@ -4776,14 +4806,14 @@ console.error("[DEBUG] Error in processData:", error);
                         } else {
                             if (isFailedProposalNode(d.data)) {
                                 tooltip.html(`
-                                    <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                                    <strong style="color: #ffb3b3; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
                                     <strong>Status:</strong> Failed Proposal<br>
                                     <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
                                     <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
                                 `);
                             } else {
                             tooltip.html(`
-                                <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
+                                <strong style="color: #58a6ff; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
                                 <strong>Score:</strong> ${score}<br>
                                 <strong>Type:</strong> ${patchType}<br>
                                 <strong>Island:</strong> ${islandIdx}<br>
@@ -5688,13 +5718,14 @@ console.error("[DEBUG] Error in processData:", error);
             const agentName = data.metadata.patch_name || data.agent_name || "unnamed_agent";
             const score = data.combined_score;
             
-            // Update node summary
+            // Update node summary. agentName/id/parent_id/error are DB-sourced
+            // (patch names come from LLM output), so escape before innerHTML.
             document.getElementById("node-summary").innerHTML = `
-                <h3>${agentName} (Gen ${data.generation})</h3>
-                <p><strong>ID:</strong> <span style="font-family: monospace;">${data.id}</span></p>
-                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${data.parent_id || 'None'}</span></p>
+                <h3>${escapeHtml(agentName)} (Gen ${escapeHtml(data.generation)})</h3>
+                <p><strong>ID:</strong> <span style="font-family: monospace;">${escapeHtml(data.id)}</span></p>
+                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${escapeHtml(data.parent_id || 'None')}</span></p>
                 <p><strong>Score:</strong> <span class="${getScoreClass(score)}">${formatScore(score)}</span></p>
-                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${data.error}</span></p>` : ''}
+                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${escapeHtml(data.error)}</span></p>` : ''}
             `;
             
 
@@ -5949,8 +5980,8 @@ console.error("[DEBUG] Error in processData:", error);
                     <div class="details-section">
                         <h5>Patch Information</h5>
                         <div class="details-section-content">
-                        <p><strong>Patch Type:</strong> ${patchType}</p>
-                        <p><strong>Patch Name:</strong> ${patchName}</p>
+                        <p><strong>Patch Type:</strong> ${escapeHtml(patchType)}</p>
+                        <p><strong>Patch Name:</strong> ${escapeHtml(patchName)}</p>
                             ${patchDescriptionHtml}
                         </div>
                     </div>
@@ -6006,7 +6037,7 @@ console.error("[DEBUG] Error in processData:", error);
                 longContentHtml += `
                     <div class="details-section" style="margin-top: 15px;">
                         <h5>Thought Process</h5>
-                        <div class="markdown">${marked.parse(data.metadata.thought)}</div>
+                        <div class="markdown">${renderMarkdown(data.metadata.thought)}</div>
                     </div>
                 `;
             }
@@ -6192,8 +6223,8 @@ console.error("[DEBUG] Error in processData:", error);
 
         // Helper function to escape HTML content to prevent XSS and formatting issues
         function escapeHtml(text) {
-            if (!text) return '';
-            return text
+            if (text === null || text === undefined) return '';
+            return String(text)
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
@@ -8174,8 +8205,8 @@ console.error("[DEBUG] Error in processData:", error);
                     <td>${prog.generation}</td>
                     <td style="text-align: center; color: ${prog.in_archive ? '#28a745' : '#6c757d'}; font-weight: bold;">${archiveStatus}</td>
                     <td>${escapeHtml(statusLabel)}</td>
-                    <td>${patchName}</td>
-                    <td>${prog.metadata?.patch_type || 'N/A'}</td>
+                    <td>${escapeHtml(patchName)}</td>
+                    <td>${escapeHtml(prog.metadata?.patch_type || 'N/A')}</td>
                     <td>${islandIdx}</td>
                     <td>${scoreDisplay}</td>
                     <td>${apiCost}</td>
@@ -8183,7 +8214,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <td>${noveltyAttempt}</td>
                     <td>${resampleAttempt}</td>
                     <td>${patchAttempt}</td>
-                    <td>${model}</td>
+                    <td>${escapeHtml(model)}</td>
                 `;
                 tableBody.appendChild(row);
             });
@@ -10404,14 +10435,14 @@ console.error("[DEBUG] Error in processData:", error);
                     
                     if (isFailedProposalNode(d.data)) {
                         tooltip.html(`
-                            <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                            <strong style="color: #ffb3b3; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
                             <strong>Status:</strong> Failed Proposal<br>
                             <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
                             <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
                         `);
                     } else {
                         tooltip.html(`
-                            <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
+                            <strong style="color: #58a6ff; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
                             <strong>Score:</strong> ${score}<br>
                             <strong>Type:</strong> ${patchType}<br>
                             <strong>Island:</strong> ${islandIdx}
@@ -17653,11 +17684,11 @@ console.error("[DEBUG] Error in processData:", error);
                         <div style="font-size: 10px; color: #888; font-family: monospace;">
                             ID: ${promptData.id.substring(0, 24)}...
                         </div>
-                        ${promptData.name ? `<div style="font-size: 13px; font-weight: 600; color: #333; margin-top: 8px;">${promptData.name}</div>` : ''}
+                        ${promptData.name ? `<div style="font-size: 13px; font-weight: 600; color: #333; margin-top: 8px;">${escapeHtml(promptData.name)}</div>` : ''}
                         ${promptData.description ? `
                             <div id="prompt-description-box" style="margin-top: 8px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;">
                                 <div id="prompt-description-content" style="font-size: 11px; color: #666; line-height: 1.4; padding: 8px; max-height: 80px; overflow: hidden; transition: max-height 0.3s ease;">
-                                    ${promptData.description}
+                                    ${escapeHtml(promptData.description)}
                                 </div>
                                 <div id="prompt-description-toggle" onclick="togglePromptDescription()" style="display: none; font-size: 10px; color: #8e44ad; padding: 4px 8px; cursor: pointer; text-align: center; border-top: 1px solid #e0e0e0; background: #f0f0f0; user-select: none;">
                                     ▼ Show more
@@ -18004,9 +18035,13 @@ console.error("[DEBUG] Error in processData:", error);
         }
 
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            if (text === null || text === undefined) return '';
+            return String(text)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
 
     </script>
