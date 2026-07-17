@@ -66,8 +66,16 @@ class QueryResult:
         lines.append(f"Total Cost: ${self.cost:.4f}")
         lines.append(f"  Input: ${self.input_cost:.4f} ({self.input_tokens} tokens)")
         lines.append(f"  Output: ${self.output_cost:.4f} ({self.output_tokens} tokens)")
+        # Guard the ratio: output_tokens can be 0 for degenerate responses
+        # (e.g. Gemini safety-blocks, local-openai max(out-think, 0)), which
+        # would otherwise raise ZeroDivisionError while logging exactly those
+        # responses we most want to inspect.
+        if self.output_tokens > 0:
+            thinking_ratio = f"{self.thinking_tokens / self.output_tokens:.2f}"
+        else:
+            thinking_ratio = "n/a"
         lines.append(
-            f"  --> Thinking tokens: {self.thinking_tokens} ({self.thinking_tokens / self.output_tokens:.2f})"
+            f"  --> Thinking tokens: {self.thinking_tokens} ({thinking_ratio})"
         )
         if self.thinking_tokens > 0:
             lines.append(f"  Thinking: {self.thinking_tokens} tokens")

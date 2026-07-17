@@ -832,4 +832,7 @@ def extract_between(
                 return json.loads(matched_str)
             else:
                 return matched_str
-    return "none"
+    # Return None (not the truthy string "none") so callers using `if result:`
+    # or `if result is None:` correctly detect a failed extraction instead of
+    # injecting the literal string "none" as code/metadata.
+    return None

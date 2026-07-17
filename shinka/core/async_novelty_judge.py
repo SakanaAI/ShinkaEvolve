@@ -217,8 +217,12 @@ class AsyncNoveltyJudge:
             )
 
             if response is None or response.content is None:
-                logger.warning("Novelty LLM returned empty response")
-                return True, "LLM response was empty", 0.0
+                # Fail CLOSED: a transient outage/empty response must not be
+                # silently accepted as novel (is_novel=False => reject upstream).
+                logger.warning(
+                    "Novelty LLM returned empty response; rejecting as not novel"
+                )
+                return False, "LLM response was empty (failing closed)", 0.0
 
             content = response.content.strip()
             api_cost = response.cost or 0.0
@@ -255,7 +259,8 @@ class AsyncNoveltyJudge:
             )
 
             if not response or not response.content:
-                return True, 0.0, "No response from LLM"
+                # Fail CLOSED on empty response (is_novel=False => reject).
+                return False, 0.0, "No response from LLM (failing closed)"
 
             # Parse response for novelty decision
             is_novel = self._parse_novelty_response(response.content)

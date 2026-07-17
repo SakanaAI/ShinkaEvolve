@@ -141,6 +141,42 @@ def gemini_extract_thoughts_and_content(response):
     return thought, content
 
 
+def validate_gemini_response(response, content: str) -> None:
+    """Raise if a Gemini response is empty or was truncated/blocked.
+
+    Empty content is reachable via safety blocks or prompt feedback, and a
+    ``finish_reason`` of ``MAX_TOKENS`` means the candidate was cut off
+    mid-generation. Either way the generation is incomplete and must not be
+    treated as a finished program (mirrors ``openai._extract_response_text``
+    and ``headless`` which already raise on empty content).
+    """
+    candidates = getattr(response, "candidates", None)
+    finish_reason = None
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+    # ``finish_reason`` is a str-based FinishReason enum; ``.name`` yields e.g.
+    # "MAX_TOKENS". Fall back to str() if a raw string is returned instead.
+    finish_name = getattr(finish_reason, "name", None)
+    if finish_name is None and finish_reason is not None:
+        finish_name = str(finish_reason)
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None)
+
+    if not content or not content.strip():
+        raise ValueError(
+            "Gemini response contained no text output; "
+            f"finish_reason={finish_name}; block_reason={block_reason}."
+        )
+
+    # MAX_TOKENS => the candidate was cut off mid-generation.
+    if finish_name == "MAX_TOKENS":
+        raise ValueError(
+            "Gemini response was truncated (finish_reason=MAX_TOKENS); "
+            "treating as an incomplete generation."
+        )
+
+
 @backoff.on_exception(
     backoff.expo,
     (Exception,),  # Catch all exceptions for Gemini API errors
@@ -192,6 +228,9 @@ def query_gemini(
 
     # Extract thoughts and content from response parts
     thought, content = gemini_extract_thoughts_and_content(response)
+
+    # Reject empty/truncated generations instead of returning content=""
+    validate_gemini_response(response, content)
 
     # Use content (without thoughts) for message history
     new_msg_history = msg_history + [
@@ -268,6 +307,9 @@ async def query_gemini_async(
 
     # Extract thoughts and content from response parts
     thought, content = gemini_extract_thoughts_and_content(response)
+
+    # Reject empty/truncated generations instead of returning content=""
+    validate_gemini_response(response, content)
 
     # Use content (without thoughts) for message history
     new_msg_history = msg_history + [
