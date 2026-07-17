@@ -4,6 +4,7 @@ import time
 import asyncio
 import shlex
 import sys
+import threading
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,25 @@ logger = logging.getLogger(__name__)
 _SLURM_CANCEL_TIMEOUT_SECONDS = 5.0
 _SLURM_CANCEL_POLL_INTERVAL_SECONDS = 0.1
 _SLURM_COMMAND_TIMEOUT_SECONDS = 5.0
+_SHUTDOWN_CLEANUP_RETRY_TIMEOUT_SECONDS = 10.0
+_SHUTDOWN_CLEANUP_RETRY_INITIAL_DELAY_SECONDS = 0.05
+_SHUTDOWN_CLEANUP_RETRY_MAX_DELAY_SECONDS = 1.0
+
+
+class SchedulerSubmissionCleanupError(RuntimeError):
+    """Report whether a scheduler-owned shutdown cleanup reached a terminal state."""
+
+    def __init__(
+        self,
+        token: object,
+        job_id: Union[str, ProcessWithLogging],
+        cleanup_succeeded: bool,
+    ):
+        self.token = token
+        self.job_id = job_id
+        self.cleanup_succeeded = cleanup_succeeded
+        state = "completed" if cleanup_succeeded else "remains owned"
+        super().__init__(f"Evaluation submission cleanup {state} during shutdown")
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -142,6 +162,13 @@ class JobScheduler:
         self.config = config
         self.verbose = verbose
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._submission_lock = threading.Lock()
+        self._shutdown_requested = False
+        self._unclaimed_submissions: Dict[
+            object, Union[str, ProcessWithLogging]
+        ] = {}
+        self._shutdown_submissions: Dict[object, Union[str, ProcessWithLogging]] = {}
+        self._shutdown_cleanup_futures: Dict[object, Any] = {}
         if self.job_type == "slurm_env":
             self.job_type = "slurm_conda"
 
@@ -410,15 +437,104 @@ class JobScheduler:
                 )
         return None
 
+    def _cleanup_unclaimed_submission(
+        self, token: object, job_id: Union[str, ProcessWithLogging]
+    ) -> bool:
+        """Retry cleanup of a submitted job that shutdown claimed before the runner."""
+        deadline = time.monotonic() + getattr(
+            self,
+            "_shutdown_cleanup_retry_timeout_seconds",
+            _SHUTDOWN_CLEANUP_RETRY_TIMEOUT_SECONDS,
+        )
+        retry_delay = _SHUTDOWN_CLEANUP_RETRY_INITIAL_DELAY_SECONDS
+        while True:
+            if self._cancel_job_sync(job_id):
+                with self._submission_lock:
+                    self._shutdown_submissions.pop(token, None)
+                return True
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.error(
+                    f"Could not clean up evaluation job {job_id} submitted during "
+                    "scheduler shutdown; retaining ownership"
+                )
+                return False
+            time.sleep(min(retry_delay, remaining))
+            retry_delay = min(
+                _SHUTDOWN_CLEANUP_RETRY_MAX_DELAY_SECONDS, retry_delay * 2
+            )
+
+    def _submit_tracked(
+        self,
+        token: object,
+        exec_fname_t: str,
+        results_dir_t: str,
+    ) -> Union[str, ProcessWithLogging]:
+        """Submit while retaining ownership until the event loop claims the job."""
+        with self._submission_lock:
+            if self._shutdown_requested:
+                raise RuntimeError("Scheduler shutdown has started")
+
+        job_id = self.submit_async(exec_fname_t, results_dir_t)
+        with self._submission_lock:
+            if self._shutdown_requested:
+                self._shutdown_submissions[token] = job_id
+                cleanup_here = True
+            else:
+                self._unclaimed_submissions[token] = job_id
+                cleanup_here = False
+
+        if cleanup_here:
+            cleaned = self._cleanup_unclaimed_submission(token, job_id)
+            raise SchedulerSubmissionCleanupError(token, job_id, cleaned)
+        return job_id
+
     async def submit_async_nonblocking(
         self, exec_fname_t: str, results_dir_t: str
     ) -> Union[str, ProcessWithLogging]:
         """Submit a job asynchronously without blocking the event loop."""
         loop = asyncio.get_event_loop()
-
-        return await loop.run_in_executor(
-            self.executor, self.submit_async, exec_fname_t, results_dir_t
+        token = object()
+        job_id = await loop.run_in_executor(
+            self.executor,
+            self._submit_tracked,
+            token,
+            exec_fname_t,
+            results_dir_t,
         )
+
+        with self._submission_lock:
+            if token in self._unclaimed_submissions:
+                self._unclaimed_submissions.pop(token)
+                return job_id
+            shutdown_job = self._shutdown_submissions.get(token)
+            cleanup_future = self._shutdown_cleanup_futures.get(token)
+
+        if shutdown_job is None:
+            raise RuntimeError("Evaluation submission was lost during scheduler shutdown")
+
+        if cleanup_future is None:
+            raise SchedulerSubmissionCleanupError(token, shutdown_job, False)
+
+        cleaned = await asyncio.wrap_future(cleanup_future)
+        with self._submission_lock:
+            self._shutdown_cleanup_futures.pop(token, None)
+        raise SchedulerSubmissionCleanupError(token, shutdown_job, cleaned)
+
+    def begin_shutdown(self) -> None:
+        """Stop submission handoffs and asynchronously clean jobs not yet claimed."""
+        with self._submission_lock:
+            if self._shutdown_requested:
+                return
+            self._shutdown_requested = True
+            unclaimed_jobs = list(self._unclaimed_submissions.items())
+            self._unclaimed_submissions.clear()
+            self._shutdown_submissions.update(unclaimed_jobs)
+            for token, job_id in unclaimed_jobs:
+                self._shutdown_cleanup_futures[token] = self.executor.submit(
+                    self._cleanup_unclaimed_submission, token, job_id
+                )
 
     async def check_job_status_async(self, job) -> bool:
         """Async version of job status checking."""
@@ -451,80 +567,82 @@ class JobScheduler:
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _cancel_job_sync(self, job_id: Union[str, ProcessWithLogging]) -> bool:
+        """Cancel a running job from a scheduler worker."""
+        try:
+            if self.job_type in ["slurm_docker", "slurm_conda"]:
+                if isinstance(job_id, str):
+                    # For SLURM jobs, use scancel command
+                    deadline = time.monotonic() + _SLURM_CANCEL_TIMEOUT_SECONDS
+                    remaining = deadline - time.monotonic()
+                    result = subprocess.run(
+                        ["scancel", job_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=max(
+                            0.001,
+                            min(_SLURM_COMMAND_TIMEOUT_SECONDS, remaining),
+                        ),
+                    )
+                    if result.returncode != 0:
+                        return False
+
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            logger.warning(
+                                f"Timed out waiting for Slurm job {job_id} "
+                                "to leave the queue after scancel"
+                            )
+                            return False
+                        if (
+                            get_job_status(
+                                job_id,
+                                timeout=max(
+                                    0.001,
+                                    min(
+                                        _SLURM_COMMAND_TIMEOUT_SECONDS,
+                                        remaining,
+                                    ),
+                                ),
+                            )
+                            == ""
+                        ):
+                            return True
+                        time.sleep(
+                            min(_SLURM_CANCEL_POLL_INTERVAL_SECONDS, remaining)
+                        )
+            else:
+                # For local jobs, kill the process
+                if isinstance(job_id, ProcessWithLogging):
+                    job_id.kill()
+                    try:
+                        job_id.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        logger.error(
+                            f"Timed out waiting for local job {job_id} "
+                            "to exit after cancellation"
+                        )
+                        return False
+                    job_id.cleanup_logging()
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"Error cancelling job {job_id}: {e}")
+            return False
+
     async def cancel_job_async(self, job_id: Union[str, ProcessWithLogging]) -> bool:
         """Cancel a running job asynchronously."""
         loop = asyncio.get_event_loop()
 
-        def cancel_job():
-            """Cancel job in thread executor."""
-            try:
-                if self.job_type in ["slurm_docker", "slurm_conda"]:
-                    if isinstance(job_id, str):
-                        # For SLURM jobs, use scancel command
-                        deadline = time.monotonic() + _SLURM_CANCEL_TIMEOUT_SECONDS
-                        remaining = deadline - time.monotonic()
-                        result = subprocess.run(
-                            ["scancel", job_id],
-                            capture_output=True,
-                            text=True,
-                            timeout=max(
-                                0.001,
-                                min(_SLURM_COMMAND_TIMEOUT_SECONDS, remaining),
-                            ),
-                        )
-                        if result.returncode != 0:
-                            return False
-
-                        while True:
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
-                                logger.warning(
-                                    f"Timed out waiting for Slurm job {job_id} "
-                                    "to leave the queue after scancel"
-                                )
-                                return False
-                            if (
-                                get_job_status(
-                                    job_id,
-                                    timeout=max(
-                                        0.001,
-                                        min(
-                                            _SLURM_COMMAND_TIMEOUT_SECONDS,
-                                            remaining,
-                                        ),
-                                    ),
-                                )
-                                == ""
-                            ):
-                                return True
-                            time.sleep(
-                                min(_SLURM_CANCEL_POLL_INTERVAL_SECONDS, remaining)
-                            )
-                else:
-                    # For local jobs, kill the process
-                    if isinstance(job_id, ProcessWithLogging):
-                        job_id.kill()
-                        try:
-                            job_id.wait(timeout=5.0)
-                        except subprocess.TimeoutExpired:
-                            logger.error(
-                                f"Timed out waiting for local job {job_id} "
-                                "to exit after cancellation"
-                            )
-                            return False
-                        job_id.cleanup_logging()
-                        return True
-                return False
-            except Exception as e:
-                logger.error(f"Error cancelling job {job_id}: {e}")
-                return False
-
-        return await loop.run_in_executor(self.executor, cancel_job)
+        return await loop.run_in_executor(self.executor, self._cancel_job_sync, job_id)
 
     def shutdown(self):
         """Shutdown the thread pool executor."""
+        self.begin_shutdown()
         self.executor.shutdown(wait=True)
 
     def shutdown_nowait(self):
         """Stop accepting work without waiting for in-flight scheduler commands."""
-        self.executor.shutdown(wait=False, cancel_futures=True)
+        self.begin_shutdown()
+        self.executor.shutdown(wait=False, cancel_futures=False)

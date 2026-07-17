@@ -1,11 +1,12 @@
 import asyncio
 import subprocess
+import threading
 
 import pytest
 
 from shinka.launch import scheduler as scheduler_module
 from shinka.launch import slurm as slurm_module
-from shinka.launch.scheduler import JobScheduler, SlurmCondaJobConfig
+from shinka.launch.scheduler import JobScheduler, LocalJobConfig, SlurmCondaJobConfig
 
 
 def test_slurm_cancel_waits_for_job_to_leave_queue(monkeypatch) -> None:
@@ -108,3 +109,64 @@ def test_scheduler_treats_unknown_slurm_status_as_running(monkeypatch) -> None:
         assert scheduler.check_job_id_status("12345") is True
     finally:
         scheduler.shutdown()
+
+
+def test_begin_shutdown_queues_cleanup_before_concurrent_executor_shutdown():
+    class _ControlledExecutor:
+        def __init__(self):
+            self.submit_started = threading.Event()
+            self.allow_submit = threading.Event()
+            self.cleanup_calls = []
+            self.closed = False
+
+        def submit(self, callback, *args):
+            self.submit_started.set()
+            assert self.allow_submit.wait(timeout=0.2)
+            if self.closed:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self.cleanup_calls.append((callback, args))
+            return object()
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            self.closed = True
+
+    scheduler = JobScheduler("local", LocalJobConfig())
+    original_executor = scheduler.executor
+    controlled_executor = _ControlledExecutor()
+    scheduler.executor = controlled_executor
+    original_executor.shutdown(wait=True)
+
+    token = object()
+    with scheduler._submission_lock:
+        scheduler._unclaimed_submissions[token] = "late-job"
+
+    errors = []
+    shutdown_started = threading.Event()
+
+    def begin_shutdown():
+        try:
+            scheduler.begin_shutdown()
+        except Exception as error:
+            errors.append(error)
+
+    def shutdown_nowait():
+        shutdown_started.set()
+        scheduler.shutdown_nowait()
+
+    begin_thread = threading.Thread(target=begin_shutdown)
+    shutdown_thread = threading.Thread(target=shutdown_nowait)
+    begin_thread.start()
+    assert controlled_executor.submit_started.wait(timeout=0.2)
+    shutdown_thread.start()
+    assert shutdown_started.wait(timeout=0.2)
+    shutdown_thread.join(timeout=0.05)
+    assert shutdown_thread.is_alive()
+    controlled_executor.allow_submit.set()
+    begin_thread.join(timeout=0.2)
+    shutdown_thread.join(timeout=0.2)
+
+    assert not begin_thread.is_alive()
+    assert not shutdown_thread.is_alive()
+    assert errors == []
+    assert len(controlled_executor.cleanup_calls) == 1
+    assert token in scheduler._shutdown_cleanup_futures

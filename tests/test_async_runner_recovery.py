@@ -16,7 +16,7 @@ from shinka.core.async_runner import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.launch import scheduler as scheduler_module
-from shinka.launch.scheduler import JobScheduler, SlurmCondaJobConfig
+from shinka.launch.scheduler import JobScheduler, LocalJobConfig, SlurmCondaJobConfig
 
 
 class _FakeAsyncDB:
@@ -2059,6 +2059,122 @@ def test_cleanup_bounds_submission_that_never_returns(
 
     assert "job IDs are not yet available" in caplog.text
     assert "evaluation slots remain owned:" in caplog.text
+
+
+def test_cleanup_cancels_submission_that_finishes_after_shutdown(monkeypatch):
+    async def _run():
+        submission_started = threading.Event()
+        allow_submission = threading.Event()
+        cancellation_finished = threading.Event()
+        cancelled_job_ids = []
+
+        scheduler = JobScheduler("local", LocalJobConfig(), max_workers=1)
+
+        def delayed_submit(exec_fname, results_dir):
+            assert exec_fname == "program.py"
+            assert results_dir == "results"
+            submission_started.set()
+            assert allow_submission.wait(timeout=1.0)
+            return "late-job"
+
+        def cancel_job(job_id):
+            cancelled_job_ids.append(job_id)
+            cancellation_finished.set()
+            return True
+
+        monkeypatch.setattr(scheduler, "submit_async", delayed_submit)
+        monkeypatch.setattr(scheduler, "_cancel_job_sync", cancel_job)
+
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+        proposal_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        runner.active_proposal_tasks = {"proposal": proposal_task}
+
+        assert await asyncio.to_thread(submission_started.wait, 0.2)
+        await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+        assert proposal_task.cancelled()
+        assert cancelled_job_ids == []
+        assert evaluation_slots.in_use == 1
+
+        # The scheduler owns the in-flight submission after cleanup returns.
+        allow_submission.set()
+        assert await asyncio.to_thread(cancellation_finished.wait, 0.5)
+
+        submission_tasks = list(runner._pending_evaluation_submissions)
+        await asyncio.gather(*submission_tasks, return_exceptions=True)
+        cleanup_tasks = list(runner._submission_cleanup_tasks)
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+        assert cancelled_job_ids == ["late-job"]
+        assert runner._pending_evaluation_submissions == {}
+        assert evaluation_slots.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_cleanup_retains_late_job_when_scheduler_shutdown_cleanup_fails(monkeypatch):
+    async def _run():
+        submission_started = threading.Event()
+        allow_submission = threading.Event()
+        cleanup_attempts = []
+
+        scheduler = JobScheduler("local", LocalJobConfig(), max_workers=1)
+
+        def delayed_submit(exec_fname, results_dir):
+            assert exec_fname == "program.py"
+            assert results_dir == "results"
+            submission_started.set()
+            assert allow_submission.wait(timeout=1.0)
+            return "late-job"
+
+        def failed_cleanup(job_id):
+            cleanup_attempts.append(job_id)
+            return False
+
+        monkeypatch.setattr(scheduler, "submit_async", delayed_submit)
+        monkeypatch.setattr(scheduler, "_cancel_job_sync", failed_cleanup)
+
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+        scheduler._shutdown_cleanup_retry_timeout_seconds = 0.02
+        proposal_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        runner.active_proposal_tasks = {"proposal": proposal_task}
+
+        assert await asyncio.to_thread(submission_started.wait, 0.2)
+        await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+        assert proposal_task.cancelled()
+        assert evaluation_slots.in_use == 1
+
+        allow_submission.set()
+        cleanup_task = next(iter(runner._submission_cleanup_tasks))
+        await asyncio.wait_for(asyncio.shield(cleanup_task), timeout=0.5)
+
+        assert cleanup_attempts
+        assert evaluation_slots.in_use == 1
+        assert list(runner._late_submission_jobs.values()) == ["late-job"]
+        assert list(scheduler._shutdown_submissions.values()) == ["late-job"]
+
+    asyncio.run(_run())
 
 
 def test_terminal_slurm_cleanup_does_not_enter_monitor():

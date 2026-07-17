@@ -38,6 +38,7 @@ from shinka.llm import (
 )
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
+from shinka.launch.scheduler import SchedulerSubmissionCleanupError
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -5152,6 +5153,24 @@ class ShinkaEvolveRunner:
             job_id = await asyncio.shield(submission_task)
         except asyncio.CancelledError:
             raise
+        except SchedulerSubmissionCleanupError as e:
+            getattr(self, "_pending_evaluation_submissions", {}).pop(
+                submission_task, None
+            )
+            if e.cleanup_succeeded:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+                return
+            job_id = e.job_id
+            late_jobs = getattr(self, "_late_submission_jobs", None)
+            if late_jobs is None:
+                late_jobs = {}
+                self._late_submission_jobs = late_jobs
+            late_jobs[id(job_id)] = job_id
+            logger.error(
+                f"Scheduler shutdown cleanup did not finish for evaluation job "
+                f"{job_id}; retaining its evaluation slot"
+            )
+            return
         except Exception as e:
             logger.warning(f"Evaluation submission failed after cancellation: {e}")
             getattr(self, "_pending_evaluation_submissions", {}).pop(
@@ -5698,6 +5717,9 @@ class ShinkaEvolveRunner:
         """Cleanup async resources."""
         try:
             deadline = time.monotonic() + self._get_cleanup_retry_timeout()
+            begin_scheduler_shutdown = getattr(self.scheduler, "begin_shutdown", None)
+            if begin_scheduler_shutdown is not None:
+                begin_scheduler_shutdown()
 
             # Cancel remaining proposal tasks
             for task in self.active_proposal_tasks.values():
@@ -5741,9 +5763,6 @@ class ShinkaEvolveRunner:
                     timeout=max(0.0, deadline - time.monotonic()),
                 )
                 if pending:
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.sleep(0)
                     late_job_ids = [
                         str(job_id)
                         for job_id in getattr(
