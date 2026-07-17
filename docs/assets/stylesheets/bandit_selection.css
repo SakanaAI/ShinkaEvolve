@@ -146,8 +146,7 @@
   accent-color: var(--demo-accent);
 }
 .se-bandit-demo input:focus-visible,
-.se-bandit-demo button:focus-visible,
-.se-bandit-demo input:focus-visible {
+.se-bandit-demo button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--demo-accent-soft);
 }
