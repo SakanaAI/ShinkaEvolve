@@ -1506,10 +1506,17 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 ) as pdf_file:
                     pdf_file_path = pdf_file.name
 
-                # Try wkhtmltopdf directly
+                # Try wkhtmltopdf directly. Disable JavaScript and local-file /
+                # external access: the HTML is built from LLM-generated meta
+                # content, so a payload like <img src="file:///etc/passwd"> or a
+                # remote fetch could otherwise exfiltrate local files / SSRF via
+                # wkhtmltopdf's WebKit engine.
                 result = subprocess.run(
                     [
                         "wkhtmltopdf",
+                        "--disable-javascript",
+                        "--disable-local-file-access",
+                        "--disable-external-links",
                         "--page-size",
                         "A4",
                         "--margin-top",
