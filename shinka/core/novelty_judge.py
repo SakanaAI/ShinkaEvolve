@@ -85,9 +85,12 @@ class NoveltyJudge:
         }
 
         for attempt in range(self.max_novelty_attempts):
-            # Compute similarities with programs in island
-            similarity_scores = database.compute_similarity(
-                code_embedding, parent_program.island_idx
+            # One island scan yields both the similarity scores and the most
+            # similar program (used below), instead of scanning the island twice.
+            similarity_scores, most_similar_program = (
+                database.compute_similarity_details(
+                    code_embedding, parent_program.island_idx
+                )
             )
 
             if not similarity_scores:
@@ -120,11 +123,7 @@ class NoveltyJudge:
             novelty_cost = 0.0
 
             if self.novelty_llm_client is not None:
-                # Get the most similar program for LLM comparison
-                most_similar_program = database.get_most_similar_program(
-                    code_embedding, parent_program.island_idx
-                )
-
+                # most_similar_program already fetched in the single scan above.
                 if most_similar_program:
                     try:
                         # Read the current proposed code
