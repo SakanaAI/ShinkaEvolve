@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import time
@@ -17,14 +18,18 @@ def _render_env_exports(eval_env: Optional[Dict[str, str]]) -> str:
     """Render an env dict as newline-joined ``export K=V`` lines for a script."""
     if not eval_env:
         return ""
-    return "\n".join(f"export {k}={v}" for k, v in eval_env.items())
+    # shlex.quote the value so a value containing spaces/;/$(...) cannot inject
+    # extra shell commands when this string is spliced into a bash script.
+    return "\n".join(f"export {k}={shlex.quote(str(v))}" for k, v in eval_env.items())
 
 
 def _render_env_docker_flags(eval_env: Optional[Dict[str, str]]) -> str:
     """Render an env dict as space-joined ``-e K=V`` flags for ``docker run``."""
     if not eval_env:
         return ""
-    return " ".join(f"-e {k}={v}" for k, v in eval_env.items())
+    return " ".join(
+        f"-e {shlex.quote(f'{k}={v}')}" for k, v in eval_env.items()
+    )
 
 
 # Configuration for Docker image caching
@@ -480,7 +485,9 @@ def submit_local_conda(
         activate_script=activate_script,
         separator="; ",
     )
-    env_exports = "; ".join(f"export {k}={v}" for k, v in (eval_env or {}).items())
+    env_exports = "; ".join(
+        f"export {k}={shlex.quote(str(v))}" for k, v in (eval_env or {}).items()
+    )
     full_cmd = "; ".join(
         segment
         for segment in [

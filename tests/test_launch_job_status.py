@@ -105,3 +105,39 @@ def test_kill_terminates_child_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild survived process-group kill")
+
+
+def test_env_exports_shell_quote_injection():
+    """A malicious eval_env value must be shell-quoted, not spliced as commands."""
+    from shinka.launch.slurm import _render_env_exports, _render_env_docker_flags
+
+    exports = _render_env_exports({"FOO": "a; rm -rf /tmp/x"})
+    # The dangerous ';' is inside a single-quoted value, not a command separator.
+    assert exports == "export FOO='a; rm -rf /tmp/x'"
+
+    flags = _render_env_docker_flags({"BAR": "b $(whoami)"})
+    assert flags == "-e 'BAR=b $(whoami)'"
+
+
+def test_strip_provider_secrets_opt_in(monkeypatch):
+    """SHINKA_STRIP_EVAL_SECRETS removes provider credentials from eval env."""
+    from shinka.launch.local import (
+        _strip_provider_secrets,
+        _should_strip_eval_secrets,
+    )
+
+    env = {
+        "PATH": "/usr/bin",
+        "OPENAI_API_KEY": "sk-secret",
+        "ANTHROPIC_API_KEY": "sk-ant",
+        "AWS_SECRET_ACCESS_KEY": "aws",
+        "HF_TOKEN": "hf",
+        "CUDA_VISIBLE_DEVICES": "0",
+    }
+    stripped = _strip_provider_secrets(env)
+    assert stripped == {"PATH": "/usr/bin", "CUDA_VISIBLE_DEVICES": "0"}
+
+    monkeypatch.delenv("SHINKA_STRIP_EVAL_SECRETS", raising=False)
+    assert _should_strip_eval_secrets() is False
+    monkeypatch.setenv("SHINKA_STRIP_EVAL_SECRETS", "1")
+    assert _should_strip_eval_secrets() is True
