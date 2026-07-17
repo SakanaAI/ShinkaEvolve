@@ -3871,15 +3871,8 @@ ${'='.repeat(80)}
             }
         }
 
-        function getSelectedNodeId() {
-            const selectedNode = document.querySelector('.node.selected');
-            if (selectedNode) {
-                // Extract node ID from D3 data
-                const d3Node = d3.select(selectedNode).datum();
-                return d3Node ? d3Node.data.id : null;
-            }
-            return null;
-        }
+        // getSelectedNodeId is defined once, later in this script (the copy
+        // here was dead — shadowed by the hoisted later definition).
 
         // Function to load and process data from a database file
         function loadDatabase(dbPath) {

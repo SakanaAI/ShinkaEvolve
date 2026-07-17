@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from .complexity import analyze_code_metrics
-from .dbase import Program, ProgramDatabase
+from .dbase import Program, ProgramDatabase, clean_nan_values
 
 logger = logging.getLogger(__name__)
 
@@ -915,7 +915,11 @@ class AsyncProgramDatabase:
                     if details is not None:
                         import json
 
-                        payload = json.dumps(details, sort_keys=True)
+                        # Match the sync event log: strip NaN/Inf so the stored
+                        # JSON is valid and round-trips through a strict parser.
+                        payload = json.dumps(
+                            clean_nan_values(details), sort_keys=True
+                        )
                     conn.execute(
                         """
                         INSERT INTO attempt_log (
@@ -968,7 +972,11 @@ class AsyncProgramDatabase:
                     if details is not None:
                         import json
 
-                        payload = json.dumps(details, sort_keys=True)
+                        # Match the sync event log: strip NaN/Inf so the stored
+                        # JSON is valid and round-trips through a strict parser.
+                        payload = json.dumps(
+                            clean_nan_values(details), sort_keys=True
+                        )
                     conn.execute(
                         """
                         INSERT INTO generation_event_log (
