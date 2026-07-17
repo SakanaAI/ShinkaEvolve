@@ -1174,3 +1174,34 @@ target = 2
     # The immutable occurrence is untouched; the editable one is changed.
     assert updated_content.splitlines()[0] == "target = 1"
     assert "target = 2" in updated_content
+
+
+def test_search_marker_literal_in_body_does_not_false_reject():
+    """A valid hunk whose body contains the literal '<<<<<<< SEARCH' must apply.
+
+    Regression: the dropped-hunk guard counted SEARCH markers across the whole
+    patch (including inside bodies), so a single valid hunk whose REPLACE body
+    mentioned the marker literally was falsely rejected as malformed.
+    """
+    original_content = """# EVOLVE-BLOCK-START
+    pass
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+    pass
+=======
+    # Example header looks like: <<<<<<< SEARCH (do not use)
+    return 1
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert error is None
+    assert num_applied == 1
+    assert "return 1" in updated_content
+    assert "pass" not in updated_content.replace("# Example", "")

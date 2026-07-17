@@ -649,9 +649,9 @@ def apply_search_replace(
     """
     new_text = original
     num_applied = 0
-    num_blocks = 0
+    block_spans: list[tuple[int, int]] = []
     for block in PATCH_PATTERN.finditer(patch_text):
-        num_blocks += 1
+        block_spans.append((block.start(), block.end()))
         search, replace = block.group(1), block.group(2)
         # Clean EVOLVE markers from search and replace text if present
         search = _clean_evolve_markers(search)
@@ -726,14 +726,23 @@ def apply_search_replace(
         num_applied += 1
 
     # A ``<<<<<<< SEARCH`` header that produced no parsed block means a hunk was
-    # silently dropped (e.g. a malformed body). Surface it instead of reporting
-    # partial success on a patch the caller believes was fully applied.
-    num_headers = len(SEARCH_HEADER_PATTERN.findall(patch_text))
-    if num_headers > num_blocks:
+    # silently dropped (e.g. a malformed body). Only count headers that fall
+    # OUTSIDE the parsed block spans — a marker that appears inside a hunk's
+    # SEARCH/REPLACE body (a comment, string literal, or code that itself
+    # manipulates diff markers) is legitimate content, not a dropped hunk.
+    def _inside_a_block(index: int) -> bool:
+        return any(start <= index < end for start, end in block_spans)
+
+    unparsed_headers = [
+        match.start()
+        for match in SEARCH_HEADER_PATTERN.finditer(patch_text)
+        if not _inside_a_block(match.start())
+    ]
+    if unparsed_headers:
         raise PatchError(
-            f"Malformed patch: found {num_headers} SEARCH markers but only "
-            f"{num_blocks} well-formed SEARCH/REPLACE block(s) could be parsed. "
-            "Each hunk needs a matching '=======' and '>>>>>>> REPLACE'."
+            f"Malformed patch: {len(unparsed_headers)} SEARCH marker(s) did not "
+            f"form a complete SEARCH/REPLACE block ({len(block_spans)} block(s) "
+            "parsed). Each hunk needs a matching '=======' and '>>>>>>> REPLACE'."
         )
 
     return new_text, num_applied
