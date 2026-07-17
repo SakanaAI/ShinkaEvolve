@@ -38,6 +38,7 @@ from shinka.llm import (
 )
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
+from shinka.launch.scheduler import SchedulerSubmissionCleanupError
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -77,6 +78,10 @@ from shinka.utils import (
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+
+_CLEANUP_RETRY_TIMEOUT_SECONDS = 10.0
+_CLEANUP_RETRY_INITIAL_DELAY_SECONDS = 0.05
+_CLEANUP_RETRY_MAX_DELAY_SECONDS = 1.0
 
 
 def _print_gradient_logo_and_mirror(
@@ -536,6 +541,14 @@ class ShinkaEvolveRunner:
         self.finalization_complete = asyncio.Event()
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
+        self._submission_cleanup_tasks: Set[asyncio.Task] = set()
+        self._submission_cleanup_by_submission: Dict[
+            asyncio.Task, asyncio.Task
+        ] = {}
+        self._pending_evaluation_submissions: Dict[
+            asyncio.Task, Tuple[str, int]
+        ] = {}
+        self._late_submission_jobs: Dict[int, Union[str, Any]] = {}
 
         # Performance tracking
         self.total_proposals_generated = 0
@@ -5063,6 +5076,165 @@ class ShinkaEvolveRunner:
         await self.evaluation_slot_pool.release(job.evaluation_worker_id)
         job.evaluation_slot_released = True
 
+    def _track_submission_cleanup_task(self, task: asyncio.Task) -> None:
+        """Keep late-submission cleanup owned by the runner until it finishes."""
+        tasks = getattr(self, "_submission_cleanup_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._submission_cleanup_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    def _ensure_submission_cleanup_task(
+        self,
+        submission_task: asyncio.Task,
+        results_dir: str,
+        evaluation_worker_id: int,
+    ) -> asyncio.Task:
+        cleanup_by_submission = getattr(
+            self, "_submission_cleanup_by_submission", None
+        )
+        if cleanup_by_submission is None:
+            cleanup_by_submission = {}
+            self._submission_cleanup_by_submission = cleanup_by_submission
+
+        existing_task = cleanup_by_submission.get(submission_task)
+        if existing_task is not None:
+            return existing_task
+
+        cleanup_task = asyncio.create_task(
+            self._cleanup_late_evaluation_submission(
+                submission_task,
+                results_dir,
+                evaluation_worker_id,
+            )
+        )
+        cleanup_by_submission[submission_task] = cleanup_task
+        self._track_submission_cleanup_task(cleanup_task)
+
+        def clear_mapping(done_task: asyncio.Task) -> None:
+            if cleanup_by_submission.get(submission_task) is done_task:
+                cleanup_by_submission.pop(submission_task, None)
+
+        cleanup_task.add_done_callback(clear_mapping)
+        return cleanup_task
+
+    def _get_cleanup_retry_timeout(self) -> float:
+        return getattr(
+            self, "_cleanup_retry_timeout_seconds", _CLEANUP_RETRY_TIMEOUT_SECONDS
+        )
+
+    async def _try_cleanup_job(self, job_id: Any, results_dir: str) -> bool:
+        """Cancel a job, or confirm that it is terminal and reap it."""
+        try:
+            if await self.scheduler.cancel_job_async(job_id):
+                return True
+        except Exception as e:
+            logger.warning(f"Error cancelling evaluation job {job_id}: {e}")
+
+        try:
+            still_running = await self.scheduler.check_job_id_status_async(job_id)
+        except Exception as e:
+            logger.warning(f"Could not confirm state of evaluation job {job_id}: {e}")
+            return False
+
+        if still_running:
+            return False
+
+        if getattr(self.scheduler, "job_type", None) in [
+            "slurm_docker",
+            "slurm_conda",
+        ]:
+            return True
+
+        try:
+            await self.scheduler.get_job_results_async(job_id, results_dir)
+        except Exception as e:
+            logger.warning(f"Could not reap terminal evaluation job {job_id}: {e}")
+            return False
+        return True
+
+    async def _cleanup_late_evaluation_submission(
+        self,
+        submission_task: asyncio.Task,
+        results_dir: str,
+        evaluation_worker_id: int,
+    ) -> None:
+        """Drain a late submission and retain its slot until it is reaped."""
+        try:
+            job_id = await asyncio.shield(submission_task)
+        except asyncio.CancelledError:
+            raise
+        except SchedulerSubmissionCleanupError as e:
+            getattr(self, "_pending_evaluation_submissions", {}).pop(
+                submission_task, None
+            )
+            if e.cleanup_succeeded:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+                return
+            job_id = e.job_id
+            late_jobs = getattr(self, "_late_submission_jobs", None)
+            if late_jobs is None:
+                late_jobs = {}
+                self._late_submission_jobs = late_jobs
+            late_jobs[id(job_id)] = job_id
+            logger.error(
+                f"Scheduler shutdown cleanup did not finish for evaluation job "
+                f"{job_id}; retaining its evaluation slot"
+            )
+            return
+        except Exception as e:
+            logger.warning(f"Evaluation submission failed after cancellation: {e}")
+            getattr(self, "_pending_evaluation_submissions", {}).pop(
+                submission_task, None
+            )
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+            return
+
+        getattr(self, "_pending_evaluation_submissions", {}).pop(
+            submission_task, None
+        )
+
+        late_jobs = getattr(self, "_late_submission_jobs", None)
+        if late_jobs is None:
+            late_jobs = {}
+            self._late_submission_jobs = late_jobs
+        late_job_key = id(job_id)
+        late_jobs[late_job_key] = job_id
+
+        deadline = time.monotonic() + self._get_cleanup_retry_timeout()
+        retry_delay = _CLEANUP_RETRY_INITIAL_DELAY_SECONDS
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                cleaned = await asyncio.wait_for(
+                    self._try_cleanup_job(job_id, results_dir), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                break
+
+            if cleaned:
+                late_jobs.pop(late_job_key, None)
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+                return
+
+            logger.warning(
+                "Evaluation submitted after proposal cancellation remains owned; "
+                "retrying cleanup"
+            )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(retry_delay, remaining))
+            retry_delay = min(_CLEANUP_RETRY_MAX_DELAY_SECONDS, retry_delay * 2)
+
+        logger.error(
+            f"Could not confirm cleanup of late evaluation job {job_id} before "
+            "the cleanup deadline; retaining its evaluation slot"
+        )
+
     async def _submit_evaluation_job_with_slot(
         self,
         exec_fname: str,
@@ -5074,13 +5246,31 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        submission_task = asyncio.create_task(
+            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
+        )
+        pending_submissions = getattr(
+            self, "_pending_evaluation_submissions", None
+        )
+        if pending_submissions is None:
+            pending_submissions = {}
+            self._pending_evaluation_submissions = pending_submissions
+        pending_submissions[submission_task] = (results_dir, evaluation_worker_id)
         try:
-            job_id = await self.scheduler.submit_async_nonblocking(
-                exec_fname, results_dir
+            job_id = await asyncio.shield(submission_task)
+        except asyncio.CancelledError:
+            self._ensure_submission_cleanup_task(
+                submission_task,
+                results_dir,
+                evaluation_worker_id,
             )
+            raise
         except Exception:
+            pending_submissions.pop(submission_task, None)
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
+
+        pending_submissions.pop(submission_task, None)
 
         evaluation_submitted_at = time.time()
         evaluation_started_at = evaluation_submitted_at
@@ -5483,18 +5673,146 @@ class ShinkaEvolveRunner:
 
         logger.info("Meta summarizer task exited")
 
+    async def _cancel_running_jobs_for_cleanup(
+        self, deadline: Optional[float] = None
+    ) -> None:
+        """Retry cleanup of active evaluators until success or a fixed deadline."""
+        pending_jobs = list(self.running_jobs)
+        cleaned_count = 0
+        if deadline is None:
+            deadline = time.monotonic() + self._get_cleanup_retry_timeout()
+        retry_delay = _CLEANUP_RETRY_INITIAL_DELAY_SECONDS
+
+        while pending_jobs:
+            surviving_jobs: List[AsyncRunningJob] = []
+            for job in pending_jobs:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    surviving_jobs.append(job)
+                    continue
+
+                try:
+                    cleaned = await asyncio.wait_for(
+                        self._try_cleanup_job(job.job_id, job.results_dir),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    cleaned = False
+
+                if cleaned:
+                    self.submitted_jobs.pop(str(job.job_id), None)
+                    await self._release_evaluation_slot_once(job)
+                    cleaned_count += 1
+                else:
+                    surviving_jobs.append(job)
+
+            pending_jobs = surviving_jobs
+            remaining = deadline - time.monotonic()
+            if not pending_jobs or remaining <= 0:
+                break
+            await asyncio.sleep(min(retry_delay, remaining))
+            retry_delay = min(_CLEANUP_RETRY_MAX_DELAY_SECONDS, retry_delay * 2)
+
+        self.running_jobs = pending_jobs
+        for job in pending_jobs:
+            logger.error(
+                f"Could not confirm cleanup of active job {job.job_id} "
+                f"(gen {job.generation}) before the cleanup deadline; retaining "
+                "its evaluation slot"
+            )
+        if cleaned_count:
+            logger.info(
+                f"Cleaned up {cleaned_count} active evaluation job(s) during shutdown"
+            )
+
     async def _cleanup_async(self):
         """Cleanup async resources."""
         try:
+            deadline = time.monotonic() + self._get_cleanup_retry_timeout()
+            begin_scheduler_shutdown = getattr(self.scheduler, "begin_shutdown", None)
+            if begin_scheduler_shutdown is not None:
+                begin_scheduler_shutdown()
+
             # Cancel remaining proposal tasks
             for task in self.active_proposal_tasks.values():
                 if not task.done():
                     task.cancel()
 
-            # Wait for tasks to finish
+            # Drain proposal cancellation only within the shared cleanup budget.
             if self.active_proposal_tasks:
-                await asyncio.gather(
-                    *self.active_proposal_tasks.values(), return_exceptions=True
+                proposal_tasks = list(self.active_proposal_tasks.values())
+                done, pending = await asyncio.wait(
+                    proposal_tasks,
+                    timeout=max(0.0, deadline - time.monotonic()),
+                )
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if pending:
+                    logger.error(
+                        f"Proposal tasks still pending after cleanup deadline: "
+                        f"{len(pending)}"
+                    )
+
+            pending_submissions = getattr(
+                self, "_pending_evaluation_submissions", {}
+            )
+            for submission_task, (
+                results_dir,
+                evaluation_worker_id,
+            ) in list(pending_submissions.items()):
+                self._ensure_submission_cleanup_task(
+                    submission_task,
+                    results_dir,
+                    evaluation_worker_id,
+                )
+
+            submission_cleanup_tasks = list(
+                getattr(self, "_submission_cleanup_tasks", set())
+            )
+            if submission_cleanup_tasks:
+                done, pending = await asyncio.wait(
+                    submission_cleanup_tasks,
+                    timeout=max(0.0, deadline - time.monotonic()),
+                )
+                if pending:
+                    late_job_ids = [
+                        str(job_id)
+                        for job_id in getattr(
+                            self, "_late_submission_jobs", {}
+                        ).values()
+                    ]
+                    logger.error(
+                        "Timed out waiting for late-submission cleanup; surviving "
+                        f"job IDs: {late_job_ids or ['unknown (submission pending)']}"
+                    )
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+
+            await self._cancel_running_jobs_for_cleanup(deadline=deadline)
+
+            surviving_job_ids = [
+                str(job.job_id) for job in self.running_jobs
+            ] + [
+                str(job_id)
+                for job_id in getattr(self, "_late_submission_jobs", {}).values()
+            ]
+            if surviving_job_ids:
+                logger.error(
+                    "Evaluation jobs still owned after cleanup deadline: "
+                    f"{surviving_job_ids}"
+                )
+
+            pending_submission_slots = [
+                evaluation_worker_id
+                for _, evaluation_worker_id in getattr(
+                    self, "_pending_evaluation_submissions", {}
+                ).values()
+            ]
+            if pending_submission_slots:
+                logger.error(
+                    "Evaluation submissions still pending after cleanup deadline; "
+                    "job IDs are not yet available and evaluation slots remain "
+                    f"owned: {pending_submission_slots}"
                 )
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
@@ -5528,7 +5846,14 @@ class ShinkaEvolveRunner:
             await self.async_db.close_async()
 
             # Cleanup scheduler
-            self.scheduler.shutdown()
+            if surviving_job_ids or pending_submission_slots:
+                shutdown_nowait = getattr(self.scheduler, "shutdown_nowait", None)
+                if shutdown_nowait is not None:
+                    shutdown_nowait()
+                else:
+                    self.scheduler.shutdown()
+            else:
+                self.scheduler.shutdown()
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")

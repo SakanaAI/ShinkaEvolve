@@ -1,5 +1,7 @@
 import asyncio
 import json
+import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +15,8 @@ from shinka.core.async_runner import (
     ShinkaEvolveRunner,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.launch import scheduler as scheduler_module
+from shinka.launch.scheduler import JobScheduler, LocalJobConfig, SlurmCondaJobConfig
 
 
 class _FakeAsyncDB:
@@ -1348,6 +1352,75 @@ def test_cancel_surplus_inflight_work_cancels_backlog_once_target_hit():
     asyncio.run(_run())
 
 
+def test_cleanup_cancels_active_jobs_before_scheduler_shutdown(caplog):
+    async def _run():
+        events = []
+
+        class _CleanupScheduler:
+            async def cancel_job_async(self, job_id):
+                events.append(f"cancel:{job_id}")
+                return job_id == "job-cancelled"
+
+            async def check_job_id_status_async(self, job_id):
+                return job_id == "job-failed"
+
+            def shutdown(self):
+                events.append("scheduler.shutdown")
+
+        class _CleanupAsyncDB(_FakeAsyncDB):
+            async def close_async(self):
+                events.append("db.close")
+
+        now = time.time()
+        cancelled_job = AsyncRunningJob(
+            job_id="job-cancelled",
+            exec_fname="program_1.py",
+            results_dir="results_1",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=51,
+            evaluation_worker_id=3,
+        )
+        failed_job = AsyncRunningJob(
+            job_id="job-failed",
+            exec_fname="program_2.py",
+            results_dir="results_2",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=52,
+            evaluation_worker_id=4,
+        )
+        evaluation_slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            async_db=_CleanupAsyncDB(total_programs=0),
+            scheduler=_CleanupScheduler(),
+            running_jobs=[cancelled_job, failed_job],
+            submitted_jobs={
+                "job-cancelled": cancelled_job,
+                "job-failed": failed_job,
+            },
+            evaluation_slot_pool=evaluation_slot_pool,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+
+        await runner._cleanup_async()
+
+        assert events[0] == "cancel:job-cancelled"
+        assert events.count("cancel:job-failed") >= 1
+        assert events[-2:] == ["db.close", "scheduler.shutdown"]
+        assert runner.running_jobs == [failed_job]
+        assert runner.submitted_jobs == {"job-failed": failed_job}
+        assert evaluation_slot_pool.released == [3]
+        assert cancelled_job.evaluation_slot_released is True
+        assert failed_job.evaluation_slot_released is False
+
+    asyncio.run(_run())
+
+    assert "Could not confirm cleanup of active job job-failed" in caplog.text
+
+
 def test_process_single_job_skips_persistence_for_discarded_surplus_job():
     async def _run():
         async_db = _FakeAsyncDBWithGuard()
@@ -1583,3 +1656,623 @@ def test_job_monitor_processes_completed_jobs_inline():
         await asyncio.wait_for(monitor_task, timeout=0.2)
 
     asyncio.run(_run())
+
+
+def test_cancelled_executor_submission_reaps_late_job_and_releases_slot():
+    async def _run():
+        class _LateSubmissionScheduler:
+            def __init__(self):
+                self.started = threading.Event()
+                self.allow_submit = threading.Event()
+                self.job_id = object()
+                self.cancelled_job_ids = []
+
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                def submit():
+                    self.started.set()
+                    if not self.allow_submit.wait(timeout=5):
+                        raise TimeoutError("test submission was not released")
+                    return self.job_id
+
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, submit)
+
+            async def cancel_job_async(self, job_id):
+                self.cancelled_job_ids.append(job_id)
+                return True
+
+        scheduler = _LateSubmissionScheduler()
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+
+        submission = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        loop = asyncio.get_running_loop()
+        assert await loop.run_in_executor(None, scheduler.started.wait, 5)
+
+        submission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(submission, timeout=0.2)
+
+        assert evaluation_slots.in_use == 1
+        assert len(runner._submission_cleanup_tasks) == 1
+
+        scheduler.allow_submit.set()
+        cleanup_task = next(iter(runner._submission_cleanup_tasks))
+        await asyncio.wait_for(asyncio.shield(cleanup_task), timeout=0.5)
+
+        assert scheduler.cancelled_job_ids == [scheduler.job_id]
+        assert evaluation_slots.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_repeated_cancellation_keeps_late_submission_owned_until_reaped():
+    async def _run():
+        class _RetryingCancellationScheduler:
+            def __init__(self):
+                self.started = threading.Event()
+                self.allow_submit = threading.Event()
+                self.first_cancel = asyncio.Event()
+                self.allow_cancel = asyncio.Event()
+                self.job_id = object()
+                self.cancel_attempts = 0
+
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                def submit():
+                    self.started.set()
+                    if not self.allow_submit.wait(timeout=5):
+                        raise TimeoutError("test submission was not released")
+                    return self.job_id
+
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, submit)
+
+            async def cancel_job_async(self, job_id):
+                assert job_id is self.job_id
+                self.cancel_attempts += 1
+                if self.cancel_attempts == 1:
+                    self.first_cancel.set()
+                    return False
+                return self.allow_cancel.is_set()
+
+            async def check_job_id_status_async(self, job_id):
+                assert job_id is self.job_id
+                return True
+
+        scheduler = _RetryingCancellationScheduler()
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+
+        submission = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        loop = asyncio.get_running_loop()
+        assert await loop.run_in_executor(None, scheduler.started.wait, 5)
+
+        submission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(submission, timeout=0.2)
+
+        assert evaluation_slots.in_use == 1
+        assert len(runner._submission_cleanup_tasks) == 1
+
+        scheduler.allow_submit.set()
+        await asyncio.wait_for(scheduler.first_cancel.wait(), timeout=0.2)
+        scheduler.allow_cancel.set()
+        cleanup_task = next(iter(runner._submission_cleanup_tasks))
+        await asyncio.wait_for(asyncio.shield(cleanup_task), timeout=0.5)
+
+        assert scheduler.cancel_attempts >= 2
+        assert evaluation_slots.in_use == 0
+        assert runner._submission_cleanup_tasks == set()
+
+    asyncio.run(_run())
+
+
+def test_cancelled_submission_reaps_job_that_finished_before_cancel():
+    async def _run():
+        class _CompletedLateScheduler:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.allow_submit = asyncio.Event()
+                self.job_id = object()
+                self.reaped_job_ids = []
+
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                self.started.set()
+                await self.allow_submit.wait()
+                return self.job_id
+
+            async def cancel_job_async(self, job_id):
+                assert job_id is self.job_id
+                return False
+
+            async def check_job_id_status_async(self, job_id):
+                assert job_id is self.job_id
+                return False
+
+            async def get_job_results_async(self, job_id, results_dir):
+                assert job_id is self.job_id
+                self.reaped_job_ids.append((job_id, results_dir))
+                return {}
+
+        scheduler = _CompletedLateScheduler()
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+
+        submission = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        await asyncio.wait_for(scheduler.started.wait(), timeout=0.2)
+
+        submission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(submission, timeout=0.2)
+
+        assert evaluation_slots.in_use == 1
+
+        scheduler.allow_submit.set()
+        cleanup_task = next(iter(runner._submission_cleanup_tasks))
+        await asyncio.wait_for(asyncio.shield(cleanup_task), timeout=0.5)
+
+        assert scheduler.reaped_job_ids == [(scheduler.job_id, "results")]
+        assert evaluation_slots.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_cleanup_keeps_slot_until_cancellation_is_confirmed():
+    async def _run():
+        class _DelayedCancellationScheduler:
+            def __init__(self):
+                self.cancel_started = asyncio.Event()
+                self.termination_confirmed = asyncio.Event()
+
+            async def cancel_job_async(self, job_id):
+                assert job_id == "delayed-job"
+                self.cancel_started.set()
+                await self.termination_confirmed.wait()
+                return True
+
+        scheduler = _DelayedCancellationScheduler()
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        worker_id = await evaluation_slots.acquire()
+        now = time.time()
+        job = AsyncRunningJob(
+            job_id="delayed-job",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=1,
+            evaluation_worker_id=worker_id,
+        )
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+            running_jobs=[job],
+            submitted_jobs={"delayed-job": job},
+        )
+        runner._cleanup_retry_timeout_seconds = 0.5
+
+        cleanup_task = asyncio.create_task(
+            runner._cancel_running_jobs_for_cleanup()
+        )
+        await asyncio.wait_for(scheduler.cancel_started.wait(), timeout=0.2)
+
+        assert evaluation_slots.in_use == 1
+        assert job.evaluation_slot_released is False
+
+        scheduler.termination_confirmed.set()
+        await asyncio.wait_for(cleanup_task, timeout=0.2)
+
+        assert evaluation_slots.in_use == 0
+        assert job.evaluation_slot_released is True
+
+    asyncio.run(_run())
+
+
+def test_cleanup_retries_transient_active_job_cancellation():
+    async def _run():
+        class _TransientCancellationScheduler:
+            def __init__(self):
+                self.cancel_attempts = 0
+
+            async def cancel_job_async(self, job_id):
+                assert job_id == "transient-job"
+                self.cancel_attempts += 1
+                return self.cancel_attempts >= 2
+
+            async def check_job_id_status_async(self, job_id):
+                assert job_id == "transient-job"
+                return True
+
+        scheduler = _TransientCancellationScheduler()
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        worker_id = await evaluation_slots.acquire()
+        now = time.time()
+        job = AsyncRunningJob(
+            job_id="transient-job",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=2,
+            evaluation_worker_id=worker_id,
+        )
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+            running_jobs=[job],
+            submitted_jobs={"transient-job": job},
+        )
+        runner._cleanup_retry_timeout_seconds = 0.2
+
+        await runner._cancel_running_jobs_for_cleanup()
+
+        assert scheduler.cancel_attempts == 2
+        assert runner.running_jobs == []
+        assert runner.submitted_jobs == {}
+        assert evaluation_slots.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_cleanup_bounds_permanently_failing_late_submission(
+    caplog: pytest.LogCaptureFixture,
+):
+    async def _run():
+        events = []
+
+        class _PermanentFailureScheduler:
+            async def cancel_job_async(self, job_id):
+                raise RuntimeError("scheduler unavailable")
+
+            async def check_job_id_status_async(self, job_id):
+                raise RuntimeError("status unavailable")
+
+            def shutdown(self):
+                events.append("scheduler.shutdown")
+
+        class _ClosingAsyncDB(_FakeAsyncDB):
+            async def close_async(self):
+                events.append("db.close")
+
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        worker_id = await evaluation_slots.acquire()
+        runner = _build_runner(
+            async_db=_ClosingAsyncDB(total_programs=0),
+            scheduler=_PermanentFailureScheduler(),
+            evaluation_slot_pool=evaluation_slots,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+        submission_task = asyncio.create_task(
+            asyncio.sleep(0, result="late-job")
+        )
+        cleanup_task = asyncio.create_task(
+            runner._cleanup_late_evaluation_submission(
+                submission_task,
+                "results",
+                worker_id,
+            )
+        )
+        runner._track_submission_cleanup_task(cleanup_task)
+
+        await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+
+        assert events == ["db.close", "scheduler.shutdown"]
+        assert evaluation_slots.in_use == 1
+        assert list(runner._late_submission_jobs.values()) == ["late-job"]
+
+    asyncio.run(_run())
+
+    assert "surviving job IDs: ['late-job']" in caplog.text
+    assert "Evaluation jobs still owned after cleanup deadline: ['late-job']" in caplog.text
+
+
+def test_cleanup_bounds_submission_that_never_returns(
+    caplog: pytest.LogCaptureFixture,
+):
+    async def _run():
+        events = []
+
+        class _NeverReturningScheduler:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.wait_forever = asyncio.Event()
+
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                self.started.set()
+                await self.wait_forever.wait()
+                raise AssertionError("submission unexpectedly resumed")
+
+            def shutdown(self):
+                events.append("scheduler.shutdown")
+
+        class _ClosingAsyncDB(_FakeAsyncDB):
+            async def close_async(self):
+                events.append("db.close")
+
+        scheduler = _NeverReturningScheduler()
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            async_db=_ClosingAsyncDB(total_programs=0),
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+        proposal_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        runner.active_proposal_tasks = {"proposal": proposal_task}
+        await asyncio.wait_for(scheduler.started.wait(), timeout=0.2)
+
+        start = time.monotonic()
+        await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.2
+        assert proposal_task.cancelled()
+        assert events == ["db.close", "scheduler.shutdown"]
+        assert evaluation_slots.in_use == 1
+        pending_submissions = list(
+            runner._pending_evaluation_submissions.values()
+        )
+        assert len(pending_submissions) == 1
+        assert pending_submissions[0][0] == "results"
+        assert pending_submissions[0][1] is not None
+
+        pending_submission = next(iter(runner._pending_evaluation_submissions))
+        pending_submission.cancel()
+        await asyncio.gather(pending_submission, return_exceptions=True)
+
+    asyncio.run(_run())
+
+    assert "job IDs are not yet available" in caplog.text
+    assert "evaluation slots remain owned:" in caplog.text
+
+
+def test_cleanup_cancels_submission_that_finishes_after_shutdown(monkeypatch):
+    async def _run():
+        submission_started = threading.Event()
+        allow_submission = threading.Event()
+        cancellation_finished = threading.Event()
+        cancelled_job_ids = []
+
+        scheduler = JobScheduler("local", LocalJobConfig(), max_workers=1)
+
+        def delayed_submit(exec_fname, results_dir):
+            assert exec_fname == "program.py"
+            assert results_dir == "results"
+            submission_started.set()
+            assert allow_submission.wait(timeout=1.0)
+            return "late-job"
+
+        def cancel_job(job_id):
+            cancelled_job_ids.append(job_id)
+            cancellation_finished.set()
+            return True
+
+        monkeypatch.setattr(scheduler, "submit_async", delayed_submit)
+        monkeypatch.setattr(scheduler, "_cancel_job_sync", cancel_job)
+
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+        proposal_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        runner.active_proposal_tasks = {"proposal": proposal_task}
+
+        assert await asyncio.to_thread(submission_started.wait, 0.2)
+        await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+        assert proposal_task.cancelled()
+        assert cancelled_job_ids == []
+        assert evaluation_slots.in_use == 1
+
+        # The scheduler owns the in-flight submission after cleanup returns.
+        allow_submission.set()
+        assert await asyncio.to_thread(cancellation_finished.wait, 0.5)
+
+        submission_tasks = list(runner._pending_evaluation_submissions)
+        await asyncio.gather(*submission_tasks, return_exceptions=True)
+        cleanup_tasks = list(runner._submission_cleanup_tasks)
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+        assert cancelled_job_ids == ["late-job"]
+        assert runner._pending_evaluation_submissions == {}
+        assert evaluation_slots.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_cleanup_retains_late_job_when_scheduler_shutdown_cleanup_fails(monkeypatch):
+    async def _run():
+        submission_started = threading.Event()
+        allow_submission = threading.Event()
+        cleanup_attempts = []
+
+        scheduler = JobScheduler("local", LocalJobConfig(), max_workers=1)
+
+        def delayed_submit(exec_fname, results_dir):
+            assert exec_fname == "program.py"
+            assert results_dir == "results"
+            submission_started.set()
+            assert allow_submission.wait(timeout=1.0)
+            return "late-job"
+
+        def failed_cleanup(job_id):
+            cleanup_attempts.append(job_id)
+            return False
+
+        monkeypatch.setattr(scheduler, "submit_async", delayed_submit)
+        monkeypatch.setattr(scheduler, "_cancel_job_sync", failed_cleanup)
+
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+        )
+        runner._cleanup_retry_timeout_seconds = 0.02
+        scheduler._shutdown_cleanup_retry_timeout_seconds = 0.02
+        proposal_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        runner.active_proposal_tasks = {"proposal": proposal_task}
+
+        assert await asyncio.to_thread(submission_started.wait, 0.2)
+        await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+        assert proposal_task.cancelled()
+        assert evaluation_slots.in_use == 1
+
+        allow_submission.set()
+        cleanup_task = next(iter(runner._submission_cleanup_tasks))
+        await asyncio.wait_for(asyncio.shield(cleanup_task), timeout=0.5)
+
+        assert cleanup_attempts
+        assert evaluation_slots.in_use == 1
+        assert list(runner._late_submission_jobs.values()) == ["late-job"]
+        assert list(scheduler._shutdown_submissions.values()) == ["late-job"]
+
+    asyncio.run(_run())
+
+
+def test_terminal_slurm_cleanup_does_not_enter_monitor():
+    async def _run():
+        class _TerminalSlurmScheduler:
+            job_type = "slurm_conda"
+
+            async def cancel_job_async(self, job_id):
+                return False
+
+            async def check_job_id_status_async(self, job_id):
+                return False
+
+            async def get_job_results_async(self, job_id, results_dir):
+                raise AssertionError("cleanup must not enter monitor_slurm")
+
+        runner = _build_runner(scheduler=_TerminalSlurmScheduler())
+
+        assert await runner._try_cleanup_job("terminal-job", "results") is True
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    ("failed_command", "raises_error"),
+    [("scancel", False), ("squeue", False), ("squeue", True)],
+    ids=["blocked-scancel", "blocked-squeue", "erroring-squeue"],
+)
+def test_cleanup_deadline_bounds_blocked_slurm_command(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failed_command: str,
+    raises_error: bool,
+):
+    async def _run():
+        release_command = threading.Event()
+        command_started = threading.Event()
+        events = []
+
+        def run(command, *args, **kwargs):
+            if command[0] == failed_command and not release_command.is_set():
+                command_started.set()
+                if raises_error:
+                    raise subprocess.CalledProcessError(1, command)
+                if not release_command.wait(timeout=0.5):
+                    raise TimeoutError("test command was not released")
+            stdout = (
+                ""
+                if command[0] == "squeue" and release_command.is_set()
+                else "RUNNING"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(scheduler_module.subprocess, "run", run)
+
+        class _ClosingAsyncDB(_FakeAsyncDB):
+            async def close_async(self):
+                events.append("db.close")
+
+        scheduler = JobScheduler("slurm_conda", SlurmCondaJobConfig())
+        evaluation_slots = LogicalSlotPool(1, "evaluation")
+        worker_id = await evaluation_slots.acquire()
+        now = time.time()
+        job = AsyncRunningJob(
+            job_id="blocked-job",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=3,
+            evaluation_worker_id=worker_id,
+        )
+        runner = _build_runner(
+            async_db=_ClosingAsyncDB(total_programs=0),
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_slots,
+            running_jobs=[job],
+            submitted_jobs={"blocked-job": job},
+        )
+        runner._cleanup_retry_timeout_seconds = 0.03
+
+        try:
+            start = time.monotonic()
+            await asyncio.wait_for(runner._cleanup_async(), timeout=0.2)
+            elapsed = time.monotonic() - start
+
+            assert elapsed < 0.2
+            assert command_started.is_set()
+            assert events == ["db.close"]
+            assert scheduler.executor._shutdown is True
+            assert evaluation_slots.in_use == 1
+            assert runner.running_jobs == [job]
+        finally:
+            release_command.set()
+            scheduler.shutdown()
+
+    asyncio.run(_run())
+
+    assert "active job blocked-job" in caplog.text
+    assert "Evaluation jobs still owned after cleanup deadline: ['blocked-job']" in caplog.text

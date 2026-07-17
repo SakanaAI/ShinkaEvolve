@@ -12,6 +12,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_SLURM_COMMAND_TIMEOUT_SECONDS = 5.0
+
 
 def _render_env_exports(eval_env: Optional[Dict[str, str]]) -> str:
     """Render an env dict as newline-joined ``export K=V`` lines for a script."""
@@ -496,7 +498,7 @@ def submit_local_conda(
     return job_id
 
 
-def get_job_status(job_id: str) -> Optional[str]:
+def get_job_status(job_id: str, timeout: Optional[float] = None) -> Optional[str]:
     """Get status for Slurm or local jobs."""
     if job_id.startswith("local-"):
         job = LOCAL_JOBS.get(job_id)
@@ -507,14 +509,20 @@ def get_job_status(job_id: str) -> Optional[str]:
             return job_id
         return ""
     try:
+        command_timeout = (
+            _SLURM_COMMAND_TIMEOUT_SECONDS if timeout is None else timeout
+        )
+        if command_timeout <= 0:
+            return None
         result = subprocess.run(
             ["squeue", "-j", str(job_id), "--noheader"],
             capture_output=True,
             text=True,
             check=True,
+            timeout=command_timeout,
         )
         return result.stdout.strip()
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         return None
 
 

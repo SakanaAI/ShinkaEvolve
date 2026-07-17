@@ -2,12 +2,46 @@ import subprocess
 import time
 import threading
 import os
+import signal
+import sys
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
 from shinka.utils import load_results, parse_time_to_seconds
 import logging
 
+_SUPERVISOR_CODE = """
+import os
+import signal
+import subprocess
+import sys
+
+def ignore_termination(_signum, _frame):
+    pass
+
+
+result_fd = int(sys.argv[1])
+signal.signal(signal.SIGTERM, ignore_termination)
+child = subprocess.Popen(sys.argv[2:])
+return_code = child.wait()
+os.write(result_fd, f"{return_code}\\n".encode("ascii"))
+os.close(result_fd)
+while True:
+    signal.pause()
+"""
 logger = logging.getLogger(__name__)
+
+
+def _move_fd_above_standard_streams(fd: int) -> int:
+    """Return a close-on-exec duplicate whose descriptor is at least 3."""
+    if fd >= 3:
+        os.set_inheritable(fd, False)
+        return fd
+
+    import fcntl
+
+    moved_fd = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+    os.close(fd)
+    return moved_fd
 
 
 class ProcessWithLogging:
@@ -18,10 +52,17 @@ class ProcessWithLogging:
         process: subprocess.Popen,
         log_files: Tuple[TextIO, TextIO],
         log_threads: Tuple[threading.Thread, threading.Thread],
+        process_group: Optional[int] = None,
+        completion_fd: Optional[int] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
+        self._process_group = process_group
+        self._completion_fd = completion_fd
+        self._completion_buffer = b""
+        self._returncode: Optional[int] = None
+        self._supervisor_exit_pending = False
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -33,10 +74,154 @@ class ProcessWithLogging:
 
     def __repr__(self):
         """Return a detailed string representation."""
-        return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.process.returncode})"
+        return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.returncode})"
+
+    @property
+    def returncode(self) -> Optional[int]:
+        """Return the evaluator's exit code rather than the supervisor's."""
+        if self._returncode is not None:
+            return self._returncode
+        if self._completion_fd is None and not self._supervisor_exit_pending:
+            return self.process.returncode
+        return self.poll()
+
+    def _read_completion(self) -> None:
+        """Read an evaluator exit code from the supervisor without blocking."""
+        if self._completion_fd is None or self._returncode is not None:
+            return
+
+        try:
+            chunk = os.read(self._completion_fd, 64)
+        except BlockingIOError:
+            return
+
+        if chunk:
+            self._completion_buffer += chunk
+            if b"\n" in self._completion_buffer:
+                line, _, _ = self._completion_buffer.partition(b"\n")
+                self._returncode = int(line)
+                os.close(self._completion_fd)
+                self._completion_fd = None
+            return
+
+        os.close(self._completion_fd)
+        self._completion_fd = None
+        self._supervisor_exit_pending = True
+        supervisor_returncode = self.process.poll()
+        if supervisor_returncode is not None:
+            self._handle_supervisor_exit(supervisor_returncode)
+
+    def poll(self) -> Optional[int]:
+        """Poll the evaluator while a supervisor keeps its process group alive."""
+        if (
+            self._completion_fd is None
+            and self._returncode is None
+            and not self._supervisor_exit_pending
+        ):
+            return self.process.poll()
+
+        self._read_completion()
+        if self._returncode is not None:
+            return self._returncode
+
+        supervisor_returncode = self.process.poll()
+        if supervisor_returncode is not None:
+            self._read_completion()
+            if self._returncode is None:
+                self._handle_supervisor_exit(supervisor_returncode)
+        return self._returncode
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        """Wait for the evaluator, leaving its supervisor alive for cleanup."""
+        if (
+            self._completion_fd is None
+            and self._returncode is None
+            and not self._supervisor_exit_pending
+        ):
+            return self.process.wait(timeout=timeout)
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            returncode = self.poll()
+            if returncode is not None:
+                return returncode
+            if deadline is not None and time.monotonic() >= deadline:
+                assert timeout is not None
+                raise subprocess.TimeoutExpired(self.process.args, timeout)
+            time.sleep(0.01)
+
+    def _signal_process_group(self, process_group: int, sig: int) -> None:
+        try:
+            os.killpg(process_group, sig)
+        except ProcessLookupError:
+            self._process_group = None
+        except PermissionError as e:
+            logger.error(f"Unable to signal process group {process_group}: {e}")
+            self._process_group = None
+        else:
+            # SIGTERM leaves the supervisor alive so callers can escalate. Once
+            # SIGKILL releases it, never retain a PGID the kernel may reuse.
+            if sig == signal.SIGKILL:
+                self._process_group = None
+
+    def _handle_supervisor_exit(self, returncode: int) -> None:
+        """Kill remaining group members before relinquishing a dead supervisor's PGID."""
+        process_group = self._process_group
+        if process_group is not None:
+            self._signal_process_group(process_group, signal.SIGKILL)
+            self._process_group = None
+        if self._returncode is None:
+            self._returncode = returncode
+        self._supervisor_exit_pending = False
+
+    def kill(self) -> None:
+        """Kill the process group on POSIX, or only the direct child elsewhere."""
+        process_group = self._process_group
+        if process_group is None:
+            self.process.kill()
+            return
+        self._signal_process_group(process_group, signal.SIGKILL)
+
+    def send_signal(self, sig: int) -> None:
+        """Signal the owned process group, or the direct child when ungrouped."""
+        process_group = self._process_group
+        if process_group is None:
+            self.process.send_signal(sig)
+            return
+        self._signal_process_group(process_group, sig)
+
+    def terminate(self) -> None:
+        """Terminate the process group on POSIX, or only the direct child elsewhere."""
+        process_group = self._process_group
+        if process_group is None:
+            self.process.terminate()
+            return
+        self._signal_process_group(process_group, signal.SIGTERM)
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
+        if (
+            self._completion_fd is not None
+            or self._returncode is not None
+            or self._supervisor_exit_pending
+        ):
+            supervisor_returncode = self.process.poll()
+            if supervisor_returncode is None:
+                self.kill()
+            else:
+                self._handle_supervisor_exit(supervisor_returncode)
+            try:
+                supervisor_returncode = self.process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                supervisor_returncode = self.process.wait(timeout=5.0)
+            if self._supervisor_exit_pending:
+                self._handle_supervisor_exit(supervisor_returncode)
+            self._process_group = None
+            if self._completion_fd is not None:
+                os.close(self._completion_fd)
+                self._completion_fd = None
+
         # Wait for logging threads to finish
         for thread in self.log_threads:
             thread.join(timeout=1.0)
@@ -101,16 +286,49 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    # Use PIPE to capture output and redirect to files in real-time
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # Line buffered
-        universal_newlines=True,
-        env=env,
-    )
+    # A live supervisor keeps the process group allocated after the evaluator
+    # exits, so descendants can still be signalled without risking PGID reuse.
+    completion_fd = None
+    if os.name == "posix":
+        completion_fd, completion_write_fd = os.pipe()
+        try:
+            completion_fd = _move_fd_above_standard_streams(completion_fd)
+            completion_write_fd = _move_fd_above_standard_streams(
+                completion_write_fd
+            )
+            os.set_blocking(completion_fd, False)
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    _SUPERVISOR_CODE,
+                    str(completion_write_fd),
+                    *cmd,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
+                env=env,
+                start_new_session=True,
+                pass_fds=(completion_write_fd,),
+            )
+        except Exception:
+            os.close(completion_fd)
+            raise
+        finally:
+            os.close(completion_write_fd)
+    else:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # Line buffered
+            universal_newlines=True,
+            env=env,
+        )
 
     # Open log files for writing with line buffering
     stdout_file = open(stdout_path, "w", buffering=1)
@@ -133,7 +351,11 @@ def submit(
 
     # Create wrapper with logging capabilities
     wrapped_process = ProcessWithLogging(
-        process, (stdout_file, stderr_file), (stdout_thread, stderr_thread)
+        process,
+        (stdout_file, stderr_file),
+        (stdout_thread, stderr_thread),
+        process_group=process.pid if os.name == "posix" else None,
+        completion_fd=completion_fd,
     )
 
     if verbose:
