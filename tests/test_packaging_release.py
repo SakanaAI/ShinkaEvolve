@@ -103,6 +103,31 @@ def test_packaged_hydra_configs_are_importable():
     assert Path(shinka.configs.__file__).resolve().name == "__init__.py"
 
 
+def test_secure_headless_image_is_one_universal_recipe():
+    dockerfile = (REPO_ROOT / "containers/headless-agents/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'io.shinka.headless.agents="antigravity,claude,codex,cursor,gemini,opencode,pi"'
+        in dockerfile
+    )
+    for executable in ("agy", "claude", "codex", "agent", "gemini", "opencode", "pi"):
+        assert f"command -v {executable}" in dockerfile
+    assert not (REPO_ROOT / "containers/headless-antigravity/Dockerfile").exists()
+
+
+def test_secure_headless_image_has_multi_arch_publish_workflow():
+    workflow = (
+        REPO_ROOT / ".github/workflows/headless-agents-image.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "platforms: linux/amd64,linux/arm64" in workflow
+    assert "ghcr.io/${{ github.repository_owner }}/shinka-headless-agents" in workflow
+    assert "provenance: mode=max" in workflow
+    assert "sbom: true" in workflow
+
+
 def test_shinka_launch_preprocesses_global_args():
     processed = cli_launch.preprocess_args(
         ["task=circle_packing", "variant=default", "verbose=true"]
