@@ -4,6 +4,9 @@
 
 This document describes the intended architecture for transforming ShinkaEvolve from a system that evolves single program strings into a system that evolves whole repositories with coding agents. The goal is to preserve as much of the original ShinkaEvolve loop as possible so results remain comparable to the upstream system, while changing the artifact being evolved from "one code string" to "one git-backed repository state".
 
+For the controlled experiment required to support such a comparison, see
+[Evaluating Repo-Agent Shinka Against Original Shinka](repo_evolution_evaluation.md).
+
 The upstream baseline is SakanaAI/ShinkaEvolve: https://github.com/SakanaAI/ShinkaEvolve. In that system, individuals are programs, proposal generation asks an LLM for edits to a code string, evaluation runs generated program files, and the database stores program text plus metrics, embeddings, lineage, islands, and metadata. Repo-level ShinkaEvolve should keep the evolutionary algorithm, scheduling model, archive, novelty logic, and metrics flow recognizable. The main change is the individual representation and mutation executor.
 
 ## Design Principles
@@ -18,7 +21,7 @@ The upstream baseline is SakanaAI/ShinkaEvolve: https://github.com/SakanaAI/Shin
    Coding agents such as Codex or Cursor should run inside an isolated child worktree and modify files there. ShinkaEvolve should not ask agents to emit diffs and should not apply patches to code strings.
 
 4. Summaries represent individuals.
-   Each individual must include a compact `summary.md`-style document that captures the mutation idea, changed files, validation, risks, and lineage. The system should embed and compare this summary, not the full repository.
+   Each individual must include a compact `summary.md`-style document that captures the mutation idea, changed files, validation, risks, and lineage. The system should embed and compare this summary, not the full repository. The current `.shinka/` summary is an ignored sidecar persisted in the database, not part of the executable Git commit; retain both when reproducing a run.
 
 5. Git is the source of truth for artifacts.
    Each individual should correspond to a commit. The database stores commit identity, summary text, changed files, metrics, and lineage metadata.
