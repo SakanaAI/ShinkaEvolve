@@ -8,6 +8,8 @@ come from monkeypatched env).
 """
 
 import asyncio
+import gc
+import weakref
 
 import pytest
 
@@ -19,10 +21,8 @@ from shinka.llm.client import get_async_client_llm, get_client_llm
 def _isolate_client_caches():
     """Start every test from an empty cache so identity assertions are exact."""
     llm_client._SYNC_CLIENT_CACHE.clear()
-    llm_client._ASYNC_CLIENT_CACHE.clear()
     yield
     llm_client._SYNC_CLIENT_CACHE.clear()
-    llm_client._ASYNC_CLIENT_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -97,14 +97,74 @@ def test_sync_distinct_api_key_sources_are_not_shared(monkeypatch):
     assert client_a is client_a_again
 
 
+@pytest.mark.parametrize(
+    ("variable", "first", "second"),
+    [
+        ("OPENAI_BASE_URL", "https://one.example/v1", "https://two.example/v1"),
+        ("OPENAI_ORG_ID", "org-one", "org-two"),
+        ("OPENAI_PROJECT_ID", "project-one", "project-two"),
+    ],
+)
+def test_sync_openai_runtime_configuration_is_part_of_cache_key(
+    monkeypatch, variable, first, second
+):
+    monkeypatch.setenv(variable, first)
+    first_client, _, _ = get_client_llm("gpt-5-mini")
+
+    monkeypatch.setenv(variable, second)
+    second_client, _, _ = get_client_llm("gpt-5-mini")
+
+    assert first_client is not second_client
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+)
+def test_sync_anthropic_runtime_configuration_is_part_of_cache_key(
+    monkeypatch, variable
+):
+    monkeypatch.setenv(variable, "first")
+    first, _, _ = get_client_llm("claude-3-5-haiku-20241022")
+
+    monkeypatch.setenv(variable, "second")
+    second, _, _ = get_client_llm("claude-3-5-haiku-20241022")
+
+    assert first is not second
+
+
+def test_sync_vertex_project_and_location_are_part_of_cache_key(monkeypatch):
+    built = []
+
+    def build_google_genai_client(**kwargs):
+        client = object()
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(llm_client, "build_google_genai_client", build_google_genai_client)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "project-one")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    first, _, _ = get_client_llm("gemini-2.5-flash")
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "project-two")
+    second, _, _ = get_client_llm("gemini-2.5-flash")
+
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west1")
+    third, _, _ = get_client_llm("gemini-2.5-flash")
+
+    assert len(built) == 3
+    assert len({id(first), id(second), id(third)}) == 3
+
+
 # --- async ----------------------------------------------------------------
 
 
-def test_async_reuses_client_outside_event_loop():
+def test_async_does_not_cache_client_outside_event_loop():
     first, _, _ = get_async_client_llm("gpt-5-mini")
     second, _, _ = get_async_client_llm("gpt-5-mini")
 
-    assert first is second
+    assert first is not second
 
 
 def test_async_reuses_client_within_same_event_loop():
@@ -125,6 +185,20 @@ def test_async_does_not_share_client_across_event_loops():
     second = asyncio.run(scenario())
 
     assert first is not second
+
+
+def test_async_loop_cache_does_not_retain_closed_event_loop():
+    async def scenario():
+        get_async_client_llm("gpt-5-mini")
+
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(scenario())
+    loop_reference = weakref.ref(loop)
+    loop.close()
+    del loop
+    gc.collect()
+
+    assert loop_reference() is None
 
 
 def test_async_different_provider_returns_distinct_clients():

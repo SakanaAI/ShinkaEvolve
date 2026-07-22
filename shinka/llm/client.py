@@ -2,13 +2,16 @@ from typing import Any, Optional, Tuple
 import asyncio
 import hashlib
 import os
-import weakref
 import anthropic
 import openai
 import instructor
 from shinka.azure_openai_config import azure_openai_api_key, azure_v1_base_url
 from shinka.env import load_shinka_dotenv
-from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
+from shinka.google_genai import (
+    _google_genai_timeout_ms,
+    build_google_genai_client,
+    google_genai_auth_mode,
+)
 from shinka.local_openai_config import resolve_local_openai_api_key
 from .constants import OPENAI_MAX_RETRIES, TIMEOUT
 from .providers.errors import StructuredOutputNotSupportedError
@@ -25,18 +28,10 @@ load_shinka_dotenv()
 # client (and its pool).
 #
 # Sync clients live in a plain dict. Async clients (httpx.AsyncClient) bind to
-# the event loop that first drives them, so they are cached per running loop in
-# a WeakKeyDictionary keyed on the loop object: when a loop is garbage-collected
-# its cached clients are dropped and never handed to a different loop.
+# the event loop that first drives them, so their cache lives on that loop. This
+# avoids a process-global cache retaining closed loops through client transports.
 _SYNC_CLIENT_CACHE: dict = {}
-_ASYNC_CLIENT_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
-
-
-class _NoRunningLoop:
-    """Weak-referenceable sentinel bucket for calls made outside a loop."""
-
-
-_NO_RUNNING_LOOP = _NoRunningLoop()
+_ASYNC_CLIENT_CACHE_ATTRIBUTE = "_shinka_async_client_cache"
 
 
 def _fingerprint(secret: Optional[str]) -> Optional[str]:
@@ -61,7 +56,11 @@ def _client_identity_extras(provider: str, resolved: ResolvedModel) -> Tuple:
     on different cache entries.
     """
     if provider == "anthropic":
-        return (_fingerprint(os.getenv("ANTHROPIC_API_KEY")),)
+        return (
+            _fingerprint(os.getenv("ANTHROPIC_API_KEY")),
+            _fingerprint(os.getenv("ANTHROPIC_AUTH_TOKEN")),
+            os.getenv("ANTHROPIC_BASE_URL"),
+        )
     if provider == "bedrock":
         return (
             _fingerprint(os.getenv("AWS_ACCESS_KEY_ID")),
@@ -69,14 +68,27 @@ def _client_identity_extras(provider: str, resolved: ResolvedModel) -> Tuple:
             os.getenv("AWS_REGION_NAME"),
         )
     if provider == "openai":
-        return (_fingerprint(os.getenv("OPENAI_API_KEY")),)
+        return (
+            _fingerprint(os.getenv("OPENAI_API_KEY")),
+            os.getenv("OPENAI_BASE_URL"),
+            os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION"),
+            os.getenv("OPENAI_PROJECT_ID"),
+        )
     if provider == "azure_openai":
         # Azure endpoint + key come from the environment, not from `resolved`.
         return (azure_v1_base_url(), _fingerprint(azure_openai_api_key()))
     if provider == "deepseek":
         return (_fingerprint(os.getenv("DEEPSEEK_API_KEY")),)
     if provider == "google":
+        auth_mode = google_genai_auth_mode()
+        if auth_mode == "vertexai":
+            return (
+                auth_mode,
+                os.getenv("GOOGLE_CLOUD_PROJECT"),
+                os.getenv("GOOGLE_CLOUD_LOCATION"),
+            )
         return (
+            auth_mode,
             _fingerprint(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
         )
     if provider == "openrouter":
@@ -146,16 +158,11 @@ def _client_cache_key(
     )
 
 
-def _running_loop_key() -> Any:
-    """The event loop bucket for async client caching.
-
-    Returns the running loop when one exists, else a shared sentinel for calls
-    made outside any loop (e.g. constructing a client eagerly in sync code).
-    """
+def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
     try:
         return asyncio.get_running_loop()
     except RuntimeError:
-        return _NO_RUNNING_LOOP
+        return None
 
 
 def _build_sync_client(
@@ -355,11 +362,15 @@ def get_async_client_llm(
     provider = resolved.provider
     builder = _async_client_builder(provider)
     cache_key = _client_cache_key(provider, structured_output, resolved, builder)
-    loop_key = _running_loop_key()
-    per_loop = _ASYNC_CLIENT_CACHE.get(loop_key)
+    loop = _running_loop()
+    if loop is None:
+        client = _build_async_client(provider, structured_output, resolved)
+        return client, resolved.api_model_name, provider
+
+    per_loop = getattr(loop, _ASYNC_CLIENT_CACHE_ATTRIBUTE, None)
     if per_loop is None:
         per_loop = {}
-        _ASYNC_CLIENT_CACHE[loop_key] = per_loop
+        setattr(loop, _ASYNC_CLIENT_CACHE_ATTRIBUTE, per_loop)
     if cache_key not in per_loop:
         per_loop[cache_key] = _build_async_client(
             provider, structured_output, resolved
