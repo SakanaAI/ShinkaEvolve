@@ -1,7 +1,7 @@
 import backoff
 import openai
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
-from .pricing import calculate_cost
+from .pricing import calculate_cost, model_exists
 from .result import QueryResult
 import logging
 
@@ -19,6 +19,40 @@ def backoff_handler(details):
         logger.info(
             f"DeepSeek - Retry {details['tries']} due to error: {exc}. Waiting {details['wait']:0.1f}s..."
         )
+
+
+def get_deepseek_costs(response, model):
+    """Token counts and costs for a DeepSeek response.
+
+    Reasoning ("thinking") tokens are billed within ``completion_tokens`` but
+    must be reported separately, so ``output_tokens`` excludes them. Cost is
+    still computed on the full completion count. An unknown model falls back to
+    a zero cost with a warning instead of raising, mirroring
+    ``openai.get_openai_costs`` / ``local_openai._extract_costs`` so a
+    pricing-catalog miss never aborts a completed generation.
+    """
+    in_tokens = response.usage.prompt_tokens
+    all_out_tokens = response.usage.completion_tokens
+    completion_details = getattr(response.usage, "completion_tokens_details", None)
+    thinking_tokens = getattr(completion_details, "reasoning_tokens", 0) or 0
+    out_tokens = all_out_tokens - thinking_tokens
+
+    if model_exists(model):
+        input_cost, output_cost = calculate_cost(model, in_tokens, all_out_tokens)
+    else:
+        logger.warning(
+            "Model '%s' has no pricing entry; defaulting query cost to 0.", model
+        )
+        input_cost, output_cost = 0.0, 0.0
+
+    return {
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "thinking_tokens": thinking_tokens,
+        "input_cost": input_cost,
+        "output_cost": output_cost,
+        "cost": input_cost + output_cost,
+    }
 
 
 @backoff.on_exception(
@@ -61,19 +95,12 @@ def query_deepseek(
     content = response.choices[0].message.content
     try:
         thought = response.choices[0].message.reasoning_content
-    except:
+    except Exception:
         thought = ""
     new_msg_history.append({"role": "assistant", "content": content})
 
     # Get token counts and costs
-    in_tokens = response.usage.prompt_tokens
-    all_out_tokens = response.usage.completion_tokens
-    try:
-        thinking_tokens = response.usage.completion_tokens_details.reasoning_tokens
-    except Exception:
-        thinking_tokens = 0
-    out_tokens = all_out_tokens - thinking_tokens
-    input_cost, output_cost = calculate_cost(model, in_tokens, all_out_tokens)
+    cost_results = get_deepseek_costs(response, model)
 
     # Collect all results
     result = QueryResult(
@@ -83,12 +110,7 @@ def query_deepseek(
         new_msg_history=new_msg_history,
         model_name=model,
         kwargs=kwargs,
-        input_tokens=in_tokens,
-        output_tokens=out_tokens,
-        thinking_tokens=thinking_tokens,
-        cost=input_cost + output_cost,
-        input_cost=input_cost,
-        output_cost=output_cost,
+        **cost_results,
         thought=thought,
         model_posteriors=model_posteriors,
     )
@@ -135,12 +157,14 @@ async def query_deepseek_async(
     content = response.choices[0].message.content
     try:
         thought = response.choices[0].message.reasoning_content
-    except:
+    except Exception:
         thought = ""
     new_msg_history.append({"role": "assistant", "content": content})
-    input_cost, output_cost = calculate_cost(
-        model, response.usage.prompt_tokens, response.usage.completion_tokens
-    )
+
+    # Get token counts and costs (parity with the sync path: reasoning tokens
+    # are subtracted from output and reported via thinking_tokens).
+    cost_results = get_deepseek_costs(response, model)
+
     return QueryResult(
         content=content,
         msg=msg,
@@ -148,11 +172,7 @@ async def query_deepseek_async(
         new_msg_history=new_msg_history,
         model_name=model,
         kwargs=kwargs,
-        input_tokens=response.usage.prompt_tokens,
-        output_tokens=response.usage.completion_tokens,
-        cost=input_cost + output_cost,
-        input_cost=input_cost,
-        output_cost=output_cost,
+        **cost_results,
         thought=thought,
         model_posteriors=model_posteriors,
     )
