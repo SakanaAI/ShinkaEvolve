@@ -72,3 +72,21 @@ def test_batch_status_combines_local_and_slurm_jobs(monkeypatch):
         scheduler.executor.shutdown(wait=True)
 
     assert statuses == [True, True, False]
+
+
+def test_batch_status_falls_back_in_original_order_when_squeue_fails(monkeypatch):
+    scheduler = JobScheduler("slurm_conda", SlurmCondaJobConfig())
+    jobs = [SimpleNamespace(job_id="101"), SimpleNamespace(job_id="102")]
+    monkeypatch.setattr(slurm, "get_active_job_ids", lambda job_ids: None)
+
+    async def check(job):
+        return job.job_id == "102"
+
+    monkeypatch.setattr(scheduler, "check_job_status_async", check)
+
+    try:
+        statuses = asyncio.run(scheduler.batch_check_status_async(jobs))
+    finally:
+        scheduler.executor.shutdown(wait=True)
+
+    assert statuses == [False, True]
