@@ -133,6 +133,77 @@ def test_sync_anthropic_runtime_configuration_is_part_of_cache_key(
     assert first is not second
 
 
+@pytest.mark.parametrize(
+    ("model_name", "credential_variables"),
+    [
+        ("gpt-5-mini", ("OPENAI_API_KEY", "OPENAI_ADMIN_KEY")),
+        (
+            "claude-3-5-haiku-20241022",
+            ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+        ),
+        (
+            "anthropic.claude-3-5-haiku-20241022-v1:0",
+            (
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            ),
+        ),
+    ],
+)
+def test_sync_implicit_credential_sources_are_not_cached(
+    monkeypatch, model_name, credential_variables
+):
+    for variable in credential_variables:
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(llm_client, "_build_sync_client", lambda *_args: object())
+
+    first, _, _ = get_client_llm(model_name)
+    second, _, _ = get_client_llm(model_name)
+
+    assert first is not second
+
+
+@pytest.mark.parametrize(
+    ("model_name", "variable"),
+    [
+        ("gpt-5-mini", "OPENAI_CUSTOM_HEADERS"),
+        ("claude-3-5-haiku-20241022", "ANTHROPIC_CUSTOM_HEADERS"),
+        ("anthropic.claude-3-5-haiku-20241022-v1:0", "AWS_REGION"),
+        (
+            "anthropic.claude-3-5-haiku-20241022-v1:0",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+        ),
+    ],
+)
+def test_sync_sdk_runtime_configuration_is_part_of_cache_key(
+    monkeypatch, model_name, variable
+):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-access-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+    monkeypatch.setattr(llm_client, "_build_sync_client", lambda *_args: object())
+    monkeypatch.setenv(variable, "first")
+    first, _, _ = get_client_llm(model_name)
+
+    monkeypatch.setenv(variable, "second")
+    second, _, _ = get_client_llm(model_name)
+
+    assert first is not second
+
+
+def test_sync_bedrock_bearer_token_is_part_of_cache_key(monkeypatch):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.setattr(llm_client, "_build_sync_client", lambda *_args: object())
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "first-token")
+    first, _, _ = get_client_llm("anthropic.claude-3-5-haiku-20241022-v1:0")
+
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "second-token")
+    second, _, _ = get_client_llm("anthropic.claude-3-5-haiku-20241022-v1:0")
+
+    assert first is not second
+
+
 def test_sync_vertex_project_and_location_are_part_of_cache_key(monkeypatch):
     built = []
 

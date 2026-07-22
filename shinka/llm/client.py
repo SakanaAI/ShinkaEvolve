@@ -46,6 +46,22 @@ def _fingerprint(secret: Optional[str]) -> Optional[str]:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
+def _has_stable_credentials(provider: str) -> bool:
+    """Whether SDK credential discovery is stable enough to cache safely."""
+    if provider == "anthropic":
+        return bool(
+            os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")
+        )
+    if provider == "openai":
+        return bool(os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_ADMIN_KEY"))
+    if provider == "bedrock":
+        static_credentials = os.getenv("AWS_ACCESS_KEY_ID") and os.getenv(
+            "AWS_SECRET_ACCESS_KEY"
+        )
+        return bool(static_credentials or os.getenv("AWS_BEARER_TOKEN_BEDROCK"))
+    return True
+
+
 def _client_identity_extras(provider: str, resolved: ResolvedModel) -> Tuple:
     """Dynamic, env-derived config that changes which client gets built.
 
@@ -60,19 +76,26 @@ def _client_identity_extras(provider: str, resolved: ResolvedModel) -> Tuple:
             _fingerprint(os.getenv("ANTHROPIC_API_KEY")),
             _fingerprint(os.getenv("ANTHROPIC_AUTH_TOKEN")),
             os.getenv("ANTHROPIC_BASE_URL"),
+            _fingerprint(os.getenv("ANTHROPIC_CUSTOM_HEADERS")),
         )
     if provider == "bedrock":
         return (
             _fingerprint(os.getenv("AWS_ACCESS_KEY_ID")),
             _fingerprint(os.getenv("AWS_SECRET_ACCESS_KEY")),
+            _fingerprint(os.getenv("AWS_SESSION_TOKEN")),
+            _fingerprint(os.getenv("AWS_BEARER_TOKEN_BEDROCK")),
             os.getenv("AWS_REGION_NAME"),
+            os.getenv("AWS_REGION"),
+            os.getenv("ANTHROPIC_BEDROCK_BASE_URL"),
         )
     if provider == "openai":
         return (
             _fingerprint(os.getenv("OPENAI_API_KEY")),
+            _fingerprint(os.getenv("OPENAI_ADMIN_KEY")),
             os.getenv("OPENAI_BASE_URL"),
             os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION"),
             os.getenv("OPENAI_PROJECT_ID"),
+            _fingerprint(os.getenv("OPENAI_CUSTOM_HEADERS")),
         )
     if provider == "azure_openai":
         # Azure endpoint + key come from the environment, not from `resolved`.
@@ -140,7 +163,7 @@ def _client_cache_key(
     structured_output: bool,
     resolved: ResolvedModel,
     builder: Any,
-) -> Tuple:
+) -> Optional[Tuple]:
     """Key that uniquely identifies a client's construction parameters.
 
     Distinct clients are forced apart by: provider (openai vs azure share a
@@ -149,6 +172,8 @@ def _client_cache_key(
     plain callers), the actual constructor object (guards against monkeypatched
     builders), and the env-derived base URL / key fingerprints.
     """
+    if not _has_stable_credentials(provider):
+        return None
     return (
         provider,
         resolved.api_model_name,
@@ -333,6 +358,9 @@ def get_client_llm(
     provider = resolved.provider
     builder = _sync_client_builder(provider)
     cache_key = _client_cache_key(provider, structured_output, resolved, builder)
+    if cache_key is None:
+        client = _build_sync_client(provider, structured_output, resolved)
+        return client, resolved.api_model_name, provider
     if cache_key not in _SYNC_CLIENT_CACHE:
         _SYNC_CLIENT_CACHE[cache_key] = _build_sync_client(
             provider, structured_output, resolved
@@ -363,7 +391,7 @@ def get_async_client_llm(
     builder = _async_client_builder(provider)
     cache_key = _client_cache_key(provider, structured_output, resolved, builder)
     loop = _running_loop()
-    if loop is None:
+    if loop is None or cache_key is None:
         client = _build_async_client(provider, structured_output, resolved)
         return client, resolved.api_model_name, provider
 
