@@ -13,6 +13,8 @@ MAX_TRIES = BACKOFF_MAX_TRIES
 MAX_VALUE = BACKOFF_MAX_VALUE
 MAX_TIME = BACKOFF_MAX_TIME
 
+DEFAULT_THINKING_BUDGET = 1024
+
 
 def build_gemini_thinking_config(thinking_budget: int):
     """Build Gemini ThinkingConfig across SDK versions.
@@ -209,7 +211,7 @@ def query_gemini(
     temperature = kwargs.get("temperature", 0.8)
     top_p = kwargs.get("top_p", 1.0)
     max_tokens = kwargs.get("max_tokens", 2048)
-    thinking_budget = kwargs.get("thinking_budget", 1024)
+    thinking_budget = kwargs.get("thinking_budget", DEFAULT_THINKING_BUDGET)
 
     generation_config = types.GenerateContentConfig(
         temperature=float(temperature),
@@ -288,7 +290,7 @@ async def query_gemini_async(
     temperature = kwargs.get("temperature", 0.8)
     top_p = kwargs.get("top_p", 1.0)
     max_tokens = kwargs.get("max_tokens", 2048)
-    thinking_budget = kwargs.get("thinking_budget", 0)
+    thinking_budget = kwargs.get("thinking_budget", DEFAULT_THINKING_BUDGET)
 
     generation_config = types.GenerateContentConfig(
         temperature=float(temperature),
