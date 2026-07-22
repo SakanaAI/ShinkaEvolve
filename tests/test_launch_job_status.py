@@ -105,4 +105,3 @@ def test_kill_terminates_child_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild survived process-group kill")
-
