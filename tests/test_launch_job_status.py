@@ -105,6 +105,8 @@ def test_kill_terminates_child_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild survived process-group kill")
+
+
 def test_get_active_job_ids_batches_squeue(monkeypatch):
     """One squeue call resolves many jobs; unlisted ids are treated as finished."""
     from shinka.launch import slurm as slurm_mod
