@@ -4,9 +4,12 @@ import asyncio
 from types import SimpleNamespace
 
 from google.genai import types
+import pytest
 
 from shinka.llm.providers.gemini import (
     DEFAULT_THINKING_BUDGET,
+    GeminiStructuredOutputError,
+    _giveup_gemini,
     query_gemini,
     query_gemini_async,
 )
@@ -58,3 +61,28 @@ def test_default_thinking_budget_matches_across_sync_and_async(monkeypatch):
 
     assert budgets == [DEFAULT_THINKING_BUDGET, DEFAULT_THINKING_BUDGET]
     assert DEFAULT_THINKING_BUDGET == 1024
+
+
+def test_giveup_targets_only_unsupported_structured_output():
+    assert _giveup_gemini(GeminiStructuredOutputError("unsupported")) is True
+    assert _giveup_gemini(ValueError("empty response")) is False
+    assert _giveup_gemini(RuntimeError("transient")) is False
+
+
+def test_structured_output_error_is_not_retried(monkeypatch):
+    import time
+
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(ValueError, match="structured output"):
+        query_gemini(
+            _SyncClient(_response()),
+            "gemini-2.5-flash",
+            "msg",
+            "sys",
+            [],
+            object(),
+        )
+
+    assert sleeps == []

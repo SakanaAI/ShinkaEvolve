@@ -16,6 +16,14 @@ MAX_TIME = BACKOFF_MAX_TIME
 DEFAULT_THINKING_BUDGET = 1024
 
 
+class GeminiStructuredOutputError(ValueError):
+    """Structured output is unsupported and cannot succeed on retry."""
+
+
+def _giveup_gemini(exc: Exception) -> bool:
+    return isinstance(exc, GeminiStructuredOutputError)
+
+
 def build_gemini_thinking_config(thinking_budget: int):
     """Build Gemini ThinkingConfig across SDK versions.
 
@@ -186,6 +194,7 @@ def validate_gemini_response(response, content: str) -> None:
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
+    giveup=_giveup_gemini,
 )
 def query_gemini(
     client,
@@ -202,7 +211,9 @@ def query_gemini(
     Based on: https://ai.google.dev/gemini-api/docs/text-generation
     """
     if output_model is not None:
-        raise ValueError("Gemini does not support structured output.")
+        raise GeminiStructuredOutputError(
+            "Gemini does not support structured output."
+        )
 
     # Build structured contents
     contents = gemini_build_contents(msg_history, msg)
@@ -265,6 +276,7 @@ def query_gemini(
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
+    giveup=_giveup_gemini,
 )
 async def query_gemini_async(
     client,
@@ -281,7 +293,9 @@ async def query_gemini_async(
     Based on: https://ai.google.dev/gemini-api/docs/text-generation
     """
     if output_model is not None:
-        raise ValueError("Gemini does not support structured output.")
+        raise GeminiStructuredOutputError(
+            "Gemini does not support structured output."
+        )
 
     # Build structured contents
     contents = gemini_build_contents(msg_history, msg)
