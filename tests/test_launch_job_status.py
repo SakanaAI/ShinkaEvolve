@@ -119,6 +119,22 @@ def test_env_exports_shell_quote_injection():
     assert flags == "-e 'BAR=b $(whoami)'"
 
 
+@pytest.mark.parametrize(
+    "renderer",
+    [
+        pytest.param("exports", id="shell-exports"),
+        pytest.param("docker", id="docker-flags"),
+    ],
+)
+def test_env_renderers_reject_shell_metacharacters_in_names(renderer):
+    from shinka.launch.slurm import _render_env_docker_flags, _render_env_exports
+
+    render = _render_env_exports if renderer == "exports" else _render_env_docker_flags
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        render({"SAFE; touch /tmp/injected; #": "value"})
+
+
 def test_strip_provider_secrets_opt_in(monkeypatch):
     """SHINKA_STRIP_EVAL_SECRETS removes provider credentials from eval env."""
     from shinka.launch.local import (

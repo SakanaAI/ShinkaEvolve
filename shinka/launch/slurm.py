@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tempfile
@@ -13,22 +14,30 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_ENV_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _validated_env_items(eval_env: Optional[Dict[str, str]]):
+    for key, value in (eval_env or {}).items():
+        name = str(key)
+        if _ENV_NAME_PATTERN.fullmatch(name) is None:
+            raise ValueError(f"Invalid environment variable name: {name!r}")
+        yield name, value
+
 
 def _render_env_exports(eval_env: Optional[Dict[str, str]]) -> str:
     """Render an env dict as newline-joined ``export K=V`` lines for a script."""
-    if not eval_env:
-        return ""
-    # shlex.quote the value so a value containing spaces/;/$(...) cannot inject
-    # extra shell commands when this string is spliced into a bash script.
-    return "\n".join(f"export {k}={shlex.quote(str(v))}" for k, v in eval_env.items())
+    return "\n".join(
+        f"export {name}={shlex.quote(str(value))}"
+        for name, value in _validated_env_items(eval_env)
+    )
 
 
 def _render_env_docker_flags(eval_env: Optional[Dict[str, str]]) -> str:
     """Render an env dict as space-joined ``-e K=V`` flags for ``docker run``."""
-    if not eval_env:
-        return ""
     return " ".join(
-        f"-e {shlex.quote(f'{k}={v}')}" for k, v in eval_env.items()
+        f"-e {shlex.quote(f'{name}={value}')}"
+        for name, value in _validated_env_items(eval_env)
     )
 
 
@@ -485,9 +494,7 @@ def submit_local_conda(
         activate_script=activate_script,
         separator="; ",
     )
-    env_exports = "; ".join(
-        f"export {k}={shlex.quote(str(v))}" for k, v in (eval_env or {}).items()
-    )
+    env_exports = _render_env_exports(eval_env).replace("\n", "; ")
     full_cmd = "; ".join(
         segment
         for segment in [
