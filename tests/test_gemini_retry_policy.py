@@ -149,3 +149,74 @@ def test_async_gemini_client_construction_uses_non_retryable_error(monkeypatch):
         client_module.get_async_client_llm(
             "gemini-2.5-flash", structured_output=True
         )
+
+
+@pytest.mark.parametrize("helper_name", ["query_fn", "sample_kwargs_query_fn"])
+def test_sync_batch_helpers_do_not_retry_structured_output_error(
+    monkeypatch, helper_name
+):
+    calls = 0
+    sleeps = []
+
+    def unsupported(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise GeminiStructuredOutputError("unsupported")
+
+    monkeypatch.setattr(llm_module, "query", unsupported)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    helper = getattr(llm_module, helper_name)
+    helper_kwargs = {
+        "idx": 0,
+        "msg": "msg",
+        "system_msg": "sys",
+        "output_model": object(),
+    }
+    if helper_name == "query_fn":
+        helper_kwargs["kwargs"] = {"model_name": "gemini-2.5-flash"}
+    else:
+        helper_kwargs["model_names"] = "gemini-2.5-flash"
+
+    with pytest.raises(GeminiStructuredOutputError):
+        helper(**helper_kwargs)
+
+    assert calls == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "helper_name",
+    ["_query_async_with_retry", "_sample_kwargs_query_async_with_retry"],
+)
+def test_async_batch_helpers_do_not_retry_structured_output_error(
+    monkeypatch, helper_name
+):
+    calls = 0
+    sleeps = []
+
+    async def unsupported(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise GeminiStructuredOutputError("unsupported")
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(llm_module, "query_async", unsupported)
+    monkeypatch.setattr(llm_module.asyncio, "sleep", record_sleep)
+    client = AsyncLLMClient(
+        model_names="gemini-2.5-flash",
+        output_model=object(),
+        verbose=False,
+    )
+    helper = getattr(client, helper_name)
+    helper_kwargs = {"idx": 0, "msg": "msg", "system_msg": "sys"}
+    if helper_name == "_query_async_with_retry":
+        helper_kwargs["kwargs"] = {"model_name": "gemini-2.5-flash"}
+
+    with pytest.raises(GeminiStructuredOutputError):
+        asyncio.run(helper(**helper_kwargs))
+
+    assert calls == 1
+    assert sleeps == []

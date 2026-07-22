@@ -654,6 +654,8 @@ class AsyncLLMClient:
                     **kwargs,
                 )
                 return idx, result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
@@ -702,6 +704,8 @@ class AsyncLLMClient:
                     **kwargs,
                 )
                 return idx, result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
@@ -735,6 +739,8 @@ def query_fn(
                 **kwargs,
             )
             return idx, result
+        except NonRetryableLLMError:
+            raise
         except Exception as e:
             logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
             try_count += 1
@@ -796,6 +802,8 @@ def sample_kwargs_query_fn(
                 **kwargs,
             )
             return idx, result
+        except NonRetryableLLMError:
+            raise
         except Exception as e:
             logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
             try_count += 1
