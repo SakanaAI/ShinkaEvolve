@@ -9,6 +9,7 @@ import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
+from .providers.errors import NonRetryableLLMError
 from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
@@ -322,6 +323,8 @@ class LLMClient:
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 model_name = llm_kwargs.get("model_name", "<unknown>")
                 logger.error(
@@ -617,6 +620,8 @@ class AsyncLLMClient:
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1

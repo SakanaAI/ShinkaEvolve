@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from google.genai import types
 import pytest
 
+import shinka.llm.client as client_module
+import shinka.llm.llm as llm_module
+from shinka.llm.llm import AsyncLLMClient, LLMClient
 from shinka.llm.providers.gemini import (
     DEFAULT_THINKING_BUDGET,
     GeminiStructuredOutputError,
@@ -86,3 +89,63 @@ def test_structured_output_error_is_not_retried(monkeypatch):
         )
 
     assert sleeps == []
+
+
+def test_sync_llm_client_does_not_retry_structured_output_error(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def unsupported(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise GeminiStructuredOutputError("unsupported")
+
+    monkeypatch.setattr(llm_module, "query", unsupported)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    client = LLMClient(model_names="gemini-2.5-flash", verbose=False)
+
+    with pytest.raises(GeminiStructuredOutputError):
+        client.query(
+            "msg", "sys", llm_kwargs={"model_name": "gemini-2.5-flash"}
+        )
+
+    assert calls == 1
+    assert sleeps == []
+
+
+def test_async_llm_client_does_not_retry_structured_output_error(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    async def unsupported(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise GeminiStructuredOutputError("unsupported")
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(llm_module, "query_async", unsupported)
+    monkeypatch.setattr(llm_module.asyncio, "sleep", record_sleep)
+    client = AsyncLLMClient(model_names="gemini-2.5-flash", verbose=False)
+
+    with pytest.raises(GeminiStructuredOutputError):
+        asyncio.run(
+            client.query(
+                "msg", "sys", llm_kwargs={"model_name": "gemini-2.5-flash"}
+            )
+        )
+
+    assert calls == 1
+    assert sleeps == []
+
+
+def test_async_gemini_client_construction_uses_non_retryable_error(monkeypatch):
+    monkeypatch.setattr(
+        client_module, "build_google_genai_client", lambda **kwargs: object()
+    )
+
+    with pytest.raises(GeminiStructuredOutputError):
+        client_module.get_async_client_llm(
+            "gemini-2.5-flash", structured_output=True
+        )

@@ -3,6 +3,7 @@ import logging
 from typing import Any, cast
 from google.genai import types
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
+from .errors import StructuredOutputNotSupportedError
 from .pricing import calculate_cost
 from .result import QueryResult
 
@@ -16,8 +17,7 @@ MAX_TIME = BACKOFF_MAX_TIME
 DEFAULT_THINKING_BUDGET = 1024
 
 
-class GeminiStructuredOutputError(ValueError):
-    """Structured output is unsupported and cannot succeed on retry."""
+GeminiStructuredOutputError = StructuredOutputNotSupportedError
 
 
 def _giveup_gemini(exc: Exception) -> bool:
