@@ -204,6 +204,7 @@ def _build_sync_client(
         client = anthropic.AnthropicBedrock(
             aws_access_key=os.getenv("AWS_ACCESS_KEY_ID"),
             aws_secret_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
             aws_region=os.getenv("AWS_REGION_NAME"),
             timeout=TIMEOUT,
         )
@@ -278,6 +279,7 @@ def _build_async_client(
         client = anthropic.AsyncAnthropicBedrock(
             aws_access_key=os.getenv("AWS_ACCESS_KEY_ID"),
             aws_secret_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
             aws_region=os.getenv("AWS_REGION_NAME"),
             timeout=TIMEOUT,
         )

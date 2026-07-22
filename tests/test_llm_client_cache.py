@@ -204,6 +204,36 @@ def test_sync_bedrock_bearer_token_is_part_of_cache_key(monkeypatch):
     assert first is not second
 
 
+@pytest.mark.parametrize(
+    ("builder_name", "constructor_name"),
+    [
+        ("_build_sync_client", "AnthropicBedrock"),
+        ("_build_async_client", "AsyncAnthropicBedrock"),
+    ],
+)
+def test_bedrock_builders_forward_aws_session_token(
+    monkeypatch, builder_name, constructor_name
+):
+    captured = {}
+
+    def constructor(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "temporary-access-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "temporary-secret-key")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "temporary-session-token")
+    monkeypatch.setattr(llm_client.anthropic, constructor_name, constructor)
+
+    resolved = llm_client.resolve_model_backend(
+        "anthropic.claude-3-5-haiku-20241022-v1:0"
+    )
+    client = getattr(llm_client, builder_name)("bedrock", False, resolved)
+
+    assert client is not None
+    assert captured["aws_session_token"] == "temporary-session-token"
+
+
 def test_sync_vertex_project_and_location_are_part_of_cache_key(monkeypatch):
     built = []
 
