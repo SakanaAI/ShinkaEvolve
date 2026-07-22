@@ -36,6 +36,11 @@ CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
 
 
+class ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class PathValidationError(ValueError):
     """Raised when a user-supplied path escapes the served search root."""
 
@@ -281,6 +286,51 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _failed_proposal_count_and_timestamp(
+        self, cursor
+    ) -> Tuple[int, Optional[float]]:
+        """Aggregate failed-proposal stats for lightweight change detection.
+
+        Returns ``(count, max_timestamp)`` where ``count`` is the number of
+        distinct generations that recorded a failed proposal (mirroring the
+        per-generation dedup in ``_load_failed_proposal_nodes``) and
+        ``max_timestamp`` is the newest ``created_at`` among them. Uses a single
+        aggregate query and never opens failure JSON files from disk, so it is
+        cheap enough for the frequent change-detection poll. A missing
+        ``attempt_log`` table yields ``(0, None)`` instead of an error.
+        """
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT generation) AS count,
+                       MAX(created_at) AS max_timestamp
+                FROM attempt_log
+                WHERE status = 'failed'
+                  AND json_valid(details)
+                  AND json_extract(details, '$.node_kind') = 'failed_proposal'
+                """
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0, None
+            raise
+        row = cursor.fetchone()
+        if not row:
+            return 0, None
+        return int(row["count"] or 0), row["max_timestamp"]
+
+    def _program_summary_change_token(self, db) -> Tuple[int, Optional[float]]:
+        change = db.get_program_count_and_timestamp()
+        failed_count, failed_max_timestamp = (
+            self._failed_proposal_count_and_timestamp(db.cursor)
+        )
+        max_timestamp = change.get("max_timestamp")
+        if failed_max_timestamp is not None and (
+            max_timestamp is None or failed_max_timestamp > max_timestamp
+        ):
+            max_timestamp = failed_max_timestamp
+        return int(change["count"]) + failed_count, max_timestamp
+
     # Host header values allowed when the server is bound to loopback. Overwritten
     # per-instance via the handler factory when an explicit external host is used.
     allowed_hosts = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
@@ -320,7 +370,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/get_programs" and "db_path" in query:
             db_path = query["db_path"][0]
-            return self.handle_get_programs(db_path)
+            return self.handle_get_programs(
+                db_path,
+                limit=self._parse_int_param(query, "limit"),
+                offset=self._parse_int_param(query, "offset"),
+                include_code=self._parse_bool_param(query, "include_code", True),
+            )
 
         if path == "/get_programs_summary" and "db_path" in query:
             db_path = query["db_path"][0]
@@ -491,20 +546,91 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """
         return self._resolve_within_root(db_path)
 
-    def handle_get_programs(self, db_path: str):
-        """Fetch all programs from a given database file."""
+    @staticmethod
+    def _parse_int_param(query: Dict[str, Any], name: str) -> Optional[int]:
+        """Parse an optional integer query param; None if absent or invalid.
+
+        Returning None on absence/parse-failure keeps the default (unpaginated)
+        response behavior unchanged for callers that omit the param.
+        """
+        values = query.get(name)
+        if not values:
+            return None
+        try:
+            return int(values[0])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_bool_param(query: Dict[str, Any], name: str, default: bool) -> bool:
+        """Parse an optional boolean query param.
+
+        Only explicit false-ish values ('false', '0', 'no', 'off') disable;
+        anything else (including an absent param) keeps ``default``.
+        """
+        values = query.get(name)
+        if not values:
+            return default
+        return values[0].strip().lower() not in ("false", "0", "no", "off")
+
+    @staticmethod
+    def _project_programs(
+        programs: list,
+        limit: Optional[int],
+        offset: Optional[int],
+        include_code: bool,
+    ) -> list:
+        """Apply opt-in pagination/projection to a full programs list.
+
+        With the defaults (no offset, no limit, include_code=True) the input
+        list is returned unchanged, so the default response stays byte-for-byte
+        identical to the pre-pagination behavior. Narrowing produces a new list
+        and never mutates the cached programs.
+        """
+        if offset is None and limit is None and include_code:
+            return programs
+        result = programs
+        if offset is not None or limit is not None:
+            start = max(offset or 0, 0)
+            if limit is None:
+                result = result[start:]
+            else:
+                result = result[start : start + max(limit, 0)]
+        if not include_code:
+            result = [{**program, "code": None} for program in result]
+        return result
+
+    def handle_get_programs(
+        self,
+        db_path: str,
+        *,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        include_code: bool = True,
+    ):
+        """Fetch all programs from a given database file.
+
+        The full programs list is always built and cached; ``limit``/``offset``/
+        ``include_code`` only narrow the *response* (opt-in), never the cache.
+        """
         print(f"[SERVER] Fetching programs from DB: {db_path}")
 
         # Handle the case where db_path might have the task name prepended
         # Extract the actual path by removing the task name prefix if present
         actual_db_path = self._get_actual_db_path(db_path)
 
+        # Key the cache on the resolved absolute path (like the summary handler)
+        # so two servers/search-roots sharing a relative db_path can't collide.
+        programs_cache_key = f"programs::{actual_db_path}"
+
         # Check cache first
-        if db_path in db_cache:
-            last_fetch_time, cached_data = db_cache[db_path]
+        if programs_cache_key in db_cache:
+            last_fetch_time, cached_data = db_cache[programs_cache_key]
             if time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS:
                 print(f"[SERVER] Serving from cache for DB: {db_path}")
-                self.send_json_response(cached_data)
+                self.send_json_response(
+                    self._project_programs(cached_data, limit, offset, include_code)
+                )
                 return
 
         # Construct absolute path to the database from search root using actual path
@@ -542,10 +668,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self._load_failed_proposal_nodes(abs_db_path, include_code=False)
                 )
 
-                # Update cache
-                db_cache[db_path] = (time.time(), programs_dict)
+                # Update cache with the full list; narrowing is applied only to
+                # the response so the cached payload stays complete.
+                db_cache[programs_cache_key] = (time.time(), programs_dict)
 
-                self.send_json_response(programs_dict)
+                self.send_json_response(
+                    self._project_programs(
+                        programs_dict, limit, offset, include_code
+                    )
+                )
                 success_msg = (
                     f"[SERVER] Successfully served {len(programs)} "
                     f"programs from {db_path} (attempt {i + 1})"
@@ -605,6 +736,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         print(f"[SERVER] Fetching program summaries from DB: {db_path}")
 
         actual_db_path = self._get_actual_db_path(db_path)
+
+        # Same TTL cache as handle_get_programs, but under a distinct namespaced
+        # key so the summary payload never collides with the full-programs entry
+        # cached under the bare db_path.
+        summary_cache_key = f"summary::{actual_db_path}"
         abs_db_path = os.path.join(self.search_root, actual_db_path)
 
         if not os.path.exists(abs_db_path):
@@ -626,9 +762,27 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     except sqlite3.OperationalError:
                         pass
 
+                change_token = self._program_summary_change_token(db)
+                if summary_cache_key in db_cache:
+                    last_fetch_time, cached_entry = db_cache[summary_cache_key]
+                    cached_token, cached_data = cached_entry
+                    cache_is_fresh = (
+                        time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS
+                    )
+                    if cache_is_fresh and cached_token == change_token:
+                        print(
+                            f"[SERVER] Serving summaries from cache for DB: {db_path}"
+                        )
+                        self.send_json_response(cached_data)
+                        return
+
                 summaries = db.get_programs_summary()
                 summaries.extend(
                     self._load_failed_proposal_nodes(abs_db_path, include_code=False)
+                )
+                db_cache[summary_cache_key] = (
+                    time.time(),
+                    (change_token, summaries),
                 )
                 self.send_json_response(summaries)
                 print(
@@ -697,21 +851,20 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         pass
 
                 result = db.get_program_count_and_timestamp()
-                failed_nodes = self._load_failed_proposal_nodes(
-                    abs_db_path, include_code=False
+                # Change-detection only: fold in the failed-proposal generations
+                # via a cheap aggregate. Do NOT materialize nodes or read any
+                # failure JSON from disk here — this endpoint is polled every
+                # few seconds, so it must stay lightweight.
+                failed_count, failed_max_ts = (
+                    self._failed_proposal_count_and_timestamp(db.cursor)
                 )
-                if failed_nodes:
-                    result["count"] += len(failed_nodes)
-                    max_failure_timestamp = max(
-                        node["timestamp"]
-                        for node in failed_nodes
-                        if node.get("timestamp") is not None
-                    )
-                    if (
-                        result.get("max_timestamp") is None
-                        or max_failure_timestamp > result["max_timestamp"]
-                    ):
-                        result["max_timestamp"] = max_failure_timestamp
+                if failed_count:
+                    result["count"] += failed_count
+                if failed_max_ts is not None and (
+                    result.get("max_timestamp") is None
+                    or failed_max_ts > result["max_timestamp"]
+                ):
+                    result["max_timestamp"] = failed_max_ts
                 self.send_json_response(result)
                 return
 
@@ -1831,10 +1984,7 @@ def start_server(
     allowed_hosts = ... if _is_loopback_host(host) else None
     handler_factory = create_handler_factory(search_root, allowed_hosts=allowed_hosts)
 
-    class ReusableTCPServer(socketserver.TCPServer):
-        allow_reuse_address = True
-
-    with ReusableTCPServer((host, port), handler_factory) as httpd:
+    with ReusableThreadingTCPServer((host, port), handler_factory) as httpd:
         msg = f"\n[*] Serving http://{host}:{port}  (Ctrl+C to stop)"
         if not _is_loopback_host(host):
             msg += (
