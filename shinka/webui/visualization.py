@@ -907,11 +907,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the meta file path - try meta subdirectory first
         meta_filename = f"meta_{processed_count}.txt"
-        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
+        meta_file_path = self._resolve_within_root(
+            os.path.join(db_dir, "meta", meta_filename)
+        )
 
         # Fall back to db_dir for backward compatibility
         if not os.path.exists(meta_file_path):
-            meta_file_path = os.path.join(db_dir, meta_filename)
+            meta_file_path = self._resolve_within_root(
+                os.path.join(db_dir, meta_filename)
+            )
 
         if not os.path.exists(meta_file_path):
             self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -955,11 +959,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the meta file path - try meta subdirectory first
         meta_filename = f"meta_{processed_count}.txt"
-        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
+        meta_file_path = self._resolve_within_root(
+            os.path.join(db_dir, "meta", meta_filename)
+        )
 
         # Fall back to db_dir for backward compatibility
         if not os.path.exists(meta_file_path):
-            meta_file_path = os.path.join(db_dir, meta_filename)
+            meta_file_path = self._resolve_within_root(
+                os.path.join(db_dir, meta_filename)
+            )
 
         if not os.path.exists(meta_file_path):
             self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -1012,7 +1020,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the plots directory path
         # Structure: db_dir/gen_X/results/plots/
-        plots_dir = os.path.join(db_dir, f"gen_{generation}", "results", "plots")
+        plots_dir = self._resolve_within_root(
+            os.path.join(db_dir, f"gen_{generation}", "results", "plots")
+        )
 
         plot_files = []
         if os.path.exists(plots_dir):

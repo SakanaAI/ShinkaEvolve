@@ -9,6 +9,7 @@ import http.client
 import os
 import socketserver
 import threading
+import urllib.parse
 
 import pytest
 
@@ -112,6 +113,44 @@ def test_http_rejects_absolute_db_path(server):
     resp, _ = server.get(
         "/get_programs?db_path=/etc/passwd", host=f"127.0.0.1:{server.port}"
     )
+    assert resp.status == 403
+
+
+def test_http_rejects_meta_content_processed_count_traversal(server):
+    query = urllib.parse.urlencode(
+        {
+            "db_path": "run/programs.sqlite",
+            "processed_count": "../../../../../outside",
+        }
+    )
+    resp, _ = server.get(
+        f"/get_meta_content?{query}", host=f"127.0.0.1:{server.port}"
+    )
+    assert resp.status == 403
+
+
+def test_http_rejects_meta_pdf_processed_count_traversal(server):
+    query = urllib.parse.urlencode(
+        {
+            "db_path": "run/programs.sqlite",
+            "processed_count": "../../../../../outside",
+        }
+    )
+    resp, _ = server.get(
+        f"/download_meta_pdf?{query}", host=f"127.0.0.1:{server.port}"
+    )
+    assert resp.status == 403
+
+
+def test_http_rejects_plot_generation_traversal(server):
+    query = urllib.parse.urlencode(
+        {
+            "db_path": "run/programs.sqlite",
+            "generation": "../../../../outside",
+            "program_id": "program-1",
+        }
+    )
+    resp, _ = server.get(f"/get_plots?{query}", host=f"127.0.0.1:{server.port}")
     assert resp.status == 403
 
 
