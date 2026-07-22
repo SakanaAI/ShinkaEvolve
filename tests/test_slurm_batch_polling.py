@@ -74,6 +74,31 @@ def test_batch_status_combines_local_and_slurm_jobs(monkeypatch):
     assert statuses == [True, True, False]
 
 
+def test_batch_status_preserves_raising_local_result_in_mixed_job_order(monkeypatch):
+    scheduler = JobScheduler("slurm_conda", SlurmCondaJobConfig())
+    jobs = [
+        SimpleNamespace(job_id="101"),
+        SimpleNamespace(job_id="local-raising"),
+        SimpleNamespace(job_id="102"),
+    ]
+    monkeypatch.setattr(slurm, "get_active_job_ids", lambda job_ids: {"101"})
+
+    async def check(job):
+        raise RuntimeError(f"status failed for {job.job_id}")
+
+    monkeypatch.setattr(scheduler, "check_job_status_async", check)
+
+    try:
+        statuses = asyncio.run(scheduler.batch_check_status_async(jobs))
+    finally:
+        scheduler.executor.shutdown(wait=True)
+
+    assert statuses[0] is True
+    assert isinstance(statuses[1], RuntimeError)
+    assert str(statuses[1]) == "status failed for local-raising"
+    assert statuses[2] is False
+
+
 def test_batch_status_falls_back_in_original_order_when_squeue_fails(monkeypatch):
     scheduler = JobScheduler("slurm_conda", SlurmCondaJobConfig())
     jobs = [SimpleNamespace(job_id="101"), SimpleNamespace(job_id="102")]

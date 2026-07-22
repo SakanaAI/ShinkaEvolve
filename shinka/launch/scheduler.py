@@ -464,7 +464,9 @@ class JobScheduler:
                         fallback_indexes.append(index)
                         fallback_tasks.append(self.check_job_status_async(job))
 
-                fallback_statuses = await asyncio.gather(*fallback_tasks)
+                fallback_statuses = await asyncio.gather(
+                    *fallback_tasks, return_exceptions=True
+                )
                 for index, status in zip(fallback_indexes, fallback_statuses):
                     statuses[index] = status
                 return statuses
