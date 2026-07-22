@@ -44,6 +44,14 @@ DISTINCT_FAILED_GENERATIONS = 2
 FAILURE_REASON = "boom-marker-should-not-be-served"
 
 
+def test_production_server_handles_requests_in_daemon_threads():
+    assert issubclass(
+        visualization.ReusableThreadingTCPServer,
+        socketserver.ThreadingTCPServer,
+    )
+    assert visualization.ReusableThreadingTCPServer.daemon_threads is True
+
+
 def _make_db(root, n_programs=N_PROGRAMS, failed_generations=FAILED_GENERATIONS):
     """Create a real programs.sqlite under ``root/run`` and return its client path.
 

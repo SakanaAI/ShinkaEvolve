@@ -36,6 +36,11 @@ CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
 
 
+class ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class PathValidationError(ValueError):
     """Raised when a user-supplied path escapes the served search root."""
 
@@ -1979,10 +1984,7 @@ def start_server(
     allowed_hosts = ... if _is_loopback_host(host) else None
     handler_factory = create_handler_factory(search_root, allowed_hosts=allowed_hosts)
 
-    class ReusableTCPServer(socketserver.TCPServer):
-        allow_reuse_address = True
-
-    with ReusableTCPServer((host, port), handler_factory) as httpd:
+    with ReusableThreadingTCPServer((host, port), handler_factory) as httpd:
         msg = f"\n[*] Serving http://{host}:{port}  (Ctrl+C to stop)"
         if not _is_loopback_host(host):
             msg += (
