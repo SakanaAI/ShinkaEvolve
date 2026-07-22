@@ -249,6 +249,7 @@ class AsyncMetaSummarizer:
         response = await self.async_llm_client.query(
             msg=user_msg,
             system_msg=META_STEP2_SYSTEM_MSG,
+            llm_kwargs=self.async_llm_client.get_kwargs(),
         )
 
         if response is None:
@@ -290,6 +291,7 @@ class AsyncMetaSummarizer:
         response = await self.async_llm_client.query(
             msg=user_msg,
             system_msg=META_STEP3_SYSTEM_MSG,
+            llm_kwargs=self.async_llm_client.get_kwargs(),
         )
 
         if response is None:

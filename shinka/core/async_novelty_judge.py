@@ -214,6 +214,7 @@ class AsyncNoveltyJudge:
             response = await self.async_llm_client.query(
                 msg=user_msg,
                 system_msg=NOVELTY_SYSTEM_MSG,
+                llm_kwargs=self.async_llm_client.get_kwargs(),
             )
 
             if response is None or response.content is None:
@@ -289,4 +290,3 @@ class AsyncNoveltyJudge:
     def __getattr__(self, name):
         """Delegate unknown methods to sync novelty judge."""
         return getattr(self.sync_judge, name)
-

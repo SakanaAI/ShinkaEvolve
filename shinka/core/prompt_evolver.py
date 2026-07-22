@@ -591,12 +591,10 @@ class AsyncSystemPromptEvolver:
         )
 
         try:
-            # Pass None if llm_kwargs is empty to let client sample params
-            kwargs = self.llm_kwargs if self.llm_kwargs else None
             response = await self.llm_client.query(
                 msg=user_msg,
                 system_msg=system_msg,
-                llm_kwargs=kwargs,
+                llm_kwargs=self.llm_kwargs,
             )
 
             if response is None or not response.content:
@@ -638,12 +636,10 @@ class AsyncSystemPromptEvolver:
         )
 
         try:
-            # Pass None if llm_kwargs is empty to let client sample params
-            kwargs = self.llm_kwargs if self.llm_kwargs else None
             response = await self.llm_client.query(
                 msg=user_msg,
                 system_msg=system_msg,
-                llm_kwargs=kwargs,
+                llm_kwargs=self.llm_kwargs,
             )
 
             if response is None or not response.content:
