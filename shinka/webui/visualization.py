@@ -28,9 +28,6 @@ from typing import Optional, Dict, Any, Tuple
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
 
-# We'll use a simple text-to-PDF approach instead of complex dependencies
-WEASYPRINT_AVAILABLE = False
-
 DEFAULT_PORT = 8000
 CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
