@@ -1831,11 +1831,8 @@ def start_server(
     allowed_hosts = ... if _is_loopback_host(host) else None
     handler_factory = create_handler_factory(search_root, allowed_hosts=allowed_hosts)
 
-    # Reuse the socket so you can restart quickly; threaded so one slow request
-    # (e.g. PDF export) doesn't freeze the whole UI.
-    class ReusableTCPServer(socketserver.ThreadingTCPServer):
+    class ReusableTCPServer(socketserver.TCPServer):
         allow_reuse_address = True
-        daemon_threads = True
 
     with ReusableTCPServer((host, port), handler_factory) as httpd:
         msg = f"\n[*] Serving http://{host}:{port}  (Ctrl+C to stop)"
