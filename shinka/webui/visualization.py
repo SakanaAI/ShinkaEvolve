@@ -36,13 +36,23 @@ CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
 
 
+class PathValidationError(ValueError):
+    """Raised when a user-supplied path escapes the served search root."""
+
+
 class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args, search_root=None, **kwargs):
+    def __init__(self, *args, search_root=None, allowed_hosts=..., **kwargs):
         self.search_root = search_root or os.getcwd()
+        # Attributes must be set before super().__init__, which handles the
+        # request immediately. `...` means "keep the class default allowlist".
+        if allowed_hosts is not ...:
+            self.allowed_hosts = allowed_hosts
         super().__init__(*args, **kwargs)
 
     def end_headers(self):
         """Disable browser caching for local HTML shells to avoid stale embedded JS."""
+        # Prevent MIME sniffing on every response (DB-sourced content is served).
+        self.send_header("X-Content-Type-Options", "nosniff")
         parsed_url = urllib.parse.urlparse(self.path)
         if parsed_url.path in ("/", "/index.html", "/viz_tree.html", "/compare.html"):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -271,7 +281,35 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
+    # Host header values allowed when the server is bound to loopback. Overwritten
+    # per-instance via the handler factory when an explicit external host is used.
+    allowed_hosts = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+    def _host_allowed(self) -> bool:
+        """Reject Host headers outside the allowlist (DNS-rebinding defense)."""
+        if self.allowed_hosts is None:
+            return True  # Explicit external bind: operator opted out of the check.
+        host_header = self.headers.get("Host", "")
+        hostname = host_header.rsplit(":", 1)[0] if host_header else ""
+        return hostname in self.allowed_hosts
+
     def do_GET(self):
+        if not self._host_allowed():
+            self.send_error(403, "Host not allowed")
+            return None
+        try:
+            return self._dispatch_get()
+        except PathValidationError as exc:
+            print(f"[SERVER] Rejected path-traversal attempt: {exc}")
+            self.send_error(403, "Access denied")
+            return None
+
+    def list_directory(self, path):
+        """Never serve auto-generated directory listings."""
+        self.send_error(403, "Directory listing is disabled")
+        return None
+
+    def _dispatch_get(self):
         print(f"\n[SERVER] Received GET request for: {self.path}")
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
@@ -425,9 +463,33 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json_response(db_files)
         print(f"[SERVER] Served DB list with {len(db_files)} entries, sorted by date.")
 
+    def _resolve_within_root(self, relative_path: str) -> str:
+        """Resolve a user-supplied path under search_root, rejecting escapes.
+
+        Returns the canonical absolute path if it is contained within
+        search_root; raises PathValidationError otherwise. Absolute inputs and
+        ``..`` traversal both fail the containment check, and symlinks are
+        resolved (realpath) before checking so an in-root symlink pointing
+        outside cannot be used to escape.
+        """
+        root = os.path.realpath(self.search_root)
+        candidate = os.path.realpath(os.path.join(root, relative_path))
+        try:
+            contained = os.path.commonpath([root, candidate]) == root
+        except ValueError:
+            # Different drives / mixed absolute-relative: treat as an escape.
+            contained = False
+        if not contained:
+            raise PathValidationError(f"Path escapes search root: {relative_path!r}")
+        return candidate
+
     def _get_actual_db_path(self, db_path: str) -> str:
-        """Convert db_path to the actual file path (now a no-op since path is not modified)."""
-        return db_path
+        """Validate db_path stays within search_root; return its absolute path.
+
+        Handlers pass the result to ``os.path.join(self.search_root, ...)``,
+        which is a no-op on the absolute path returned here.
+        """
+        return self._resolve_within_root(db_path)
 
     def handle_get_programs(self, db_path: str):
         """Fetch all programs from a given database file."""
@@ -845,11 +907,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the meta file path - try meta subdirectory first
         meta_filename = f"meta_{processed_count}.txt"
-        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
+        meta_file_path = self._resolve_within_root(
+            os.path.join(db_dir, "meta", meta_filename)
+        )
 
         # Fall back to db_dir for backward compatibility
         if not os.path.exists(meta_file_path):
-            meta_file_path = os.path.join(db_dir, meta_filename)
+            meta_file_path = self._resolve_within_root(
+                os.path.join(db_dir, meta_filename)
+            )
 
         if not os.path.exists(meta_file_path):
             self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -893,11 +959,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the meta file path - try meta subdirectory first
         meta_filename = f"meta_{processed_count}.txt"
-        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
+        meta_file_path = self._resolve_within_root(
+            os.path.join(db_dir, "meta", meta_filename)
+        )
 
         # Fall back to db_dir for backward compatibility
         if not os.path.exists(meta_file_path):
-            meta_file_path = os.path.join(db_dir, meta_filename)
+            meta_file_path = self._resolve_within_root(
+                os.path.join(db_dir, meta_filename)
+            )
 
         if not os.path.exists(meta_file_path):
             self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -950,7 +1020,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the plots directory path
         # Structure: db_dir/gen_X/results/plots/
-        plots_dir = os.path.join(db_dir, f"gen_{generation}", "results", "plots")
+        plots_dir = self._resolve_within_root(
+            os.path.join(db_dir, f"gen_{generation}", "results", "plots")
+        )
 
         plot_files = []
         if os.path.exists(plots_dir):
@@ -984,29 +1056,33 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         rel_path = urllib.parse.unquote(parsed_url.path[11:])  # Remove /plot_file/
 
-        abs_path = os.path.join(self.search_root, rel_path)
-        print(f"[SERVER] Serving plot file: {abs_path}")
-
-        if not os.path.exists(abs_path):
-            self.send_error(404, f"Plot file not found: {rel_path}")
-            return
-
-        # Security check: ensure the path is within search_root
-        abs_path = os.path.abspath(abs_path)
-        abs_search_root = os.path.abspath(self.search_root)
-        if not abs_path.startswith(abs_search_root):
-            self.send_error(403, "Access denied")
-            return
-
-        # Determine content type
-        ext = os.path.splitext(abs_path)[1].lower()
+        # Restrict to image files, and containment-check BEFORE touching disk so
+        # out-of-root paths can't be probed for existence (403 vs 404 leak) and
+        # symlinks pointing outside the root are rejected (realpath + commonpath).
         content_types = {
             ".png": "image/png",
             ".gif": "image/gif",
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
         }
-        content_type = content_types.get(ext, "application/octet-stream")
+        ext = os.path.splitext(rel_path)[1].lower()
+        if ext not in content_types:
+            self.send_error(403, "Access denied")
+            return
+        content_type = content_types[ext]
+
+        try:
+            abs_path = self._resolve_within_root(rel_path)
+        except PathValidationError as exc:
+            print(f"[SERVER] Rejected plot-file traversal: {exc}")
+            self.send_error(403, "Access denied")
+            return
+
+        print(f"[SERVER] Serving plot file: {abs_path}")
+
+        if not os.path.isfile(abs_path):
+            self.send_error(404, f"Plot file not found: {rel_path}")
+            return
 
         try:
             with open(abs_path, "rb") as f:
@@ -1678,7 +1754,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         payload = json.dumps(clean_data, default=self._json_encoder).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # No "Access-Control-Allow-Origin: *": the UI is served same-origin, and
+        # a wildcard would let any site the operator visits read the full DB.
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -1708,17 +1785,36 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-def create_handler_factory(search_root):
+def create_handler_factory(search_root, allowed_hosts=...):
     """Create a handler factory that passes the search root to handler."""
 
     def handler_factory(*args, **kwargs):
-        return DatabaseRequestHandler(*args, search_root=search_root, **kwargs)
+        return DatabaseRequestHandler(
+            *args,
+            search_root=search_root,
+            allowed_hosts=allowed_hosts,
+            **kwargs,
+        )
 
     return handler_factory
 
 
-def start_server(port: int, search_root: str, db_path: Optional[str] = None):
-    """Start the HTTP server."""
+def _is_loopback_host(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1", "")
+
+
+def start_server(
+    port: int,
+    search_root: str,
+    db_path: Optional[str] = None,
+    host: str = "127.0.0.1",
+):
+    """Start the HTTP server.
+
+    Binds to 127.0.0.1 by default so the evolution database is not exposed to
+    the local network. Pass an explicit ``host`` (e.g. "0.0.0.0") to expose it,
+    which also relaxes the DNS-rebinding Host-header check.
+    """
     # Change to the webui directory inside the shinka package to serve static files
     webui_dir = os.path.dirname(__file__)
     webui_dir = os.path.abspath(webui_dir)
@@ -1730,15 +1826,21 @@ def start_server(port: int, search_root: str, db_path: Optional[str] = None):
     print(f"[DEBUG] Server root directory: {webui_dir}")
     print(f"[DEBUG] Search root directory: {search_root}")
 
-    # Create handler factory with search root
-    handler_factory = create_handler_factory(search_root)
+    # On a loopback bind, enforce the Host-header allowlist (anti DNS-rebinding).
+    # On an explicit external bind the operator has opted in, so disable it.
+    allowed_hosts = ... if _is_loopback_host(host) else None
+    handler_factory = create_handler_factory(search_root, allowed_hosts=allowed_hosts)
 
-    # Reuse the socket so you can restart quickly
     class ReusableTCPServer(socketserver.TCPServer):
         allow_reuse_address = True
 
-    with ReusableTCPServer(("", port), handler_factory) as httpd:
-        msg = f"\n[*] Serving http://0.0.0.0:{port}  (Ctrl+C to stop)"
+    with ReusableTCPServer((host, port), handler_factory) as httpd:
+        msg = f"\n[*] Serving http://{host}:{port}  (Ctrl+C to stop)"
+        if not _is_loopback_host(host):
+            msg += (
+                "\n[!] Bound to a non-loopback address: the evolution database "
+                "is reachable from the network with no authentication."
+            )
         print(msg)
         httpd.serve_forever()
 
@@ -1775,6 +1877,15 @@ def main():
         default=None,
         help="Path to a specific database file to serve.",
     )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help=(
+            "Address to bind (default: 127.0.0.1, local only). Use 0.0.0.0 to "
+            "expose on the network — this serves the database with no auth."
+        ),
+    )
     args = parser.parse_args()
 
     # Resolve the root directory to an absolute path
@@ -1789,7 +1900,7 @@ def main():
     # Kick off the HTTP server in a daemon thread.
     server_thread = threading.Thread(
         target=start_server,
-        args=(args.port, search_root, args.db),
+        args=(args.port, search_root, args.db, args.host),
         daemon=True,
     )
     server_thread.start()
