@@ -314,6 +314,18 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return 0, None
         return int(row["count"] or 0), row["max_timestamp"]
 
+    def _program_summary_change_token(self, db) -> Tuple[int, Optional[float]]:
+        change = db.get_program_count_and_timestamp()
+        failed_count, failed_max_timestamp = (
+            self._failed_proposal_count_and_timestamp(db.cursor)
+        )
+        max_timestamp = change.get("max_timestamp")
+        if failed_max_timestamp is not None and (
+            max_timestamp is None or failed_max_timestamp > max_timestamp
+        ):
+            max_timestamp = failed_max_timestamp
+        return int(change["count"]) + failed_count, max_timestamp
+
     # Host header values allowed when the server is bound to loopback. Overwritten
     # per-instance via the handler factory when an explicit external host is used.
     allowed_hosts = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
@@ -724,13 +736,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         # key so the summary payload never collides with the full-programs entry
         # cached under the bare db_path.
         summary_cache_key = f"summary::{actual_db_path}"
-        if summary_cache_key in db_cache:
-            last_fetch_time, cached_data = db_cache[summary_cache_key]
-            if time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS:
-                print(f"[SERVER] Serving summaries from cache for DB: {db_path}")
-                self.send_json_response(cached_data)
-                return
-
         abs_db_path = os.path.join(self.search_root, actual_db_path)
 
         if not os.path.exists(abs_db_path):
@@ -752,11 +757,28 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     except sqlite3.OperationalError:
                         pass
 
+                change_token = self._program_summary_change_token(db)
+                if summary_cache_key in db_cache:
+                    last_fetch_time, cached_entry = db_cache[summary_cache_key]
+                    cached_token, cached_data = cached_entry
+                    cache_is_fresh = (
+                        time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS
+                    )
+                    if cache_is_fresh and cached_token == change_token:
+                        print(
+                            f"[SERVER] Serving summaries from cache for DB: {db_path}"
+                        )
+                        self.send_json_response(cached_data)
+                        return
+
                 summaries = db.get_programs_summary()
                 summaries.extend(
                     self._load_failed_proposal_nodes(abs_db_path, include_code=False)
                 )
-                db_cache[summary_cache_key] = (time.time(), summaries)
+                db_cache[summary_cache_key] = (
+                    time.time(),
+                    (change_token, summaries),
+                )
                 self.send_json_response(summaries)
                 print(
                     f"[SERVER] Successfully served {len(summaries)} "

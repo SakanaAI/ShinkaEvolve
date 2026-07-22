@@ -180,27 +180,51 @@ def test_program_count_matches_full_program_list_length(server):
 # -------------------------------------------------------------------------- P10
 
 
-def test_programs_summary_is_ttl_cached(server, tmp_path):
+def test_programs_summary_is_ttl_cached(server, monkeypatch):
+    path = f"/get_programs_summary?db_path={_q(server.db_path)}"
+    calls = 0
+    original = ProgramDatabase.get_programs_summary
+
+    def counted(database):
+        nonlocal calls
+        calls += 1
+        return original(database)
+
+    monkeypatch.setattr(ProgramDatabase, "get_programs_summary", counted)
+
+    first, _ = server.get_json(path)
+    second, _ = server.get_json(path)
+
+    assert second == first
+    assert calls == 1
+
+
+def test_summary_cache_invalidates_for_newer_failed_proposal(server, tmp_path):
     path = f"/get_programs_summary?db_path={_q(server.db_path)}"
     first, _ = server.get_json(path)
 
-    # Mutate the DB after the first fetch; a fresh read would see the new row.
     db = ProgramDatabase(
         DatabaseConfig(db_path=str(tmp_path / server.db_path)), read_only=False
     )
     try:
-        db.cursor.execute(
-            "INSERT INTO programs (id, code, language, generation, timestamp) "
-            "VALUES ('extra', 'x', 'python', 99, 999.0)"
+        db.record_attempt_event(
+            5,
+            "proposal",
+            "failed",
+            details={
+                "node_kind": "failed_proposal",
+                "failure_reason": "newer failure",
+                "failure_json_path": "does/not/exist/newer.json",
+            },
         )
-        db.conn.commit()
     finally:
         db.close()
 
-    # Within the TTL the cached (stale) payload is returned, proving the cache.
     second, _ = server.get_json(path)
-    assert second == first
-    assert len(second) == N_PROGRAMS + DISTINCT_FAILED_GENERATIONS
+
+    assert len(second) == len(first)
+    failed_generation = next(item for item in second if item["generation"] == 5)
+    assert failed_generation["text_feedback"] == "newer failure"
 
 
 def test_summary_cache_does_not_collide_with_programs_cache(server):
