@@ -64,3 +64,24 @@ def test_unknown_model_preserves_tokens_and_defaults_cost_to_zero():
         "output_cost": 0.0,
         "cost": 0.0,
     }
+
+
+def test_sync_and_async_treat_missing_reasoning_count_as_zero():
+    response = _response(reasoning_tokens=None)
+
+    sync_result = query_deepseek(
+        _Client(response), "deepseek/not-in-catalog", "msg", "sys", [], None
+    )
+    async_result = asyncio.run(
+        query_deepseek_async(
+            _Client(response, asynchronous=True),
+            "deepseek/not-in-catalog",
+            "msg",
+            "sys",
+            [],
+            None,
+        )
+    )
+
+    assert sync_result.output_tokens == async_result.output_tokens == 30
+    assert sync_result.thinking_tokens == async_result.thinking_tokens == 0
