@@ -157,3 +157,49 @@ def test_strip_provider_secrets_opt_in(monkeypatch):
     assert _should_strip_eval_secrets() is False
     monkeypatch.setenv("SHINKA_STRIP_EVAL_SECRETS", "1")
     assert _should_strip_eval_secrets() is True
+
+
+def test_local_submit_strips_inherited_secrets_then_applies_overrides(
+    monkeypatch, tmp_path
+):
+    from shinka.launch import local
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 123
+        returncode = None
+        stdout = object()
+        stderr = object()
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    def popen(command, **kwargs):
+        captured.update(kwargs["env"])
+        return FakeProcess()
+
+    monkeypatch.setenv("SHINKA_STRIP_EVAL_SECRETS", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "inherited-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-openai")
+    monkeypatch.setenv("SAFE_SETTING", "preserved")
+    monkeypatch.setattr(local.subprocess, "Popen", popen)
+    monkeypatch.setattr(local.threading, "Thread", FakeThread)
+
+    process = local.submit(
+        str(tmp_path),
+        ["python", "evaluate.py"],
+        env_overrides={"OPENAI_API_KEY": "explicit-openai"},
+    )
+    process.cleanup_logging()
+
+    assert "ANTHROPIC_API_KEY" not in captured
+    assert captured["OPENAI_API_KEY"] == "explicit-openai"
+    assert captured["SAFE_SETTING"] == "preserved"
