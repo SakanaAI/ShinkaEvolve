@@ -58,6 +58,11 @@ class DummyDatabase:
             return self._similarity_sequences[0]
         return self._similarity_sequences.pop(0)
 
+    def compute_similarity_details(self, code_embedding, island_idx):
+        return self.compute_similarity(code_embedding, island_idx), (
+            self.most_similar_program
+        )
+
     def get_most_similar_program(self, code_embedding, island_idx):
         return self.most_similar_program
 

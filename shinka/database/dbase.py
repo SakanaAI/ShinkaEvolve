@@ -463,6 +463,14 @@ class ProgramDatabase:
             "programs(island_idx)",
             "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
             "programs(system_prompt_id)",
+            # combined_score and correct are the two most-filtered/sorted columns
+            # (top-N, elites, island aggregates). These composite indexes turn
+            # the per-generation "WHERE correct=1 ORDER BY combined_score" scans
+            # into index range scans and cover the island-sampler aggregates.
+            "CREATE INDEX IF NOT EXISTS idx_programs_correct_score ON "
+            "programs(correct, combined_score)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_island_correct_score ON "
+            "programs(island_idx, correct, combined_score)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
@@ -2505,6 +2513,85 @@ class ProgramDatabase:
 
         similarity = np.dot(arr1, arr2) / (norm_a * norm_b)
         return float(similarity)
+
+    def _scan_island_similarities(
+        self, cursor, code_embedding: List[float], island_idx: int
+    ) -> Tuple[List[float], Optional[str]]:
+        """Single scan over an island: return (scores, id_of_most_similar).
+
+        Combines what compute_similarity and get_most_similar_program each did
+        with a full independent scan, so the novelty check no longer walks the
+        whole island twice (and re-parses every embedding twice) per candidate.
+        """
+        cursor.execute(
+            "SELECT id, embedding FROM programs WHERE island_idx = ? "
+            "AND embedding IS NOT NULL AND embedding != '[]'",
+            (island_idx,),
+        )
+        rows = cursor.fetchall()
+        scores: List[float] = []
+        best_sim = -1.0
+        best_id: Optional[str] = None
+        for row in rows:
+            rid = row["id"]
+            try:
+                embedding = json.loads(row["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Could not decode embedding for program {rid}")
+                scores.append(0.0)
+                continue
+            sim = self._cosine_similarity(code_embedding, embedding) if embedding else 0.0
+            scores.append(sim)
+            if sim > best_sim:
+                best_sim = sim
+                best_id = rid
+        return scores, best_id
+
+    def compute_similarity_details(
+        self, code_embedding: List[float], island_idx: int
+    ) -> Tuple[List[float], Optional["Program"]]:
+        """Return (similarity_scores, most_similar_program) in one island scan."""
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        if not code_embedding:
+            return [], None
+        scores, best_id = self._scan_island_similarities(
+            self.cursor, code_embedding, island_idx
+        )
+        program = self.get(best_id) if best_id is not None else None
+        return scores, program
+
+    @db_retry()
+    def compute_similarity_details_thread_safe(
+        self, code_embedding: List[float], island_idx: int
+    ) -> Tuple[List[float], Optional["Program"]]:
+        """Thread-safe single-scan returning (scores, most_similar_program).
+
+        Uses one connection for both the island scan and the single-row fetch of
+        the winner, so the async novelty path no longer scans the island twice.
+        """
+        if not code_embedding:
+            return [], None
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                self.config.db_path, check_same_thread=False, timeout=60.0
+            )
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            scores, best_id = self._scan_island_similarities(
+                cursor, code_embedding, island_idx
+            )
+            program = None
+            if best_id is not None:
+                cursor.execute("SELECT * FROM programs WHERE id = ?", (best_id,))
+                row = cursor.fetchone()
+                if row:
+                    program = self._program_from_row(row)
+            return scores, program
+        finally:
+            if conn:
+                conn.close()
 
     @db_retry()
     def compute_similarity_thread_safe(

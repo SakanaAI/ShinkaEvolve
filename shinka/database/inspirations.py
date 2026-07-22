@@ -36,6 +36,15 @@ class ContextSelectorStrategy(ABC):
 class ArchiveInspirationSelector(ContextSelectorStrategy):
     """Strategy for selecting archive inspirations."""
 
+    def _row_to_program(self, row: sqlite3.Row) -> Any:
+        """Build a Program from a full row, avoiding a per-id follow-up query.
+
+        Falls back to get_program() only if no row converter was provided.
+        """
+        if self.program_from_row is not None:
+            return self.program_from_row(row)
+        return self.get_program(row["id"])
+
     def sample_context(self, parent: Any, n: int) -> List[Any]:
         """Sample archive inspirations based on elites, best program, and random selection."""
         if n <= 0:
@@ -71,7 +80,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
         if num_elites > 0 and len(inspirations) < n and parent_island_idx is not None:
             self.cursor.execute(
                 """
-                SELECT p.id FROM programs p
+                SELECT p.* FROM programs p
                 JOIN archive a ON p.id = a.program_id
                 WHERE p.island_idx = ? AND p.correct = 1
                 ORDER BY p.combined_score DESC
@@ -82,7 +91,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             for row in self.cursor.fetchall():
                 if len(inspirations) >= n:
                     break
-                prog = self.get_program(row["id"])
+                prog = self._row_to_program(row)
                 if prog and prog.id not in insp_ids:
                     inspirations.append(prog)
                     insp_ids.add(prog.id)
@@ -93,7 +102,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             if needed > 0:
                 placeholders_rand = ",".join("?" * len(insp_ids))
                 sql_rand = f"""
-                    SELECT p.id FROM programs p
+                    SELECT p.* FROM programs p
                     JOIN archive a ON p.id = a.program_id
                     WHERE p.island_idx = ? AND p.correct = 1
                     AND p.id NOT IN ({placeholders_rand})
@@ -103,7 +112,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
 
                 self.cursor.execute(sql_rand, params_rand)
                 for row in self.cursor.fetchall():
-                    prog = self.get_program(row["id"])
+                    prog = self._row_to_program(row)
                     if prog:  # id is already not in insp_ids from query
                         inspirations.append(prog)
 
@@ -113,7 +122,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
             needed = n - len(inspirations)
             if needed > 0:
                 placeholders_rand = ",".join("?" * len(insp_ids))
-                sql_rand = f"""SELECT p.id FROM programs p
+                sql_rand = f"""SELECT p.* FROM programs p
                                  JOIN archive a ON p.id = a.program_id
                                  WHERE p.correct = 1
                                  AND p.id NOT IN ({placeholders_rand})
@@ -122,7 +131,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
                 params_rand = list(insp_ids) + [needed]
                 self.cursor.execute(sql_rand, params_rand)
                 for row in self.cursor.fetchall():
-                    prog = self.get_program(row["id"])
+                    prog = self._row_to_program(row)
                     if prog:
                         inspirations.append(prog)
 

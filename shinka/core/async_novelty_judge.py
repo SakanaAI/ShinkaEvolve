@@ -91,9 +91,11 @@ class AsyncNoveltyJudge:
                 return True, novelty_metadata
 
             loop = asyncio.get_event_loop()
-            similarity_scores = await loop.run_in_executor(
+            # One thread-safe scan returns both the scores and the most similar
+            # program, replacing two full island scans per candidate.
+            similarity_scores, most_similar_program = await loop.run_in_executor(
                 None,
-                db.compute_similarity_thread_safe,
+                db.compute_similarity_details_thread_safe,
                 code_embedding,
                 parent_program.island_idx,
             )
@@ -127,15 +129,7 @@ class AsyncNoveltyJudge:
             novelty_cost = 0.0
 
             if self.async_llm_client is not None:
-                # Get the most similar program for LLM comparison (thread-safe)
-                loop = asyncio.get_event_loop()
-                most_similar_program = await loop.run_in_executor(
-                    None,
-                    db.get_most_similar_program_thread_safe,
-                    code_embedding,
-                    parent_program.island_idx,
-                )
-
+                # most_similar_program already fetched in the single scan above.
                 if most_similar_program:
                     try:
                         # Read the current proposed code
