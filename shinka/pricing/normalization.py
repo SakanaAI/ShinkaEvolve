@@ -114,6 +114,7 @@ def _apply_overlay(
     overlay = _read_overlay(overlay_path)
     _add_model_aliases(entries, overlay.get("model_aliases", []))
     _apply_llm_overrides(entries, overlay.get("llm_overrides", []))
+    _apply_embedding_overrides(entries, overlay.get("embedding_overrides", []))
 
 
 def _read_overlay(path: Path) -> dict[str, Any]:
@@ -190,6 +191,33 @@ def _apply_llm_overrides(
         if threshold is not None:
             values["tier_threshold"] = threshold
         entries[key] = ModelPrice(**values)
+
+
+def _apply_embedding_overrides(
+    entries: dict[tuple[ModelKind, str, str], ModelPrice], overrides: Any
+) -> None:
+    """Apply pinned embedding prices at runtime, matching the CSV build.
+
+    Without this, embedding_overrides were applied only when regenerating the
+    bundled CSVs, so a live models.dev refresh silently dropped pinned prices
+    (e.g. gemini-embedding-exp-03-07 -> 0.0) back to the upstream values.
+    """
+    if not isinstance(overrides, list):
+        return
+    for override in overrides:
+        if not isinstance(override, dict):
+            continue
+        provider = override.get("provider")
+        model_name = override.get("model_name")
+        if not isinstance(provider, str) or not isinstance(model_name, str):
+            continue
+        entry = entries.get(("embedding", provider, model_name))
+        if entry is None:
+            continue
+        values = asdict(entry)
+        for field in ("input_price", "output_price"):
+            _apply_price_override(values, override, field)
+        entries[("embedding", provider, model_name)] = ModelPrice(**values)
 
 
 def _apply_price_override(
