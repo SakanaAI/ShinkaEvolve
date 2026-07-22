@@ -192,13 +192,14 @@ class SystemPromptEvolver:
         """
         self.llm_client = llm_client
 
-        for p in patch_types:
-            if p not in ["diff", "full"]:
-                raise ValueError(f"Invalid patch type: {p}")
         if patch_types is None:
             patch_types = ["diff", "full"]
         if patch_type_probs is None:
             patch_type_probs = [0.7, 0.3]
+
+        for p in patch_types:
+            if p not in ["diff", "full"]:
+                raise ValueError(f"Invalid patch type: {p}")
 
         # Normalize probabilities
         prob_sum = sum(patch_type_probs)
@@ -462,6 +463,10 @@ class AsyncSystemPromptEvolver:
             patch_types = ["diff", "full"]
         if patch_type_probs is None:
             patch_type_probs = [0.7, 0.3]
+
+        for p in patch_types:
+            if p not in ["diff", "full"]:
+                raise ValueError(f"Invalid patch type: {p}")
 
         # Normalize probabilities
         prob_sum = sum(patch_type_probs)
