@@ -25,7 +25,14 @@ DEFAULT_METRICS_ON_ERROR = {
 
 
 def load_program(program_path: str) -> Any:
-    """Loads a Python module dynamically from a given file path."""
+    """Loads a Python module dynamically from a given file path.
+
+    Security note: ``program_path`` points at LLM-generated code, and importing
+    it executes it in-process with no sandbox. Run evolution only with models
+    and initial programs you trust, or use an isolated eval (Docker/Slurm). The
+    local launcher honours ``SHINKA_STRIP_EVAL_SECRETS=1`` to withhold provider
+    credentials from the eval subprocess (see shinka.launch.local).
+    """
     spec = importlib.util.spec_from_file_location("program", program_path)
     if spec is None:
         raise ImportError(f"Could not load spec for module at {program_path}")

@@ -10,6 +10,48 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Environment variable name-parts that identify provider credentials. A local
+# evaluation runs LLM-generated program code with no isolation, inheriting the
+# parent environment; when SHINKA_STRIP_EVAL_SECRETS is truthy these are removed
+# so an adversarial/prompt-injected program cannot read the operator's keys.
+_SECRET_NAME_MARKERS = (
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "OPENAI",
+    "ANTHROPIC",
+    "GEMINI",
+    "DEEPSEEK",
+    "AZURE",
+    "AWS_",
+    "HUGGINGFACE",
+    "WANDB",
+    "XAI",
+    "GROQ",
+    "MISTRAL",
+    "COHERE",
+    "OPENROUTER",
+)
+
+
+def _should_strip_eval_secrets() -> bool:
+    return os.environ.get("SHINKA_STRIP_EVAL_SECRETS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _strip_provider_secrets(env: Dict[str, str]) -> Dict[str, str]:
+    """Drop provider-credential variables from an environment mapping."""
+    return {
+        key: value
+        for key, value in env.items()
+        if not any(marker in key.upper() for marker in _SECRET_NAME_MARKERS)
+    }
+
 
 class ProcessWithLogging:
     """Wrapper for subprocess.Popen with real-time logging capabilities."""
@@ -113,8 +155,14 @@ def submit(
     stdout_path = log_dir_path / "job_log.out"
     stderr_path = log_dir_path / "job_log.err"
 
-    # Set up environment to force unbuffered output
+    # Set up environment to force unbuffered output. The evaluated program is
+    # LLM-generated and runs unsandboxed here, inheriting this environment; set
+    # SHINKA_STRIP_EVAL_SECRETS=1 to withhold provider credentials from it.
+    # Explicit env_overrides are applied AFTER stripping so an eval that needs a
+    # key (e.g. an LLM judge) can still be given one deliberately.
     env = os.environ.copy()
+    if _should_strip_eval_secrets():
+        env = _strip_provider_secrets(env)
     env["PYTHONUNBUFFERED"] = "1"  # Force Python to be unbuffered
     env["PYTHONIOENCODING"] = "utf-8"  # Ensure proper encoding
     if env_overrides:

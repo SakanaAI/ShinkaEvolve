@@ -105,3 +105,101 @@ def test_kill_terminates_child_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild survived process-group kill")
+
+
+def test_env_exports_shell_quote_injection():
+    """A malicious eval_env value must be shell-quoted, not spliced as commands."""
+    from shinka.launch.slurm import _render_env_exports, _render_env_docker_flags
+
+    exports = _render_env_exports({"FOO": "a; rm -rf /tmp/x"})
+    # The dangerous ';' is inside a single-quoted value, not a command separator.
+    assert exports == "export FOO='a; rm -rf /tmp/x'"
+
+    flags = _render_env_docker_flags({"BAR": "b $(whoami)"})
+    assert flags == "-e 'BAR=b $(whoami)'"
+
+
+@pytest.mark.parametrize(
+    "renderer",
+    [
+        pytest.param("exports", id="shell-exports"),
+        pytest.param("docker", id="docker-flags"),
+    ],
+)
+def test_env_renderers_reject_shell_metacharacters_in_names(renderer):
+    from shinka.launch.slurm import _render_env_docker_flags, _render_env_exports
+
+    render = _render_env_exports if renderer == "exports" else _render_env_docker_flags
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        render({"SAFE; touch /tmp/injected; #": "value"})
+
+
+def test_strip_provider_secrets_opt_in(monkeypatch):
+    """SHINKA_STRIP_EVAL_SECRETS removes provider credentials from eval env."""
+    from shinka.launch.local import (
+        _strip_provider_secrets,
+        _should_strip_eval_secrets,
+    )
+
+    env = {
+        "PATH": "/usr/bin",
+        "OPENAI_API_KEY": "sk-secret",
+        "ANTHROPIC_API_KEY": "sk-ant",
+        "AWS_SECRET_ACCESS_KEY": "aws",
+        "HF_TOKEN": "hf",
+        "CUDA_VISIBLE_DEVICES": "0",
+    }
+    stripped = _strip_provider_secrets(env)
+    assert stripped == {"PATH": "/usr/bin", "CUDA_VISIBLE_DEVICES": "0"}
+
+    monkeypatch.delenv("SHINKA_STRIP_EVAL_SECRETS", raising=False)
+    assert _should_strip_eval_secrets() is False
+    monkeypatch.setenv("SHINKA_STRIP_EVAL_SECRETS", "1")
+    assert _should_strip_eval_secrets() is True
+
+
+def test_local_submit_strips_inherited_secrets_then_applies_overrides(
+    monkeypatch, tmp_path
+):
+    from shinka.launch import local
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 123
+        returncode = None
+        stdout = object()
+        stderr = object()
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    def popen(command, **kwargs):
+        captured.update(kwargs["env"])
+        return FakeProcess()
+
+    monkeypatch.setenv("SHINKA_STRIP_EVAL_SECRETS", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "inherited-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-openai")
+    monkeypatch.setenv("SAFE_SETTING", "preserved")
+    monkeypatch.setattr(local.subprocess, "Popen", popen)
+    monkeypatch.setattr(local.threading, "Thread", FakeThread)
+
+    process = local.submit(
+        str(tmp_path),
+        ["python", "evaluate.py"],
+        env_overrides={"OPENAI_API_KEY": "explicit-openai"},
+    )
+    process.cleanup_logging()
+
+    assert "ANTHROPIC_API_KEY" not in captured
+    assert captured["OPENAI_API_KEY"] == "explicit-openai"
+    assert captured["SAFE_SETTING"] == "preserved"
