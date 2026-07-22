@@ -442,15 +442,32 @@ class JobScheduler:
             from .slurm import get_active_job_ids
 
             loop = asyncio.get_event_loop()
-            job_ids = [job.job_id for job in jobs if isinstance(job.job_id, str)]
+            slurm_job_ids = [
+                job.job_id
+                for job in jobs
+                if isinstance(job.job_id, str)
+                and not job.job_id.startswith("local-")
+            ]
             active = await loop.run_in_executor(
-                self.executor, get_active_job_ids, job_ids
+                self.executor, get_active_job_ids, slurm_job_ids
             )
             if active is not None:
-                return [
-                    isinstance(job.job_id, str) and job.job_id in active
-                    for job in jobs
-                ]
+                statuses = [False] * len(jobs)
+                fallback_indexes = []
+                fallback_tasks = []
+                for index, job in enumerate(jobs):
+                    if isinstance(job.job_id, str) and not job.job_id.startswith(
+                        "local-"
+                    ):
+                        statuses[index] = job.job_id in active
+                    else:
+                        fallback_indexes.append(index)
+                        fallback_tasks.append(self.check_job_status_async(job))
+
+                fallback_statuses = await asyncio.gather(*fallback_tasks)
+                for index, status in zip(fallback_indexes, fallback_statuses):
+                    statuses[index] = status
+                return statuses
 
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
