@@ -329,6 +329,8 @@ class LLMClient:
                     f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
                 )
                 try_count += 1
+                if try_count < MAX_RETRIES:
+                    time.sleep(1)
         return None
 
 
