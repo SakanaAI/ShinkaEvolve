@@ -4,7 +4,7 @@ from pathlib import Path
 from types import ModuleType
 
 markdown_stub = ModuleType("markdown")
-setattr(markdown_stub, "markdown", lambda text: text)
+setattr(markdown_stub, "markdown", lambda text, **_kwargs: text)
 sys.modules.setdefault("markdown", markdown_stub)
 
 

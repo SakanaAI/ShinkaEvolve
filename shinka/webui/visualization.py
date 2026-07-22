@@ -28,9 +28,6 @@ from typing import Optional, Dict, Any, Tuple
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
 
-# We'll use a simple text-to-PDF approach instead of complex dependencies
-WEASYPRINT_AVAILABLE = False
-
 DEFAULT_PORT = 8000
 CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
@@ -1506,10 +1503,17 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 ) as pdf_file:
                     pdf_file_path = pdf_file.name
 
-                # Try wkhtmltopdf directly
+                # Try wkhtmltopdf directly. Disable JavaScript and local-file /
+                # external access: the HTML is built from LLM-generated meta
+                # content, so a payload like <img src="file:///etc/passwd"> or a
+                # remote fetch could otherwise exfiltrate local files / SSRF via
+                # wkhtmltopdf's WebKit engine.
                 result = subprocess.run(
                     [
                         "wkhtmltopdf",
+                        "--disable-javascript",
+                        "--disable-local-file-access",
+                        "--disable-external-links",
                         "--page-size",
                         "A4",
                         "--margin-top",
@@ -1546,13 +1550,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 except (NameError, OSError):
                     pass
 
-            # Try pandoc as fallback
+            # Pandoc's plain reader treats LLM output as text rather than raw
+            # HTML, so local-file and remote-resource elements cannot become
+            # fetchable document nodes in the fallback renderer.
             try:
                 with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".html", delete=False
-                ) as html_file:
-                    html_file.write(html_full)
-                    html_file_path = html_file.name
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as text_file:
+                    text_file.write(content)
+                    text_file_path = text_file.name
 
                 with tempfile.NamedTemporaryFile(
                     suffix=".pdf", delete=False
@@ -1560,7 +1566,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     pdf_file_path = pdf_file.name
 
                 result = subprocess.run(
-                    ["pandoc", html_file_path, "-o", pdf_file_path],
+                    ["pandoc", text_file_path, "--from=plain", "-o", pdf_file_path],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -1579,7 +1585,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 # Clean up temp files
                 try:
-                    os.unlink(html_file_path)
+                    os.unlink(text_file_path)
                     os.unlink(pdf_file_path)
                 except (NameError, OSError):
                     pass
