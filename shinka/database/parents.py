@@ -300,51 +300,36 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
             logger.warning("No suitable parent found for weighted sampling")
             return None
 
+        def _safe_json(raw: Any, default: Any) -> Any:
+            """Parse a JSON column, tolerating a corrupt/malformed cell."""
+            if not raw:
+                return default
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Could not decode JSON column during parent sampling")
+                return default
+
         eligible_programs = []
         for row in archive_rows:
             p_dict = dict(row)
 
-            # Parse JSON fields
-            p_dict["public_metrics"] = (
-                json.loads(p_dict["public_metrics"])
-                if p_dict.get("public_metrics")
-                else {}
+            # Parse JSON fields defensively so one corrupt cell cannot abort
+            # selection from otherwise valid archive rows.
+            p_dict["public_metrics"] = _safe_json(p_dict.get("public_metrics"), {})
+            p_dict["private_metrics"] = _safe_json(p_dict.get("private_metrics"), {})
+            p_dict["metadata"] = _safe_json(p_dict.get("metadata"), {})
+            p_dict["archive_inspiration_ids"] = _safe_json(
+                p_dict.get("archive_inspiration_ids"), []
             )
-            p_dict["private_metrics"] = (
-                json.loads(p_dict["private_metrics"])
-                if p_dict.get("private_metrics")
-                else {}
+            p_dict["top_k_inspiration_ids"] = _safe_json(
+                p_dict.get("top_k_inspiration_ids"), []
             )
-            p_dict["metadata"] = (
-                json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
-            )
-            p_dict["archive_inspiration_ids"] = (
-                json.loads(p_dict["archive_inspiration_ids"])
-                if p_dict.get("archive_inspiration_ids")
-                else []
-            )
-            p_dict["top_k_inspiration_ids"] = (
-                json.loads(p_dict["top_k_inspiration_ids"])
-                if p_dict.get("top_k_inspiration_ids")
-                else []
-            )
-            p_dict["embedding"] = (
-                json.loads(p_dict["embedding"]) if p_dict.get("embedding") else []
-            )
-            p_dict["embedding_pca_2d"] = (
-                json.loads(p_dict["embedding_pca_2d"])
-                if p_dict.get("embedding_pca_2d")
-                else []
-            )
-            p_dict["embedding_pca_3d"] = (
-                json.loads(p_dict["embedding_pca_3d"])
-                if p_dict.get("embedding_pca_3d")
-                else []
-            )
-            p_dict["migration_history"] = (
-                json.loads(p_dict["migration_history"])
-                if p_dict.get("migration_history")
-                else []
+            p_dict["embedding"] = _safe_json(p_dict.get("embedding"), [])
+            p_dict["embedding_pca_2d"] = _safe_json(p_dict.get("embedding_pca_2d"), [])
+            p_dict["embedding_pca_3d"] = _safe_json(p_dict.get("embedding_pca_3d"), [])
+            p_dict["migration_history"] = _safe_json(
+                p_dict.get("migration_history"), []
             )
 
             # Create a simple dataclass-like object from the dict to avoid circular imports
