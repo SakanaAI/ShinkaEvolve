@@ -6214,17 +6214,6 @@ console.error("[DEBUG] Error in processData:", error);
             return html;
         }
 
-        // Helper function to escape HTML content to prevent XSS and formatting issues
-        function escapeHtml(text) {
-            if (text === null || text === undefined) return '';
-            return String(text)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
         // Function to fetch and display plots for a program
         async function fetchAndDisplayPlots(generation, programId) {
             const plotsContainer = document.getElementById('plots-container');
@@ -17575,7 +17564,7 @@ console.error("[DEBUG] Error in processData:", error);
                             Generated Programs (${programIds.length})
                         </div>
                         <div style="font-size: 10px; color: #888; padding: 8px; background: #f8f8f8; border-radius: 4px;">
-                            ${programIds.slice(0, 10).map(id => id.substring(0, 12) + '...').join(', ')}
+                            ${programIds.slice(0, 10).map(id => escapeHtml(String(id).substring(0, 12)) + '...').join(', ')}
                             ${programIds.length > 10 ? ` and ${programIds.length - 10} more...` : ''}
                         </div>
                     </div>
@@ -17646,7 +17635,7 @@ console.error("[DEBUG] Error in processData:", error);
                     .map(([k, v]) => {
                         const formatted = formatValue(k, v);
                         if (formatted === null) return null;
-                        return `<div><span style="color: #888;">${formatLabel(k)}:</span> <strong>${formatted}</strong></div>`;
+                        return `<div><span style="color: #888;">${escapeHtml(formatLabel(k))}:</span> <strong>${escapeHtml(formatted)}</strong></div>`;
                     })
                     .filter(item => item !== null)
                     .join('');
@@ -17668,14 +17657,14 @@ console.error("[DEBUG] Error in processData:", error);
                     <div style="margin-bottom: 12px; flex-shrink: 0;">
                         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
                             <span style="background-color: ${patchColor}; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600;">
-                                ${promptData.patch_type.toUpperCase()}
+                                ${escapeHtml(promptData.patch_type.toUpperCase())}
                             </span>
                             <span style="color: #888; font-size: 11px;">Prompt Gen ${promptData.generation}</span>
                             <span style="background-color: #8e44ad; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600;">P${promptData.program_generation || 0}</span>
                             ${promptData.in_archive ? '<span style="background-color: #27ae60; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;">ARCHIVE</span>' : ''}
                         </div>
                         <div style="font-size: 10px; color: #888; font-family: monospace;">
-                            ID: ${promptData.id.substring(0, 24)}...
+                            ID: ${escapeHtml(promptData.id.substring(0, 24))}...
                         </div>
                         ${promptData.name ? `<div style="font-size: 13px; font-weight: 600; color: #333; margin-top: 8px;">${escapeHtml(promptData.name)}</div>` : ''}
                         ${promptData.description ? `
@@ -17718,7 +17707,7 @@ console.error("[DEBUG] Error in processData:", error);
                     
                     <div style="margin-bottom: 12px; font-size: 11px; color: #666; flex-shrink: 0;">
                         <div style="margin-bottom: 3px;"><strong>Created:</strong> ${timestamp}</div>
-                        <div><strong>Parent:</strong> ${promptData.parent_id ? promptData.parent_id.substring(0, 20) + '...' : 'None (root)'}</div>
+                        <div><strong>Parent:</strong> ${promptData.parent_id ? escapeHtml(promptData.parent_id.substring(0, 20)) + '...' : 'None (root)'}</div>
                     </div>
                     
                     <div style="flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden;">
@@ -17734,6 +17723,8 @@ console.error("[DEBUG] Error in processData:", error);
                     ${programsTableHtml}
                 </div>
             `;
+
+            bindPromptProgramRowHandlers();
             
             // After rendering, check if description toggle should be shown
             // Use setTimeout to ensure layout has fully settled
@@ -17805,15 +17796,26 @@ console.error("[DEBUG] Error in processData:", error);
                     else beatColor = '#e74c3c';
                 }
                 
-                return `<tr style="cursor: pointer;" onclick="selectProgramFromPromptView('${p.id}')" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor=''">
-                    <td style="padding: 4px 6px; border-bottom: 1px solid #eee; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${name}">${name}</td>
-                    <td style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #eee;">${p.generation}</td>
+                return `<tr data-program-id="${escapeHtml(p.id)}" style="cursor: pointer;" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor=''">
+                    <td style="padding: 4px 6px; border-bottom: 1px solid #eee; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(name)}">${escapeHtml(name)}</td>
+                    <td style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #eee;">${escapeHtml(p.generation)}</td>
                     <td style="padding: 4px 6px; text-align: right; border-bottom: 1px solid #eee;">${score}</td>
                     <td style="padding: 4px 6px; text-align: right; border-bottom: 1px solid #eee; color: ${improvementColor};">${improvement}</td>
                     <td style="padding: 4px 6px; text-align: right; border-bottom: 1px solid #eee; color: ${beatColor};">${beatDisplay}</td>
                     <td style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #eee; color: ${correctColor};">${correct}</td>
                 </tr>`;
             }).join('');
+        }
+
+        function bindPromptProgramRowHandlers() {
+            const tbody = document.getElementById('prompt-programs-tbody');
+            if (!tbody) return;
+
+            tbody.querySelectorAll('tr[data-program-id]').forEach(row => {
+                row.addEventListener('click', () => {
+                    selectProgramFromPromptView(row.dataset.programId);
+                });
+            });
         }
         
         // Sort the prompt programs table
@@ -17860,6 +17862,7 @@ console.error("[DEBUG] Error in processData:", error);
             const tbody = document.getElementById('prompt-programs-tbody');
             if (tbody) {
                 tbody.innerHTML = renderPromptProgramRows(programs);
+                bindPromptProgramRowHandlers();
             }
         }
 
@@ -17902,7 +17905,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
                         <h3 style="margin: 0 0 10px 0; color: #8e44ad; font-size: 14px; flex-shrink: 0;">
                             System Prompt Text
-                            ${prompt.name ? `<span style="font-weight: normal; color: #666;"> — ${prompt.name}</span>` : ''}
+                            ${prompt.name ? `<span style="font-weight: normal; color: #666;"> — ${escapeHtml(prompt.name)}</span>` : ''}
                         </h3>
                         <pre style="white-space: pre-wrap; word-wrap: break-word; background: #1e1e1e; color: #d4d4d4;
                             padding: 15px; border-radius: 5px; font-size: 12px; flex: 1; overflow: auto; margin: 0;
@@ -17912,7 +17915,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
                         <h3 style="margin: 0 0 10px 0; color: #e67e22; font-size: 14px; flex-shrink: 0;">
                             Diff with Parent
-                            ${parentPrompt ? `<span style="font-weight: normal; color: #666;"> — ${parentPrompt.name || parentPrompt.id.substring(0, 12) + '...'}</span>` : ''}
+                            ${parentPrompt ? `<span style="font-weight: normal; color: #666;"> — ${escapeHtml(parentPrompt.name || parentPrompt.id.substring(0, 12) + '...')}</span>` : ''}
                         </h3>
                         <div style="background: #1e1e1e; border-radius: 5px; flex: 1; overflow: auto; font-family: 'Monaco', 'Menlo', 'Consolas', monospace; font-size: 12px; line-height: 1.5;">
                             ${diffHtml}
@@ -18025,16 +18028,6 @@ console.error("[DEBUG] Error in processData:", error);
             }
             
             return lcs;
-        }
-
-        function escapeHtml(text) {
-            if (text === null || text === undefined) return '';
-            return String(text)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
         }
 
     </script>
