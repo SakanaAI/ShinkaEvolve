@@ -1550,13 +1550,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 except (NameError, OSError):
                     pass
 
-            # Try pandoc as fallback
+            # Pandoc's plain reader treats LLM output as text rather than raw
+            # HTML, so local-file and remote-resource elements cannot become
+            # fetchable document nodes in the fallback renderer.
             try:
                 with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".html", delete=False
-                ) as html_file:
-                    html_file.write(html_full)
-                    html_file_path = html_file.name
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as text_file:
+                    text_file.write(content)
+                    text_file_path = text_file.name
 
                 with tempfile.NamedTemporaryFile(
                     suffix=".pdf", delete=False
@@ -1564,7 +1566,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     pdf_file_path = pdf_file.name
 
                 result = subprocess.run(
-                    ["pandoc", html_file_path, "-o", pdf_file_path],
+                    ["pandoc", text_file_path, "--from=plain", "-o", pdf_file_path],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -1583,7 +1585,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 # Clean up temp files
                 try:
-                    os.unlink(html_file_path)
+                    os.unlink(text_file_path)
                     os.unlink(pdf_file_path)
                 except (NameError, OSError):
                     pass
