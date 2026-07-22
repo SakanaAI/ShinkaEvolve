@@ -244,7 +244,10 @@ class _AsyncNoveltyLLM:
     def __init__(self, response):
         self._response = response
 
-    async def query(self, msg, system_msg):
+    def get_kwargs(self):
+        return {}
+
+    async def query(self, msg, system_msg, llm_kwargs=None):
         return self._response
 
 

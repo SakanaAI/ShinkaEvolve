@@ -192,13 +192,14 @@ class SystemPromptEvolver:
         """
         self.llm_client = llm_client
 
-        for p in patch_types:
-            if p not in ["diff", "full"]:
-                raise ValueError(f"Invalid patch type: {p}")
         if patch_types is None:
             patch_types = ["diff", "full"]
         if patch_type_probs is None:
             patch_type_probs = [0.7, 0.3]
+
+        for p in patch_types:
+            if p not in ["diff", "full"]:
+                raise ValueError(f"Invalid patch type: {p}")
 
         # Normalize probabilities
         prob_sum = sum(patch_type_probs)
@@ -463,6 +464,10 @@ class AsyncSystemPromptEvolver:
         if patch_type_probs is None:
             patch_type_probs = [0.7, 0.3]
 
+        for p in patch_types:
+            if p not in ["diff", "full"]:
+                raise ValueError(f"Invalid patch type: {p}")
+
         # Normalize probabilities
         prob_sum = sum(patch_type_probs)
         if not np.isclose(prob_sum, 1.0, atol=1e-6):
@@ -591,12 +596,10 @@ class AsyncSystemPromptEvolver:
         )
 
         try:
-            # Pass None if llm_kwargs is empty to let client sample params
-            kwargs = self.llm_kwargs if self.llm_kwargs else None
             response = await self.llm_client.query(
                 msg=user_msg,
                 system_msg=system_msg,
-                llm_kwargs=kwargs,
+                llm_kwargs=self.llm_kwargs,
             )
 
             if response is None or not response.content:
@@ -638,12 +641,10 @@ class AsyncSystemPromptEvolver:
         )
 
         try:
-            # Pass None if llm_kwargs is empty to let client sample params
-            kwargs = self.llm_kwargs if self.llm_kwargs else None
             response = await self.llm_client.query(
                 msg=user_msg,
                 system_msg=system_msg,
-                llm_kwargs=kwargs,
+                llm_kwargs=self.llm_kwargs,
             )
 
             if response is None or not response.content:

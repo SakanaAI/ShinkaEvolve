@@ -3622,8 +3622,10 @@ class ShinkaEvolveRunner:
             meta_patch_data = {
                 "api_costs": total_costs,
                 "patch_type": patch_type,
-                "patch_name": patch_name,
-                "patch_description": patch_description,
+                "patch_name": patch_name if "patch_name" in locals() else None,
+                "patch_description": patch_description
+                if "patch_description" in locals()
+                else None,
                 "num_applied": 0,
                 "error_attempt": "Max fix attempts reached without success.",
                 "last_error_msg": error_str if "error_str" in locals() else None,
@@ -3631,7 +3633,9 @@ class ShinkaEvolveRunner:
                 "resample_attempt": resample_attempt,
                 "patch_attempt": self.evo_config.max_patch_attempts,
                 **llm_kwargs,  # Spread llm_kwargs like _run_patch_async
-                "llm_result": response.to_dict() if response else None,
+                "llm_result": response.to_dict()
+                if "response" in locals() and response
+                else None,
             }
 
             return None, meta_patch_data, False
