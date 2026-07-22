@@ -1,7 +1,7 @@
 import backoff
 import anthropic
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
-from .pricing import calculate_cost
+from .pricing import calculate_cost, model_exists
 from .result import QueryResult
 import logging
 
@@ -20,7 +20,16 @@ def get_anthropic_costs(response, model):
     all_out_tokens = response.usage.output_tokens
     # Unclear how to get thinking tokens from Anthropic
     thinking_tokens = 0
-    input_cost, output_cost = calculate_cost(model, input_tokens, all_out_tokens)
+    # Fall back to a zero cost (with a warning) on an unknown model instead of
+    # raising, mirroring openai/local so a pricing-catalog miss never aborts a
+    # completed generation.
+    if model_exists(model):
+        input_cost, output_cost = calculate_cost(model, input_tokens, all_out_tokens)
+    else:
+        logger.warning(
+            "Model '%s' has no pricing entry; defaulting query cost to 0.", model
+        )
+        input_cost, output_cost = 0.0, 0.0
     return {
         "input_tokens": input_tokens,
         "output_tokens": all_out_tokens,
@@ -179,9 +188,7 @@ async def query_anthropic_async(
             ],
         }
     )
-    input_cost, output_cost = calculate_cost(
-        model, response.usage.input_tokens, response.usage.output_tokens
-    )
+    cost_results = get_anthropic_costs(response, model)
     result = QueryResult(
         content=content,
         msg=msg,
@@ -189,11 +196,7 @@ async def query_anthropic_async(
         new_msg_history=new_msg_history,
         model_name=model,
         kwargs=kwargs,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-        cost=input_cost + output_cost,
-        input_cost=input_cost,
-        output_cost=output_cost,
+        **cost_results,
         thought=thought,
         model_posteriors=model_posteriors,
     )
