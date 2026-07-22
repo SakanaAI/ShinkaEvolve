@@ -577,6 +577,37 @@ def get_job_status(job_id: str) -> Optional[str]:
         return None
 
 
+def get_active_job_ids(job_ids) -> Optional[set]:
+    """Return the subset of Slurm job ids still active, via a single squeue call.
+
+    Batches what would otherwise be one ``squeue`` subprocess per job per poll
+    tick. Returns None to signal the caller to fall back to per-job checks when
+    squeue is unavailable or returns nothing useful. Job ids listed by squeue
+    are active; any queried id not listed has left the queue (finished).
+    """
+    ids = [str(j) for j in job_ids if not str(j).startswith("local-")]
+    if not ids:
+        return set()
+    try:
+        result = subprocess.run(
+            ["squeue", "--jobs=" + ",".join(ids), "--noheader", "--format=%i"],
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if result.returncode != 0 and not lines:
+        # squeue failed entirely (e.g. controller unreachable): let the caller
+        # fall back to the per-job path, which disambiguates via sacct.
+        return None
+    active = set()
+    for line in lines:
+        token = line.split()[0]
+        active.add(token.split(".")[0])  # strip any array/step suffix
+    return active
+
+
 def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
     """
     Monitor a Slurm job until completion and load its results.

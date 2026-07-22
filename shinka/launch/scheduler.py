@@ -432,7 +432,45 @@ class JobScheduler:
         )
 
     async def batch_check_status_async(self, jobs: List) -> List[bool]:
-        """Check status of multiple jobs concurrently."""
+        """Check status of multiple jobs.
+
+        For Slurm, resolve all jobs with ONE ``squeue`` call per tick instead of
+        spawning a squeue subprocess per job; fall back to per-job checks if the
+        batched query is unavailable.
+        """
+        if self.job_type in ("slurm_docker", "slurm_conda"):
+            from .slurm import get_active_job_ids
+
+            loop = asyncio.get_event_loop()
+            slurm_job_ids = [
+                job.job_id
+                for job in jobs
+                if isinstance(job.job_id, str)
+                and not job.job_id.startswith("local-")
+            ]
+            active = await loop.run_in_executor(
+                self.executor, get_active_job_ids, slurm_job_ids
+            )
+            if active is not None:
+                statuses = [False] * len(jobs)
+                fallback_indexes = []
+                fallback_tasks = []
+                for index, job in enumerate(jobs):
+                    if isinstance(job.job_id, str) and not job.job_id.startswith(
+                        "local-"
+                    ):
+                        statuses[index] = job.job_id in active
+                    else:
+                        fallback_indexes.append(index)
+                        fallback_tasks.append(self.check_job_status_async(job))
+
+                fallback_statuses = await asyncio.gather(
+                    *fallback_tasks, return_exceptions=True
+                )
+                for index, status in zip(fallback_indexes, fallback_statuses):
+                    statuses[index] = status
+                return statuses
+
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
