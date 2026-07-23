@@ -1123,6 +1123,40 @@ b = 2
     assert updated_content == _strip_trailing_whitespace(original_content)
 
 
+def test_missing_replace_terminator_does_not_absorb_next_hunk():
+    """A malformed hunk must not consume the following hunk's terminator."""
+    original_content = """# EVOLVE-BLOCK-START
+a = 1
+b = 1
+# EVOLVE-BLOCK-END"""
+
+    patch_str = "\n".join(
+        [
+            "<" * 7 + " SEARCH",
+            "a = 1",
+            "=" * 7,
+            "a = 2",
+            "<" * 7 + " SEARCH",
+            "b = 1",
+            "=" * 7,
+            "b = 2",
+            ">" * 7 + " REPLACE",
+        ]
+    )
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert updated_content == _strip_trailing_whitespace(original_content)
+    assert "<<<<<<< SEARCH" not in updated_content
+
+
 def test_ambiguous_search_in_editable_region_is_rejected():
     """Non-unique SEARCH inside editable regions must be rejected, not guessed."""
     original_content = """# EVOLVE-BLOCK-START

@@ -9,18 +9,10 @@ from .marker_validation import validate_evolve_markers
 
 logger = logging.getLogger(__name__)
 
-PATCH_PATTERN = re.compile(
-    # The REPLACE body is ``(.*?)`` up to ``\s*>>>>>>>`` so that an *empty*
-    # REPLACE (a deletion hunk, with no blank line before the end marker) still
-    # parses. Requiring a literal ``\n`` before ``>>>>>>>`` silently dropped
-    # deletion hunks while the surrounding patch still reported success.
-    r"<{7}\s*SEARCH\s*\n(.*?)\n\s*={7}\s*\n(.*?)\s*>{7}\s*REPLACE\s*",
-    re.DOTALL,
-)
-
-# Counts ``<<<<<<< SEARCH`` hunk headers so we can detect hunks that failed to
-# parse (e.g. a malformed body) instead of silently dropping them.
-SEARCH_HEADER_PATTERN = re.compile(r"<{7}\s*SEARCH\b")
+SEARCH_HEADER = re.compile(r"\s*<{7}\s*SEARCH\s*")
+SEARCH_HEADER_PREFIX = re.compile(r"\s*<{7}\s*SEARCH\b")
+SEARCH_REPLACE_DIVIDER = re.compile(r"\s*={7}\s*")
+REPLACE_FOOTER = re.compile(r"\s*>{7}\s*REPLACE\s*")
 
 
 EVOLVE_START = re.compile(
@@ -73,6 +65,56 @@ def _strip_trailing_whitespace(text: str) -> str:
     left intact. ``rstrip`` still removes a trailing ``\r`` for CRLF input.
     """
     return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+def _parse_search_replace_blocks(patch_text: str) -> list[tuple[str, str]]:
+    """Parse complete SEARCH/REPLACE hunks without crossing hunk boundaries."""
+    lines = patch_text.split("\n")
+    blocks: list[tuple[str, str]] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if not SEARCH_HEADER_PREFIX.match(line):
+            index += 1
+            continue
+        if not SEARCH_HEADER.fullmatch(line):
+            raise PatchError("Malformed patch: invalid SEARCH header")
+
+        index += 1
+        search_lines: list[str] = []
+        while index < len(lines) and not SEARCH_REPLACE_DIVIDER.fullmatch(lines[index]):
+            if SEARCH_HEADER_PREFIX.match(lines[index]) or REPLACE_FOOTER.fullmatch(
+                lines[index]
+            ):
+                raise PatchError("Malformed patch: SEARCH hunk is missing '======='")
+            search_lines.append(lines[index])
+            index += 1
+        if index == len(lines):
+            raise PatchError("Malformed patch: SEARCH hunk is missing '======='")
+
+        index += 1
+        replace_lines: list[str] = []
+        while index < len(lines) and not REPLACE_FOOTER.fullmatch(lines[index]):
+            if SEARCH_HEADER_PREFIX.match(lines[index]):
+                raise PatchError(
+                    "Malformed patch: REPLACE hunk is missing '>>>>>>> REPLACE'"
+                )
+            replace_lines.append(lines[index])
+            index += 1
+        if index == len(lines):
+            raise PatchError(
+                "Malformed patch: REPLACE hunk is missing '>>>>>>> REPLACE'"
+            )
+
+        while search_lines and not search_lines[-1]:
+            search_lines.pop()
+        while replace_lines and not replace_lines[-1]:
+            replace_lines.pop()
+        blocks.append(("\n".join(search_lines), "\n".join(replace_lines)))
+        index += 1
+
+    return blocks
 
 
 def _is_line_aligned(text: str, start: int, end: int) -> bool:
@@ -649,10 +691,8 @@ def apply_search_replace(
     """
     new_text = original
     num_applied = 0
-    block_spans: list[tuple[int, int]] = []
-    for block in PATCH_PATTERN.finditer(patch_text):
-        block_spans.append((block.start(), block.end()))
-        search, replace = block.group(1), block.group(2)
+    blocks = _parse_search_replace_blocks(patch_text)
+    for search, replace in blocks:
         # Clean EVOLVE markers from search and replace text if present
         search = _clean_evolve_markers(search)
         replace = _clean_evolve_markers(replace)
@@ -724,26 +764,6 @@ def apply_search_replace(
         # the editable region we checked.
         new_text = new_text[:pos] + replace + new_text[pos + match_len :]
         num_applied += 1
-
-    # A ``<<<<<<< SEARCH`` header that produced no parsed block means a hunk was
-    # silently dropped (e.g. a malformed body). Only count headers that fall
-    # OUTSIDE the parsed block spans — a marker that appears inside a hunk's
-    # SEARCH/REPLACE body (a comment, string literal, or code that itself
-    # manipulates diff markers) is legitimate content, not a dropped hunk.
-    def _inside_a_block(index: int) -> bool:
-        return any(start <= index < end for start, end in block_spans)
-
-    unparsed_headers = [
-        match.start()
-        for match in SEARCH_HEADER_PATTERN.finditer(patch_text)
-        if not _inside_a_block(match.start())
-    ]
-    if unparsed_headers:
-        raise PatchError(
-            f"Malformed patch: {len(unparsed_headers)} SEARCH marker(s) did not "
-            f"form a complete SEARCH/REPLACE block ({len(block_spans)} block(s) "
-            "parsed). Each hunk needs a matching '=======' and '>>>>>>> REPLACE'."
-        )
 
     return new_text, num_applied
 
