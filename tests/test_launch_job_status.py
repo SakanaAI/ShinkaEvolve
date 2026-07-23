@@ -57,12 +57,26 @@ def test_squeue_error_resolved_done_via_sacct(monkeypatch):
         if cmd[0] == "squeue":
             raise subprocess.CalledProcessError(1, cmd)
         if cmd[0] == "sacct":
-            return _FakeCompleted("TIMEOUT\n")
+            return _FakeCompleted("TIMEOUT|\n")
         raise AssertionError(cmd)
 
     monkeypatch.setattr(slurm.subprocess, "run", fake_run)
     # Departed/failed job resolved to done ("") instead of hanging as running.
     assert slurm.get_job_status("999") == ""
+
+
+@pytest.mark.parametrize("state", ["PENDING", "RUNNING", "SUSPENDED", "COMPLETING"])
+def test_squeue_error_active_sacct_state_reports_running(monkeypatch, state):
+    def fake_run(cmd, *a, **k):
+        if cmd[0] == "squeue":
+            raise subprocess.CalledProcessError(1, cmd)
+        if cmd[0] == "sacct":
+            return _FakeCompleted(f"{state}|\n")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+
+    assert slurm.get_job_status("999") == "999"
 
 
 def test_squeue_error_transient_returns_unknown(monkeypatch):
@@ -76,6 +90,14 @@ def test_squeue_error_transient_returns_unknown(monkeypatch):
     monkeypatch.setattr(slurm.subprocess, "run", fake_run)
     # Neither tool could answer -> unknown, so callers keep polling (not done).
     assert slurm.get_job_status("999") is None
+
+
+def test_monitor_raises_when_status_remains_unknown(monkeypatch):
+    monkeypatch.setattr(slurm, "get_job_status", lambda _job_id: None)
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(slurm.JobStatusUnavailableError, match="status unknown"):
+        slurm.monitor("999", poll_interval=0)
 
 
 def test_kill_terminates_child_process_group(tmp_path):

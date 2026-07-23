@@ -40,6 +40,11 @@ CACHE_MANIFEST = DOCKER_CACHE_DIR / "cache_manifest.json"
 
 # track local jobs for status checks
 LOCAL_JOBS: dict[str, dict] = {}
+MAX_UNKNOWN_STATUS_POLLS = 30
+
+
+class JobStatusUnavailableError(RuntimeError):
+    """Raised when scheduler status cannot be established after bounded retries."""
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -532,9 +537,9 @@ def _query_sacct_state(job_id: str) -> Optional[str]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
     for line in result.stdout.splitlines():
-        state = line.strip().split()[0] if line.strip() else ""
+        state_field = line.partition("|")[0].strip()
+        state = state_field.split()[0].rstrip("+") if state_field else ""
         if state:
-            # sacct can annotate states, e.g. "CANCELLED by 12345".
             return state
     return None
 
@@ -572,7 +577,7 @@ def get_job_status(job_id: str) -> Optional[str]:
         state = _query_sacct_state(job_id)
         if state is None:
             return None
-        return ""
+        return "" if state in _SLURM_TERMINAL_STATES else job_id
     except FileNotFoundError:
         return None
 
@@ -594,7 +599,6 @@ def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
     # Monitor job status. ``None`` means the status is transiently unknown;
     # bound how long we keep polling on it so a persistent lookup failure can't
     # hang the monitor forever (the old code looped indefinitely on None).
-    max_unknown_polls = 30
     unknown_polls = 0
     while True:
         status = get_job_status(job_id)
@@ -604,12 +608,10 @@ def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
             break
         if status is None:
             unknown_polls += 1
-            if unknown_polls >= max_unknown_polls:
-                logger.warning(
-                    f"Job {job_id} status unknown after "
-                    f"{unknown_polls} polls; assuming it has finished."
+            if unknown_polls >= MAX_UNKNOWN_STATUS_POLLS:
+                raise JobStatusUnavailableError(
+                    f"Job {job_id} status unknown after {unknown_polls} polls"
                 )
-                break
         else:
             unknown_polls = 0
             if verbose:
