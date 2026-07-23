@@ -554,6 +554,8 @@ class ShinkaEvolveRunner:
         # Set when shutdown was triggered by a signal (SIGINT/SIGTERM) so we skip
         # slow optional finalization work and head straight to job cancellation.
         self._interrupted = False
+        self._fatal_error: Optional[Exception] = None
+        self._job_cancellation_retry_delay_seconds = 1.0
         self._run_task: Optional[asyncio.Task] = None
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
@@ -1023,15 +1025,38 @@ class ShinkaEvolveRunner:
         repeated signal is a no-op rather than a crash.
         """
         first_signal = not self._interrupted
-        self._interrupted = True
         if first_signal:
             logger.warning(f"Received signal {sig}; shutting down gracefully...")
-        self.should_stop.set()
-        self.slot_available.set()
-        self.finalization_complete.set()
+        self._unblock_shutdown()
         run_task = getattr(self, "_run_task", None)
         if run_task is not None and not run_task.done():
             run_task.cancel()
+
+    def _unblock_shutdown(self) -> None:
+        """Skip optional finalization and unblock the main run loop."""
+        self._interrupted = True
+        self.should_stop.set()
+        self.slot_available.set()
+        self.finalization_complete.set()
+
+    def _record_fatal_error(self, error: Exception) -> None:
+        """Preserve a background failure and begin immediate cleanup."""
+        if self._fatal_error is None:
+            self._fatal_error = error
+        self._unblock_shutdown()
+        run_task = getattr(self, "_run_task", None)
+        current_task = asyncio.current_task()
+        if (
+            run_task is not None
+            and run_task is not current_task
+            and not run_task.done()
+        ):
+            run_task.cancel()
+
+    def _raise_fatal_error_if_any(self) -> None:
+        """Raise a preserved background failure after cleanup completes."""
+        if self._fatal_error is not None:
+            raise self._fatal_error
 
     def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> list:
         """Install SIGINT/SIGTERM handlers on the running loop; return the set."""
@@ -1219,6 +1244,8 @@ class ShinkaEvolveRunner:
                 await self._await_finalizer_resiliently(finalizer_task)
             finally:
                 self._run_task = None
+
+        self._raise_fatal_error_if_any()
 
         # Print final summary
         await self._print_final_summary()
@@ -1808,6 +1835,8 @@ class ShinkaEvolveRunner:
         except UnconfirmedJobCancellationError:
             raise
         except Exception as e:
+            if getattr(e, "cancel_target", None) is not None:
+                raise
             logger.warning(f"Initial program evaluation failed: {e}")
             evaluation_finished_at = time.time()
             postprocess_started_at = evaluation_finished_at
@@ -3112,6 +3141,11 @@ class ShinkaEvolveRunner:
                 return running_job
 
             except Exception as e:
+                if getattr(e, "cancel_target", None) is not None:
+                    logger.critical(
+                        "Evaluation submission ownership is ambiguous: %s", e
+                    )
+                    raise
                 logger.error(f"Error submitting job: {e}")
                 await self._record_terminal_failed_proposal(
                     generation=generation,
@@ -5225,8 +5259,17 @@ class ShinkaEvolveRunner:
             job_id = await asyncio.shield(submission_task)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             self._pending_evaluation_submissions.pop(submission_task, None)
+            cancel_target = getattr(error, "cancel_target", None)
+            if cancel_target is not None:
+                key = self._job_cancellation_key(cancel_target)
+                self._unconfirmed_job_cancellations[key] = (
+                    cancel_target,
+                    evaluation_worker_id,
+                )
+                self._record_fatal_error(error)
+                raise
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
         self._pending_evaluation_submissions.pop(submission_task, None)
@@ -5661,7 +5704,15 @@ class ShinkaEvolveRunner:
             for submission, result in zip(pending_submissions, submission_results):
                 evaluation_worker_id = pending_submissions[submission]
                 if isinstance(result, BaseException):
-                    failed_submission_workers.append(evaluation_worker_id)
+                    cancel_target = getattr(result, "cancel_target", None)
+                    if cancel_target is None:
+                        failed_submission_workers.append(evaluation_worker_id)
+                    else:
+                        key = self._job_cancellation_key(cancel_target)
+                        self._unconfirmed_job_cancellations[key] = (
+                            cancel_target,
+                            evaluation_worker_id,
+                        )
                 else:
                     key = self._job_cancellation_key(result)
                     self._unconfirmed_job_cancellations[key] = (
@@ -5812,7 +5863,11 @@ class ShinkaEvolveRunner:
                 JOB_CANCELLATION_ATTEMPTS,
                 len(pending),
             )
-            await asyncio.sleep(0)
+            if attempt < JOB_CANCELLATION_ATTEMPTS:
+                retry_delay = self._job_cancellation_retry_delay_seconds * (
+                    2 ** (attempt - 1)
+                )
+                await asyncio.sleep(retry_delay)
 
         for job_id in pending.values():
             logger.error("Job cancellation remains unconfirmed: %s", job_id)

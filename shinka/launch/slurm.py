@@ -6,6 +6,7 @@ import tempfile
 import time
 import uuid
 import threading
+from dataclasses import dataclass
 from shinka.utils import load_results
 from typing import Optional, Dict
 import logging
@@ -51,11 +52,22 @@ class JobStatusUnavailableError(RuntimeError):
     """Raised when scheduler status cannot be established after bounded retries."""
 
 
+@dataclass(frozen=True)
+class SlurmJobName:
+    """Unique Slurm submission name usable before a job ID is known."""
+
+    value: str
+
+    def __str__(self) -> str:
+        return f"SlurmJobName({self.value})"
+
+
 class AmbiguousSlurmSubmissionError(RuntimeError):
     """Raised when a timed-out submission cannot be recovered or cancelled."""
 
     def __init__(self, job_name: str):
         self.job_name = job_name
+        self.cancel_target = SlurmJobName(job_name)
         super().__init__(
             f"Slurm submission outcome remains ambiguous for job name {job_name}"
         )
@@ -269,10 +281,12 @@ def _reconcile_ambiguous_submission(job_name: str) -> Optional[str]:
     if recovered_job_id is not None:
         return recovered_job_id
     if _cancel_ambiguous_submission(job_name):
-        logger.warning(
-            "Cancelled ambiguous Slurm submission by unique name %s", job_name
-        )
-        return None
+        if get_job_status_by_name(job_name) == "":
+            logger.warning(
+                "Cancelled ambiguous Slurm submission by unique name %s",
+                job_name,
+            )
+            return None
     raise AmbiguousSlurmSubmissionError(job_name)
 
 
@@ -685,6 +699,25 @@ def get_job_status(job_id: str) -> Optional[str]:
             return None
         return "" if state in _SLURM_TERMINAL_STATES else job_id
     except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def get_job_status_by_name(job_name: str) -> Optional[str]:
+    """Return active jobs for a unique name, empty when absent, or None."""
+    try:
+        result = subprocess.run(
+            ["squeue", "--name", job_name, "--noheader"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+        )
+        return result.stdout.strip()
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         return None
 
 

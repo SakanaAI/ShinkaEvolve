@@ -9,6 +9,7 @@ import pytest
 from shinka.launch import JobScheduler, LocalJobConfig, SlurmCondaJobConfig
 from shinka.launch.scheduler import SlurmEnvJobConfig
 from shinka.launch.slurm import (
+    AmbiguousSlurmSubmissionError,
     SLURM_COMMAND_TIMEOUT_SECONDS,
     submit_conda,
     submit_local_conda,
@@ -136,7 +137,7 @@ def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(
     monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
     monkeypatch.setattr("shinka.launch.slurm.time.sleep", lambda _seconds: None)
 
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(AmbiguousSlurmSubmissionError) as exc_info:
         submit_conda(
             log_dir=str(tmp_path / "logs"),
             cmd=["python", "evaluate.py"],
@@ -148,6 +149,7 @@ def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(
             activate_script=".venv/bin/activate",
         )
     assert cancelled_by_name is True
+    assert exc_info.value.job_name == submitted_job_name
 
 
 def test_submit_local_conda_sources_activate_script(

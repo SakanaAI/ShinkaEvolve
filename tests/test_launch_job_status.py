@@ -21,6 +21,7 @@ import pytest
 
 from shinka.launch import local, slurm
 from shinka.launch.local import ProcessWithLogging, submit
+from shinka.launch.slurm import SlurmJobName
 from shinka.launch.scheduler import (
     JobScheduler,
     LocalJobConfig,
@@ -160,6 +161,62 @@ def test_cancellation_is_not_starved_by_submission_executor(monkeypatch):
         assert asyncio.run(cancel()) is True
     finally:
         release_executor.set()
+        scheduler.shutdown()
+
+
+def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[0] == "scancel":
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    target = SlurmJobName("conda-unique")
+
+    async def reconcile():
+        assert await scheduler.cancel_job_async(target) is True
+        assert await scheduler.is_job_terminal_async(target) is True
+
+    try:
+        asyncio.run(reconcile())
+    finally:
+        scheduler.shutdown()
+
+    assert commands == [
+        ["scancel", "--name", "conda-unique", "--quiet"],
+        ["squeue", "--name", "conda-unique", "--noheader"],
+        ["squeue", "--name", "conda-unique", "--noheader"],
+    ]
+
+
+def test_scheduler_retains_ambiguous_name_while_job_is_active(monkeypatch):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "scancel":
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(stdout="123 RUNNING conda-unique")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    async def cancel():
+        return await scheduler.cancel_job_async(SlurmJobName("conda-unique"))
+
+    try:
+        assert asyncio.run(cancel()) is False
+    finally:
         scheduler.shutdown()
 
 

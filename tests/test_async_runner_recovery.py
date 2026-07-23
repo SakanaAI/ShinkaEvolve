@@ -192,6 +192,12 @@ def _build_runner(**overrides):
     runner._unconfirmed_job_cancellations = overrides.get(
         "_unconfirmed_job_cancellations", {}
     )
+    runner._fatal_error = overrides.get("_fatal_error")
+    runner._job_cancellation_retry_delay_seconds = overrides.get(
+        "_job_cancellation_retry_delay_seconds", 0.0
+    )
+    runner._run_task = overrides.get("_run_task")
+    runner._interrupted = overrides.get("_interrupted", False)
     runner.slot_available = overrides.get("slot_available", _FakeEvent())
     runner.should_stop = overrides.get("should_stop", _FakeEvent())
     runner.finalization_complete = overrides.get("finalization_complete", _FakeEvent())

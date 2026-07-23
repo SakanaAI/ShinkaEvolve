@@ -10,6 +10,8 @@ from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
+    SlurmJobName,
+    get_job_status_by_name,
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
     monitor as monitor_slurm,
@@ -437,7 +439,9 @@ class JobScheduler:
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def cancel_job_async(self, job_id: Union[str, ProcessWithLogging]) -> bool:
+    async def cancel_job_async(
+        self, job_id: Union[str, ProcessWithLogging, SlurmJobName]
+    ) -> bool:
         """Cancel a running job asynchronously."""
         loop = asyncio.get_event_loop()
 
@@ -445,6 +449,19 @@ class JobScheduler:
             """Cancel job in thread executor."""
             try:
                 if self.job_type in ["slurm_docker", "slurm_conda"]:
+                    if isinstance(job_id, SlurmJobName):
+                        import subprocess
+
+                        result = subprocess.run(
+                            ["scancel", "--name", job_id.value, "--quiet"],
+                            capture_output=True,
+                            text=True,
+                            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+                        )
+                        return (
+                            result.returncode == 0
+                            and get_job_status_by_name(job_id.value) == ""
+                        )
                     if isinstance(job_id, str):
                         # For SLURM jobs, use scancel command
                         import subprocess
@@ -468,13 +485,15 @@ class JobScheduler:
         return await loop.run_in_executor(self.cancellation_executor, cancel_job)
 
     async def is_job_terminal_async(
-        self, job_id: Union[str, ProcessWithLogging]
+        self, job_id: Union[str, ProcessWithLogging, SlurmJobName]
     ) -> bool:
         """Return whether a job is confirmed to have reached a terminal state."""
         loop = asyncio.get_event_loop()
 
         def is_terminal() -> bool:
             if self.job_type in ["slurm_docker", "slurm_conda"]:
+                if isinstance(job_id, SlurmJobName):
+                    return get_job_status_by_name(job_id.value) == ""
                 if not isinstance(job_id, str):
                     return False
                 from .slurm import get_job_status

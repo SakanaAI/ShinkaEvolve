@@ -10,13 +10,16 @@ Covers:
 import asyncio
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+import shinka.core.async_runner as async_runner_module
 from shinka.core.async_runner import (
     ShinkaEvolveRunner,
     UnconfirmedJobCancellationError,
 )
+from shinka.launch.slurm import AmbiguousSlurmSubmissionError
 
 from test_async_runner_recovery import _FakeScheduler, _FakeSlotPool, _build_runner
 
@@ -202,6 +205,152 @@ def test_initial_result_failure_aborts_when_cancellation_is_unconfirmed():
             "unconfirmed-job": ("unconfirmed-job", 0)
         }
         assert slot_pool.in_use == 1
+
+    asyncio.run(_run())
+
+
+def test_ambiguous_submission_name_remains_owned_until_cleanup():
+    async def _run():
+        error = AmbiguousSlurmSubmissionError("conda-unique")
+
+        class _AmbiguousScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                raise error
+
+        scheduler = _AmbiguousScheduler(
+            cancelled_job_ids=[error.cancel_target]
+        )
+        slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=slot_pool,
+            prompt_db=None,
+        )
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        runner._run_task = run_task
+
+        with pytest.raises(AmbiguousSlurmSubmissionError):
+            await runner._submit_evaluation_job_with_slot(
+                "main.py",
+                "results",
+                sampling_worker_id=None,
+            )
+
+        assert list(runner._unconfirmed_job_cancellations.values()) == [
+            (error.cancel_target, 0)
+        ]
+        assert slot_pool.in_use == 1
+        assert runner.should_stop.is_set()
+        assert runner._fatal_error is error
+        with pytest.raises(asyncio.CancelledError):
+            await run_task
+
+        await runner._cleanup_async()
+
+        assert scheduler.cancelled_job_ids == [error.cancel_target]
+        assert runner._unconfirmed_job_cancellations == {}
+        assert slot_pool.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_run_async_surfaces_ambiguous_background_submission_after_cleanup(
+    monkeypatch,
+):
+    async def _run():
+        error = AmbiguousSlurmSubmissionError("background-unique")
+        runner = _build_runner(
+            slot_available=asyncio.Event(),
+            should_stop=asyncio.Event(),
+            finalization_complete=asyncio.Event(),
+        )
+        runner.pricing_snapshot = None
+        runner.embedding_client = None
+        runner._install_signal_handlers = lambda _loop: []
+        runner._setup_async = AsyncMock()
+        runner._verify_database_ready = AsyncMock()
+        runner._cancel_completed_job_batches = AsyncMock()
+        runner._cancel_background_side_effect_worker = AsyncMock()
+        runner._cleanup_async = AsyncMock()
+
+        async def monitor():
+            await asyncio.Event().wait()
+
+        async def submit_ambiguous_proposal():
+            runner._record_fatal_error(error)
+
+        runner._job_monitor_task = monitor
+        runner._proposal_coordinator_task = submit_ambiguous_proposal
+        monkeypatch.setattr(
+            async_runner_module,
+            "activate_model_catalog",
+            lambda _snapshot: None,
+        )
+
+        with pytest.raises(AmbiguousSlurmSubmissionError) as exc_info:
+            await runner.run_async()
+
+        assert exc_info.value is error
+        runner._cleanup_async.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_initial_program_does_not_fallback_after_ambiguous_submission(tmp_path):
+    async def _run():
+        error = AmbiguousSlurmSubmissionError("initial-unique")
+
+        class _AmbiguousScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                raise error
+
+        async_db = SimpleNamespace(add_program_async=AsyncMock())
+        runner = _build_runner(
+            scheduler=_AmbiguousScheduler(),
+            evaluation_slot_pool=_FakeSlotPool(),
+            async_db=async_db,
+            results_dir=str(tmp_path),
+        )
+        runner._get_code_embedding_async = AsyncMock(return_value=(None, 0.0))
+
+        with pytest.raises(AmbiguousSlurmSubmissionError):
+            await runner._setup_initial_program_with_metadata(
+                "print('hello')",
+                "initial",
+                "initial program",
+                0.0,
+            )
+
+        async_db.add_program_async.assert_not_awaited()
+        assert list(runner._unconfirmed_job_cancellations.values()) == [
+            (error.cancel_target, 0)
+        ]
+
+    asyncio.run(_run())
+
+
+def test_cleanup_retries_until_ambiguous_job_name_disappears():
+    async def _run():
+        target = AmbiguousSlurmSubmissionError("eventual-unique").cancel_target
+
+        class _EventuallyTerminalScheduler(_FakeScheduler):
+            def __init__(self):
+                super().__init__()
+                self.terminal_checks = 0
+
+            async def cancel_job_async(self, job_id):
+                self.cancelled_job_ids.append(job_id)
+                return False
+
+            async def is_job_terminal_async(self, job_id):
+                self.terminal_checks += 1
+                return self.terminal_checks >= 2
+
+        scheduler = _EventuallyTerminalScheduler()
+        runner = _build_runner(scheduler=scheduler)
+
+        assert await runner._cancel_job_ids([target]) == []
+        assert scheduler.cancelled_job_ids == [target, target]
 
     asyncio.run(_run())
 
@@ -402,6 +551,51 @@ def test_cancelled_submission_cancels_eventual_external_job():
 
         assert scheduler.cancelled_job_ids == ["existing-job", "late-job"]
         assert runner.evaluation_slot_pool.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_cancelled_submission_retains_eventual_ambiguous_job_name():
+    async def _run():
+        submit_started = asyncio.Event()
+        allow_submit = asyncio.Event()
+        error = AmbiguousSlurmSubmissionError("cancelled-waiter-unique")
+
+        class _AmbiguousScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                submit_started.set()
+                await allow_submit.wait()
+                raise error
+
+        scheduler = _AmbiguousScheduler(
+            cancelled_job_ids=[error.cancel_target]
+        )
+        slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=slot_pool,
+            prompt_db=None,
+        )
+        submission_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="candidate.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        await submit_started.wait()
+
+        submission_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await submission_task
+
+        cleanup_task = asyncio.create_task(runner._cleanup_async())
+        allow_submit.set()
+        await cleanup_task
+
+        assert scheduler.cancelled_job_ids == [error.cancel_target]
+        assert runner._unconfirmed_job_cancellations == {}
+        assert slot_pool.in_use == 0
 
     asyncio.run(_run())
 
