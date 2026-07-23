@@ -14,6 +14,7 @@ import os
 import math
 import psutil
 import threading
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
@@ -79,6 +80,27 @@ from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
 JOB_CANCELLATION_ATTEMPTS = 3
+API_COST_CHECKPOINT_ATTEMPTS = 3
+
+
+class ApiCostAccountingError(RuntimeError):
+    """Base class for failures that make budget enforcement unsafe."""
+
+
+class InvalidApiCostError(ApiCostAccountingError):
+    """Raised when a provider or durable source reports an invalid cost."""
+
+
+class ApiCostCheckpointError(ApiCostAccountingError):
+    """Raised when a billed cost cannot be durably checkpointed."""
+
+    def __init__(self, billed_cost: float, total_api_cost: float):
+        self.billed_cost = billed_cost
+        self.total_api_cost = total_api_cost
+        super().__init__(
+            "Could not durably checkpoint billed API cost "
+            f"${billed_cost:.6f} (run total ${total_api_cost:.6f})"
+        )
 
 
 class UnconfirmedJobCancellationError(RuntimeError):
@@ -559,6 +581,8 @@ class ShinkaEvolveRunner:
         self._run_task: Optional[asyncio.Task] = None
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
+        self._active_proposal_costs: Dict[asyncio.Task, float] = {}
+        self._api_cost_checkpoint_lock = asyncio.Lock()
 
         # Performance tracking
         self.total_proposals_generated = 0
@@ -820,17 +844,20 @@ class ShinkaEvolveRunner:
                     if metadata_str:
                         try:
                             metadata = json.loads(metadata_str)
-                            # Sum up all cost-related fields (handle None values)
-                            api_cost = metadata.get("api_costs")
-                            total_costs += api_cost if api_cost is not None else 0.0
-                            embed_cost = metadata.get("embed_cost")
-                            total_costs += embed_cost if embed_cost is not None else 0.0
-                            novelty_cost = metadata.get("novelty_cost")
-                            total_costs += (
-                                novelty_cost if novelty_cost is not None else 0.0
-                            )
-                            meta_cost = metadata.get("meta_cost")
-                            total_costs += meta_cost if meta_cost is not None else 0.0
+                            for field_name in (
+                                "api_costs",
+                                "embed_cost",
+                                "novelty_cost",
+                                "meta_cost",
+                            ):
+                                field_cost = self._validate_api_cost(
+                                    metadata.get(field_name),
+                                    source=f"program metadata {field_name}",
+                                )
+                                total_costs = self._validate_api_cost(
+                                    total_costs + field_cost,
+                                    source="accumulated durable API cost",
+                                )
                         except json.JSONDecodeError:
                             continue
 
@@ -847,11 +874,19 @@ class ShinkaEvolveRunner:
         if self.prompt_db is not None:
             try:
                 prompt_costs = self.prompt_db.get_total_evolution_costs()
-                total_costs += prompt_costs
             except Exception as e:
                 logger.warning(f"Failed to get prompt evolution costs: {e}")
+            else:
+                validated_prompt_costs = self._validate_api_cost(
+                    prompt_costs,
+                    source="prompt evolution database",
+                )
+                total_costs = self._validate_api_cost(
+                    total_costs + validated_prompt_costs,
+                    source="accumulated durable API cost",
+                )
 
-        return total_costs
+        return max(total_costs, self._load_api_cost_checkpoint())
 
     def _update_avg_proposal_cost(self, proposal_cost: float) -> None:
         """Update the running average cost per proposal.
@@ -864,6 +899,143 @@ class ShinkaEvolveRunner:
             self.completed_proposal_costs
         )
 
+    def _api_cost_checkpoint_path(self) -> Path:
+        return Path(self.results_dir) / "api_cost_checkpoint.json"
+
+    @staticmethod
+    def _validate_api_cost(cost: Any, *, source: str) -> float:
+        if cost is None:
+            return 0.0
+        try:
+            validated_cost = float(cost)
+        except (TypeError, ValueError) as error:
+            raise InvalidApiCostError(
+                f"Invalid API cost from {source}: {cost!r}"
+            ) from error
+        if not math.isfinite(validated_cost) or validated_cost < 0.0:
+            raise InvalidApiCostError(
+                f"Invalid API cost from {source}: {cost!r}"
+            )
+        return validated_cost
+
+    def _validate_completed_api_cost(self, cost: Any, *, source: str) -> float:
+        try:
+            return self._validate_api_cost(cost, source=source)
+        except InvalidApiCostError as error:
+            self._record_fatal_error(error)
+            raise
+
+    def _load_api_cost_checkpoint(self) -> float:
+        """Load the latest atomic cost checkpoint and reject unsafe values."""
+        checkpoint_path = self._api_cost_checkpoint_path()
+        if not checkpoint_path.exists():
+            return 0.0
+        try:
+            payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint_cost = payload["total_api_cost"]
+        except (OSError, KeyError, json.JSONDecodeError) as error:
+            raise InvalidApiCostError(
+                f"Invalid API cost checkpoint {checkpoint_path}: {error}"
+            ) from error
+        return self._validate_api_cost(
+            checkpoint_cost,
+            source=f"checkpoint {checkpoint_path}",
+        )
+
+    def _write_api_cost_checkpoint(self, total_api_cost: float) -> None:
+        """Atomically persist the run's current billed cost."""
+        checkpoint_path = self._api_cost_checkpoint_path()
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=checkpoint_path.parent,
+                prefix=".api-cost-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump(
+                    {"total_api_cost": total_api_cost},
+                    handle,
+                    allow_nan=False,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, checkpoint_path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    async def _persist_api_cost_checkpoint(self) -> None:
+        """Serialize checkpoint writes without blocking the event loop."""
+        async with self._api_cost_checkpoint_lock:
+            total_api_cost = self.total_api_cost
+            for attempt in range(1, API_COST_CHECKPOINT_ATTEMPTS + 1):
+                try:
+                    await asyncio.to_thread(
+                        self._write_api_cost_checkpoint,
+                        total_api_cost,
+                    )
+                    return
+                except OSError:
+                    if attempt == API_COST_CHECKPOINT_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(0.05 * (2 ** (attempt - 1)))
+
+    @staticmethod
+    async def _await_cost_checkpoint_resiliently(
+        checkpoint_task: asyncio.Task,
+    ) -> None:
+        """Finish a billed-cost checkpoint before propagating cancellation."""
+        cancellation_received = False
+        while not checkpoint_task.done():
+            try:
+                await asyncio.shield(checkpoint_task)
+            except asyncio.CancelledError:
+                cancellation_received = True
+        checkpoint_task.result()
+        if cancellation_received:
+            raise asyncio.CancelledError
+
+    async def _account_api_cost(self, cost: float) -> float:
+        """Own a completed API charge before any later await can cancel."""
+        billed_cost = self._validate_completed_api_cost(
+            cost,
+            source="completed API response",
+        )
+        if billed_cost == 0.0:
+            return 0.0
+        updated_total = self._validate_completed_api_cost(
+            self.total_api_cost + billed_cost,
+            source="accumulated run API cost",
+        )
+        self.total_api_cost = updated_total
+        current_task = asyncio.current_task()
+        if (
+            current_task is not None
+            and current_task in self.active_proposal_tasks.values()
+        ):
+            self._active_proposal_costs[current_task] = (
+                self._active_proposal_costs.get(current_task, 0.0) + billed_cost
+            )
+        checkpoint_task = asyncio.create_task(
+            self._persist_api_cost_checkpoint(),
+            name="api_cost_checkpoint",
+        )
+        try:
+            await self._await_cost_checkpoint_resiliently(checkpoint_task)
+        except Exception as error:
+            checkpoint_error = ApiCostCheckpointError(
+                billed_cost,
+                self.total_api_cost,
+            )
+            self._record_fatal_error(checkpoint_error)
+            raise checkpoint_error from error
+        return billed_cost
+
     def _get_committed_cost(self) -> float:
         """Calculate the committed cost including estimated in-flight proposals.
 
@@ -872,18 +1044,22 @@ class ShinkaEvolveRunner:
         their costs yet.
 
         Returns:
-            Total committed cost = current cost + (active proposals * avg cost)
+            Actual billed cost plus each active proposal's estimated remainder.
         """
-        num_active_proposals = len(self.active_proposal_tasks)
-
-        if num_active_proposals == 0:
+        active_tasks = list(self.active_proposal_tasks.values())
+        if not active_tasks:
             return self.total_api_cost
 
-        # Use average cost if we have historical data, otherwise use a conservative estimate
         if self.avg_proposal_cost > 0:
-            estimated_in_flight = num_active_proposals * self.avg_proposal_cost
+            estimated_in_flight = sum(
+                max(
+                    0.0,
+                    self.avg_proposal_cost
+                    - self._active_proposal_costs.get(task, 0.0),
+                )
+                for task in active_tasks
+            )
         else:
-            # No historical data yet - don't add estimates to avoid blocking early proposals
             estimated_in_flight = 0.0
 
         committed_cost = self.total_api_cost + estimated_in_flight
@@ -1194,13 +1370,14 @@ class ShinkaEvolveRunner:
                                 ),
                                 timeout=600.0,  # 10 minute timeout for final meta summary
                             )
-                            if success and final_meta_cost > 0:
-                                self.total_api_cost += final_meta_cost
+                            accounted_final_meta_cost = (
+                                await self._account_api_cost(final_meta_cost)
+                            )
                             if self.verbose:
-                                if success and final_meta_cost > 0:
+                                if success and accounted_final_meta_cost > 0:
                                     logger.info(
                                         f"Final meta summary completed successfully "
-                                        f"(cost: ${final_meta_cost:.4f})"
+                                        f"(cost: ${accounted_final_meta_cost:.4f})"
                                     )
                                 else:
                                     logger.info(
@@ -1333,7 +1510,8 @@ class ShinkaEvolveRunner:
             logger.info(f"Resuming from generation {self.db.last_iteration}")
             logger.info(f"Found {program_count} programs in database")
 
-            # Load existing API costs from database
+            # Load existing API costs from durable program data and the atomic
+            # checkpoint, whichever is newer.
             existing_costs = await self._get_total_api_costs()
             self.total_api_cost = existing_costs
             logger.info(f"Loaded existing API costs: ${existing_costs:.4f}")
@@ -1344,6 +1522,11 @@ class ShinkaEvolveRunner:
             # Update state for resuming
             await self._restore_resume_progress()
         else:
+            self.total_api_cost = max(
+                self.total_api_cost,
+                self._load_api_cost_checkpoint(),
+            )
+
             # Generate or copy initial program only if NOT resuming
             if (
                 self.evo_config.init_program_path
@@ -1658,19 +1841,21 @@ class ShinkaEvolveRunner:
                 global_scratchpad=global_scratchpad,
             )
 
-            self.prompt_api_cost += cost
-            self.total_api_cost += cost
+            accounted_prompt_cost = await self._account_api_cost(cost)
+            self.prompt_api_cost += accounted_prompt_cost
 
             if new_prompt:
                 self.prompt_db.add(new_prompt, verbose=self.verbose)
                 logger.info(
                     f"Evolved new prompt {new_prompt.id[:8]}... "
                     f"(prompt_gen={new_prompt.generation}, prog_gen={current_program_generation}, "
-                    f"patch={patch_type}, cost=${cost:.4f})"
+                    f"patch={patch_type}, cost=${accounted_prompt_cost:.4f})"
                 )
             else:
                 logger.warning(f"Prompt evolution failed (patch_type={patch_type})")
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error during prompt evolution: {e}")
 
@@ -1757,6 +1942,7 @@ class ShinkaEvolveRunner:
 
             # Get code embedding for initial program
             code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
+            e_cost = await self._account_api_cost(e_cost)
             if self.verbose and code_embedding:
                 logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
 
@@ -1834,6 +2020,8 @@ class ShinkaEvolveRunner:
 
         except UnconfirmedJobCancellationError:
             raise
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             if getattr(e, "cancel_target", None) is not None:
                 raise
@@ -1851,6 +2039,9 @@ class ShinkaEvolveRunner:
                 code_embedding, e_cost = await self._get_code_embedding_async(
                     exec_fname
                 )
+                e_cost = await self._account_api_cost(e_cost)
+            except ApiCostAccountingError:
+                raise
             except Exception:
                 code_embedding, e_cost = None, 0.0
 
@@ -1908,11 +2099,6 @@ class ShinkaEvolveRunner:
         # Add to database
         await self.async_db.add_program_async(initial_program, verbose=self.verbose)
 
-        # Add initial program costs to in-memory total for accurate budget tracking
-        initial_embed_cost = (initial_program.metadata or {}).get("embed_cost", 0.0)
-        initial_novelty_cost = (initial_program.metadata or {}).get("novelty_cost", 0.0)
-        self.total_api_cost += initial_embed_cost + initial_novelty_cost
-
         # Add the initial program to meta memory tracking
         if self.meta_summarizer:
             self.meta_summarizer.add_evaluated_program(initial_program)
@@ -1931,23 +2117,22 @@ class ShinkaEvolveRunner:
                     updated_recs,
                     meta_cost,
                 ) = await self.meta_summarizer.update_meta_memory_async(best_program)
+                accounted_meta_cost = await self._account_api_cost(meta_cost)
                 if updated_recs:
                     # Write meta output file asynchronously
                     await self.meta_summarizer.write_meta_output_async(
                         str(self.results_dir)
                     )
                     # Store meta cost for tracking
-                    if meta_cost > 0:
+                    if accounted_meta_cost > 0:
                         logger.info(
-                            f"Meta recommendation generation cost: ${meta_cost:.4f}"
+                            "Meta recommendation generation cost: "
+                            f"${accounted_meta_cost:.4f}"
                         )
-                        # Add meta cost to in-memory total for accurate budget tracking
-                        self.total_api_cost += meta_cost
-
                         # Add meta cost to this program's metadata (the one that triggered the update)
                         if initial_program.metadata is None:
                             initial_program.metadata = {}
-                        initial_program.metadata["meta_cost"] = meta_cost
+                        initial_program.metadata["meta_cost"] = accounted_meta_cost
 
         # Set baseline score for LLM selection
         if self.llm_selection is not None:
@@ -2030,9 +2215,12 @@ class ShinkaEvolveRunner:
             )
 
             if response is not None:
-                response_cost = response.cost or 0.0
+                response_cost = self._validate_completed_api_cost(
+                    response.cost,
+                    source="initial-program LLM response",
+                )
                 total_costs += response_cost
-                self.total_api_cost += response_cost
+                await self._account_api_cost(response_cost)
 
             if response is None or not response.content:
                 error_msg = "LLM response content was None."
@@ -2810,6 +2998,8 @@ class ShinkaEvolveRunner:
                 active_proposals_at_start,
             )
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error generating proposal for generation {generation}: {e}")
             return None
@@ -2954,6 +3144,8 @@ class ShinkaEvolveRunner:
                     # We have a successful patch, break from resample loop
                     meta_patch_data["api_costs"] = api_costs
                     break
+                except ApiCostAccountingError:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Error in patch generation attempt {resample + 1}: {e}"
@@ -2969,10 +3161,12 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Getting code embedding for generation {generation}...")
             code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
-            embed_cost += e_cost
+            accounted_embed_cost = await self._account_api_cost(e_cost)
+            embed_cost += accounted_embed_cost
             if self.verbose:
                 logger.info(
-                    f"Code embedding completed for generation {generation} (cost: ${e_cost:.4f})"
+                    "Code embedding completed for generation "
+                    f"{generation} (cost: ${accounted_embed_cost:.4f})"
                 )
 
             if not code_embedding:
@@ -2999,9 +3193,10 @@ class ShinkaEvolveRunner:
                     novelty_cost_from_check = novelty_metadata.get(
                         "novelty_total_cost", 0.0
                     )
-                    novelty_total_cost += (
-                        novelty_cost_from_check  # Accumulate novelty cost separately
+                    accounted_novelty_cost = await self._account_api_cost(
+                        novelty_cost_from_check
                     )
+                    novelty_total_cost += accounted_novelty_cost
                     novelty_checks_performed = novelty_metadata.get(
                         "novelty_checks_performed", 0
                     )
@@ -3106,7 +3301,6 @@ class ShinkaEvolveRunner:
                 # Update costs
                 meta_patch_data["api_costs"] = api_costs
                 proposal_total_cost = api_costs + embed_cost + novelty_total_cost
-                self.total_api_cost += proposal_total_cost
 
                 # Update average proposal cost for in-flight estimation
                 self._update_avg_proposal_cost(proposal_total_cost)
@@ -3471,7 +3665,6 @@ class ShinkaEvolveRunner:
         terminal_failure_cost = float(api_costs) + float(embed_cost) + float(
             novelty_cost
         )
-        self.total_api_cost += terminal_failure_cost
         if terminal_failure_cost > 0.0:
             self._update_avg_proposal_cost(terminal_failure_cost)
         failure_class = self._classify_failed_proposal(
@@ -3573,6 +3766,7 @@ class ShinkaEvolveRunner:
             model_sample_probs: Model sampling probabilities
             model_posterior: Model posterior probabilities
         """
+        total_costs = 0.0
         try:
             # Generate fix prompt with ancestor inspirations
             patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
@@ -3585,7 +3779,6 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Generated FIX patch type: {patch_type}")
 
-            total_costs = 0.0
             msg_history = []
 
             llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
@@ -3604,7 +3797,12 @@ class ShinkaEvolveRunner:
                 )
 
                 if response is not None:
-                    total_costs += response.cost or 0.0
+                    response_cost = self._validate_completed_api_cost(
+                        response.cost,
+                        source="fix-patch LLM response",
+                    )
+                    total_costs += response_cost
+                    await self._account_api_cost(response_cost)
 
                 if not response or not response.content:
                     error_str = "LLM response content was None."
@@ -3759,9 +3957,11 @@ class ShinkaEvolveRunner:
 
             return None, meta_patch_data, False
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
-            return None, {"api_costs": 0.0, "error_attempt": str(e)}, False
+            return None, {"api_costs": total_costs, "error_attempt": str(e)}, False
 
     async def _run_patch_async(
         self,
@@ -3777,6 +3977,7 @@ class ShinkaEvolveRunner:
     ) -> Optional[Tuple[Optional[str], Dict[str, Any], bool]]:
         """Run async patch generation."""
         # Initialize prompt-related variables outside try block for exception handling
+        total_costs = 0.0
         current_prompt_id: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
 
@@ -3807,7 +4008,6 @@ class ShinkaEvolveRunner:
                 if current_prompt_id:
                     logger.info(f"Using evolved prompt: {current_prompt_id[:8]}...")
 
-            total_costs = 0.0
             msg_history = []
 
             # Use provided model_sample_probs (selected once before all loops)
@@ -3829,7 +4029,12 @@ class ShinkaEvolveRunner:
                 )
 
                 if response is not None:
-                    total_costs += response.cost or 0.0
+                    response_cost = self._validate_completed_api_cost(
+                        response.cost,
+                        source="patch LLM response",
+                    )
+                    total_costs += response_cost
+                    await self._account_api_cost(response_cost)
 
                 if not response or not response.content:
                     error_str = "LLM response content was None."
@@ -3992,6 +4197,8 @@ class ShinkaEvolveRunner:
 
             return None, meta_patch_data, False
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error in async patch generation: {e}")
             # Restore original task_sys_msg in case of exception
@@ -3999,7 +4206,7 @@ class ShinkaEvolveRunner:
             return (
                 None,
                 {
-                    "api_costs": 0.0,
+                    "api_costs": total_costs,
                     "error_attempt": str(e),
                     "system_prompt_id": current_prompt_id,
                 },
@@ -4605,22 +4812,25 @@ class ShinkaEvolveRunner:
                             ) = await self.meta_summarizer.update_meta_memory_async(
                                 best_program
                             )
+                            accounted_meta_cost = await self._account_api_cost(
+                                meta_cost
+                            )
                             if updated_recs:
                                 # Write meta output file asynchronously
                                 await self.meta_summarizer.write_meta_output_async(
                                     str(self.results_dir)
                                 )
-                                if meta_cost > 0:
+                                if accounted_meta_cost > 0:
                                     logger.info(
-                                        f"Meta recommendation cost: ${meta_cost:.4f}"
+                                        "Meta recommendation cost: "
+                                        f"${accounted_meta_cost:.4f}"
                                     )
-                                    # Add meta cost to in-memory total for accurate budget tracking
-                                    self.total_api_cost += meta_cost
-
                                     # Add meta cost to this program's metadata
                                     if program.metadata is None:
                                         program.metadata = {}
-                                    program.metadata["meta_cost"] = meta_cost
+                                    program.metadata["meta_cost"] = (
+                                        accounted_meta_cost
+                                    )
                                     metadata_persist_needed = True
                 except Exception as e:
                     logger.warning(f"Meta summarizer error for {job.job_id}: {e}")
@@ -5230,8 +5440,9 @@ class ShinkaEvolveRunner:
     ) -> None:
         """Release proposal bookkeeping after a proposal attempt finishes."""
         self.assigned_generations.discard(generation)
-        if task_id in self.active_proposal_tasks:
-            del self.active_proposal_tasks[task_id]
+        task = self.active_proposal_tasks.pop(task_id, None)
+        if task is not None:
+            self._active_proposal_costs.pop(task, None)
 
     async def _release_evaluation_slot_once(self, job: AsyncRunningJob) -> None:
         """Release an evaluation slot at most once per job."""
@@ -5390,7 +5601,8 @@ class ShinkaEvolveRunner:
                 completed_tasks.append(task_id)
 
         for task_id in completed_tasks:
-            del self.active_proposal_tasks[task_id]
+            task = self.active_proposal_tasks.pop(task_id)
+            self._active_proposal_costs.pop(task, None)
 
     async def _cancel_surplus_inflight_work(self) -> None:
         """Cancel or discard work that is no longer needed after hitting target."""

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,8 +9,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from shinka.core.async_runner import (
+    ApiCostCheckpointError,
     AsyncRunningJob,
     CompletedJobPersistResult,
+    InvalidApiCostError,
     PersistedProgramEvent,
     ShinkaEvolveRunner,
 )
@@ -179,6 +182,10 @@ def _build_runner(**overrides):
     runner.next_generation_to_submit = overrides.get("next_generation_to_submit", 1)
     runner.running_jobs = overrides.get("running_jobs", [])
     runner.active_proposal_tasks = overrides.get("active_proposal_tasks", {})
+    runner._active_proposal_costs = overrides.get("_active_proposal_costs", {})
+    runner._api_cost_checkpoint_lock = overrides.get(
+        "_api_cost_checkpoint_lock", asyncio.Lock()
+    )
     runner.failed_jobs_for_retry = overrides.get("failed_jobs_for_retry", {})
     runner.assigned_generations = overrides.get("assigned_generations", set())
     runner.evaluation_slot_pool = overrides.get("evaluation_slot_pool", _FakeSlotPool())
@@ -279,7 +286,7 @@ def test_prompt_evolution_resumes_generation_zero_database(tmp_path):
     asyncio.run(_run())
 
 
-def test_failed_initial_generation_accounts_rejected_query_costs():
+def test_failed_initial_generation_accounts_rejected_query_costs(tmp_path):
     async def _run():
         class _RejectedLLM:
             def __init__(self):
@@ -300,6 +307,7 @@ def test_failed_initial_generation_accounts_rejected_query_costs():
                 language="python",
             ),
             total_api_cost=1.0,
+            results_dir=str(tmp_path),
         )
         runner.llm = _RejectedLLM()
         runner.llm_selection = None
@@ -317,7 +325,7 @@ def test_failed_initial_generation_accounts_rejected_query_costs():
     asyncio.run(_run())
 
 
-def test_cancelled_initial_generation_keeps_completed_query_cost():
+def test_cancelled_initial_generation_keeps_completed_query_cost(tmp_path):
     async def _run():
         second_query_started = asyncio.Event()
 
@@ -341,6 +349,7 @@ def test_cancelled_initial_generation_keeps_completed_query_cost():
                 language="python",
             ),
             total_api_cost=1.0,
+            results_dir=str(tmp_path),
         )
         runner.llm = _RejectedThenBlockedLLM()
         runner.llm_selection = None
@@ -356,6 +365,523 @@ def test_cancelled_initial_generation_keeps_completed_query_cost():
             await generation_task
 
         assert runner.total_api_cost == pytest.approx(1.2)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("patch_mode", ["normal", "fix"])
+def test_failed_patch_persistence_keeps_completed_query_cost(patch_mode, tmp_path):
+    async def _run():
+        response = SimpleNamespace(content="", cost=0.25)
+        runner = _build_runner(
+            evo_config=SimpleNamespace(
+                evolve_prompts=False,
+                task_sys_msg="task",
+                max_patch_attempts=1,
+                language="python",
+            ),
+            total_api_cost=1.0,
+            results_dir=str(tmp_path),
+        )
+        runner.prompt_sampler_evo = None
+        runner.prompt_sampler = SimpleNamespace(
+            task_sys_msg="task",
+            sample=lambda **_kwargs: ("system", "user", "diff"),
+            sample_fix=lambda **_kwargs: ("system", "user", "full"),
+        )
+        runner.llm = SimpleNamespace(
+            get_kwargs=lambda **_kwargs: {},
+            query=AsyncMock(return_value=response),
+        )
+        runner._save_patch_attempt_async = AsyncMock(
+            side_effect=RuntimeError("attempt persistence failed")
+        )
+
+        if patch_mode == "fix":
+            result = await runner._run_fix_patch_async(
+                SimpleNamespace(code="print('broken')"),
+                [],
+                generation=1,
+            )
+        else:
+            result = await runner._run_patch_async(
+                SimpleNamespace(code="print('parent')"),
+                [],
+                [],
+                generation=1,
+            )
+
+        assert result is not None
+        _, metadata, success = result
+        assert success is False
+        assert metadata["api_costs"] == pytest.approx(0.25)
+        assert runner.total_api_cost == pytest.approx(1.25)
+
+    asyncio.run(_run())
+
+
+def test_cancelled_patch_persistence_keeps_completed_query_cost(tmp_path):
+    async def _run():
+        persistence_started = asyncio.Event()
+
+        async def block_persistence(**_kwargs):
+            persistence_started.set()
+            await asyncio.Event().wait()
+
+        runner = _build_runner(
+            evo_config=SimpleNamespace(
+                evolve_prompts=False,
+                task_sys_msg="task",
+                max_patch_attempts=1,
+                language="python",
+            ),
+            total_api_cost=1.0,
+            results_dir=str(tmp_path),
+        )
+        runner.prompt_sampler_evo = None
+        runner.prompt_sampler = SimpleNamespace(
+            task_sys_msg="task",
+            sample=lambda **_kwargs: ("system", "user", "diff"),
+        )
+        runner.llm = SimpleNamespace(
+            get_kwargs=lambda **_kwargs: {},
+            query=AsyncMock(
+                return_value=SimpleNamespace(content="", cost=0.25)
+            ),
+        )
+        runner._save_patch_attempt_async = block_persistence
+
+        patch_task = asyncio.create_task(
+            runner._run_patch_async(
+                SimpleNamespace(code="print('parent')"),
+                [],
+                [],
+                generation=1,
+            )
+        )
+        await persistence_started.wait()
+        patch_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await patch_task
+
+        assert runner.total_api_cost == pytest.approx(1.25)
+
+    asyncio.run(_run())
+
+
+def test_committed_cost_estimates_only_unbilled_proposal_remainder(tmp_path):
+    async def _run():
+        current_task = asyncio.current_task()
+        runner = _build_runner(
+            active_proposal_tasks={"proposal-1": current_task},
+            total_api_cost=7.0,
+            completed_proposal_costs=[2.0],
+            avg_proposal_cost=2.0,
+            results_dir=str(tmp_path),
+        )
+
+        await runner._account_api_cost(1.0)
+
+        assert runner.total_api_cost == pytest.approx(8.0)
+        assert runner._get_committed_cost() == pytest.approx(9.0)
+
+    asyncio.run(_run())
+
+
+def test_api_cost_checkpoint_restores_unpersisted_response_cost(tmp_path):
+    async def _run():
+        database_path = tmp_path / "programs.sqlite"
+        connection = sqlite3.connect(database_path)
+        connection.execute("CREATE TABLE programs (metadata TEXT)")
+        connection.execute(
+            "INSERT INTO programs (metadata) VALUES (?)",
+            (json.dumps({"api_costs": 5.0}),),
+        )
+        connection.commit()
+        connection.close()
+
+        runner = _build_runner(
+            db=SimpleNamespace(
+                config=SimpleNamespace(db_path=str(database_path))
+            ),
+            total_api_cost=5.0,
+            results_dir=str(tmp_path),
+        )
+        await runner._account_api_cost(1.0)
+        await runner._account_api_cost(2.0)
+        connection = sqlite3.connect(database_path)
+        connection.execute(
+            "UPDATE programs SET metadata = ?",
+            (json.dumps({"api_costs": 7.0}),),
+        )
+        connection.commit()
+        connection.close()
+
+        resumed_runner = _build_runner(
+            db=SimpleNamespace(
+                config=SimpleNamespace(db_path=str(database_path))
+            ),
+            results_dir=str(tmp_path),
+        )
+
+        assert await resumed_runner._get_total_api_costs() == pytest.approx(8.0)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "invalid_cost",
+    [float("nan"), float("inf"), float("-inf"), -0.01],
+)
+def test_invalid_live_api_cost_fails_closed(invalid_cost, tmp_path):
+    async def _run():
+        runner = _build_runner(
+            total_api_cost=1.0,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(InvalidApiCostError):
+            await runner._account_api_cost(invalid_cost)
+
+        assert runner.total_api_cost == pytest.approx(1.0)
+        assert isinstance(runner._fatal_error, InvalidApiCostError)
+        assert runner._api_cost_checkpoint_path().exists() is False
+
+    asyncio.run(_run())
+
+
+def test_nonfinite_durable_api_cost_fails_resume(tmp_path):
+    async def _run():
+        database_path = tmp_path / "programs.sqlite"
+        connection = sqlite3.connect(database_path)
+        connection.execute("CREATE TABLE programs (metadata TEXT)")
+        connection.execute(
+            "INSERT INTO programs (metadata) VALUES (?)",
+            (json.dumps({"api_costs": float("nan")}),),
+        )
+        connection.commit()
+        connection.close()
+        runner = _build_runner(
+            db=SimpleNamespace(
+                config=SimpleNamespace(db_path=str(database_path))
+            ),
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(InvalidApiCostError):
+            await runner._get_total_api_costs()
+
+    asyncio.run(_run())
+
+
+def test_durable_api_cost_overflow_fails_resume(tmp_path):
+    async def _run():
+        database_path = tmp_path / "programs.sqlite"
+        connection = sqlite3.connect(database_path)
+        connection.execute("CREATE TABLE programs (metadata TEXT)")
+        connection.execute(
+            "INSERT INTO programs (metadata) VALUES (?)",
+            (
+                json.dumps(
+                    {
+                        "api_costs": 1e308,
+                        "embed_cost": 1e308,
+                    }
+                ),
+            ),
+        )
+        connection.commit()
+        connection.close()
+        runner = _build_runner(
+            db=SimpleNamespace(
+                config=SimpleNamespace(db_path=str(database_path))
+            ),
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(InvalidApiCostError):
+            await runner._get_total_api_costs()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("serialized_cost", ["NaN", "Infinity", "-Infinity"])
+def test_nonfinite_api_cost_checkpoint_fails_resume(
+    serialized_cost,
+    tmp_path,
+):
+    runner = _build_runner(results_dir=str(tmp_path))
+    runner._api_cost_checkpoint_path().write_text(
+        f'{{"total_api_cost": {serialized_cost}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidApiCostError):
+        runner._load_api_cost_checkpoint()
+
+
+def test_checkpoint_failure_is_fatal_after_preserving_billed_total(
+    tmp_path,
+    monkeypatch,
+):
+    async def _run():
+        runner = _build_runner(
+            total_api_cost=1.0,
+            results_dir=str(tmp_path),
+        )
+
+        def fail_checkpoint(_total_api_cost):
+            raise OSError("storage unavailable")
+
+        monkeypatch.setattr(runner, "_write_api_cost_checkpoint", fail_checkpoint)
+
+        with pytest.raises(ApiCostCheckpointError) as exc_info:
+            await runner._account_api_cost(0.25)
+
+        assert exc_info.value.billed_cost == pytest.approx(0.25)
+        assert runner.total_api_cost == pytest.approx(1.25)
+        assert runner._fatal_error is exc_info.value
+
+    asyncio.run(_run())
+
+
+def test_cumulative_api_cost_overflow_fails_closed(tmp_path):
+    async def _run():
+        runner = _build_runner(
+            total_api_cost=1e308,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(InvalidApiCostError):
+            await runner._account_api_cost(1e308)
+
+        assert runner.total_api_cost == 1e308
+        assert isinstance(runner._fatal_error, InvalidApiCostError)
+
+    asyncio.run(_run())
+
+
+def test_initial_embedding_cost_survives_database_failure(tmp_path):
+    async def _run():
+        async_db = SimpleNamespace(
+            add_program_async=AsyncMock(side_effect=RuntimeError("database failed"))
+        )
+        runner = _build_runner(
+            async_db=async_db,
+            db_config=SimpleNamespace(
+                num_islands=1,
+                max_stdout_log_chars=1000,
+            ),
+            results_dir=str(tmp_path),
+        )
+        runner._run_initial_evaluation = AsyncMock(
+            return_value=(
+                {
+                    "correct": {"correct": True},
+                    "metrics": {
+                        "combined_score": 1.0,
+                        "public": {},
+                        "private": {},
+                    },
+                },
+                0.1,
+            )
+        )
+        runner._get_code_embedding_async = AsyncMock(
+            return_value=([0.1], 0.2)
+        )
+
+        with pytest.raises(RuntimeError, match="database failed"):
+            await runner._setup_initial_program_with_metadata(
+                "print('initial')",
+                "initial",
+                "initial program",
+                0.0,
+            )
+
+        assert runner.total_api_cost == pytest.approx(0.2)
+        assert runner._load_api_cost_checkpoint() == pytest.approx(0.2)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("invalid_meta_cost", [float("nan"), -0.1])
+def test_initial_meta_cost_fails_closed(invalid_meta_cost, tmp_path):
+    async def _run():
+        async_db = SimpleNamespace(
+            add_program_async=AsyncMock(),
+            get_best_program_async=AsyncMock(return_value=SimpleNamespace()),
+        )
+        meta_summarizer = SimpleNamespace(
+            evaluated_since_last_meta=[object()],
+            add_evaluated_program=lambda _program: None,
+            should_update_meta=lambda _interval: True,
+            update_meta_memory_async=AsyncMock(
+                return_value=(False, invalid_meta_cost)
+            ),
+        )
+        runner = _build_runner(
+            async_db=async_db,
+            db_config=SimpleNamespace(
+                num_islands=1,
+                max_stdout_log_chars=1000,
+            ),
+            evo_config=SimpleNamespace(meta_rec_interval=1),
+            results_dir=str(tmp_path),
+            meta_summarizer=meta_summarizer,
+        )
+        runner._run_initial_evaluation = AsyncMock(
+            return_value=(
+                {
+                    "correct": {"correct": True},
+                    "metrics": {"combined_score": 1.0},
+                },
+                0.1,
+            )
+        )
+        runner._get_code_embedding_async = AsyncMock(
+            return_value=(None, 0.0)
+        )
+
+        with pytest.raises(InvalidApiCostError):
+            await runner._setup_initial_program_with_metadata(
+                "print('initial')",
+                "initial",
+                "initial program",
+                0.0,
+            )
+
+        assert isinstance(runner._fatal_error, InvalidApiCostError)
+
+    asyncio.run(_run())
+
+
+def test_cancelled_proposal_keeps_completed_embedding_cost(tmp_path):
+    async def _run():
+        novelty_started = asyncio.Event()
+        parent = SimpleNamespace(id="parent-1", generation=0, island_idx=None)
+
+        async def sample_with_fix_mode_async(**_kwargs):
+            return parent, [], [], False
+
+        class _BlockingNoveltyJudge:
+            async def should_check_novelty_async(self, *_args):
+                novelty_started.set()
+                await asyncio.Event().wait()
+
+        runner = _build_runner(
+            async_db=SimpleNamespace(
+                sample_with_fix_mode_async=sample_with_fix_mode_async
+            ),
+            db=SimpleNamespace(island_manager=None),
+            evo_config=SimpleNamespace(
+                max_novelty_attempts=1,
+                max_patch_resamples=1,
+            ),
+            results_dir=str(tmp_path),
+        )
+        runner.novelty_judge = _BlockingNoveltyJudge()
+        runner.llm_selection = None
+        runner._run_patch_async = AsyncMock(
+            return_value=("diff", {"api_costs": 0.0}, True)
+        )
+        runner._get_code_embedding_async = AsyncMock(
+            return_value=([0.1], 0.2)
+        )
+
+        proposal_task = asyncio.create_task(
+            runner._generate_evolved_proposal(
+                generation=1,
+                task_id="proposal-1",
+                exec_fname=str(tmp_path / "main.py"),
+                results_dir=str(tmp_path / "results"),
+                meta_recs=None,
+                meta_summary=None,
+                meta_scratch=None,
+                proposal_started_at=time.time(),
+                sampling_worker_id=None,
+                active_proposals_at_start=1,
+            )
+        )
+        runner.active_proposal_tasks["proposal-1"] = proposal_task
+        await novelty_started.wait()
+        proposal_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await proposal_task
+
+        assert runner.total_api_cost == pytest.approx(0.2)
+
+    asyncio.run(_run())
+
+
+def test_cancelled_proposal_keeps_completed_novelty_cost(tmp_path):
+    async def _run():
+        terminal_record_started = asyncio.Event()
+        parent = SimpleNamespace(id="parent-1", generation=0, island_idx=None)
+
+        async def sample_with_fix_mode_async(**_kwargs):
+            return parent, [], [], False
+
+        class _RejectingNoveltyJudge:
+            async def should_check_novelty_async(self, *_args):
+                return True
+
+            async def assess_novelty_with_rejection_sampling_async(self, *_args):
+                return False, {
+                    "novelty_total_cost": 0.3,
+                    "novelty_checks_performed": 1,
+                    "novelty_explanation": "too similar",
+                }
+
+        async def block_terminal_record(**_kwargs):
+            terminal_record_started.set()
+            await asyncio.Event().wait()
+
+        runner = _build_runner(
+            async_db=SimpleNamespace(
+                sample_with_fix_mode_async=sample_with_fix_mode_async
+            ),
+            db=SimpleNamespace(island_manager=None),
+            evo_config=SimpleNamespace(
+                max_novelty_attempts=1,
+                max_patch_resamples=1,
+            ),
+            results_dir=str(tmp_path),
+        )
+        runner.novelty_judge = _RejectingNoveltyJudge()
+        runner.llm_selection = None
+        runner._run_patch_async = AsyncMock(
+            return_value=("diff", {"api_costs": 0.0}, True)
+        )
+        runner._get_code_embedding_async = AsyncMock(
+            return_value=([0.1], 0.0)
+        )
+        runner._record_terminal_failed_proposal = block_terminal_record
+
+        proposal_task = asyncio.create_task(
+            runner._generate_evolved_proposal(
+                generation=1,
+                task_id="proposal-1",
+                exec_fname=str(tmp_path / "main.py"),
+                results_dir=str(tmp_path / "results"),
+                meta_recs=None,
+                meta_summary=None,
+                meta_scratch=None,
+                proposal_started_at=time.time(),
+                sampling_worker_id=None,
+                active_proposals_at_start=1,
+            )
+        )
+        runner.active_proposal_tasks["proposal-1"] = proposal_task
+        await terminal_record_started.wait()
+        proposal_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await proposal_task
+
+        assert runner.total_api_cost == pytest.approx(0.3)
 
     asyncio.run(_run())
 
@@ -561,6 +1087,7 @@ def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_fa
                 max_patch_resamples=1,
                 num_generations=5,
             ),
+            results_dir=str(tmp_path),
         )
         runner._record_progress = lambda: None
         runner.novelty_judge = None
@@ -580,6 +1107,7 @@ def test_generate_evolved_proposal_records_failed_node_attempt_after_pre_eval_fa
             )
 
         async def _run_patch_async(*_args, **_kwargs):
+            await runner._account_api_cost(0.1)
             return (
                 None,
                 {
@@ -705,10 +1233,10 @@ def test_persist_failed_generation_skips_maintenance_and_handles_missing_code(tm
     asyncio.run(_run())
 
 
-def test_record_terminal_failed_proposal_updates_total_api_cost_once(tmp_path):
+def test_record_terminal_failed_proposal_does_not_double_count_api_costs(tmp_path):
     async def _run():
         async_db = _RecordingAsyncDB()
-        runner = _build_runner(async_db=async_db, total_api_cost=1.25)
+        runner = _build_runner(async_db=async_db, total_api_cost=1.34)
 
         gen_dir = tmp_path / "gen_9"
         gen_dir.mkdir()
@@ -738,7 +1266,7 @@ def test_record_terminal_failed_proposal_updates_total_api_cost_once(tmp_path):
             failure_reason="Could not extract code from patch string",
         )
 
-        assert runner.total_api_cost == 1.34
+        assert runner.total_api_cost == pytest.approx(1.34)
         assert len(async_db.attempt_events) == 1
 
     asyncio.run(_run())
@@ -749,7 +1277,7 @@ def test_record_terminal_failed_proposal_updates_avg_proposal_cost(tmp_path):
         async_db = _RecordingAsyncDB()
         runner = _build_runner(
             async_db=async_db,
-            total_api_cost=0.5,
+            total_api_cost=0.59,
             completed_proposal_costs=[0.3],
             avg_proposal_cost=0.3,
         )
@@ -782,17 +1310,18 @@ def test_record_terminal_failed_proposal_updates_avg_proposal_cost(tmp_path):
             failure_reason="Could not extract code from patch string",
         )
 
-        assert runner.total_api_cost == 0.59
+        assert runner.total_api_cost == pytest.approx(0.59)
         assert runner.completed_proposal_costs == [0.3, 0.09]
         assert runner.avg_proposal_cost == pytest.approx(0.195)
 
     asyncio.run(_run())
 
 
-def test_maybe_evolve_prompt_updates_total_api_cost():
+def test_maybe_evolve_prompt_updates_total_api_cost(tmp_path):
     async def _run():
         runner = _build_runner(
             total_api_cost=1.0,
+            results_dir=str(tmp_path),
             evo_config=SimpleNamespace(
                 evolve_prompts=True,
                 prompt_evolution_interval=1,
@@ -820,6 +1349,49 @@ def test_maybe_evolve_prompt_updates_total_api_cost():
 
         assert runner.prompt_api_cost == 0.25
         assert runner.total_api_cost == 1.25
+        assert runner._load_api_cost_checkpoint() == pytest.approx(1.25)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("invalid_prompt_cost", [float("nan"), -0.1])
+def test_prompt_evolution_cost_fails_closed(invalid_prompt_cost, tmp_path):
+    async def _run():
+        runner = _build_runner(
+            total_api_cost=1.0,
+            results_dir=str(tmp_path),
+            evo_config=SimpleNamespace(
+                evolve_prompts=True,
+                prompt_evolution_interval=1,
+                prompt_evo_top_k_programs=3,
+                language="python",
+                use_text_feedback=False,
+            ),
+            prompt_db=SimpleNamespace(last_generation=2),
+        )
+        runner.prompt_evolution_counter = 0
+        runner.prompt_sampler_evo = SimpleNamespace(
+            sample=lambda: SimpleNamespace(id="prompt-parent")
+        )
+        runner.prompt_evolver = SimpleNamespace(
+            evolve=lambda **_kwargs: asyncio.sleep(
+                0,
+                result=(None, "diff", invalid_prompt_cost),
+            )
+        )
+        runner.async_db.get_top_programs_async = lambda _count: asyncio.sleep(
+            0,
+            result=[],
+        )
+        runner.meta_summarizer = None
+        runner.prompt_api_cost = 0.0
+
+        with pytest.raises(InvalidApiCostError):
+            await runner._maybe_evolve_prompt()
+
+        assert runner.prompt_api_cost == 0.0
+        assert runner.total_api_cost == pytest.approx(1.0)
+        assert isinstance(runner._fatal_error, InvalidApiCostError)
 
     asyncio.run(_run())
 
@@ -990,6 +1562,7 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
                 max_patch_resamples=1,
             ),
             scheduler=_FailingSubmitScheduler(),
+            results_dir=str(tmp_path),
         )
         runner.llm_selection = None
         runner.novelty_judge = None
@@ -998,6 +1571,7 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
         )
 
         async def _run_patch_async(*args, **kwargs):
+            await runner._account_api_cost(0.2)
             return ("diff", {"api_costs": 0.2, "system_prompt_id": "prompt-1"}, True)
 
         runner._run_patch_async = _run_patch_async
@@ -1046,6 +1620,7 @@ def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
                 max_patch_resamples=1,
             ),
             scheduler=_TrackedScheduler(events),
+            results_dir=str(tmp_path),
         )
         runner.llm_selection = None
         runner.novelty_judge = None
@@ -1054,6 +1629,7 @@ def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
         )
 
         async def _run_patch_async(*args, **kwargs):
+            await runner._account_api_cost(0.2)
             return ("diff", {"api_costs": 0.2, "system_prompt_id": "prompt-1"}, True)
 
         runner._run_patch_async = _run_patch_async
