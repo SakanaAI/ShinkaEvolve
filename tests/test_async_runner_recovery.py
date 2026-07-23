@@ -14,6 +14,11 @@ from shinka.core.async_runner import (
     ShinkaEvolveRunner,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.database.prompt_dbase import (
+    SystemPromptConfig,
+    SystemPromptDatabase,
+    create_system_prompt,
+)
 
 
 class _FakeAsyncDB:
@@ -227,6 +232,43 @@ def test_restore_resume_progress_uses_actual_program_count():
 
         assert runner.completed_generations == 6
         assert runner.next_generation_to_submit == 9
+
+    asyncio.run(_run())
+
+
+def test_prompt_evolution_resumes_generation_zero_database(tmp_path):
+    async def _run():
+        prompt_db_path = tmp_path / "prompts.sqlite"
+        existing_db = SystemPromptDatabase(
+            SystemPromptConfig(db_path=str(prompt_db_path))
+        )
+        existing_prompt = create_system_prompt(
+            prompt_text="persisted prompt",
+            generation=0,
+            patch_type="init",
+        )
+        existing_db.add(existing_prompt)
+        existing_db.close()
+
+        runner = _build_runner(
+            evo_config=SimpleNamespace(
+                prompt_archive_size=5,
+                prompt_ucb_exploration_constant=1.0,
+                prompt_epsilon=0.1,
+                task_sys_msg="replacement prompt",
+                prompt_patch_types=["diff"],
+                prompt_patch_type_probs=[1.0],
+                prompt_llm_kwargs={},
+            ),
+            results_dir=str(tmp_path),
+        )
+        runner.prompt_llm = None
+
+        await runner._setup_prompt_evolution()
+
+        assert runner.prompt_db._count_prompts_in_db() == 1
+        assert runner.prompt_db.get(existing_prompt.id) is not None
+        runner.prompt_db.close()
 
     asyncio.run(_run())
 

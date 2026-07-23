@@ -1358,12 +1358,12 @@ class ShinkaEvolveRunner:
         self.prompt_db = SystemPromptDatabase(prompt_config)
 
         # Check if we're resuming from existing prompt database
-        if prompt_db_path.exists() and self.prompt_db.last_generation > 0:
+        prompt_count = self.prompt_db._count_prompts_in_db()
+        if prompt_count > 0:
             logger.info(
                 f"Resuming prompt evolution from generation "
                 f"{self.prompt_db.last_generation}"
             )
-            prompt_count = self.prompt_db._count_prompts_in_db()
             logger.info(f"Found {prompt_count} prompts in database")
         else:
             # Add initial prompt to database
