@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Union, Optional
+from typing import Awaitable, Callable, Dict, List, Union, Optional
 import re
 import json
 import multiprocessing as mp
@@ -13,6 +13,10 @@ from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
+
+
+class BatchResultCallbackError(RuntimeError):
+    """Raised when a completed batch result cannot be processed."""
 
 
 def _rejected_gemini_result(error: Exception) -> Optional[QueryResult]:
@@ -442,6 +446,9 @@ class AsyncLLMClient:
         system_msg: Union[str, List[str]],
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
+        result_callback: Optional[
+            Callable[[QueryResult], Awaitable[None]]
+        ] = None,
     ) -> List[Optional[QueryResult]]:
         """Batch query the LLM with the given message and system message asynchronously.
 
@@ -475,19 +482,35 @@ class AsyncLLMClient:
                 lines.append(f"  {name:<30} {prob:>8.4f}")
             logger.info("\n".join(lines))
 
+        async def sample_and_report(index: int):
+            result = await self._sample_kwargs_query_async_with_retry(
+                index,
+                msg[index],
+                system_msg[index],
+                msg_history[index],
+                posterior,
+                num_samples,
+            )
+            if (
+                result_callback is not None
+                and result is not None
+                and len(result) > 1
+                and result[1] is not None
+            ):
+                try:
+                    await result_callback(result[1])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    raise BatchResultCallbackError(
+                        f"Failed to process batch result {index}"
+                    ) from error
+            return result
+
         # Create async tasks
         tasks = []
         for i in range(len(msg)):
-            tasks.append(
-                self._sample_kwargs_query_async_with_retry(
-                    i,
-                    msg[i],
-                    system_msg[i],
-                    msg_history[i],
-                    posterior,
-                    num_samples,
-                )
-            )
+            tasks.append(sample_and_report(i))
 
         # Execute all tasks concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -495,6 +518,8 @@ class AsyncLLMClient:
         # Process results and filter out exceptions
         final_results: List[Optional[QueryResult]] = [None] * len(results)
         for i, result in enumerate(results):
+            if isinstance(result, BatchResultCallbackError):
+                raise result
             if isinstance(result, BaseException):
                 logger.info(f"Error in batch query task {i}: {str(result)}")
             elif result is not None and len(result) > 1 and result[1] is not None:

@@ -3,7 +3,10 @@ import asyncio
 
 import pytest
 
-from shinka.core.async_summarizer import AsyncMetaSummarizer
+from shinka.core.async_summarizer import (
+    AsyncMetaSummarizer,
+    MetaCostAccountingError,
+)
 from shinka.core.summarizer import MetaSummarizer
 from shinka.database import Program
 
@@ -193,6 +196,29 @@ def test_async_step1_preserves_generation_after_missing_response():
         assert "Generation 2" in summary
         assert "Generation 1" not in summary
         assert cost == pytest.approx(0.2)
+
+    asyncio.run(_run())
+
+
+def test_meta_cost_accounting_attempts_all_completed_responses():
+    async def _run():
+        accounted_costs = []
+
+        async def account_cost(cost):
+            accounted_costs.append(cost)
+            if len(accounted_costs) == 1:
+                raise RuntimeError("checkpoint failed")
+            return cost
+
+        summarizer = AsyncMetaSummarizer(
+            MetaSummarizer(),
+            cost_accountant=account_cost,
+        )
+
+        with pytest.raises(MetaCostAccountingError):
+            await summarizer._account_costs([0.1, 0.2])
+
+        assert accounted_costs == [0.1, 0.2]
 
     asyncio.run(_run())
 

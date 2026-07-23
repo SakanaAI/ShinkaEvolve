@@ -17,6 +17,10 @@ from shinka.core.async_runner import (
     ShinkaEvolveRunner,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.core.async_summarizer import AsyncMetaSummarizer
+from shinka.core.summarizer import MetaSummarizer
+from shinka.database import Program
+from shinka.llm import AsyncLLMClient
 from shinka.database.prompt_dbase import (
     SystemPromptConfig,
     SystemPromptDatabase,
@@ -881,6 +885,173 @@ def test_cancelled_proposal_keeps_completed_novelty_cost(tmp_path):
         with pytest.raises(asyncio.CancelledError):
             await proposal_task
 
+        assert runner.total_api_cost == pytest.approx(0.3)
+
+    asyncio.run(_run())
+
+
+def test_cancelled_meta_analysis_keeps_completed_step_cost(tmp_path):
+    async def _run():
+        step_two_started = asyncio.Event()
+
+        class _BlockingMetaLLM:
+            async def batch_kwargs_query(self, **_kwargs):
+                response = SimpleNamespace(
+                    content="program summary",
+                    cost=0.2,
+                )
+                await _kwargs["result_callback"](response)
+                return [response]
+
+            async def query(self, **_kwargs):
+                step_two_started.set()
+                await asyncio.Event().wait()
+
+        runner = _build_runner(results_dir=str(tmp_path))
+        sync_summarizer = MetaSummarizer(async_mode=True)
+        sync_summarizer.add_evaluated_program(
+            Program(
+                id="program-1",
+                code="print('program')",
+                language="python",
+                generation=1,
+                correct=True,
+                combined_score=1.0,
+                metadata={"patch_name": "candidate"},
+            )
+        )
+        summarizer = AsyncMetaSummarizer(
+            sync_summarizer,
+            async_llm_client=_BlockingMetaLLM(),
+            cost_accountant=runner._account_api_cost,
+        )
+
+        meta_task = asyncio.create_task(summarizer.update_meta_memory_async())
+        await step_two_started.wait()
+        meta_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await meta_task
+
+        assert runner.total_api_cost == pytest.approx(0.2)
+        assert runner._load_api_cost_checkpoint() == pytest.approx(0.2)
+
+    asyncio.run(_run())
+
+
+def test_cancelled_meta_batch_keeps_completed_child_cost(tmp_path):
+    async def _run():
+        blocked_query_started = asyncio.Event()
+        first_cost_accounted = asyncio.Event()
+
+        class _PartialBatchLLM(AsyncLLMClient):
+            async def _sample_kwargs_query_async_with_retry(
+                self,
+                idx,
+                msg,
+                system_msg,
+                msg_history=None,
+                model_sample_probs=None,
+                total_samples=1,
+            ):
+                if idx == 0:
+                    return idx, SimpleNamespace(
+                        content="first summary",
+                        cost=0.2,
+                    )
+                blocked_query_started.set()
+                await asyncio.Event().wait()
+
+        runner = _build_runner(results_dir=str(tmp_path))
+
+        async def account_cost(cost):
+            accounted_cost = await runner._account_api_cost(cost)
+            first_cost_accounted.set()
+            return accounted_cost
+
+        sync_summarizer = MetaSummarizer(async_mode=True)
+        for generation in (1, 2):
+            sync_summarizer.add_evaluated_program(
+                Program(
+                    id=f"program-{generation}",
+                    code=f"print({generation})",
+                    language="python",
+                    generation=generation,
+                    correct=True,
+                    combined_score=float(generation),
+                    metadata={"patch_name": f"candidate-{generation}"},
+                )
+            )
+        summarizer = AsyncMetaSummarizer(
+            sync_summarizer,
+            async_llm_client=_PartialBatchLLM(
+                model_names=["test-model"],
+                verbose=False,
+            ),
+            cost_accountant=account_cost,
+        )
+
+        meta_task = asyncio.create_task(summarizer.update_meta_memory_async())
+        await blocked_query_started.wait()
+        await first_cost_accounted.wait()
+        meta_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await meta_task
+
+        assert runner.total_api_cost == pytest.approx(0.2)
+        assert runner._load_api_cost_checkpoint() == pytest.approx(0.2)
+
+    asyncio.run(_run())
+
+
+def test_concurrent_meta_batch_returns_full_accounted_cost(tmp_path):
+    async def _run():
+        class _CompletedBatchLLM(AsyncLLMClient):
+            async def _sample_kwargs_query_async_with_retry(
+                self,
+                idx,
+                msg,
+                system_msg,
+                msg_history=None,
+                model_sample_probs=None,
+                total_samples=1,
+            ):
+                await asyncio.sleep(0)
+                return idx, SimpleNamespace(
+                    content=f"summary {idx}",
+                    cost=(0.1, 0.2)[idx],
+                )
+
+        runner = _build_runner(results_dir=str(tmp_path))
+        sync_summarizer = MetaSummarizer(async_mode=True)
+        programs = []
+        for generation in (1, 2):
+            program = Program(
+                id=f"program-{generation}",
+                code=f"print({generation})",
+                language="python",
+                generation=generation,
+                correct=True,
+                combined_score=float(generation),
+                metadata={"patch_name": f"candidate-{generation}"},
+            )
+            programs.append(program)
+        summarizer = AsyncMetaSummarizer(
+            sync_summarizer,
+            async_llm_client=_CompletedBatchLLM(
+                model_names=["test-model"],
+                verbose=False,
+            ),
+            cost_accountant=runner._account_api_cost,
+        )
+
+        summary, cost = await summarizer._step1_individual_summaries_async(
+            programs
+        )
+
+        assert summary is not None
+        assert cost == pytest.approx(0.3)
         assert runner.total_api_cost == pytest.approx(0.3)
 
     asyncio.run(_run())

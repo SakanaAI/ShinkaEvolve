@@ -506,6 +506,7 @@ class ShinkaEvolveRunner:
             self.meta_summarizer = AsyncMetaSummarizer(
                 sync_meta_summarizer,
                 async_meta_llm,
+                cost_accountant=self._account_api_cost,
             )
         else:
             self.meta_summarizer = None
@@ -1038,6 +1039,19 @@ class ShinkaEvolveRunner:
             raise checkpoint_error from error
         return billed_cost
 
+    async def _account_meta_cost(self, cost: float) -> float:
+        """Account aggregate costs only for summarizers without per-step billing."""
+        if getattr(
+            self.meta_summarizer,
+            "accounts_costs_incrementally",
+            False,
+        ):
+            return self._validate_completed_api_cost(
+                cost,
+                source="meta-analysis aggregate",
+            )
+        return await self._account_api_cost(cost)
+
     def _get_committed_cost(self) -> float:
         """Calculate the committed cost including estimated in-flight proposals.
 
@@ -1373,7 +1387,7 @@ class ShinkaEvolveRunner:
                                 timeout=600.0,  # 10 minute timeout for final meta summary
                             )
                             accounted_final_meta_cost = (
-                                await self._account_api_cost(final_meta_cost)
+                                await self._account_meta_cost(final_meta_cost)
                             )
                             if self.verbose:
                                 if success and accounted_final_meta_cost > 0:
@@ -2119,7 +2133,7 @@ class ShinkaEvolveRunner:
                     updated_recs,
                     meta_cost,
                 ) = await self.meta_summarizer.update_meta_memory_async(best_program)
-                accounted_meta_cost = await self._account_api_cost(meta_cost)
+                accounted_meta_cost = await self._account_meta_cost(meta_cost)
                 if updated_recs:
                     # Write meta output file asynchronously
                     await self.meta_summarizer.write_meta_output_async(
@@ -4814,7 +4828,7 @@ class ShinkaEvolveRunner:
                             ) = await self.meta_summarizer.update_meta_memory_async(
                                 best_program
                             )
-                            accounted_meta_cost = await self._account_api_cost(
+                            accounted_meta_cost = await self._account_meta_cost(
                                 meta_cost
                             )
                             if updated_recs:
