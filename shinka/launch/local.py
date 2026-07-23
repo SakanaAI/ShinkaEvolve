@@ -1,4 +1,5 @@
 import subprocess
+import signal
 import time
 import threading
 import os
@@ -26,6 +27,55 @@ class ProcessWithLogging:
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
         return getattr(self.process, name)
+
+    def kill(self) -> bool:
+        """Kill the whole process group, not just the direct child.
+
+        Eval commands are often wrappers (``conda run -n env python …`` or
+        ``bash -lc "… docker run …"``) that fork the real worker; killing only
+        the direct child would orphan a GPU-holding process. The child is
+        started with ``start_new_session=True`` so it leads its own group.
+        """
+        pid = self.process.pid
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except (PermissionError, OSError):
+            # Best effort for the direct child, but group ownership remains
+            # unconfirmed and is checked below.
+            try:
+                self.process.kill()
+            except Exception as e:
+                logger.error(f"Error killing process {pid}: {e}")
+                return False
+
+        try:
+            self.process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            logger.error(f"Process {pid} did not exit after SIGKILL")
+            return False
+        except Exception as e:
+            logger.error(f"Could not confirm process {pid} termination: {e}")
+            return False
+
+        deadline = time.monotonic() + 1.0
+        while self._process_group_exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.is_terminated()
+
+    def is_terminated(self) -> bool:
+        """Return whether both the leader and its process group are gone."""
+        return self.process.poll() is not None and not self._process_group_exists()
+
+    def _process_group_exists(self) -> bool:
+        try:
+            os.killpg(self.process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError):
+            return True
 
     def __str__(self):
         """Return a string representation showing the PID."""
@@ -101,7 +151,9 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    # Use PIPE to capture output and redirect to files in real-time
+    # Use PIPE to capture output and redirect to files in real-time.
+    # start_new_session=True puts the child in its own process group so a
+    # timeout/cancel can kill the whole tree (see ProcessWithLogging.kill).
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -110,6 +162,7 @@ def submit(
         bufsize=1,  # Line buffered
         universal_newlines=True,
         env=env,
+        start_new_session=True,
     )
 
     # Open log files for writing with line buffering
@@ -174,7 +227,10 @@ def monitor(
                 logger.info(
                     f"Process {process.pid} exceeded timeout of {timeout}. Killing."
                 )
-            process.kill()
+            if not process.kill():
+                raise RuntimeError(
+                    f"Could not confirm termination of process group {process.pid}"
+                )
             break
 
         if verbose:

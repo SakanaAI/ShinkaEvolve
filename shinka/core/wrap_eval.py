@@ -86,21 +86,32 @@ def save_json_results(
     error: Optional[str] = None,
     verbose: bool = True,
 ) -> None:
-    """Saves metrics and correctness status to JSON files."""
+    """Saves metrics and correctness status to JSON files.
+
+    ``metrics.json`` is written first and ``correct.json`` (the success marker)
+    last, so that an interruption (timeout SIGKILL, OOM, disk-full) between the
+    two writes leaves ``correct.json`` absent — which readers treat as
+    ``correct=False`` — rather than recording a passing program with a missing
+    score as ``correct=True, combined_score=0.0``.
+    """
     os.makedirs(results_dir, exist_ok=True)
+
+    metrics_file = os.path.join(results_dir, "metrics.json")
+    with open(metrics_file, "w") as f:
+        json.dump(metrics, f, indent=4)
+        f.flush()
+        os.fsync(f.fileno())
+    if verbose:
+        print(f"Metrics saved to {metrics_file}")
 
     correct_payload = {"correct": correct, "error": error}
     correct_file = os.path.join(results_dir, "correct.json")
     with open(correct_file, "w") as f:
         json.dump(correct_payload, f, indent=4)
+        f.flush()
+        os.fsync(f.fileno())
     if verbose:
         print(f"Correctness and error status saved to {correct_file}")
-
-    metrics_file = os.path.join(results_dir, "metrics.json")
-    with open(metrics_file, "w") as f:
-        json.dump(metrics, f, indent=4)
-    if verbose:
-        print(f"Metrics saved to {metrics_file}")
 
 
 def run_shinka_eval(
@@ -429,17 +440,26 @@ def run_shinka_eval(
                 "scores": early_stop_scores,
             }
 
-        # Check if combined_score is NaN or inf/-inf and mark as incorrect
-        if "combined_score" in metrics:
-            combined_score = metrics["combined_score"]
-            if np.isnan(combined_score):
+        # A correct run must report a usable combined_score. A missing key would
+        # otherwise be substituted with 0.0 downstream and admitted into
+        # selection as a "correct" score-0 program; NaN/inf are equally unusable.
+        if overall_correct_flag:
+            if "combined_score" not in metrics:
                 overall_correct_flag = False
                 if not first_error_message:
-                    first_error_message = "combined_score is NaN"
-            elif np.isinf(combined_score):
-                overall_correct_flag = False
-                if not first_error_message:
-                    first_error_message = f"combined_score is inf ({combined_score})"
+                    first_error_message = "combined_score missing from metrics"
+            else:
+                combined_score = metrics["combined_score"]
+                if np.isnan(combined_score):
+                    overall_correct_flag = False
+                    if not first_error_message:
+                        first_error_message = "combined_score is NaN"
+                elif np.isinf(combined_score):
+                    overall_correct_flag = False
+                    if not first_error_message:
+                        first_error_message = (
+                            f"combined_score is inf ({combined_score})"
+                        )
 
     except Exception as e:
         print(f"Evaluation error: {e}")

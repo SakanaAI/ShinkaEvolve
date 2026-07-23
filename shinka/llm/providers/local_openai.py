@@ -27,6 +27,31 @@ def _extract_costs(model: str, in_tokens: int, all_out_tokens: int) -> tuple[flo
     return 0.0, 0.0
 
 
+def _extract_local_openai_content(response) -> str:
+    """Return the completion text, raising on empty or truncated output.
+
+    An empty message or a ``finish_reason == "length"`` (the model hit the
+    token cap mid-stream) means the generation is incomplete and must not be
+    treated as a finished program. Mirrors ``openai._extract_response_text``
+    and ``headless`` which already raise on empty content.
+    """
+    choice = response.choices[0]
+    content = getattr(choice.message, "content", None) or ""
+    finish_reason = getattr(choice, "finish_reason", None)
+
+    if finish_reason == "length":
+        raise ValueError(
+            "Local OpenAI completion was truncated (finish_reason='length'); "
+            "treating as an incomplete generation."
+        )
+    if not content.strip():
+        raise ValueError(
+            "Local OpenAI completion contained no text output "
+            f"(finish_reason={finish_reason})."
+        )
+    return content
+
+
 def _extract_usage(response) -> tuple[int, int, int]:
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -75,7 +100,7 @@ def query_local_openai(
         **kwargs,
         n=1,
     )
-    content = response.choices[0].message.content or ""
+    content = _extract_local_openai_content(response)
     thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
     new_msg_history.append({"role": "assistant", "content": content})
 
@@ -136,7 +161,7 @@ async def query_local_openai_async(
         **kwargs,
         n=1,
     )
-    content = response.choices[0].message.content or ""
+    content = _extract_local_openai_content(response)
     thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
     new_msg_history.append({"role": "assistant", "content": content})
 

@@ -6,6 +6,7 @@ import tempfile
 import time
 import uuid
 import threading
+from dataclasses import dataclass
 from shinka.utils import load_results
 from typing import Optional, Dict
 import logging
@@ -40,6 +41,36 @@ CACHE_MANIFEST = DOCKER_CACHE_DIR / "cache_manifest.json"
 
 # track local jobs for status checks
 LOCAL_JOBS: dict[str, dict] = {}
+MAX_UNKNOWN_STATUS_POLLS = 30
+SLURM_COMMAND_TIMEOUT_SECONDS = 30
+DOCKER_COMMAND_TIMEOUT_SECONDS = 600
+SUBMISSION_RECOVERY_ATTEMPTS = 3
+SUBMISSION_RECOVERY_DELAY_SECONDS = 1
+
+
+class JobStatusUnavailableError(RuntimeError):
+    """Raised when scheduler status cannot be established after bounded retries."""
+
+
+@dataclass(frozen=True)
+class SlurmJobName:
+    """Unique Slurm submission name usable before a job ID is known."""
+
+    value: str
+
+    def __str__(self) -> str:
+        return f"SlurmJobName({self.value})"
+
+
+class AmbiguousSlurmSubmissionError(RuntimeError):
+    """Raised when a timed-out submission cannot be recovered or cancelled."""
+
+    def __init__(self, job_name: str):
+        self.job_name = job_name
+        self.cancel_target = SlurmJobName(job_name)
+        super().__init__(
+            f"Slurm submission outcome remains ambiguous for job name {job_name}"
+        )
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -108,13 +139,19 @@ def get_local_image(image_name):
     # Try to pull and cache the image
     try:
         logger.info(f"Pulling and caching {image_name}...")
-        subprocess.run(["docker", "pull", image_name], check=True)
+        subprocess.run(
+            ["docker", "pull", image_name],
+            check=True,
+            timeout=DOCKER_COMMAND_TIMEOUT_SECONDS,
+        )
 
         # Save the image
         image_file = f"{image_name.replace('/', '_').replace(':', '_')}.tar"
         image_path = DOCKER_CACHE_DIR / image_file
         subprocess.run(
-            ["docker", "save", image_name, "-o", str(image_path)], check=True
+            ["docker", "save", image_name, "-o", str(image_path)],
+            check=True,
+            timeout=DOCKER_COMMAND_TIMEOUT_SECONDS,
         )
 
         # Update manifest
@@ -122,7 +159,7 @@ def get_local_image(image_name):
         save_cache_manifest(manifest)
 
         return image_name
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         logger.info(f"Warning: Could not pull {image_name}, using as is")
         return image_name
 
@@ -186,6 +223,100 @@ exit $?
 """
 
 
+def _recover_timed_out_submission(job_name: str) -> Optional[str]:
+    """Recover a Slurm job ID when sbatch accepted work but lost its response."""
+    for attempt in range(SUBMISSION_RECOVERY_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                [
+                    "squeue",
+                    "--name",
+                    job_name,
+                    "--noheader",
+                    "--format=%A",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+            )
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            FileNotFoundError,
+        ):
+            result = None
+
+        job_ids = result.stdout.split() if result is not None else []
+        if len(job_ids) == 1:
+            logger.warning(
+                "Recovered Slurm job %s after sbatch response timeout", job_ids[0]
+            )
+            return job_ids[0]
+        if attempt + 1 < SUBMISSION_RECOVERY_ATTEMPTS:
+            time.sleep(SUBMISSION_RECOVERY_DELAY_SECONDS)
+    return None
+
+
+def _cancel_ambiguous_submission(job_name: str) -> bool:
+    """Cancel any accepted job by its unique submission name."""
+    try:
+        result = subprocess.run(
+            ["scancel", "--name", job_name, "--quiet"],
+            capture_output=True,
+            text=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        return False
+    return result.returncode == 0
+
+
+def _reconcile_ambiguous_submission(job_name: str) -> Optional[str]:
+    recovered_job_id = _recover_timed_out_submission(job_name)
+    if recovered_job_id is not None:
+        return recovered_job_id
+    if _cancel_ambiguous_submission(job_name):
+        if get_job_status_by_name(job_name) == "":
+            logger.warning(
+                "Cancelled ambiguous Slurm submission by unique name %s",
+                job_name,
+            )
+            return None
+    raise AmbiguousSlurmSubmissionError(job_name)
+
+
+def _submit_sbatch(sbatch_path: str, job_name: str) -> str:
+    """Submit one batch script, reconciling an ambiguous client timeout."""
+    try:
+        result = subprocess.run(
+            ["sbatch", sbatch_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        recovered_job_id = _reconcile_ambiguous_submission(job_name)
+        if recovered_job_id is not None:
+            return recovered_job_id
+        raise
+
+    output_parts = result.stdout.strip().split()
+    if output_parts:
+        return output_parts[-1].split(";", 1)[0]
+
+    recovered_job_id = _reconcile_ambiguous_submission(job_name)
+    if recovered_job_id is not None:
+        return recovered_job_id
+    raise RuntimeError(f"Slurm returned no job ID for cancelled submission {job_name}")
+
+
 def submit_docker(
     log_dir: str,
     cmd: list[str],
@@ -218,7 +349,7 @@ def submit_docker(
             eval_env=eval_env,
             **sbatch_kwargs,
         )
-    job_name = f"docker-{uuid.uuid4().hex[:6]}"
+    job_name = f"docker-{uuid.uuid4().hex}"
     log_dir = os.path.abspath(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
@@ -277,11 +408,7 @@ fi
         f.write(sbatch_script)
         sbatch_path = f.name
 
-    result = subprocess.run(
-        ["sbatch", sbatch_path], stdout=subprocess.PIPE, check=True, text=True
-    )
-    # Slurm replies: "Submitted batch job <jobid>"
-    job_id = result.stdout.strip().split()[-1]
+    job_id = _submit_sbatch(sbatch_path, job_name)
     if verbose:
         logger.info(f"Submitted Docker job {job_id}")
     return job_id
@@ -319,7 +446,7 @@ def submit_conda(
             eval_env=eval_env,
             **sbatch_kwargs,
         )
-    job_name = f"conda-{uuid.uuid4().hex[:6]}"
+    job_name = f"conda-{uuid.uuid4().hex}"
     log_dir = os.path.abspath(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
@@ -358,21 +485,13 @@ def submit_conda(
         sbatch_path = f.name
 
     try:
-        result = subprocess.run(
-            ["sbatch", sbatch_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-            text=True,
-        )
+        job_id = _submit_sbatch(sbatch_path, job_name)
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.strip() if e.stderr else str(e)
         logger.info(f"Error failed to submit Conda job: {err_msg}")
         logger.info(f"Failed sbatch script: {sbatch_script}")
         raise
 
-    # Slurm replies: "Submitted batch job <jobid>"
-    job_id = result.stdout.strip().split()[-1]
     if verbose:
         logger.info(f"Submitted Conda job {job_id}")
     return job_id
@@ -404,7 +523,9 @@ def launch_local_subprocess(
                     free.append(idx)
             if len(free) >= gpus:
                 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(free[:gpus])
-                proc = subprocess.Popen(cmd)
+                # New session so the whole tree (bash -lc … docker/conda …)
+                # can be signalled as a group rather than orphaning children.
+                proc = subprocess.Popen(cmd, start_new_session=True)
                 LOCAL_JOBS[job_id]["popen"] = proc
                 break
             time.sleep(5)
@@ -496,14 +617,68 @@ def submit_local_conda(
     return job_id
 
 
+# Slurm states that mean the job has left the queue for good.
+_SLURM_TERMINAL_STATES = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "TIMEOUT",
+        "CANCELLED",
+        "OUT_OF_MEMORY",
+        "NODE_FAIL",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "PREEMPTED",
+        "REVOKED",
+        "SPECIAL_EXIT",
+    }
+)
+
+
+def _query_sacct_state(job_id: str) -> Optional[str]:
+    """Return the primary Slurm state for a job via ``sacct``, or None.
+
+    Used to disambiguate a ``squeue`` failure (which several Slurm builds emit
+    for a departed/unknown job id) from a genuinely transient controller error.
+    """
+    try:
+        result = subprocess.run(
+            ["sacct", "-j", str(job_id), "-o", "State", "-n", "-P", "-X"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        return None
+    for line in result.stdout.splitlines():
+        state_field = line.partition("|")[0].strip()
+        state = state_field.split()[0].rstrip("+") if state_field else ""
+        if state:
+            return state
+    return None
+
+
 def get_job_status(job_id: str) -> Optional[str]:
-    """Get status for Slurm or local jobs."""
+    """Get status for Slurm or local jobs.
+
+    Returns a non-empty string while the job is still active, ``""`` when it has
+    finished, and ``None`` only when the status is genuinely unknown (a
+    transient error) so callers keep polling instead of declaring completion.
+    """
     if job_id.startswith("local-"):
         job = LOCAL_JOBS.get(job_id)
         if not job:
             return None
         proc = job.get("popen")
-        if proc and proc.poll() is None:
+        if proc is None:
+            # Still waiting for a free GPU: not started, and definitely not done.
+            return job_id
+        if proc.poll() is None:
             return job_id
         return ""
     try:
@@ -512,9 +687,37 @@ def get_job_status(job_id: str) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError:
+        # squeue can exit non-zero for a job that has already left the queue.
+        # Confirm with sacct: a known terminal state (or an unknown job) means
+        # the job is done; otherwise treat it as a transient, unknown status.
+        state = _query_sacct_state(job_id)
+        if state is None:
+            return None
+        return "" if state in _SLURM_TERMINAL_STATES else job_id
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def get_job_status_by_name(job_name: str) -> Optional[str]:
+    """Return active jobs for a unique name, empty when absent, or None."""
+    try:
+        result = subprocess.run(
+            ["squeue", "--name", job_name, "--noheader"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+        )
+        return result.stdout.strip()
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         return None
 
 
@@ -532,16 +735,26 @@ def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
     if verbose:
         logger.info(f"Monitoring job {job_id}...")
 
-    # Monitor job status
+    # Monitor job status. ``None`` means the status is transiently unknown;
+    # bound how long we keep polling on it so a persistent lookup failure can't
+    # hang the monitor forever (the old code looped indefinitely on None).
+    unknown_polls = 0
     while True:
         status = get_job_status(job_id)
         if status == "":
             if verbose:
                 logger.info("Job completed!")
             break
-
-        if verbose:
-            logger.info(f"\rJob status: {status}", end="", flush=True)
+        if status is None:
+            unknown_polls += 1
+            if unknown_polls >= MAX_UNKNOWN_STATUS_POLLS:
+                raise JobStatusUnavailableError(
+                    f"Job {job_id} status unknown after {unknown_polls} polls"
+                )
+        else:
+            unknown_polls = 0
+            if verbose:
+                logger.info(f"\rJob status: {status}", end="", flush=True)
         time.sleep(poll_interval)
 
     if results_dir is not None:

@@ -184,10 +184,14 @@ def test_check_llm_novelty_handles_empty_response_and_exception():
         most_similar_program=similar_program,
     )
 
-    assert is_novel
+    # Empty/blocked response fails CLOSED: the judge ran but gave no usable
+    # verdict, so the candidate is rejected rather than silently waved through.
+    assert not is_novel
     assert "empty" in explanation.lower()
-    assert cost == 0.0
+    assert cost == pytest.approx(0.5)
 
+    # An API exception (network/timeout) stays fail-open: an infrastructure
+    # error should not penalize a potentially-good candidate.
     failing_llm = DummyNoveltyLLM(raise_on_query=RuntimeError("network down"))
     failing_judge = NoveltyJudge(novelty_llm_client=failing_llm)
 

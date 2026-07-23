@@ -7,12 +7,14 @@ import json
 import asyncio
 import logging
 import shutil
+import signal
 import time
 import uuid
 import os
 import math
 import psutil
 import threading
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
@@ -77,6 +79,41 @@ from shinka.utils import (
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+# Six exponentially backed-off checks (1+2+4+8+16 seconds) allow Slurm
+# KillWait/epilog processing to settle while keeping shutdown bounded.
+JOB_CANCELLATION_ATTEMPTS = 6
+API_COST_CHECKPOINT_ATTEMPTS = 3
+
+
+class ApiCostAccountingError(RuntimeError):
+    """Base class for failures that make budget enforcement unsafe."""
+
+
+class InvalidApiCostError(ApiCostAccountingError):
+    """Raised when a provider or durable source reports an invalid cost."""
+
+
+class ApiCostCheckpointError(ApiCostAccountingError):
+    """Raised when a billed cost cannot be durably checkpointed."""
+
+    def __init__(self, billed_cost: float, total_api_cost: float):
+        self.billed_cost = billed_cost
+        self.total_api_cost = total_api_cost
+        super().__init__(
+            "Could not durably checkpoint billed API cost "
+            f"${billed_cost:.6f} (run total ${total_api_cost:.6f})"
+        )
+
+
+class UnconfirmedJobCancellationError(RuntimeError):
+    """Raised when shutdown cannot confirm cancellation of external jobs."""
+
+    def __init__(self, job_ids: List[Union[str, Any]]):
+        self.job_ids = job_ids
+        super().__init__(
+            "Could not confirm cancellation of external job(s): "
+            + ", ".join(str(job_id) for job_id in job_ids)
+        )
 
 
 def _print_gradient_logo_and_mirror(
@@ -469,6 +506,7 @@ class ShinkaEvolveRunner:
             self.meta_summarizer = AsyncMetaSummarizer(
                 sync_meta_summarizer,
                 async_meta_llm,
+                cost_accountant=self._account_api_cost,
             )
         else:
             self.meta_summarizer = None
@@ -523,6 +561,10 @@ class ShinkaEvolveRunner:
 
         # Runtime state
         self.running_jobs: List[AsyncRunningJob] = []
+        self._pending_evaluation_submissions: Dict[asyncio.Task, int] = {}
+        self._unconfirmed_job_cancellations: Dict[
+            Union[str, int], tuple[Union[str, Any], Optional[int]]
+        ] = {}
         self.completed_generations = 0
         self.next_generation_to_submit = (
             1  # Start from generation 1 since 0 is handled in setup
@@ -534,8 +576,16 @@ class ShinkaEvolveRunner:
         self.slot_available = asyncio.Event()
         self.should_stop = asyncio.Event()
         self.finalization_complete = asyncio.Event()
+        # Set when shutdown was triggered by a signal (SIGINT/SIGTERM) so we skip
+        # slow optional finalization work and head straight to job cancellation.
+        self._interrupted = False
+        self._fatal_error: Optional[Exception] = None
+        self._job_cancellation_retry_delay_seconds = 1.0
+        self._run_task: Optional[asyncio.Task] = None
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
+        self._active_proposal_costs: Dict[asyncio.Task, float] = {}
+        self._api_cost_checkpoint_lock = asyncio.Lock()
 
         # Performance tracking
         self.total_proposals_generated = 0
@@ -797,17 +847,20 @@ class ShinkaEvolveRunner:
                     if metadata_str:
                         try:
                             metadata = json.loads(metadata_str)
-                            # Sum up all cost-related fields (handle None values)
-                            api_cost = metadata.get("api_costs")
-                            total_costs += api_cost if api_cost is not None else 0.0
-                            embed_cost = metadata.get("embed_cost")
-                            total_costs += embed_cost if embed_cost is not None else 0.0
-                            novelty_cost = metadata.get("novelty_cost")
-                            total_costs += (
-                                novelty_cost if novelty_cost is not None else 0.0
-                            )
-                            meta_cost = metadata.get("meta_cost")
-                            total_costs += meta_cost if meta_cost is not None else 0.0
+                            for field_name in (
+                                "api_costs",
+                                "embed_cost",
+                                "novelty_cost",
+                                "meta_cost",
+                            ):
+                                field_cost = self._validate_api_cost(
+                                    metadata.get(field_name),
+                                    source=f"program metadata {field_name}",
+                                )
+                                total_costs = self._validate_api_cost(
+                                    total_costs + field_cost,
+                                    source="accumulated durable API cost",
+                                )
                         except json.JSONDecodeError:
                             continue
 
@@ -824,11 +877,19 @@ class ShinkaEvolveRunner:
         if self.prompt_db is not None:
             try:
                 prompt_costs = self.prompt_db.get_total_evolution_costs()
-                total_costs += prompt_costs
             except Exception as e:
                 logger.warning(f"Failed to get prompt evolution costs: {e}")
+            else:
+                validated_prompt_costs = self._validate_api_cost(
+                    prompt_costs,
+                    source="prompt evolution database",
+                )
+                total_costs = self._validate_api_cost(
+                    total_costs + validated_prompt_costs,
+                    source="accumulated durable API cost",
+                )
 
-        return total_costs
+        return max(total_costs, self._load_api_cost_checkpoint())
 
     def _update_avg_proposal_cost(self, proposal_cost: float) -> None:
         """Update the running average cost per proposal.
@@ -841,6 +902,156 @@ class ShinkaEvolveRunner:
             self.completed_proposal_costs
         )
 
+    def _api_cost_checkpoint_path(self) -> Path:
+        return Path(self.results_dir) / "api_cost_checkpoint.json"
+
+    @staticmethod
+    def _validate_api_cost(cost: Any, *, source: str) -> float:
+        if cost is None:
+            return 0.0
+        try:
+            validated_cost = float(cost)
+        except (TypeError, ValueError) as error:
+            raise InvalidApiCostError(
+                f"Invalid API cost from {source}: {cost!r}"
+            ) from error
+        if not math.isfinite(validated_cost) or validated_cost < 0.0:
+            raise InvalidApiCostError(
+                f"Invalid API cost from {source}: {cost!r}"
+            )
+        return validated_cost
+
+    def _validate_completed_api_cost(self, cost: Any, *, source: str) -> float:
+        try:
+            return self._validate_api_cost(cost, source=source)
+        except InvalidApiCostError as error:
+            self._record_fatal_error(error)
+            raise
+
+    def _load_api_cost_checkpoint(self) -> float:
+        """Load the latest atomic cost checkpoint and reject unsafe values."""
+        checkpoint_path = self._api_cost_checkpoint_path()
+        if not checkpoint_path.exists():
+            return 0.0
+        try:
+            payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint_cost = payload["total_api_cost"]
+        except (OSError, KeyError, json.JSONDecodeError) as error:
+            raise InvalidApiCostError(
+                f"Invalid API cost checkpoint {checkpoint_path}: {error}"
+            ) from error
+        return self._validate_api_cost(
+            checkpoint_cost,
+            source=f"checkpoint {checkpoint_path}",
+        )
+
+    def _write_api_cost_checkpoint(self, total_api_cost: float) -> None:
+        """Atomically persist the run's current billed cost."""
+        checkpoint_path = self._api_cost_checkpoint_path()
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=checkpoint_path.parent,
+                prefix=".api-cost-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump(
+                    {"total_api_cost": total_api_cost},
+                    handle,
+                    allow_nan=False,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, checkpoint_path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    async def _persist_api_cost_checkpoint(self) -> None:
+        """Serialize checkpoint writes without blocking the event loop."""
+        async with self._api_cost_checkpoint_lock:
+            total_api_cost = self.total_api_cost
+            for attempt in range(1, API_COST_CHECKPOINT_ATTEMPTS + 1):
+                try:
+                    await asyncio.to_thread(
+                        self._write_api_cost_checkpoint,
+                        total_api_cost,
+                    )
+                    return
+                except OSError:
+                    if attempt == API_COST_CHECKPOINT_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(0.05 * (2 ** (attempt - 1)))
+
+    @staticmethod
+    async def _await_cost_checkpoint_resiliently(
+        checkpoint_task: asyncio.Task,
+    ) -> None:
+        """Finish a billed-cost checkpoint before propagating cancellation."""
+        cancellation_received = False
+        while not checkpoint_task.done():
+            try:
+                await asyncio.shield(checkpoint_task)
+            except asyncio.CancelledError:
+                cancellation_received = True
+        checkpoint_task.result()
+        if cancellation_received:
+            raise asyncio.CancelledError
+
+    async def _account_api_cost(self, cost: float) -> float:
+        """Own a completed API charge before any later await can cancel."""
+        billed_cost = self._validate_completed_api_cost(
+            cost,
+            source="completed API response",
+        )
+        if billed_cost == 0.0:
+            return 0.0
+        updated_total = self._validate_completed_api_cost(
+            self.total_api_cost + billed_cost,
+            source="accumulated run API cost",
+        )
+        self.total_api_cost = updated_total
+        current_task = asyncio.current_task()
+        if (
+            current_task is not None
+            and current_task in self.active_proposal_tasks.values()
+        ):
+            self._active_proposal_costs[current_task] = (
+                self._active_proposal_costs.get(current_task, 0.0) + billed_cost
+            )
+        checkpoint_task = asyncio.create_task(
+            self._persist_api_cost_checkpoint(),
+            name="api_cost_checkpoint",
+        )
+        try:
+            await self._await_cost_checkpoint_resiliently(checkpoint_task)
+        except Exception as error:
+            checkpoint_error = ApiCostCheckpointError(
+                billed_cost,
+                self.total_api_cost,
+            )
+            self._record_fatal_error(checkpoint_error)
+            raise checkpoint_error from error
+        return billed_cost
+
+    async def _account_meta_cost(self, cost: float) -> float:
+        """Account aggregate costs only for summarizers without per-step billing."""
+        if getattr(
+            self.meta_summarizer,
+            "accounts_costs_incrementally",
+            False,
+        ):
+            return self._validate_completed_api_cost(
+                cost,
+                source="meta-analysis aggregate",
+            )
+        return await self._account_api_cost(cost)
+
     def _get_committed_cost(self) -> float:
         """Calculate the committed cost including estimated in-flight proposals.
 
@@ -849,18 +1060,22 @@ class ShinkaEvolveRunner:
         their costs yet.
 
         Returns:
-            Total committed cost = current cost + (active proposals * avg cost)
+            Actual billed cost plus each active proposal's estimated remainder.
         """
-        num_active_proposals = len(self.active_proposal_tasks)
-
-        if num_active_proposals == 0:
+        active_tasks = list(self.active_proposal_tasks.values())
+        if not active_tasks:
             return self.total_api_cost
 
-        # Use average cost if we have historical data, otherwise use a conservative estimate
         if self.avg_proposal_cost > 0:
-            estimated_in_flight = num_active_proposals * self.avg_proposal_cost
+            estimated_in_flight = sum(
+                max(
+                    0.0,
+                    self.avg_proposal_cost
+                    - self._active_proposal_costs.get(task, 0.0),
+                )
+                for task in active_tasks
+            )
         else:
-            # No historical data yet - don't add estimates to avoid blocking early proposals
             estimated_in_flight = 0.0
 
         committed_cost = self.total_api_cost + estimated_in_flight
@@ -994,12 +1209,73 @@ class ShinkaEvolveRunner:
                 raise
         asyncio.run(self.run_async())
 
+    def _request_stop(self, sig=None) -> None:
+        """Trigger a graceful shutdown (used by the SIGINT/SIGTERM handlers).
+
+        Sets the stop/finalization events so ``run_async`` unblocks and reaches
+        its cleanup, which cancels every running evaluation job. Idempotent, so a
+        repeated signal is a no-op rather than a crash.
+        """
+        first_signal = not self._interrupted
+        if first_signal:
+            logger.warning(f"Received signal {sig}; shutting down gracefully...")
+        self._unblock_shutdown()
+        run_task = getattr(self, "_run_task", None)
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
+
+    def _unblock_shutdown(self) -> None:
+        """Skip optional finalization and unblock the main run loop."""
+        self._interrupted = True
+        self.should_stop.set()
+        self.slot_available.set()
+        self.finalization_complete.set()
+
+    def _record_fatal_error(self, error: Exception) -> None:
+        """Preserve a background failure and begin immediate cleanup."""
+        if self._fatal_error is None:
+            self._fatal_error = error
+        self._unblock_shutdown()
+        run_task = getattr(self, "_run_task", None)
+        current_task = asyncio.current_task()
+        if (
+            run_task is not None
+            and run_task is not current_task
+            and not run_task.done()
+        ):
+            run_task.cancel()
+
+    def _raise_fatal_error_if_any(self) -> None:
+        """Raise a preserved background failure after cleanup completes."""
+        if self._fatal_error is not None:
+            raise self._fatal_error
+
+    def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> list:
+        """Install SIGINT/SIGTERM handlers on the running loop; return the set."""
+        installed = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self._request_stop, sig)
+                installed.append(sig)
+            except (NotImplementedError, RuntimeError, ValueError):
+                # Unavailable off the main thread or on some platforms; there we
+                # simply fall back to the default (KeyboardInterrupt) behaviour.
+                pass
+        return installed
+
     async def run_async(self):
         """Main async evolution loop."""
+        self._run_task = asyncio.current_task()
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
+        try:
+            signal_handlers = self._install_signal_handlers(
+                asyncio.get_running_loop()
+            )
+        except RuntimeError:
+            signal_handlers = []
 
         try:
             # Setup initial program (results_dir now set)
@@ -1049,8 +1325,9 @@ class ShinkaEvolveRunner:
                     "🔄 Performing final embedding recomputation and meta summary..."
                 )
 
-            # Force final embedding recomputation before shutdown
-            if self.embedding_client:
+            # Force final embedding recomputation before shutdown (skipped on a
+            # signal-triggered stop so Ctrl-C doesn't block for minutes).
+            if self.embedding_client and not self._interrupted:
                 try:
                     if self.verbose:
                         logger.info("Starting final PCA/embedding recomputation...")
@@ -1087,7 +1364,8 @@ class ShinkaEvolveRunner:
                     )
 
             # Perform final meta summary for any remaining unprocessed programs
-            if self.meta_summarizer:
+            # (skipped on a signal-triggered stop for a prompt shutdown).
+            if self.meta_summarizer and not self._interrupted:
                 try:
                     if self.verbose:
                         logger.info("Starting final meta summary generation...")
@@ -1108,13 +1386,14 @@ class ShinkaEvolveRunner:
                                 ),
                                 timeout=600.0,  # 10 minute timeout for final meta summary
                             )
-                            if success and final_meta_cost > 0:
-                                self.total_api_cost += final_meta_cost
+                            accounted_final_meta_cost = (
+                                await self._account_meta_cost(final_meta_cost)
+                            )
                             if self.verbose:
-                                if success and final_meta_cost > 0:
+                                if success and accounted_final_meta_cost > 0:
                                     logger.info(
                                         f"Final meta summary completed successfully "
-                                        f"(cost: ${final_meta_cost:.4f})"
+                                        f"(cost: ${accounted_final_meta_cost:.4f})"
                                     )
                                 else:
                                     logger.info(
@@ -1143,21 +1422,58 @@ class ShinkaEvolveRunner:
                     "🏁 All final operations completed, proceeding to cleanup..."
                 )
 
+        except asyncio.CancelledError:
+            if not self._interrupted:
+                raise
         except Exception as e:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
-            await self._cancel_completed_job_batches()
-            await self._cancel_background_side_effect_worker()
-            # Ensure all tasks are cancelled on exit
-            for task in tasks:
-                task.cancel()
-            if tasks:  # Only gather if there are tasks
-                await asyncio.gather(*tasks, return_exceptions=True)
-            await self._cleanup_async()
+            finalizer_task = asyncio.create_task(
+                self._finalize_async_run(tasks, signal_handlers),
+                name="run_finalizer",
+            )
+            try:
+                await self._await_finalizer_resiliently(finalizer_task)
+            finally:
+                self._run_task = None
+
+        self._raise_fatal_error_if_any()
 
         # Print final summary
         await self._print_final_summary()
+
+    async def _finalize_async_run(self, tasks: list, signal_handlers: list) -> None:
+        """Cancel background work and release owned resources exactly once."""
+        try:
+            await self._cancel_completed_job_batches()
+            await self._cancel_background_side_effect_worker()
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._cleanup_async()
+        finally:
+            loop = asyncio.get_running_loop()
+            for sig in signal_handlers:
+                try:
+                    loop.remove_signal_handler(sig)
+                except (NotImplementedError, RuntimeError, ValueError):
+                    pass
+
+    async def _await_finalizer_resiliently(
+        self, finalizer_task: asyncio.Task
+    ) -> None:
+        """Keep finalization alive when the owning task is cancelled repeatedly."""
+        cancellation_received = False
+        while not finalizer_task.done():
+            try:
+                await asyncio.shield(finalizer_task)
+            except asyncio.CancelledError:
+                cancellation_received = True
+        finalizer_task.result()
+        if cancellation_received and not self._interrupted:
+            raise asyncio.CancelledError
 
     async def _setup_async(self):
         """Setup initial program (results directory already created)."""
@@ -1190,8 +1506,17 @@ class ShinkaEvolveRunner:
             results_dir=Path(self.results_dir),
         )
 
-        # Check if we're resuming from an existing database
-        resuming_run = db_path.exists() and self.db.last_iteration > 0
+        # Resume if the database already holds any persisted programs. Gating on
+        # last_iteration > 0 missed the case where only the generation-0 initial
+        # cohort was persisted before the process died: that mis-detected a fresh
+        # start, duplicated the initial cohort, skipped bandit/cost restore, and
+        # inflated the completed-generation count into a premature stop.
+        program_count = (
+            await self.async_db.get_total_program_count_async()
+            if db_path.exists()
+            else 0
+        )
+        resuming_run = program_count > 0
 
         # Load bandit state if resuming
         if resuming_run:
@@ -1199,10 +1524,10 @@ class ShinkaEvolveRunner:
             logger.info("RESUMING PREVIOUS ASYNC EVOLUTION RUN")
             logger.info("=" * 80)
             logger.info(f"Resuming from generation {self.db.last_iteration}")
-            program_count = await self.async_db.get_total_program_count_async()
             logger.info(f"Found {program_count} programs in database")
 
-            # Load existing API costs from database
+            # Load existing API costs from durable program data and the atomic
+            # checkpoint, whichever is newer.
             existing_costs = await self._get_total_api_costs()
             self.total_api_cost = existing_costs
             logger.info(f"Loaded existing API costs: ${existing_costs:.4f}")
@@ -1213,6 +1538,11 @@ class ShinkaEvolveRunner:
             # Update state for resuming
             await self._restore_resume_progress()
         else:
+            self.total_api_cost = max(
+                self.total_api_cost,
+                self._load_api_cost_checkpoint(),
+            )
+
             # Generate or copy initial program only if NOT resuming
             if (
                 self.evo_config.init_program_path
@@ -1254,12 +1584,12 @@ class ShinkaEvolveRunner:
         self.prompt_db = SystemPromptDatabase(prompt_config)
 
         # Check if we're resuming from existing prompt database
-        if prompt_db_path.exists() and self.prompt_db.last_generation > 0:
+        prompt_count = self.prompt_db._count_prompts_in_db()
+        if prompt_count > 0:
             logger.info(
                 f"Resuming prompt evolution from generation "
                 f"{self.prompt_db.last_generation}"
             )
-            prompt_count = self.prompt_db._count_prompts_in_db()
             logger.info(f"Found {prompt_count} prompts in database")
         else:
             # Add initial prompt to database
@@ -1527,19 +1857,21 @@ class ShinkaEvolveRunner:
                 global_scratchpad=global_scratchpad,
             )
 
-            self.prompt_api_cost += cost
-            self.total_api_cost += cost
+            accounted_prompt_cost = await self._account_api_cost(cost)
+            self.prompt_api_cost += accounted_prompt_cost
 
             if new_prompt:
                 self.prompt_db.add(new_prompt, verbose=self.verbose)
                 logger.info(
                     f"Evolved new prompt {new_prompt.id[:8]}... "
                     f"(prompt_gen={new_prompt.generation}, prog_gen={current_program_generation}, "
-                    f"patch={patch_type}, cost=${cost:.4f})"
+                    f"patch={patch_type}, cost=${accounted_prompt_cost:.4f})"
                 )
             else:
                 logger.warning(f"Prompt evolution failed (patch_type={patch_type})")
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error during prompt evolution: {e}")
 
@@ -1548,6 +1880,44 @@ class ShinkaEvolveRunner:
         await self._setup_initial_program_with_metadata(
             code, "initial_program", "Initial program setup", 0.0
         )
+
+    async def _run_initial_evaluation(
+        self, exec_fname: str, results_dir: str
+    ) -> tuple[Dict[str, Any], float]:
+        """Run generation zero while retaining cancellation ownership."""
+        started_at = time.time()
+        (
+            job_id,
+            evaluation_worker_id,
+            _,
+            _,
+            _,
+        ) = await self._submit_evaluation_job_with_slot(
+            exec_fname,
+            results_dir,
+            sampling_worker_id=None,
+        )
+        key = self._job_cancellation_key(job_id)
+        self._unconfirmed_job_cancellations[key] = (
+            job_id,
+            evaluation_worker_id,
+        )
+        try:
+            results = await self.scheduler.get_job_results_async(job_id, results_dir)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed_cancellations = await self._cancel_job_ids([job_id])
+            if failed_cancellations:
+                raise UnconfirmedJobCancellationError(failed_cancellations)
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+            self._unconfirmed_job_cancellations.pop(key, None)
+            raise
+        await self.evaluation_slot_pool.release(evaluation_worker_id)
+        self._unconfirmed_job_cancellations.pop(key, None)
+        if results is None:
+            results = {"correct": {"correct": False}, "metrics": {}}
+        return results, time.time() - started_at
 
     async def _setup_initial_program_with_metadata(
         self,
@@ -1576,11 +1946,9 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Starting initial program evaluation: {exec_fname}")
 
-            # Run the evaluation synchronously for generation 0
-            loop = asyncio.get_event_loop()
             evaluation_started_at = time.time()
-            results, rtime = await loop.run_in_executor(
-                None, self.scheduler.run, exec_fname, results_dir
+            results, rtime = await self._run_initial_evaluation(
+                exec_fname, results_dir
             )
             evaluation_finished_at = time.time()
             postprocess_started_at = evaluation_finished_at
@@ -1590,6 +1958,7 @@ class ShinkaEvolveRunner:
 
             # Get code embedding for initial program
             code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
+            e_cost = await self._account_api_cost(e_cost)
             if self.verbose and code_embedding:
                 logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
 
@@ -1665,7 +2034,13 @@ class ShinkaEvolveRunner:
                     f"combined_score: {initial_program.combined_score}"
                 )
 
+        except UnconfirmedJobCancellationError:
+            raise
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
+            if getattr(e, "cancel_target", None) is not None:
+                raise
             logger.warning(f"Initial program evaluation failed: {e}")
             evaluation_finished_at = time.time()
             postprocess_started_at = evaluation_finished_at
@@ -1680,6 +2055,9 @@ class ShinkaEvolveRunner:
                 code_embedding, e_cost = await self._get_code_embedding_async(
                     exec_fname
                 )
+                e_cost = await self._account_api_cost(e_cost)
+            except ApiCostAccountingError:
+                raise
             except Exception:
                 code_embedding, e_cost = None, 0.0
 
@@ -1737,14 +2115,6 @@ class ShinkaEvolveRunner:
         # Add to database
         await self.async_db.add_program_async(initial_program, verbose=self.verbose)
 
-        # Add initial program costs to in-memory total for accurate budget tracking
-        initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
-        initial_embed_cost = (initial_program.metadata or {}).get("embed_cost", 0.0)
-        initial_novelty_cost = (initial_program.metadata or {}).get("novelty_cost", 0.0)
-        self.total_api_cost += (
-            initial_api_cost + initial_embed_cost + initial_novelty_cost
-        )
-
         # Add the initial program to meta memory tracking
         if self.meta_summarizer:
             self.meta_summarizer.add_evaluated_program(initial_program)
@@ -1763,23 +2133,22 @@ class ShinkaEvolveRunner:
                     updated_recs,
                     meta_cost,
                 ) = await self.meta_summarizer.update_meta_memory_async(best_program)
+                accounted_meta_cost = await self._account_meta_cost(meta_cost)
                 if updated_recs:
                     # Write meta output file asynchronously
                     await self.meta_summarizer.write_meta_output_async(
                         str(self.results_dir)
                     )
                     # Store meta cost for tracking
-                    if meta_cost > 0:
+                    if accounted_meta_cost > 0:
                         logger.info(
-                            f"Meta recommendation generation cost: ${meta_cost:.4f}"
+                            "Meta recommendation generation cost: "
+                            f"${accounted_meta_cost:.4f}"
                         )
-                        # Add meta cost to in-memory total for accurate budget tracking
-                        self.total_api_cost += meta_cost
-
                         # Add meta cost to this program's metadata (the one that triggered the update)
                         if initial_program.metadata is None:
                             initial_program.metadata = {}
-                        initial_program.metadata["meta_cost"] = meta_cost
+                        initial_program.metadata["meta_cost"] = accounted_meta_cost
 
         # Set baseline score for LLM selection
         if self.llm_selection is not None:
@@ -1861,7 +2230,15 @@ class ShinkaEvolveRunner:
                 model_posterior=model_posterior,
             )
 
-            if response is None or response.content is None:
+            if response is not None:
+                response_cost = self._validate_completed_api_cost(
+                    response.cost,
+                    source="initial-program LLM response",
+                )
+                total_costs += response_cost
+                await self._account_api_cost(response_cost)
+
+            if response is None or not response.content:
                 error_msg = "LLM response content was None."
                 if self.verbose:
                     logger.info(
@@ -1891,8 +2268,6 @@ class ShinkaEvolveRunner:
                     continue
                 else:
                     break
-
-            total_costs += response.cost or 0.0
 
             # Extract code using language-specific markers
             initial_code = extract_between(
@@ -2049,15 +2424,7 @@ class ShinkaEvolveRunner:
                             logger.debug(
                                 f"Running jobs: {len(self.running_jobs)}, Active proposals: {len(self.active_proposal_tasks)}"
                             )
-                    still_running = []
-                    current_running_jobs = list(self.running_jobs)
-                    current_job_ids = {id(job) for job in current_running_jobs}
-                    monitored_job_ids = {id(job) for job in monitored_jobs}
-                    concurrently_added_jobs = [
-                        job
-                        for job in current_running_jobs
-                        if id(job) not in monitored_job_ids
-                    ]
+                    current_job_ids = {id(job) for job in self.running_jobs}
 
                     for job, is_running in zip(monitored_jobs, status_results):
                         if id(job) not in current_job_ids:
@@ -2066,7 +2433,6 @@ class ShinkaEvolveRunner:
                             logger.warning(
                                 f"Error checking job {job.job_id}: {is_running}"
                             )
-                            still_running.append(job)
                         elif not is_running:
                             completed_jobs.append(job)
                             runtime = time.time() - job.start_time
@@ -2092,13 +2458,21 @@ class ShinkaEvolveRunner:
                                     f"Failed to cancel hung job {job.job_id} "
                                     f"(gen {job.generation}); keeping it running"
                                 )
-                                still_running.append(job)
                                 continue
                             completed_jobs.append(job)
-                        else:
-                            still_running.append(job)
+                        # else: still running -> retained by the rebuild below.
 
-                    self.running_jobs = still_running + concurrently_added_jobs
+                    # Rebuild running_jobs from a *fresh* read, dropping only the
+                    # jobs just resolved as completed. Using a snapshot taken
+                    # before the cancel_job_async await above would silently drop
+                    # any job a proposal task appended during that await, leaking
+                    # its evaluation slot (and eventually deadlocking the pool).
+                    completed_ids = {id(job) for job in completed_jobs}
+                    self.running_jobs = [
+                        job
+                        for job in list(self.running_jobs)
+                        if id(job) not in completed_ids
+                    ]
 
                 if completed_jobs:
                     if self.verbose:
@@ -2640,6 +3014,8 @@ class ShinkaEvolveRunner:
                 active_proposals_at_start,
             )
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error generating proposal for generation {generation}: {e}")
             return None
@@ -2784,6 +3160,8 @@ class ShinkaEvolveRunner:
                     # We have a successful patch, break from resample loop
                     meta_patch_data["api_costs"] = api_costs
                     break
+                except ApiCostAccountingError:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Error in patch generation attempt {resample + 1}: {e}"
@@ -2799,10 +3177,12 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Getting code embedding for generation {generation}...")
             code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
-            embed_cost += e_cost
+            accounted_embed_cost = await self._account_api_cost(e_cost)
+            embed_cost += accounted_embed_cost
             if self.verbose:
                 logger.info(
-                    f"Code embedding completed for generation {generation} (cost: ${e_cost:.4f})"
+                    "Code embedding completed for generation "
+                    f"{generation} (cost: ${accounted_embed_cost:.4f})"
                 )
 
             if not code_embedding:
@@ -2829,9 +3209,10 @@ class ShinkaEvolveRunner:
                     novelty_cost_from_check = novelty_metadata.get(
                         "novelty_total_cost", 0.0
                     )
-                    novelty_total_cost += (
-                        novelty_cost_from_check  # Accumulate novelty cost separately
+                    accounted_novelty_cost = await self._account_api_cost(
+                        novelty_cost_from_check
                     )
+                    novelty_total_cost += accounted_novelty_cost
                     novelty_checks_performed = novelty_metadata.get(
                         "novelty_checks_performed", 0
                     )
@@ -2936,7 +3317,6 @@ class ShinkaEvolveRunner:
                 # Update costs
                 meta_patch_data["api_costs"] = api_costs
                 proposal_total_cost = api_costs + embed_cost + novelty_total_cost
-                self.total_api_cost += proposal_total_cost
 
                 # Update average proposal cost for in-flight estimation
                 self._update_avg_proposal_cost(proposal_total_cost)
@@ -2971,6 +3351,11 @@ class ShinkaEvolveRunner:
                 return running_job
 
             except Exception as e:
+                if getattr(e, "cancel_target", None) is not None:
+                    logger.critical(
+                        "Evaluation submission ownership is ambiguous: %s", e
+                    )
+                    raise
                 logger.error(f"Error submitting job: {e}")
                 await self._record_terminal_failed_proposal(
                     generation=generation,
@@ -3296,7 +3681,6 @@ class ShinkaEvolveRunner:
         terminal_failure_cost = float(api_costs) + float(embed_cost) + float(
             novelty_cost
         )
-        self.total_api_cost += terminal_failure_cost
         if terminal_failure_cost > 0.0:
             self._update_avg_proposal_cost(terminal_failure_cost)
         failure_class = self._classify_failed_proposal(
@@ -3398,6 +3782,7 @@ class ShinkaEvolveRunner:
             model_sample_probs: Model sampling probabilities
             model_posterior: Model posterior probabilities
         """
+        total_costs = 0.0
         try:
             # Generate fix prompt with ancestor inspirations
             patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
@@ -3410,7 +3795,6 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Generated FIX patch type: {patch_type}")
 
-            total_costs = 0.0
             msg_history = []
 
             llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
@@ -3427,6 +3811,14 @@ class ShinkaEvolveRunner:
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
+
+                if response is not None:
+                    response_cost = self._validate_completed_api_cost(
+                        response.cost,
+                        source="fix-patch LLM response",
+                    )
+                    total_costs += response_cost
+                    await self._account_api_cost(response_cost)
 
                 if not response or not response.content:
                     error_str = "LLM response content was None."
@@ -3450,8 +3842,6 @@ class ShinkaEvolveRunner:
                         continue
                     else:
                         break
-
-                total_costs += response.cost if response.cost else 0.0
 
                 patch_name = extract_between(
                     response.content, "<NAME>", "</NAME>", False
@@ -3583,9 +3973,11 @@ class ShinkaEvolveRunner:
 
             return None, meta_patch_data, False
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
-            return None, {"api_costs": 0.0, "error_attempt": str(e)}, False
+            return None, {"api_costs": total_costs, "error_attempt": str(e)}, False
 
     async def _run_patch_async(
         self,
@@ -3601,6 +3993,7 @@ class ShinkaEvolveRunner:
     ) -> Optional[Tuple[Optional[str], Dict[str, Any], bool]]:
         """Run async patch generation."""
         # Initialize prompt-related variables outside try block for exception handling
+        total_costs = 0.0
         current_prompt_id: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
 
@@ -3631,7 +4024,6 @@ class ShinkaEvolveRunner:
                 if current_prompt_id:
                     logger.info(f"Using evolved prompt: {current_prompt_id[:8]}...")
 
-            total_costs = 0.0
             msg_history = []
 
             # Use provided model_sample_probs (selected once before all loops)
@@ -3651,6 +4043,14 @@ class ShinkaEvolveRunner:
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
+
+                if response is not None:
+                    response_cost = self._validate_completed_api_cost(
+                        response.cost,
+                        source="patch LLM response",
+                    )
+                    total_costs += response_cost
+                    await self._account_api_cost(response_cost)
 
                 if not response or not response.content:
                     error_str = "LLM response content was None."
@@ -3675,8 +4075,6 @@ class ShinkaEvolveRunner:
                         continue
                     else:
                         break
-
-                total_costs += response.cost if response.cost else 0.0
 
                 # Extract patch name and description from LLM response
                 patch_name = extract_between(
@@ -3815,6 +4213,8 @@ class ShinkaEvolveRunner:
 
             return None, meta_patch_data, False
 
+        except ApiCostAccountingError:
+            raise
         except Exception as e:
             logger.error(f"Error in async patch generation: {e}")
             # Restore original task_sys_msg in case of exception
@@ -3822,7 +4222,7 @@ class ShinkaEvolveRunner:
             return (
                 None,
                 {
-                    "api_costs": 0.0,
+                    "api_costs": total_costs,
                     "error_attempt": str(e),
                     "system_prompt_id": current_prompt_id,
                 },
@@ -4428,22 +4828,25 @@ class ShinkaEvolveRunner:
                             ) = await self.meta_summarizer.update_meta_memory_async(
                                 best_program
                             )
+                            accounted_meta_cost = await self._account_meta_cost(
+                                meta_cost
+                            )
                             if updated_recs:
                                 # Write meta output file asynchronously
                                 await self.meta_summarizer.write_meta_output_async(
                                     str(self.results_dir)
                                 )
-                                if meta_cost > 0:
+                                if accounted_meta_cost > 0:
                                     logger.info(
-                                        f"Meta recommendation cost: ${meta_cost:.4f}"
+                                        "Meta recommendation cost: "
+                                        f"${accounted_meta_cost:.4f}"
                                     )
-                                    # Add meta cost to in-memory total for accurate budget tracking
-                                    self.total_api_cost += meta_cost
-
                                     # Add meta cost to this program's metadata
                                     if program.metadata is None:
                                         program.metadata = {}
-                                    program.metadata["meta_cost"] = meta_cost
+                                    program.metadata["meta_cost"] = (
+                                        accounted_meta_cost
+                                    )
                                     metadata_persist_needed = True
                 except Exception as e:
                     logger.warning(f"Meta summarizer error for {job.job_id}: {e}")
@@ -5053,8 +5456,9 @@ class ShinkaEvolveRunner:
     ) -> None:
         """Release proposal bookkeeping after a proposal attempt finishes."""
         self.assigned_generations.discard(generation)
-        if task_id in self.active_proposal_tasks:
-            del self.active_proposal_tasks[task_id]
+        task = self.active_proposal_tasks.pop(task_id, None)
+        if task is not None:
+            self._active_proposal_costs.pop(task, None)
 
     async def _release_evaluation_slot_once(self, job: AsyncRunningJob) -> None:
         """Release an evaluation slot at most once per job."""
@@ -5074,13 +5478,28 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        submission_task = asyncio.create_task(
+            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
+        )
+        self._pending_evaluation_submissions[submission_task] = evaluation_worker_id
         try:
-            job_id = await self.scheduler.submit_async_nonblocking(
-                exec_fname, results_dir
-            )
-        except Exception:
+            job_id = await asyncio.shield(submission_task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._pending_evaluation_submissions.pop(submission_task, None)
+            cancel_target = getattr(error, "cancel_target", None)
+            if cancel_target is not None:
+                key = self._job_cancellation_key(cancel_target)
+                self._unconfirmed_job_cancellations[key] = (
+                    cancel_target,
+                    evaluation_worker_id,
+                )
+                self._record_fatal_error(error)
+                raise
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
+        self._pending_evaluation_submissions.pop(submission_task, None)
 
         evaluation_submitted_at = time.time()
         evaluation_started_at = evaluation_submitted_at
@@ -5198,7 +5617,8 @@ class ShinkaEvolveRunner:
                 completed_tasks.append(task_id)
 
         for task_id in completed_tasks:
-            del self.active_proposal_tasks[task_id]
+            task = self.active_proposal_tasks.pop(task_id)
+            self._active_proposal_costs.pop(task, None)
 
     async def _cancel_surplus_inflight_work(self) -> None:
         """Cancel or discard work that is no longer needed after hitting target."""
@@ -5485,16 +5905,101 @@ class ShinkaEvolveRunner:
 
     async def _cleanup_async(self):
         """Cleanup async resources."""
+        unconfirmed_error: Optional[UnconfirmedJobCancellationError] = None
         try:
-            # Cancel remaining proposal tasks
-            for task in self.active_proposal_tasks.values():
+            proposal_tasks = list(self.active_proposal_tasks.values())
+            for task in proposal_tasks:
                 if not task.done():
                     task.cancel()
 
-            # Wait for tasks to finish
-            if self.active_proposal_tasks:
-                await asyncio.gather(
-                    *self.active_proposal_tasks.values(), return_exceptions=True
+            running_jobs = list(self.running_jobs)
+            retained_cancellations = dict(self._unconfirmed_job_cancellations)
+            running_cancellation = asyncio.create_task(
+                self._cancel_job_ids(
+                    [job.job_id for job in running_jobs]
+                    + [target for target, _ in retained_cancellations.values()]
+                )
+            )
+
+            if proposal_tasks:
+                await asyncio.gather(*proposal_tasks, return_exceptions=True)
+
+            pending_submissions = dict(self._pending_evaluation_submissions)
+            submission_results = await asyncio.gather(
+                *pending_submissions, return_exceptions=True
+            )
+            failed_submission_workers = []
+            for submission, result in zip(pending_submissions, submission_results):
+                evaluation_worker_id = pending_submissions[submission]
+                if isinstance(result, BaseException):
+                    cancel_target = getattr(result, "cancel_target", None)
+                    if cancel_target is None:
+                        failed_submission_workers.append(evaluation_worker_id)
+                    else:
+                        key = self._job_cancellation_key(cancel_target)
+                        self._unconfirmed_job_cancellations[key] = (
+                            cancel_target,
+                            evaluation_worker_id,
+                        )
+                else:
+                    key = self._job_cancellation_key(result)
+                    self._unconfirmed_job_cancellations[key] = (
+                        result,
+                        evaluation_worker_id,
+                    )
+                self._pending_evaluation_submissions.pop(submission, None)
+
+            failed_running_cancellations = await running_cancellation
+            failed_running_keys = {
+                self._job_cancellation_key(job_id)
+                for job_id in failed_running_cancellations
+            }
+            for key, (_, evaluation_worker_id) in retained_cancellations.items():
+                if key in failed_running_keys:
+                    continue
+                self._unconfirmed_job_cancellations.pop(key, None)
+                if evaluation_worker_id is not None:
+                    await self.evaluation_slot_pool.release(evaluation_worker_id)
+
+            known_jobs = {id(job) for job in running_jobs}
+            late_jobs = [
+                job for job in self.running_jobs if id(job) not in known_jobs
+            ]
+            new_retained_cancellations = {
+                key: value
+                for key, value in self._unconfirmed_job_cancellations.items()
+                if key not in retained_cancellations
+            }
+            late_job_ids = [job.job_id for job in late_jobs]
+            late_job_ids.extend(
+                job_id for job_id, _ in new_retained_cancellations.values()
+            )
+            failed_late_cancellations = await self._cancel_job_ids(late_job_ids)
+            failed_late_keys = {
+                self._job_cancellation_key(job_id)
+                for job_id in failed_late_cancellations
+            }
+            for key, (_, evaluation_worker_id) in new_retained_cancellations.items():
+                if key in failed_late_keys:
+                    continue
+                self._unconfirmed_job_cancellations.pop(key, None)
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+            for evaluation_worker_id in failed_submission_workers:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+            failed_job_keys = failed_running_keys | failed_late_keys
+            self.running_jobs = [
+                job
+                for job in self.running_jobs
+                if self._job_cancellation_key(job.job_id) in failed_job_keys
+            ]
+            if self.running_jobs or self._unconfirmed_job_cancellations:
+                unconfirmed_job_ids = [job.job_id for job in self.running_jobs]
+                unconfirmed_job_ids.extend(
+                    job_id
+                    for job_id, _ in self._unconfirmed_job_cancellations.values()
+                )
+                unconfirmed_error = UnconfirmedJobCancellationError(
+                    unconfirmed_job_ids
                 )
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
@@ -5527,11 +6032,74 @@ class ShinkaEvolveRunner:
             self._finish_wandb_logging()
             await self.async_db.close_async()
 
-            # Cleanup scheduler
-            self.scheduler.shutdown()
+            if unconfirmed_error is None:
+                self.scheduler.shutdown()
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")
+        if unconfirmed_error is not None:
+            raise unconfirmed_error
+
+    @staticmethod
+    def _job_cancellation_key(job_id: Union[str, Any]) -> Union[str, int]:
+        """Return a stable ownership key for an external job handle."""
+        return job_id if isinstance(job_id, str) else id(job_id)
+
+    async def _cancel_job_ids(
+        self, job_ids: List[Union[str, Any]]
+    ) -> List[Union[str, Any]]:
+        """Cancel external jobs, returning handles without confirmed cancellation."""
+        pending = {
+            self._job_cancellation_key(job_id): job_id for job_id in job_ids
+        }
+        if not pending:
+            return []
+        logger.info(f"Cancelling {len(pending)} running job(s) during shutdown")
+        for attempt in range(1, JOB_CANCELLATION_ATTEMPTS + 1):
+            targets = list(pending.values())
+            results = await asyncio.gather(
+                *(self.scheduler.cancel_job_async(job_id) for job_id in targets),
+                return_exceptions=True,
+            )
+            unconfirmed = {
+                self._job_cancellation_key(job_id): job_id
+                for job_id, result in zip(targets, results)
+                if result is not True
+            }
+            if unconfirmed:
+                terminal_results = await asyncio.gather(
+                    *(
+                        self.scheduler.is_job_terminal_async(job_id)
+                        for job_id in unconfirmed.values()
+                    ),
+                    return_exceptions=True,
+                )
+                pending = {
+                    self._job_cancellation_key(job_id): job_id
+                    for job_id, terminal in zip(
+                        unconfirmed.values(), terminal_results
+                    )
+                    if terminal is not True
+                }
+            else:
+                pending = {}
+            if not pending:
+                break
+            logger.warning(
+                "Cancellation attempt %d/%d unconfirmed for %d job(s)",
+                attempt,
+                JOB_CANCELLATION_ATTEMPTS,
+                len(pending),
+            )
+            if attempt < JOB_CANCELLATION_ATTEMPTS:
+                retry_delay = self._job_cancellation_retry_delay_seconds * (
+                    2 ** (attempt - 1)
+                )
+                await asyncio.sleep(retry_delay)
+
+        for job_id in pending.values():
+            logger.error("Job cancellation remains unconfirmed: %s", job_id)
+        return list(pending.values())
 
     def _log_program_to_wandb(self, program: Program) -> None:
         wandb_logger = getattr(self, "wandb_logger", None)

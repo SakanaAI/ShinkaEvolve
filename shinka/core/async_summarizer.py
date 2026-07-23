@@ -5,10 +5,11 @@ Provides non-blocking meta summarization with concurrent LLM calls.
 
 import asyncio
 import logging
-from typing import List, Optional, Tuple
+from typing import Awaitable, Callable, List, Optional, Tuple
 from pathlib import Path
 from .summarizer import MetaSummarizer
 from ..llm import AsyncLLMClient
+from ..llm.llm import BatchResultCallbackError
 from ..database import Program
 from ..prompts import (
     construct_individual_program_msg,
@@ -23,6 +24,10 @@ from ..prompts import (
 logger = logging.getLogger(__name__)
 
 
+class MetaCostAccountingError(RuntimeError):
+    """Raised when runner-owned cost accounting cannot be completed."""
+
+
 class AsyncMetaSummarizer:
     """Async version of MetaSummarizer for concurrent meta-analysis."""
 
@@ -30,15 +35,43 @@ class AsyncMetaSummarizer:
         self,
         sync_summarizer: MetaSummarizer,
         async_llm_client: Optional[AsyncLLMClient] = None,
+        cost_accountant: Optional[Callable[[float], Awaitable[float]]] = None,
     ):
         """Initialize with existing sync summarizer.
 
         Args:
             sync_summarizer: The synchronous MetaSummarizer instance
             async_llm_client: Optional async LLM client for meta analysis
+            cost_accountant: Optional runner callback for durable per-step billing
         """
         self.sync_summarizer = sync_summarizer
         self.async_llm_client = async_llm_client
+        self.cost_accountant = cost_accountant
+        self.accounts_costs_incrementally = cost_accountant is not None
+
+    async def _account_costs(self, costs: List[float]) -> float:
+        """Account every completed response before the next model request."""
+        if self.cost_accountant is None:
+            return sum(float(cost or 0.0) for cost in costs)
+
+        total_cost = 0.0
+        cancellation_received = False
+        first_error: Optional[Exception] = None
+        for cost in costs:
+            try:
+                total_cost += await self.cost_accountant(cost)
+            except asyncio.CancelledError:
+                cancellation_received = True
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise MetaCostAccountingError(
+                "Failed to account meta-analysis response cost"
+            ) from first_error
+        if cancellation_received:
+            raise asyncio.CancelledError
+        return total_cost
 
     async def update_meta_memory_async(
         self, best_program: Optional[Program] = None
@@ -122,6 +155,8 @@ class AsyncMetaSummarizer:
             logger.info(
                 f"==> Meta-analysis completed successfully with 3-step process (total cost: ${total_meta_cost:.4f})"
             )
+        except (BatchResultCallbackError, MetaCostAccountingError):
+            raise
         except Exception as e:
             logger.error(f"Failed to complete 3-step meta-analysis: {e}")
             return None, total_meta_cost
@@ -175,38 +210,53 @@ class AsyncMetaSummarizer:
         logger.info(
             f"==> Step 1 - Processing {num_programs} programs with async batch query"
         )
-        responses = await self.async_llm_client.batch_kwargs_query(
-            num_samples=num_programs,
-            msg=user_messages,
-            system_msg=META_STEP1_SYSTEM_MSG,
-        )
+        accounted_batch_costs = []
+
+        async def account_batch_response(response) -> None:
+            accounted_cost = await self._account_costs([response.cost])
+            accounted_batch_costs.append(accounted_cost)
+
+        if self.accounts_costs_incrementally:
+            responses = await self.async_llm_client.batch_kwargs_query(
+                num_samples=num_programs,
+                msg=user_messages,
+                system_msg=META_STEP1_SYSTEM_MSG,
+                result_callback=account_batch_response,
+            )
+            total_cost = sum(accounted_batch_costs)
+        else:
+            responses = await self.async_llm_client.batch_kwargs_query(
+                num_samples=num_programs,
+                msg=user_messages,
+                system_msg=META_STEP1_SYSTEM_MSG,
+            )
+            total_cost = await self._account_costs(
+                [
+                    response.cost
+                    for response in responses
+                    if response is not None
+                ]
+            )
 
         if not responses:
             logger.error("Step 1: Failed to get responses from async meta LLM client")
             return None, 0.0
 
-        # Filter out None responses and combine summaries
-        valid_responses = [r for r in responses if r is not None]
-        if not valid_responses:
+        if not any(response is not None for response in responses):
             logger.error("Step 1: All batch responses were None")
             return None, 0.0
 
         # Combine all individual summaries
-        combined_summaries = []
-        total_cost = 0.0
-        for i, response in enumerate(valid_responses):
+        summaries_with_gen = []
+        for i, response in enumerate(responses):
             if response and response.content:
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
                 program_summary += f"Generation {generation_ids[i]} - Patch Name {patch_names[i]} - Correct Program: {correct_programs[i]}"
-                combined_summaries.append(program_summary)
-                total_cost += response.cost or 0.0
+                summaries_with_gen.append((generation_ids[i], program_summary))
             else:
                 logger.warning(f"Step 1: Empty response for program {i}")
 
-        # Sort combined_summaries by generation (using generation_ids)
-        # Zip together summaries and their generation, sort, then extract summaries
-        summaries_with_gen = list(zip(generation_ids, combined_summaries))
         summaries_with_gen.sort(key=lambda x: x[0])
         combined_summaries = [summary for _, summary in summaries_with_gen]
 
@@ -255,7 +305,7 @@ class AsyncMetaSummarizer:
             logger.error("Step 2: Failed to get response from async meta LLM client")
             return None, 0.0
 
-        cost = response.cost or 0.0
+        cost = await self._account_costs([response.cost])
         logger.info(f"==> Step 2 - Global insights generated (cost: ${cost:.4f})")
         return response.content.strip(), cost
 
@@ -296,7 +346,7 @@ class AsyncMetaSummarizer:
             logger.error("Step 3: Failed to get response from async meta LLM client")
             return None, 0.0
 
-        cost = response.cost or 0.0
+        cost = await self._account_costs([response.cost])
         logger.info(f"==> Step 3 - Recommendations generated (cost: ${cost:.4f})")
         return response.content.strip(), cost
 

@@ -203,8 +203,15 @@ class NoveltyJudge:
             )
 
             if response is None or response.content is None:
-                logger.warning("Novelty LLM returned empty response")
-                return True, "LLM response was empty", 0.0
+                # Fail CLOSED: on a transient outage/empty response we must not
+                # silently accept the candidate as novel. Treat it as not-novel
+                # (reject) so a degraded novelty LLM cannot wave everything
+                # through. is_novel=False => should_reject=True in callers.
+                logger.warning(
+                    "Novelty LLM returned empty response; rejecting as not novel"
+                )
+                cost = response.cost if response is not None else 0.0
+                return False, "LLM response was empty (failing closed)", cost
 
             content = response.content.strip()
             api_cost = response.cost or 0.0

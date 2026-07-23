@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Union, Optional
+from typing import Awaitable, Callable, Dict, List, Union, Optional
 import re
 import json
 import multiprocessing as mp
@@ -8,11 +8,21 @@ from pydantic import BaseModel
 import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
-from .providers import QueryResult
+from .providers import IncompleteGeminiResponseError, QueryResult
 from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
+
+
+class BatchResultCallbackError(RuntimeError):
+    """Raised when a completed batch result cannot be processed."""
+
+
+def _rejected_gemini_result(error: Exception) -> Optional[QueryResult]:
+    if isinstance(error, IncompleteGeminiResponseError):
+        return error.query_result
+    return None
 
 
 class LLMClient:
@@ -54,7 +64,7 @@ class LLMClient:
         system_msg: Union[str, List[str]],
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         llm_kwargs: List[Dict] = [],
-    ) -> List[QueryResult]:
+    ) -> List[Optional[QueryResult]]:
         """Batch query the LLM with the given message and system message.
 
         Args:
@@ -95,29 +105,27 @@ class LLMClient:
                 )
 
             # Then collect all results and sort by index
-            results = []
-            for async_result in async_results:
+            final_results: List[Optional[QueryResult]] = [None] * len(async_results)
+            for expected_idx, async_result in enumerate(async_results):
                 try:
                     idx, result = async_result.get()
-                    results.append((idx, result))
+                    final_results[idx] = result
                 except Exception as e:
-                    logger.error(f"Error in batch query: {str(e)}")
-
-            # Sort by index and extract just the results
-            results.sort(key=lambda x: x[0])
-            final_results = [r[1] for r in results if r[1] is not None]
+                    logger.error(
+                        f"Error in batch query task {expected_idx}: {str(e)}"
+                    )
 
             # Print batch total cost
             if self.verbose:
                 total_cost = sum(
                     r.cost
                     for r in final_results
-                    if hasattr(r, "cost") and r.cost is not None
+                    if r is not None and r.cost is not None
                 )
                 formatted_costs = [
                     f"{r.cost:.4f}"
                     for r in final_results
-                    if hasattr(r, "cost") and r.cost is not None
+                    if r is not None and r.cost is not None
                 ]
                 logger.info(f"==> SAMPLING: Individual API costs: {formatted_costs}")
                 logger.info(f"==> SAMPLING: Total API costs: ${total_cost:.4f}")
@@ -130,7 +138,7 @@ class LLMClient:
         system_msg: Union[str, List[str]],
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
-    ) -> List[QueryResult]:
+    ) -> List[Optional[QueryResult]]:
         """Batch query the LLM with the given message and system message.
 
         Args:
@@ -190,29 +198,27 @@ class LLMClient:
                 )
 
             # Then collect all results and sort by index
-            results = []
-            for async_result in async_results:
+            final_results: List[Optional[QueryResult]] = [None] * len(async_results)
+            for expected_idx, async_result in enumerate(async_results):
                 try:
                     idx, result = async_result.get()
-                    results.append((idx, result))
+                    final_results[idx] = result
                 except Exception as e:
-                    logger.error(f"Error in batch query: {str(e)}")
-
-            # Sort by index and extract just the results
-            results.sort(key=lambda x: x[0])
-            final_results = [r[1] for r in results if r[1] is not None]
+                    logger.error(
+                        f"Error in batch query task {expected_idx}: {str(e)}"
+                    )
 
             # Print batch total cost
             if self.verbose:
                 total_cost = sum(
                     r.cost
                     for r in final_results
-                    if hasattr(r, "cost") and r.cost is not None
+                    if r is not None and r.cost is not None
                 )
                 formatted_costs = [
                     f"{r.cost:.4f}"
                     for r in final_results
-                    if hasattr(r, "cost") and r.cost is not None
+                    if r is not None and r.cost is not None
                 ]
                 logger.info(f"==> SAMPLING: Individual API costs: {formatted_costs}")
                 logger.info(f"==> SAMPLING: Total API costs: ${total_cost:.4f}")
@@ -323,6 +329,9 @@ class LLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
+                rejected_result = _rejected_gemini_result(e)
+                if rejected_result is not None:
+                    return rejected_result
                 model_name = llm_kwargs.get("model_name", "<unknown>")
                 logger.error(
                     f"{try_count + 1}/{MAX_RETRIES} Error in query "
@@ -371,7 +380,7 @@ class AsyncLLMClient:
         system_msg: Union[str, List[str]],
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         llm_kwargs: List[Dict] = [],
-    ) -> List[QueryResult]:
+    ) -> List[Optional[QueryResult]]:
         """Batch query the LLM with the given message and system message asynchronously.
 
         Args:
@@ -407,24 +416,24 @@ class AsyncLLMClient:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Process results and filter out exceptions
-        final_results = []
+        final_results: List[Optional[QueryResult]] = [None] * len(results)
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.info(f"Error in batch query task {i}: {str(result)}")
             elif result is not None and len(result) > 1 and result[1] is not None:
-                final_results.append(result[1])
+                final_results[result[0]] = result[1]
 
         # Print batch total cost
         if self.verbose:
             total_cost = sum(
                 r.cost
                 for r in final_results
-                if hasattr(r, "cost") and r.cost is not None
+                if r is not None and r.cost is not None
             )
             formatted_costs = [
                 f"{r.cost:.4f}"
                 for r in final_results
-                if hasattr(r, "cost") and r.cost is not None
+                if r is not None and r.cost is not None
             ]
             logger.info(f"==> SAMPLING: Individual API costs: {formatted_costs}")
             logger.info(f"==> SAMPLING: Total API costs: ${total_cost:.4f}")
@@ -437,7 +446,10 @@ class AsyncLLMClient:
         system_msg: Union[str, List[str]],
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
-    ) -> List[QueryResult]:
+        result_callback: Optional[
+            Callable[[QueryResult], Awaitable[None]]
+        ] = None,
+    ) -> List[Optional[QueryResult]]:
         """Batch query the LLM with the given message and system message asynchronously.
 
         Args:
@@ -470,42 +482,60 @@ class AsyncLLMClient:
                 lines.append(f"  {name:<30} {prob:>8.4f}")
             logger.info("\n".join(lines))
 
+        async def sample_and_report(index: int):
+            result = await self._sample_kwargs_query_async_with_retry(
+                index,
+                msg[index],
+                system_msg[index],
+                msg_history[index],
+                posterior,
+                num_samples,
+            )
+            if (
+                result_callback is not None
+                and result is not None
+                and len(result) > 1
+                and result[1] is not None
+            ):
+                try:
+                    await result_callback(result[1])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    raise BatchResultCallbackError(
+                        f"Failed to process batch result {index}"
+                    ) from error
+            return result
+
         # Create async tasks
         tasks = []
         for i in range(len(msg)):
-            tasks.append(
-                self._sample_kwargs_query_async_with_retry(
-                    i,
-                    msg[i],
-                    system_msg[i],
-                    msg_history[i],
-                    posterior,
-                    num_samples,
-                )
-            )
+            tasks.append(sample_and_report(i))
 
         # Execute all tasks concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Process results and filter out exceptions
-        final_results = []
+        final_results: List[Optional[QueryResult]] = [None] * len(results)
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BatchResultCallbackError):
+                raise result
+            if isinstance(result, BaseException):
                 logger.info(f"Error in batch query task {i}: {str(result)}")
             elif result is not None and len(result) > 1 and result[1] is not None:
-                final_results.append(result[1])
+                final_results[result[0]] = result[1]
 
         # Print batch total cost
         if self.verbose:
             total_cost = sum(
                 r.cost
                 for r in final_results
-                if hasattr(r, "cost") and r.cost is not None
+                if r is not None and r.cost is not None
             )
             formatted_costs = [
                 f"{r.cost:.4f}"
                 for r in final_results
-                if hasattr(r, "cost") and r.cost is not None
+                if r is not None and r.cost is not None
             ]
             logger.info(f"==> SAMPLING: Individual API costs: {formatted_costs}")
             logger.info(f"==> SAMPLING: Total API costs: ${total_cost:.4f}")
@@ -616,6 +646,9 @@ class AsyncLLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
+                rejected_result = _rejected_gemini_result(e)
+                if rejected_result is not None:
+                    return rejected_result
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
                 if try_count < MAX_RETRIES:
@@ -648,6 +681,9 @@ class AsyncLLMClient:
                 )
                 return idx, result
             except Exception as e:
+                rejected_result = _rejected_gemini_result(e)
+                if rejected_result is not None:
+                    return idx, rejected_result
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
                 if try_count == MAX_RETRIES:
@@ -696,6 +732,9 @@ class AsyncLLMClient:
                 )
                 return idx, result
             except Exception as e:
+                rejected_result = _rejected_gemini_result(e)
+                if rejected_result is not None:
+                    return idx, rejected_result
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
                 if try_count == MAX_RETRIES:
@@ -729,6 +768,9 @@ def query_fn(
             )
             return idx, result
         except Exception as e:
+            rejected_result = _rejected_gemini_result(e)
+            if rejected_result is not None:
+                return idx, rejected_result
             logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
             try_count += 1
             if try_count == MAX_RETRIES:
@@ -790,6 +832,9 @@ def sample_kwargs_query_fn(
             )
             return idx, result
         except Exception as e:
+            rejected_result = _rejected_gemini_result(e)
+            if rejected_result is not None:
+                return idx, rejected_result
             logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
             try_count += 1
             if try_count == MAX_RETRIES:
@@ -832,4 +877,7 @@ def extract_between(
                 return json.loads(matched_str)
             else:
                 return matched_str
-    return "none"
+    # Return None (not the truthy string "none") so callers using `if result:`
+    # or `if result is None:` correctly detect a failed extraction instead of
+    # injecting the literal string "none" as code/metadata.
+    return None

@@ -34,11 +34,14 @@ THIS IS A TEST PART 2
 >>>>>>> REPLACE
 """
 
+# Trailing newline is preserved from the source file (tests/file.py ends with
+# one); _strip_trailing_whitespace no longer drops it.
 new_str = """# EVOLVE-BLOCK-START
 THIS IS A TEST PART 2
 
 
-# EVOLVE-BLOCK-END"""
+# EVOLVE-BLOCK-END
+"""
 
 
 def test_edit():
@@ -985,3 +988,254 @@ return result
 
     assert num_applied == 0
     assert error is not None
+
+
+# ============================================================================
+# Regression tests: silent-corruption bugs in the diff engine
+# ============================================================================
+
+
+def test_search_does_not_match_midline_substring():
+    """A SEARCH block must not rewrite a mid-token substring of another line.
+
+    Regression for the substring-match corruption: SEARCH ``xval = 10`` used to
+    match inside ``maxval = 100`` via ``str.find``, silently producing
+    ``maxval = 9990`` and reporting success.
+    """
+    original_content = """# EVOLVE-BLOCK-START
+maxval = 100
+result = 5
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+xval = 10
+=======
+xval = 999
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = (
+        apply_diff_patch(
+            patch_str=patch_str,
+            original_str=original_content,
+            language="python",
+            verbose=False,
+        )
+    )
+
+    # The corrupting edit must be rejected, not silently applied.
+    assert num_applied == 0
+    assert error is not None
+    assert "maxval = 9990" not in updated_content
+    assert "maxval = 100" in updated_content
+
+
+def test_line_aligned_match_still_allows_indentation_offset():
+    """A search that differs only by leading indentation still matches."""
+    original_content = """# EVOLVE-BLOCK-START
+def f():
+    x = 1
+    return x
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+x = 1
+=======
+x = 2
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert error is None
+    assert num_applied == 1
+    assert "x = 2" in updated_content
+
+
+def test_deletion_hunk_is_applied_not_silently_dropped():
+    """An empty-REPLACE (deletion) hunk must actually delete, not vanish.
+
+    Regression for the parser dropping deletion hunks (empty REPLACE body)
+    while the surrounding patch still reported success.
+    """
+    original_content = """# EVOLVE-BLOCK-START
+a = 1
+b = 2
+c = 3
+# EVOLVE-BLOCK-END"""
+
+    # Second hunk deletes ``b = 2`` (empty REPLACE body, no blank line).
+    patch_str = """<<<<<<< SEARCH
+a = 1
+=======
+a = 111
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+b = 2
+=======
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert error is None
+    assert num_applied == 2
+    assert "a = 111" in updated_content
+    assert "b = 2" not in updated_content
+    assert "c = 3" in updated_content
+
+
+def test_unparseable_hunk_is_reported_not_dropped():
+    """A SEARCH header with no valid body must raise, not report partial success."""
+    original_content = """# EVOLVE-BLOCK-START
+a = 1
+b = 2
+# EVOLVE-BLOCK-END"""
+
+    # Second header is malformed (missing '=======' divider).
+    patch_str = """<<<<<<< SEARCH
+a = 1
+=======
+a = 111
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+b = 2
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert updated_content == _strip_trailing_whitespace(original_content)
+
+
+def test_missing_replace_terminator_does_not_absorb_next_hunk():
+    """A malformed hunk must not consume the following hunk's terminator."""
+    original_content = """# EVOLVE-BLOCK-START
+a = 1
+b = 1
+# EVOLVE-BLOCK-END"""
+
+    patch_str = "\n".join(
+        [
+            "<" * 7 + " SEARCH",
+            "a = 1",
+            "=" * 7,
+            "a = 2",
+            "<" * 7 + " SEARCH",
+            "b = 1",
+            "=" * 7,
+            "b = 2",
+            ">" * 7 + " REPLACE",
+        ]
+    )
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert updated_content == _strip_trailing_whitespace(original_content)
+    assert "<<<<<<< SEARCH" not in updated_content
+
+
+def test_ambiguous_search_in_editable_region_is_rejected():
+    """Non-unique SEARCH inside editable regions must be rejected, not guessed."""
+    original_content = """# EVOLVE-BLOCK-START
+x = 1
+y = 1
+x = 1
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+x = 1
+=======
+x = 2
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert "mbiguous" in error
+
+
+def test_match_prefers_editable_over_earlier_immutable_occurrence():
+    """An identical line in an earlier immutable region must not block a valid edit."""
+    original_content = """target = 1
+# EVOLVE-BLOCK-START
+target = 1
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+target = 1
+=======
+target = 2
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert error is None
+    assert num_applied == 1
+    # The immutable occurrence is untouched; the editable one is changed.
+    assert updated_content.splitlines()[0] == "target = 1"
+    assert "target = 2" in updated_content
+
+
+def test_search_marker_literal_in_body_does_not_false_reject():
+    """A valid hunk whose body contains the literal '<<<<<<< SEARCH' must apply.
+
+    Regression: the dropped-hunk guard counted SEARCH markers across the whole
+    patch (including inside bodies), so a single valid hunk whose REPLACE body
+    mentioned the marker literally was falsely rejected as malformed.
+    """
+    original_content = """# EVOLVE-BLOCK-START
+    pass
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+    pass
+=======
+    # Example header looks like: <<<<<<< SEARCH (do not use)
+    return 1
+>>>>>>> REPLACE"""
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert error is None
+    assert num_applied == 1
+    assert "return 1" in updated_content
+    assert "pass" not in updated_content.replace("# Example", "")

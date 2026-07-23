@@ -1612,7 +1612,11 @@ class ProgramDatabase:
             progs_with_cs = [p for p in programs if p.combined_score is not None]
             sorted_p = sorted(
                 progs_with_cs,
-                key=lambda p_item: p_item.combined_score or -float("inf"),
+                key=lambda p_item: (
+                    -float("inf")
+                    if p_item.combined_score is None
+                    else p_item.combined_score
+                ),
                 reverse=True,
             )
             log_key = "combined_score"

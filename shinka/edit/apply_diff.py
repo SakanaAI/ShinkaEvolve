@@ -9,10 +9,10 @@ from .marker_validation import validate_evolve_markers
 
 logger = logging.getLogger(__name__)
 
-PATCH_PATTERN = re.compile(
-    r"<{7}\s*SEARCH\s*\n(.*?)\n\s*={7}\s*\n(.*?)\n\s*>{7}\s*REPLACE\s*",
-    re.DOTALL,
-)
+SEARCH_HEADER = re.compile(r"\s*<{7}\s*SEARCH\s*")
+SEARCH_HEADER_PREFIX = re.compile(r"\s*<{7}\s*SEARCH\b")
+SEARCH_REPLACE_DIVIDER = re.compile(r"\s*={7}\s*")
+REPLACE_FOOTER = re.compile(r"\s*>{7}\s*REPLACE\s*")
 
 
 EVOLVE_START = re.compile(
@@ -58,22 +58,111 @@ def _inside(span: tuple[int, int], ranges: list[tuple[int, int]]) -> bool:
 
 
 def _strip_trailing_whitespace(text: str) -> str:
-    """Strip trailing whitespace from each line in the text."""
-    return "\n".join(line.rstrip() for line in text.splitlines())
+    """Strip trailing whitespace from each line in the text.
+
+    Splits on ``\n`` only (not ``str.splitlines``) so that form-feeds,
+    vertical tabs and other Unicode line separators inside string literals are
+    left intact. ``rstrip`` still removes a trailing ``\r`` for CRLF input.
+    """
+    return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+def _parse_search_replace_blocks(patch_text: str) -> list[tuple[str, str]]:
+    """Parse complete SEARCH/REPLACE hunks without crossing hunk boundaries."""
+    lines = patch_text.split("\n")
+    blocks: list[tuple[str, str]] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if not SEARCH_HEADER_PREFIX.match(line):
+            index += 1
+            continue
+        if not SEARCH_HEADER.fullmatch(line):
+            raise PatchError("Malformed patch: invalid SEARCH header")
+
+        index += 1
+        search_lines: list[str] = []
+        while index < len(lines) and not SEARCH_REPLACE_DIVIDER.fullmatch(lines[index]):
+            if SEARCH_HEADER_PREFIX.match(lines[index]) or REPLACE_FOOTER.fullmatch(
+                lines[index]
+            ):
+                raise PatchError("Malformed patch: SEARCH hunk is missing '======='")
+            search_lines.append(lines[index])
+            index += 1
+        if index == len(lines):
+            raise PatchError("Malformed patch: SEARCH hunk is missing '======='")
+
+        index += 1
+        replace_lines: list[str] = []
+        while index < len(lines) and not REPLACE_FOOTER.fullmatch(lines[index]):
+            if SEARCH_HEADER_PREFIX.match(lines[index]):
+                raise PatchError(
+                    "Malformed patch: REPLACE hunk is missing '>>>>>>> REPLACE'"
+                )
+            replace_lines.append(lines[index])
+            index += 1
+        if index == len(lines):
+            raise PatchError(
+                "Malformed patch: REPLACE hunk is missing '>>>>>>> REPLACE'"
+            )
+
+        while search_lines and not search_lines[-1]:
+            search_lines.pop()
+        while replace_lines and not replace_lines[-1]:
+            replace_lines.pop()
+        blocks.append(("\n".join(search_lines), "\n".join(replace_lines)))
+        index += 1
+
+    return blocks
+
+
+def _is_line_aligned(text: str, start: int, end: int) -> bool:
+    """True if ``text[start:end]`` begins and ends on line boundaries.
+
+    A match is line-aligned when only leading whitespace separates ``start``
+    from the previous newline (so indentation-only offsets are allowed) and
+    ``end`` sits at end-of-line. This distinguishes a real line match such as
+    ``x = 1`` inside ``    x = 1`` from a corrupting mid-token substring match
+    such as ``xval = 10`` inside ``maxval = 100``.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    if text[line_start:start].strip() != "":
+        return False
+    return end == len(text) or text[end] == "\n"
+
+
+def _iter_aligned_positions(needle: str, haystack: str):
+    """Yield each start index where ``needle`` occurs line-aligned in ``haystack``."""
+    if not needle:
+        return
+    search_from = 0
+    needle_len = len(needle)
+    while True:
+        pos = haystack.find(needle, search_from)
+        if pos == -1:
+            return
+        if _is_line_aligned(haystack, pos, pos + needle_len):
+            yield pos
+        search_from = pos + 1
 
 
 def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int]:
     """
     Try to find search_text in original_text, and if not found, try to find
     it with proper indentation. Returns (matched_text, position) or ("", -1).
+
+    Matching is line-aligned: a hit must cover whole lines (leading-indent
+    offsets allowed) so that a SEARCH block cannot silently rewrite a
+    mid-line substring of an unrelated line.
     """
     # Handle empty search text
     if not search_text.strip():
         return "", -1
 
-    # First try exact match
-    pos = original_text.find(search_text)
-    if pos != -1:
+    # First try exact match (line-aligned, so indentation-only offsets match
+    # but mid-token substrings do not).
+    for pos in _iter_aligned_positions(search_text, original_text):
         return search_text, pos
 
     # If not found, try to find the first line with different indentation
@@ -111,9 +200,8 @@ def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int
 
             indented_search = "\n".join(indented_search_lines)
 
-            # Check if this indented version exists in original
-            indented_pos = original_text.find(indented_search)
-            if indented_pos != -1:
+            # Check if this indented version exists in original (line-aligned).
+            for indented_pos in _iter_aligned_positions(indented_search, original_text):
                 return indented_search, indented_pos
 
     return "", -1
@@ -603,8 +691,8 @@ def apply_search_replace(
     """
     new_text = original
     num_applied = 0
-    for block in PATCH_PATTERN.finditer(patch_text):
-        search, replace = block.group(1), block.group(2)
+    blocks = _parse_search_replace_blocks(patch_text)
+    for search, replace in blocks:
         # Clean EVOLVE markers from search and replace text if present
         search = _clean_evolve_markers(search)
         replace = _clean_evolve_markers(replace)
@@ -637,10 +725,28 @@ def apply_search_replace(
                 raise PatchError(msg)
             continue
 
-        span = (pos, pos + len(matched_search))
-        if not _inside(span, mutable):
+        # Collect every line-aligned occurrence of the matched text so we can
+        # (a) target one that lives in an editable region even when an
+        # identical line appears earlier in an immutable region, and
+        # (b) refuse to guess when the target is ambiguous.
+        match_len = len(matched_search)
+        aligned = list(_iter_aligned_positions(matched_search, new_text))
+        in_mutable = [
+            p for p in aligned if _inside((p, p + match_len), mutable)
+        ]
+
+        if not in_mutable:
             msg = _create_evolve_block_error(matched_search, pos, new_text, mutable)
             raise PatchError(msg)
+
+        if len(in_mutable) > 1:
+            raise PatchError(
+                "Ambiguous SEARCH block: the search text matches "
+                f"{len(in_mutable)} distinct locations inside editable "
+                "regions. Add surrounding context so the target is unique."
+            )
+
+        pos = in_mutable[0]
 
         # If we found an indented match, apply same indentation to replace text
         if matched_search != search:
@@ -653,8 +759,12 @@ def apply_search_replace(
                 replace = _apply_indentation_to_replace(replace, indent_str)
                 logger.debug("Applied indentation correction to search/replace block")
 
-        new_text = new_text.replace(matched_search, replace, 1)
+        # Apply at the validated position rather than str.replace(...), which
+        # would rewrite the first substring occurrence and could land outside
+        # the editable region we checked.
+        new_text = new_text[:pos] + replace + new_text[pos + match_len :]
         num_applied += 1
+
     return new_text, num_applied
 
 

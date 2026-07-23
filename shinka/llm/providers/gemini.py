@@ -14,6 +14,18 @@ MAX_VALUE = BACKOFF_MAX_VALUE
 MAX_TIME = BACKOFF_MAX_TIME
 
 
+class IncompleteGeminiResponseError(ValueError):
+    """Non-retryable Gemini response rejection with billable usage attached."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.query_result: QueryResult | None = None
+
+
+def _is_incomplete_response(error: Exception) -> bool:
+    return isinstance(error, IncompleteGeminiResponseError)
+
+
 def build_gemini_thinking_config(thinking_budget: int):
     """Build Gemini ThinkingConfig across SDK versions.
 
@@ -141,12 +153,62 @@ def gemini_extract_thoughts_and_content(response):
     return thought, content
 
 
+def validate_gemini_response(response, content: str) -> None:
+    """Raise if a Gemini response is empty or was truncated/blocked.
+
+    Empty content is reachable via safety blocks or prompt feedback, and a
+    ``finish_reason`` of ``MAX_TOKENS`` means the candidate was cut off
+    mid-generation. Either way the generation is incomplete and must not be
+    treated as a finished program (mirrors ``openai._extract_response_text``
+    and ``headless`` which already raise on empty content).
+    """
+    candidates = getattr(response, "candidates", None)
+    finish_reason = None
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+    # ``finish_reason`` is a str-based FinishReason enum; ``.name`` yields e.g.
+    # "MAX_TOKENS". Fall back to str() if a raw string is returned instead.
+    finish_name = getattr(finish_reason, "name", None)
+    if finish_name is None and finish_reason is not None:
+        finish_name = str(finish_reason)
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None)
+
+    if not content or not content.strip():
+        raise IncompleteGeminiResponseError(
+            "Gemini response contained no text output; "
+            f"finish_reason={finish_name}; block_reason={block_reason}."
+        )
+
+    if finish_name == "MAX_TOKENS":
+        raise IncompleteGeminiResponseError(
+            "Gemini response was truncated (finish_reason=MAX_TOKENS); "
+            "treating as an incomplete generation."
+        )
+    if finish_name is not None and finish_name != "STOP":
+        raise IncompleteGeminiResponseError(
+            "Gemini response was incomplete "
+            f"(finish_reason={finish_name}; block_reason={block_reason})."
+        )
+
+    block_name = getattr(block_reason, "name", None)
+    if block_name is None and block_reason is not None:
+        block_name = str(block_reason)
+    if block_name not in (None, "BLOCKED_REASON_UNSPECIFIED"):
+        raise IncompleteGeminiResponseError(
+            "Gemini prompt was blocked "
+            f"(finish_reason={finish_name}; block_reason={block_name})."
+        )
+
+
 @backoff.on_exception(
     backoff.expo,
     (Exception,),  # Catch all exceptions for Gemini API errors
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
+    giveup=_is_incomplete_response,
     on_backoff=backoff_handler,
 )
 def query_gemini(
@@ -193,14 +255,30 @@ def query_gemini(
     # Extract thoughts and content from response parts
     thought, content = gemini_extract_thoughts_and_content(response)
 
+    cost_results = get_gemini_costs(response, model)
+
+    # Reject empty/truncated generations instead of returning content=""
+    try:
+        validate_gemini_response(response, content)
+    except IncompleteGeminiResponseError as error:
+        error.query_result = QueryResult(
+            content="",
+            msg=msg,
+            system_msg=system_msg,
+            new_msg_history=msg_history,
+            model_name=model,
+            kwargs=kwargs,
+            **cost_results,
+            thought=thought,
+            model_posteriors=model_posteriors,
+        )
+        raise
+
     # Use content (without thoughts) for message history
     new_msg_history = msg_history + [
         {"role": "user", "content": msg},
         {"role": "assistant", "content": content},
     ]
-
-    # Get token counts and costs
-    cost_results = get_gemini_costs(response, model)
 
     # Collect all results
     result = QueryResult(
@@ -223,6 +301,7 @@ def query_gemini(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
+    giveup=_is_incomplete_response,
     on_backoff=backoff_handler,
 )
 async def query_gemini_async(
@@ -269,14 +348,30 @@ async def query_gemini_async(
     # Extract thoughts and content from response parts
     thought, content = gemini_extract_thoughts_and_content(response)
 
+    cost_results = get_gemini_costs(response, model)
+
+    # Reject empty/truncated generations instead of returning content=""
+    try:
+        validate_gemini_response(response, content)
+    except IncompleteGeminiResponseError as error:
+        error.query_result = QueryResult(
+            content="",
+            msg=msg,
+            system_msg=system_msg,
+            new_msg_history=msg_history,
+            model_name=model,
+            kwargs=kwargs,
+            **cost_results,
+            thought=thought,
+            model_posteriors=model_posteriors,
+        )
+        raise
+
     # Use content (without thoughts) for message history
     new_msg_history = msg_history + [
         {"role": "user", "content": msg},
         {"role": "assistant", "content": content},
     ]
-
-    # Get token counts and costs
-    cost_results = get_gemini_costs(response, model)
 
     result = QueryResult(
         content=content,
