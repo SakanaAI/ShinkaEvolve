@@ -210,7 +210,8 @@ class NoveltyJudge:
                 logger.warning(
                     "Novelty LLM returned empty response; rejecting as not novel"
                 )
-                return False, "LLM response was empty (failing closed)", 0.0
+                cost = response.cost if response is not None else 0.0
+                return False, "LLM response was empty (failing closed)", cost
 
             content = response.content.strip()
             api_cost = response.cost or 0.0

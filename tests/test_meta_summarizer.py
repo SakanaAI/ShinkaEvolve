@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+import asyncio
 
 import pytest
 
+from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.summarizer import MetaSummarizer
 from shinka.database import Program
 
@@ -30,6 +32,14 @@ class DummyMetaLLM:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class DummyAsyncMetaLLM:
+    def __init__(self, batch_responses):
+        self.batch_responses = batch_responses
+
+    async def batch_kwargs_query(self, num_samples, msg, system_msg):
+        return self.batch_responses
 
 
 def make_program(program_id, generation, patch_name="patch", correct=True):
@@ -95,6 +105,96 @@ def test_update_meta_memory_successfully_updates_state():
     assert summarizer.meta_summary.find("Generation 1") < summarizer.meta_summary.find(
         "Generation 2"
     )
+
+
+def test_step1_preserves_generation_after_empty_response():
+    programs = [
+        make_program("prog-1", generation=1, patch_name="p1"),
+        make_program("prog-2", generation=2, patch_name="p2"),
+    ]
+    responses = [
+        DummyResponse(content="", cost=0.1),
+        DummyResponse(content="summary two", cost=0.2),
+    ]
+    summarizer = MetaSummarizer(
+        meta_llm_client=DummyMetaLLM(batch_responses=responses)
+    )
+
+    summary, cost = summarizer._step1_individual_summaries(programs)
+
+    assert summary is not None
+    assert "Generation 2" in summary
+    assert "Generation 1" not in summary
+    assert cost == pytest.approx(0.3)
+
+
+def test_async_step1_preserves_generation_after_empty_response():
+    async def _run():
+        programs = [
+            make_program("prog-1", generation=1, patch_name="p1"),
+            make_program("prog-2", generation=2, patch_name="p2"),
+        ]
+        responses = [
+            DummyResponse(content="", cost=0.1),
+            DummyResponse(content="summary two", cost=0.2),
+        ]
+        summarizer = AsyncMetaSummarizer(
+            MetaSummarizer(),
+            async_llm_client=DummyAsyncMetaLLM(responses),
+        )
+
+        summary, cost = await summarizer._step1_individual_summaries_async(
+            programs
+        )
+
+        assert summary is not None
+        assert "Generation 2" in summary
+        assert "Generation 1" not in summary
+        assert cost == pytest.approx(0.3)
+
+    asyncio.run(_run())
+
+
+def test_step1_preserves_generation_after_missing_response():
+    programs = [
+        make_program("prog-1", generation=1, patch_name="p1"),
+        make_program("prog-2", generation=2, patch_name="p2"),
+    ]
+    responses = [None, DummyResponse(content="summary two", cost=0.2)]
+    summarizer = MetaSummarizer(
+        meta_llm_client=DummyMetaLLM(batch_responses=responses)
+    )
+
+    summary, cost = summarizer._step1_individual_summaries(programs)
+
+    assert summary is not None
+    assert "Generation 2" in summary
+    assert "Generation 1" not in summary
+    assert cost == pytest.approx(0.2)
+
+
+def test_async_step1_preserves_generation_after_missing_response():
+    async def _run():
+        programs = [
+            make_program("prog-1", generation=1, patch_name="p1"),
+            make_program("prog-2", generation=2, patch_name="p2"),
+        ]
+        responses = [None, DummyResponse(content="summary two", cost=0.2)]
+        summarizer = AsyncMetaSummarizer(
+            MetaSummarizer(),
+            async_llm_client=DummyAsyncMetaLLM(responses),
+        )
+
+        summary, cost = await summarizer._step1_individual_summaries_async(
+            programs
+        )
+
+        assert summary is not None
+        assert "Generation 2" in summary
+        assert "Generation 1" not in summary
+        assert cost == pytest.approx(0.2)
+
+    asyncio.run(_run())
 
 
 def test_update_meta_memory_returns_none_without_client_or_programs():

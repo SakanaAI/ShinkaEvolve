@@ -343,11 +343,10 @@ class SystemPromptEvolver:
                 llm_kwargs=self.llm_kwargs,
             )
 
+            cost = response.cost if response is not None else 0.0
             if response is None or not response.content:
                 logger.warning("Empty response from LLM for diff mutation")
-                return None, None, None, 0.0, None
-
-            cost = response.cost or 0.0
+                return None, None, None, cost, None
 
             # Extract LLM metadata from response
             llm_metadata = _extract_llm_metadata(response)
@@ -404,11 +403,10 @@ class SystemPromptEvolver:
                 llm_kwargs=self.llm_kwargs,
             )
 
+            cost = response.cost if response is not None else 0.0
             if response is None or not response.content:
                 logger.warning("Empty response from LLM for full rewrite")
-                return None, None, None, 0.0, None
-
-            cost = response.cost or 0.0
+                return None, None, None, cost, None
 
             # Extract LLM metadata from response
             llm_metadata = _extract_llm_metadata(response)
@@ -599,10 +597,9 @@ class AsyncSystemPromptEvolver:
                 llm_kwargs=kwargs,
             )
 
+            cost = response.cost if response is not None else 0.0
             if response is None or not response.content:
-                return None, None, None, 0.0, None
-
-            cost = response.cost or 0.0
+                return None, None, None, cost, None
 
             # Extract LLM metadata from response
             llm_metadata = _extract_llm_metadata(response)
@@ -646,10 +643,9 @@ class AsyncSystemPromptEvolver:
                 llm_kwargs=kwargs,
             )
 
+            cost = response.cost if response is not None else 0.0
             if response is None or not response.content:
-                return None, None, None, 0.0, None
-
-            cost = response.cost or 0.0
+                return None, None, None, cost, None
 
             # Extract LLM metadata from response
             llm_metadata = _extract_llm_metadata(response)

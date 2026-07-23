@@ -222,7 +222,8 @@ class AsyncNoveltyJudge:
                 logger.warning(
                     "Novelty LLM returned empty response; rejecting as not novel"
                 )
-                return False, "LLM response was empty (failing closed)", 0.0
+                cost = response.cost if response is not None else 0.0
+                return False, "LLM response was empty (failing closed)", cost
 
             content = response.content.strip()
             api_cost = response.cost or 0.0
@@ -260,7 +261,8 @@ class AsyncNoveltyJudge:
 
             if not response or not response.content:
                 # Fail CLOSED on empty response (is_novel=False => reject).
-                return False, 0.0, "No response from LLM (failing closed)"
+                cost = response.cost if response is not None else 0.0
+                return False, cost, "No response from LLM (failing closed)"
 
             # Parse response for novelty decision
             is_novel = self._parse_novelty_response(response.content)
@@ -289,4 +291,3 @@ class AsyncNoveltyJudge:
     def __getattr__(self, name):
         """Delegate unknown methods to sync novelty judge."""
         return getattr(self.sync_judge, name)
-

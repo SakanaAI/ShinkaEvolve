@@ -19,9 +19,14 @@ import pytest
 
 from google.genai import types
 
-from shinka.llm import extract_between
+from shinka.llm import AsyncLLMClient, extract_between
 from shinka.llm.providers.result import QueryResult
-from shinka.llm.providers.gemini import query_gemini, validate_gemini_response
+from shinka.llm.providers.gemini import (
+    IncompleteGeminiResponseError,
+    query_gemini,
+    query_gemini_async,
+    validate_gemini_response,
+)
 from shinka.llm.providers.local_openai import (
     query_local_openai,
     _extract_local_openai_content,
@@ -160,8 +165,27 @@ def _gemini_response(*, parts=None, text=None, finish_reason=None):
 
 class _FakeGeminiClient:
     def __init__(self, response):
+        self.call_count = 0
+
+        def generate_content(**kwargs):
+            self.call_count += 1
+            return response
+
         self.models = SimpleNamespace(
-            generate_content=lambda **kwargs: response
+            generate_content=generate_content
+        )
+
+
+class _FakeAsyncGeminiClient:
+    def __init__(self, response):
+        self.call_count = 0
+
+        async def generate_content(**kwargs):
+            self.call_count += 1
+            return response
+
+        self.aio = SimpleNamespace(
+            models=SimpleNamespace(generate_content=generate_content)
         )
 
 
@@ -180,6 +204,22 @@ def test_validate_gemini_response_raises_on_max_tokens_truncation():
         validate_gemini_response(response, "partial")
 
 
+@pytest.mark.parametrize(
+    "finish_reason",
+    [types.FinishReason.SAFETY, types.FinishReason.RECITATION],
+)
+def test_validate_gemini_response_rejects_non_success_finish(
+    finish_reason,
+):
+    response = _gemini_response(
+        parts=[_gemini_part("partial")],
+        finish_reason=finish_reason,
+    )
+
+    with pytest.raises(IncompleteGeminiResponseError, match="incomplete"):
+        validate_gemini_response(response, "partial")
+
+
 def test_validate_gemini_response_accepts_completed_content():
     response = _gemini_response(
         parts=[_gemini_part("done")],
@@ -188,11 +228,25 @@ def test_validate_gemini_response_accepts_completed_content():
     validate_gemini_response(response, "done")  # must not raise
 
 
+def test_validate_gemini_response_accepts_unspecified_block_reason():
+    response = _gemini_response(
+        parts=[_gemini_part("done")],
+        finish_reason=types.FinishReason.STOP,
+    )
+    response.prompt_feedback = SimpleNamespace(
+        block_reason=types.BlockedReason.BLOCKED_REASON_UNSPECIFIED
+    )
+
+    validate_gemini_response(response, "done")
+
+
 def test_query_gemini_raises_on_empty_response():
     # A Gemini safety-block returns candidates with no text parts.
     response = _gemini_response(parts=[], text=None)
     client = _FakeGeminiClient(response)
-    with pytest.raises(ValueError, match="no text output"):
+    with pytest.raises(
+        IncompleteGeminiResponseError, match="no text output"
+    ) as exc_info:
         query_gemini(
             client,
             "gemini-2.5-flash",
@@ -202,6 +256,160 @@ def test_query_gemini_raises_on_empty_response():
             None,
             max_tokens=128,
         )
+    assert client.call_count == 1
+    assert exc_info.value.query_result is not None
+    assert exc_info.value.query_result.content == ""
+
+
+def test_query_gemini_preserves_rejected_response_usage(monkeypatch):
+    response = _gemini_response(parts=[], text=None)
+    response.usage_metadata = SimpleNamespace(
+        prompt_token_count=12,
+        candidates_token_count=3,
+        thoughts_token_count=4,
+    )
+    client = _FakeGeminiClient(response)
+    monkeypatch.setattr(
+        "shinka.llm.providers.gemini.calculate_cost",
+        lambda model, input_tokens, output_tokens: (0.1, 0.2),
+    )
+
+    with pytest.raises(IncompleteGeminiResponseError) as exc_info:
+        query_gemini(
+            client,
+            "gemini-2.5-flash",
+            "msg",
+            "sys",
+            [],
+            None,
+            max_tokens=128,
+        )
+
+    rejected = exc_info.value.query_result
+    assert rejected is not None
+    assert rejected.input_tokens == 12
+    assert rejected.output_tokens == 3
+    assert rejected.thinking_tokens == 4
+    assert rejected.cost == pytest.approx(0.3)
+
+
+def test_query_gemini_async_rejects_without_retry():
+    client = _FakeAsyncGeminiClient(
+        _gemini_response(parts=[], text=None)
+    )
+
+    async def query():
+        with pytest.raises(IncompleteGeminiResponseError):
+            await query_gemini_async(
+                client,
+                "gemini-2.5-flash",
+                "msg",
+                "sys",
+                [],
+                None,
+                max_tokens=128,
+            )
+
+    asyncio.run(query())
+
+    assert client.call_count == 1
+
+
+def test_async_llm_client_returns_rejected_usage_without_retry(monkeypatch):
+    rejected = _make_result(output_tokens=3, thinking_tokens=4)
+    rejected.content = ""
+    rejected.cost = 0.3
+    error = IncompleteGeminiResponseError("blocked")
+    error.query_result = rejected
+    calls = 0
+
+    async def fail_once(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise error
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("shinka.llm.llm.query_async", fail_once)
+    monkeypatch.setattr("shinka.llm.llm.asyncio.sleep", no_sleep)
+    client = AsyncLLMClient("gemini-2.5-flash", verbose=False)
+
+    result = asyncio.run(
+        client.query(
+            "msg",
+            "sys",
+            llm_kwargs={"model_name": "gemini-2.5-flash"},
+        )
+    )
+
+    assert calls == 1
+    assert result is rejected
+    assert result.cost == pytest.approx(0.3)
+
+
+def test_async_batch_preserves_failed_response_position(monkeypatch):
+    valid = _make_result(output_tokens=3, thinking_tokens=0)
+    client = AsyncLLMClient("gemini-2.5-flash", verbose=False)
+
+    async def fake_query(idx, *args, **kwargs):
+        return idx, None if idx == 0 else valid
+
+    monkeypatch.setattr(
+        client,
+        "_sample_kwargs_query_async_with_retry",
+        fake_query,
+    )
+
+    results = asyncio.run(
+        client.batch_kwargs_query(
+            num_samples=2,
+            msg=["first", "second"],
+            system_msg=["sys", "sys"],
+        )
+    )
+
+    assert results == [None, valid]
+
+
+def test_async_batch_preserves_cancelled_response_position(monkeypatch):
+    valid = _make_result(output_tokens=3, thinking_tokens=0)
+    client = AsyncLLMClient("gemini-2.5-flash", verbose=False)
+
+    async def fake_query(idx, *args, **kwargs):
+        if idx == 0:
+            raise asyncio.CancelledError
+        return idx, valid
+
+    monkeypatch.setattr(client, "_query_async_with_retry", fake_query)
+    results = asyncio.run(
+        client.batch_query(
+            num_samples=2,
+            msg=["first", "second"],
+            system_msg=["sys", "sys"],
+            llm_kwargs=[
+                {"model_name": "gemini-2.5-flash"},
+                {"model_name": "gemini-2.5-flash"},
+            ],
+        )
+    )
+
+    assert results == [None, valid]
+
+    monkeypatch.setattr(
+        client,
+        "_sample_kwargs_query_async_with_retry",
+        fake_query,
+    )
+    results = asyncio.run(
+        client.batch_kwargs_query(
+            num_samples=2,
+            msg=["first", "second"],
+            system_msg=["sys", "sys"],
+        )
+    )
+
+    assert results == [None, valid]
 
 
 def test_query_gemini_returns_result_for_valid_content():

@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -226,6 +227,87 @@ def test_restore_resume_progress_uses_actual_program_count():
 
         assert runner.completed_generations == 6
         assert runner.next_generation_to_submit == 9
+
+    asyncio.run(_run())
+
+
+def test_failed_initial_generation_accounts_rejected_query_costs():
+    async def _run():
+        class _RejectedLLM:
+            def __init__(self):
+                self.responses = [
+                    SimpleNamespace(content="", cost=0.2),
+                    SimpleNamespace(content="", cost=0.3),
+                ]
+
+            def get_kwargs(self, **kwargs):
+                return {"model_name": "gemini-2.5-flash"}
+
+            async def query(self, **kwargs):
+                return self.responses.pop(0)
+
+        runner = _build_runner(
+            evo_config=SimpleNamespace(
+                max_patch_attempts=2,
+                language="python",
+            ),
+            total_api_cost=1.0,
+        )
+        runner.llm = _RejectedLLM()
+        runner.llm_selection = None
+        runner.prompt_sampler = SimpleNamespace(
+            initial_program_prompt=lambda: ("system", "user")
+        )
+        runner._save_patch_attempt_async = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="failed to generate"):
+            await runner._generate_initial_program()
+
+        assert runner.total_api_cost == pytest.approx(1.5)
+        assert runner._save_patch_attempt_async.await_count == 2
+
+    asyncio.run(_run())
+
+
+def test_cancelled_initial_generation_keeps_completed_query_cost():
+    async def _run():
+        second_query_started = asyncio.Event()
+
+        class _RejectedThenBlockedLLM:
+            def __init__(self):
+                self.query_count = 0
+
+            def get_kwargs(self, **kwargs):
+                return {"model_name": "gemini-2.5-flash"}
+
+            async def query(self, **kwargs):
+                self.query_count += 1
+                if self.query_count == 1:
+                    return SimpleNamespace(content="", cost=0.2)
+                second_query_started.set()
+                await asyncio.Event().wait()
+
+        runner = _build_runner(
+            evo_config=SimpleNamespace(
+                max_patch_attempts=2,
+                language="python",
+            ),
+            total_api_cost=1.0,
+        )
+        runner.llm = _RejectedThenBlockedLLM()
+        runner.llm_selection = None
+        runner.prompt_sampler = SimpleNamespace(
+            initial_program_prompt=lambda: ("system", "user")
+        )
+        runner._save_patch_attempt_async = AsyncMock()
+        generation_task = asyncio.create_task(runner._generate_initial_program())
+        await second_query_started.wait()
+
+        generation_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await generation_task
+
+        assert runner.total_api_cost == pytest.approx(1.2)
 
     asyncio.run(_run())
 

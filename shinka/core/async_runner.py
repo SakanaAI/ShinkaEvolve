@@ -1880,12 +1880,9 @@ class ShinkaEvolveRunner:
         await self.async_db.add_program_async(initial_program, verbose=self.verbose)
 
         # Add initial program costs to in-memory total for accurate budget tracking
-        initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
         initial_embed_cost = (initial_program.metadata or {}).get("embed_cost", 0.0)
         initial_novelty_cost = (initial_program.metadata or {}).get("novelty_cost", 0.0)
-        self.total_api_cost += (
-            initial_api_cost + initial_embed_cost + initial_novelty_cost
-        )
+        self.total_api_cost += initial_embed_cost + initial_novelty_cost
 
         # Add the initial program to meta memory tracking
         if self.meta_summarizer:
@@ -2003,7 +2000,12 @@ class ShinkaEvolveRunner:
                 model_posterior=model_posterior,
             )
 
-            if response is None or response.content is None:
+            if response is not None:
+                response_cost = response.cost or 0.0
+                total_costs += response_cost
+                self.total_api_cost += response_cost
+
+            if response is None or not response.content:
                 error_msg = "LLM response content was None."
                 if self.verbose:
                     logger.info(
@@ -2033,8 +2035,6 @@ class ShinkaEvolveRunner:
                     continue
                 else:
                     break
-
-            total_costs += response.cost or 0.0
 
             # Extract code using language-specific markers
             initial_code = extract_between(
@@ -3569,6 +3569,9 @@ class ShinkaEvolveRunner:
                     model_posterior=model_posterior,
                 )
 
+                if response is not None:
+                    total_costs += response.cost or 0.0
+
                 if not response or not response.content:
                     error_str = "LLM response content was None."
 
@@ -3591,8 +3594,6 @@ class ShinkaEvolveRunner:
                         continue
                     else:
                         break
-
-                total_costs += response.cost if response.cost else 0.0
 
                 patch_name = extract_between(
                     response.content, "<NAME>", "</NAME>", False
@@ -3793,6 +3794,9 @@ class ShinkaEvolveRunner:
                     model_posterior=model_posterior,
                 )
 
+                if response is not None:
+                    total_costs += response.cost or 0.0
+
                 if not response or not response.content:
                     error_str = "LLM response content was None."
 
@@ -3816,8 +3820,6 @@ class ShinkaEvolveRunner:
                         continue
                     else:
                         break
-
-                total_costs += response.cost if response.cost else 0.0
 
                 # Extract patch name and description from LLM response
                 patch_name = extract_between(
