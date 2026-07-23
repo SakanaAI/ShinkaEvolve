@@ -9,8 +9,10 @@ Covers:
   wrapper-spawned children are not orphaned.
 """
 
+import asyncio
 import os
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
 
@@ -18,6 +20,7 @@ import pytest
 
 from shinka.launch import slurm
 from shinka.launch.local import submit
+from shinka.launch.scheduler import JobScheduler, SlurmCondaJobConfig
 
 
 class _FakeCompleted:
@@ -98,6 +101,52 @@ def test_monitor_raises_when_status_remains_unknown(monkeypatch):
 
     with pytest.raises(slurm.JobStatusUnavailableError, match="status unknown"):
         slurm.monitor("999", poll_interval=0)
+
+
+def test_cancellation_is_not_starved_by_submission_executor(monkeypatch):
+    executor_blocked = threading.Event()
+    release_executor = threading.Event()
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+
+    def block_submission_executor():
+        executor_blocked.set()
+        release_executor.wait(timeout=2)
+
+    scheduler.executor.submit(block_submission_executor)
+    assert executor_blocked.wait(timeout=1)
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["scancel", "123"]
+        assert kwargs["timeout"] == slurm.SLURM_COMMAND_TIMEOUT_SECONDS
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    async def cancel():
+        return await asyncio.wait_for(scheduler.cancel_job_async("123"), timeout=1)
+
+    try:
+        assert asyncio.run(cancel()) is True
+    finally:
+        release_executor.set()
+        scheduler.shutdown()
+
+
+def test_docker_image_preparation_has_bounded_subprocesses(monkeypatch):
+    monkeypatch.setattr(slurm, "load_cache_manifest", lambda: {})
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["docker", "pull", "example/image:latest"]
+        assert kwargs["timeout"] == slurm.DOCKER_COMMAND_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert slurm.get_local_image("example/image:latest") == "example/image:latest"
 
 
 def test_kill_terminates_child_process_group(tmp_path):

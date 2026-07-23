@@ -166,6 +166,9 @@ def _build_runner(**overrides):
     runner.sampling_slot_pool = overrides.get("sampling_slot_pool", _FakeSlotPool())
     runner.scheduler = overrides.get("scheduler", _FakeScheduler())
     runner.submitted_jobs = overrides.get("submitted_jobs", {})
+    runner._pending_evaluation_submissions = overrides.get(
+        "_pending_evaluation_submissions", {}
+    )
     runner.slot_available = overrides.get("slot_available", _FakeEvent())
     runner.should_stop = overrides.get("should_stop", _FakeEvent())
     runner.finalization_complete = overrides.get("finalization_complete", _FakeEvent())

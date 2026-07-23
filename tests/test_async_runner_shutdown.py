@@ -8,7 +8,10 @@ Covers:
 """
 
 import asyncio
+import threading
 from types import SimpleNamespace
+
+import pytest
 
 from shinka.core.async_runner import ShinkaEvolveRunner
 
@@ -70,6 +73,91 @@ def test_cleanup_cancels_running_jobs():
 
         assert set(scheduler.cancelled_job_ids) == {"j1", "j2"}
         assert runner.running_jobs == []
+
+    asyncio.run(_run())
+
+
+def test_cleanup_settles_proposals_before_snapshotting_jobs():
+    async def _run():
+        scheduler = _FakeScheduler(cancelled_job_ids=["existing", "late"])
+        existing_job = SimpleNamespace(job_id="existing")
+        late_job = SimpleNamespace(job_id="late")
+        runner = _build_runner(
+            scheduler=scheduler,
+            running_jobs=[existing_job],
+            active_proposal_tasks={},
+            prompt_db=None,
+        )
+
+        async def proposal():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                runner.running_jobs.append(late_job)
+
+        proposal_task = asyncio.create_task(proposal())
+        runner.active_proposal_tasks = {"proposal": proposal_task}
+        await asyncio.sleep(0)
+
+        await runner._cleanup_async()
+
+        assert set(scheduler.cancelled_job_ids) == {"existing", "late"}
+        assert runner.running_jobs == []
+
+    asyncio.run(_run())
+
+
+def test_cancelled_submission_cancels_eventual_external_job():
+    async def _run():
+        submit_started = threading.Event()
+        allow_submit = threading.Event()
+        existing_cancel_started = asyncio.Event()
+
+        class _ExecutorScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                loop = asyncio.get_running_loop()
+
+                def submit():
+                    submit_started.set()
+                    allow_submit.wait(timeout=2)
+                    return "late-job"
+
+                return await loop.run_in_executor(None, submit)
+
+            async def cancel_job_async(self, job_id):
+                if job_id == "existing-job":
+                    existing_cancel_started.set()
+                return await super().cancel_job_async(job_id)
+
+        scheduler = _ExecutorScheduler(cancelled_job_ids=["late-job"])
+        runner = _build_runner(
+            scheduler=scheduler,
+            running_jobs=[SimpleNamespace(job_id="existing-job")],
+            prompt_db=None,
+        )
+
+        submission_task = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="candidate.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+        await asyncio.wait_for(asyncio.to_thread(submit_started.wait, 1), timeout=2)
+
+        submission_task.cancel()
+        await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await submission_task
+
+        cleanup_task = asyncio.create_task(runner._cleanup_async())
+        await asyncio.wait_for(existing_cancel_started.wait(), timeout=1)
+
+        allow_submit.set()
+        await cleanup_task
+
+        assert scheduler.cancelled_job_ids == ["existing-job", "late-job"]
+        assert runner.evaluation_slot_pool.in_use == 0
 
     asyncio.run(_run())
 

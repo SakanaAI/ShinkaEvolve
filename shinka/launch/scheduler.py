@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
 from .slurm import (
+    SLURM_COMMAND_TIMEOUT_SECONDS,
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
     monitor as monitor_slurm,
@@ -136,6 +137,7 @@ class JobScheduler:
         self.config = config
         self.verbose = verbose
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.cancellation_executor = ThreadPoolExecutor(max_workers=max_workers)
         if self.job_type == "slurm_env":
             self.job_type = "slurm_conda"
 
@@ -449,7 +451,10 @@ class JobScheduler:
                         import subprocess
 
                         result = subprocess.run(
-                            ["scancel", job_id], capture_output=True, text=True
+                            ["scancel", job_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
                         )
                         return result.returncode == 0
                 else:
@@ -462,8 +467,9 @@ class JobScheduler:
                 logger.error(f"Error cancelling job {job_id}: {e}")
                 return False
 
-        return await loop.run_in_executor(self.executor, cancel_job)
+        return await loop.run_in_executor(self.cancellation_executor, cancel_job)
 
     def shutdown(self):
         """Shutdown the thread pool executor."""
+        self.cancellation_executor.shutdown(wait=True)
         self.executor.shutdown(wait=True)

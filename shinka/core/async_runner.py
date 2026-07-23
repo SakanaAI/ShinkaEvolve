@@ -524,6 +524,7 @@ class ShinkaEvolveRunner:
 
         # Runtime state
         self.running_jobs: List[AsyncRunningJob] = []
+        self._pending_evaluation_submissions: Dict[asyncio.Task, int] = {}
         self.completed_generations = 0
         self.next_generation_to_submit = (
             1  # Start from generation 1 since 0 is handled in setup
@@ -5127,13 +5128,19 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        submission_task = asyncio.create_task(
+            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
+        )
+        self._pending_evaluation_submissions[submission_task] = evaluation_worker_id
         try:
-            job_id = await self.scheduler.submit_async_nonblocking(
-                exec_fname, results_dir
-            )
+            job_id = await asyncio.shield(submission_task)
+        except asyncio.CancelledError:
+            raise
         except Exception:
+            self._pending_evaluation_submissions.pop(submission_task, None)
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
+        self._pending_evaluation_submissions.pop(submission_task, None)
 
         evaluation_submitted_at = time.time()
         evaluation_started_at = evaluation_submitted_at
@@ -5539,33 +5546,51 @@ class ShinkaEvolveRunner:
     async def _cleanup_async(self):
         """Cleanup async resources."""
         try:
-            # Cancel any still-running evaluation jobs first, so we never orphan
-            # local subprocesses or leave Slurm jobs occupying the cluster on
-            # exit (normal completion, exception, or SIGINT/SIGTERM).
-            running_jobs = list(self.running_jobs)
-            if running_jobs:
-                logger.info(
-                    f"Cancelling {len(running_jobs)} running job(s) during shutdown"
-                )
-                await asyncio.gather(
-                    *(
-                        self.scheduler.cancel_job_async(job.job_id)
-                        for job in running_jobs
-                    ),
-                    return_exceptions=True,
-                )
-                self.running_jobs = []
-
-            # Cancel remaining proposal tasks
-            for task in self.active_proposal_tasks.values():
+            proposal_tasks = list(self.active_proposal_tasks.values())
+            for task in proposal_tasks:
                 if not task.done():
                     task.cancel()
 
-            # Wait for tasks to finish
-            if self.active_proposal_tasks:
-                await asyncio.gather(
-                    *self.active_proposal_tasks.values(), return_exceptions=True
-                )
+            running_jobs = list(self.running_jobs)
+            running_cancellation = asyncio.create_task(
+                self._cancel_job_ids([job.job_id for job in running_jobs])
+            )
+
+            if proposal_tasks:
+                await asyncio.gather(*proposal_tasks, return_exceptions=True)
+
+            pending_submissions = dict(self._pending_evaluation_submissions)
+            submission_results = await asyncio.gather(
+                *pending_submissions, return_exceptions=True
+            )
+            for submission in pending_submissions:
+                self._pending_evaluation_submissions.pop(submission, None)
+
+            await running_cancellation
+
+            known_jobs = {id(job) for job in running_jobs}
+            late_job_ids = [
+                job.job_id
+                for job in self.running_jobs
+                if id(job) not in known_jobs
+            ]
+            submitted_during_shutdown = [
+                (result, pending_submissions[submission])
+                for submission, result in zip(pending_submissions, submission_results)
+                if not isinstance(result, BaseException)
+            ]
+            failed_submission_workers = [
+                pending_submissions[submission]
+                for submission, result in zip(pending_submissions, submission_results)
+                if isinstance(result, BaseException)
+            ]
+            late_job_ids.extend(job_id for job_id, _ in submitted_during_shutdown)
+            await self._cancel_job_ids(late_job_ids)
+            for _, evaluation_worker_id in submitted_during_shutdown:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+            for evaluation_worker_id in failed_submission_workers:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+            self.running_jobs = []
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:
@@ -5602,6 +5627,16 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")
+
+    async def _cancel_job_ids(self, job_ids: List[Union[str, Any]]) -> list:
+        """Cancel external jobs concurrently during shutdown."""
+        if not job_ids:
+            return []
+        logger.info(f"Cancelling {len(job_ids)} running job(s) during shutdown")
+        return await asyncio.gather(
+            *(self.scheduler.cancel_job_async(job_id) for job_id in job_ids),
+            return_exceptions=True,
+        )
 
     def _log_program_to_wandb(self, program: Program) -> None:
         wandb_logger = getattr(self, "wandb_logger", None)

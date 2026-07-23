@@ -8,7 +8,11 @@ import pytest
 
 from shinka.launch import JobScheduler, LocalJobConfig, SlurmCondaJobConfig
 from shinka.launch.scheduler import SlurmEnvJobConfig
-from shinka.launch.slurm import submit_conda, submit_local_conda
+from shinka.launch.slurm import (
+    SLURM_COMMAND_TIMEOUT_SECONDS,
+    submit_conda,
+    submit_local_conda,
+)
 
 
 def test_slurm_env_config_rejects_conda_and_activate_script() -> None:
@@ -25,12 +29,13 @@ def test_submit_conda_sources_activate_script(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         assert cmd[0] == "sbatch"
         script_path = Path(cmd[1])
         captured["script"] = script_path.read_text(encoding="utf-8")
+        captured["timeout"] = kwargs.get("timeout")
         return subprocess.CompletedProcess(
             cmd,
             0,
@@ -52,8 +57,97 @@ def test_submit_conda_sources_activate_script(
     )
 
     assert job_id == "123"
-    assert 'source ".venv/bin/activate"' in captured["script"]
-    assert "conda activate" not in captured["script"]
+    script = captured["script"]
+    assert isinstance(script, str)
+    assert 'source ".venv/bin/activate"' in script
+    assert "conda activate" not in script
+    assert captured["timeout"] == SLURM_COMMAND_TIMEOUT_SECONDS
+
+
+def test_submit_conda_recovers_job_id_after_sbatch_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    submitted_job_name = ""
+
+    def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        nonlocal submitted_job_name
+        if cmd[0] == "sbatch":
+            script = Path(cmd[1]).read_text(encoding="utf-8")
+            job_name_line = next(
+                line for line in script.splitlines() if line.startswith("#SBATCH --job-name")
+            )
+            submitted_job_name = job_name_line.split("=", 1)[1]
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if cmd[0] == "squeue":
+            assert submitted_job_name
+            assert cmd == [
+                "squeue",
+                "--name",
+                submitted_job_name,
+                "--noheader",
+                "--format=%A",
+            ]
+            return subprocess.CompletedProcess(cmd, 0, stdout="456\n", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+
+    job_id = submit_conda(
+        log_dir=str(tmp_path / "logs"),
+        cmd=["python", "evaluate.py"],
+        time="00:10:00",
+        partition="gpu",
+        cpus=1,
+        gpus=0,
+        mem="8G",
+        activate_script=".venv/bin/activate",
+    )
+
+    assert job_id == "456"
+
+
+def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    submitted_job_name = ""
+    cancelled_by_name = False
+
+    def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        nonlocal cancelled_by_name, submitted_job_name
+        if cmd[0] == "sbatch":
+            script = Path(cmd[1]).read_text(encoding="utf-8")
+            job_name_line = next(
+                line
+                for line in script.splitlines()
+                if line.startswith("#SBATCH --job-name")
+            )
+            submitted_job_name = job_name_line.split("=", 1)[1]
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if cmd[0] == "squeue":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if cmd[0] == "scancel":
+            assert cmd == ["scancel", "--name", submitted_job_name, "--quiet"]
+            cancelled_by_name = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+    monkeypatch.setattr("shinka.launch.slurm.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        submit_conda(
+            log_dir=str(tmp_path / "logs"),
+            cmd=["python", "evaluate.py"],
+            time="00:10:00",
+            partition="gpu",
+            cpus=1,
+            gpus=0,
+            mem="8G",
+            activate_script=".venv/bin/activate",
+        )
+    assert cancelled_by_name is True
 
 
 def test_submit_local_conda_sources_activate_script(
