@@ -11,6 +11,7 @@ from .local import ProcessWithLogging
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
     SlurmJobName,
+    get_job_status,
     get_job_status_by_name,
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
@@ -472,7 +473,10 @@ class JobScheduler:
                             text=True,
                             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
                         )
-                        return result.returncode == 0
+                        return (
+                            result.returncode == 0
+                            and get_job_status(job_id) == ""
+                        )
                 else:
                     # For local jobs, kill the process
                     if isinstance(job_id, ProcessWithLogging):
@@ -496,8 +500,6 @@ class JobScheduler:
                     return get_job_status_by_name(job_id.value) == ""
                 if not isinstance(job_id, str):
                     return False
-                from .slurm import get_job_status
-
                 return get_job_status(job_id) == ""
             if isinstance(job_id, ProcessWithLogging):
                 return job_id.is_terminated()

@@ -79,7 +79,9 @@ from shinka.utils import (
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
-JOB_CANCELLATION_ATTEMPTS = 3
+# Six exponentially backed-off checks (1+2+4+8+16 seconds) allow Slurm
+# KillWait/epilog processing to settle while keeping shutdown bounded.
+JOB_CANCELLATION_ATTEMPTS = 6
 API_COST_CHECKPOINT_ATTEMPTS = 3
 
 

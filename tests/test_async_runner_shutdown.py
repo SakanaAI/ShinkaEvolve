@@ -329,9 +329,9 @@ def test_initial_program_does_not_fallback_after_ambiguous_submission(tmp_path):
     asyncio.run(_run())
 
 
-def test_cleanup_retries_until_ambiguous_job_name_disappears():
+def test_cleanup_waits_for_known_job_id_to_disappear():
     async def _run():
-        target = AmbiguousSlurmSubmissionError("eventual-unique").cancel_target
+        target = "123"
 
         class _EventuallyTerminalScheduler(_FakeScheduler):
             def __init__(self):
@@ -344,13 +344,13 @@ def test_cleanup_retries_until_ambiguous_job_name_disappears():
 
             async def is_job_terminal_async(self, job_id):
                 self.terminal_checks += 1
-                return self.terminal_checks >= 2
+                return self.terminal_checks >= 5
 
         scheduler = _EventuallyTerminalScheduler()
         runner = _build_runner(scheduler=scheduler)
 
         assert await runner._cancel_job_ids([target]) == []
-        assert scheduler.cancelled_job_ids == [target, target]
+        assert scheduler.cancelled_job_ids == [target] * 5
 
     asyncio.run(_run())
 
@@ -394,7 +394,9 @@ def test_cleanup_retries_and_retains_job_when_cancellation_fails():
         ):
             await runner._cleanup_async()
 
-        assert scheduler.cancelled_job_ids == ["still-running"] * 3
+        assert scheduler.cancelled_job_ids == [
+            "still-running"
+        ] * async_runner_module.JOB_CANCELLATION_ATTEMPTS
         assert runner.running_jobs == [job]
         assert scheduler.shutdown_called is False
 
@@ -444,7 +446,9 @@ def test_cleanup_retries_cancellation_exceptions():
         ):
             await runner._cleanup_async()
 
-        assert scheduler.cancelled_job_ids == ["unreachable-job"] * 3
+        assert scheduler.cancelled_job_ids == [
+            "unreachable-job"
+        ] * async_runner_module.JOB_CANCELLATION_ATTEMPTS
         assert scheduler.shutdown_called is False
 
     asyncio.run(_run())
@@ -620,7 +624,9 @@ def test_cleanup_retains_late_submission_until_cancellation_is_confirmed():
         with pytest.raises(UnconfirmedJobCancellationError, match="late-job"):
             await runner._cleanup_async()
 
-        assert scheduler.cancelled_job_ids == ["late-job"] * 3
+        assert scheduler.cancelled_job_ids == [
+            "late-job"
+        ] * async_runner_module.JOB_CANCELLATION_ATTEMPTS
         assert runner._unconfirmed_job_cancellations == {
             "late-job": ("late-job", 0)
         }
@@ -629,7 +635,9 @@ def test_cleanup_retains_late_submission_until_cancellation_is_confirmed():
         scheduler._cancelled_job_ids.add("late-job")
         await runner._cleanup_async()
 
-        assert scheduler.cancelled_job_ids == ["late-job"] * 4
+        assert scheduler.cancelled_job_ids == ["late-job"] * (
+            async_runner_module.JOB_CANCELLATION_ATTEMPTS + 1
+        )
         assert runner._unconfirmed_job_cancellations == {}
         assert slot_pool.in_use == 0
         assert scheduler.shutdown_called is True

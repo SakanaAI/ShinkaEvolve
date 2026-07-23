@@ -147,10 +147,14 @@ def test_cancellation_is_not_starved_by_submission_executor(monkeypatch):
     scheduler.executor.submit(block_submission_executor)
     assert executor_blocked.wait(timeout=1)
 
+    commands = []
+
     def fake_run(cmd, **kwargs):
-        assert cmd == ["scancel", "123"]
+        commands.append(cmd)
         assert kwargs["timeout"] == slurm.SLURM_COMMAND_TIMEOUT_SECONDS
-        return SimpleNamespace(returncode=0)
+        if cmd[0] == "scancel":
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(stdout="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -162,6 +166,45 @@ def test_cancellation_is_not_starved_by_submission_executor(monkeypatch):
     finally:
         release_executor.set()
         scheduler.shutdown()
+
+    assert commands == [
+        ["scancel", "123"],
+        ["squeue", "-j", "123", "--noheader"],
+    ]
+
+
+def test_scheduler_retains_known_job_id_until_it_disappears(monkeypatch):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+    status_results = iter(["RUNNING", ""])
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[0] == "scancel":
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(stdout=next(status_results))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    async def reconcile():
+        assert await scheduler.cancel_job_async("123") is False
+        assert await scheduler.cancel_job_async("123") is True
+
+    try:
+        asyncio.run(reconcile())
+    finally:
+        scheduler.shutdown()
+
+    assert commands == [
+        ["scancel", "123"],
+        ["squeue", "-j", "123", "--noheader"],
+        ["scancel", "123"],
+        ["squeue", "-j", "123", "--noheader"],
+    ]
 
 
 def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
