@@ -358,8 +358,7 @@ class JobScheduler:
                                 f"timeout of {self.config.time}. Killing. "
                                 f"=> Gen. {job.generation}"
                             )
-                        job.job_id.kill()
-                        return False
+                        return not job.job_id.kill()
 
                 # More robust status checking with exception handling
                 try:
@@ -460,14 +459,38 @@ class JobScheduler:
                 else:
                     # For local jobs, kill the process
                     if isinstance(job_id, ProcessWithLogging):
-                        job_id.kill()
-                        return True
+                        return job_id.kill()
                 return False
             except Exception as e:
                 logger.error(f"Error cancelling job {job_id}: {e}")
                 return False
 
         return await loop.run_in_executor(self.cancellation_executor, cancel_job)
+
+    async def is_job_terminal_async(
+        self, job_id: Union[str, ProcessWithLogging]
+    ) -> bool:
+        """Return whether a job is confirmed to have reached a terminal state."""
+        loop = asyncio.get_event_loop()
+
+        def is_terminal() -> bool:
+            if self.job_type in ["slurm_docker", "slurm_conda"]:
+                if not isinstance(job_id, str):
+                    return False
+                from .slurm import get_job_status
+
+                return get_job_status(job_id) == ""
+            if isinstance(job_id, ProcessWithLogging):
+                return job_id.is_terminated()
+            return False
+
+        try:
+            return await loop.run_in_executor(
+                self.cancellation_executor, is_terminal
+            )
+        except Exception as e:
+            logger.error(f"Error checking terminal state for job {job_id}: {e}")
+            return False
 
     def shutdown(self):
         """Shutdown the thread pool executor."""

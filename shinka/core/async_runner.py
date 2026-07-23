@@ -78,6 +78,18 @@ from shinka.utils import (
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+JOB_CANCELLATION_ATTEMPTS = 3
+
+
+class UnconfirmedJobCancellationError(RuntimeError):
+    """Raised when shutdown cannot confirm cancellation of external jobs."""
+
+    def __init__(self, job_ids: List[Union[str, Any]]):
+        self.job_ids = job_ids
+        super().__init__(
+            "Could not confirm cancellation of external job(s): "
+            + ", ".join(str(job_id) for job_id in job_ids)
+        )
 
 
 def _print_gradient_logo_and_mirror(
@@ -525,6 +537,9 @@ class ShinkaEvolveRunner:
         # Runtime state
         self.running_jobs: List[AsyncRunningJob] = []
         self._pending_evaluation_submissions: Dict[asyncio.Task, int] = {}
+        self._unconfirmed_job_cancellations: Dict[
+            Union[str, int], tuple[Union[str, Any], Optional[int]]
+        ] = {}
         self.completed_generations = 0
         self.next_generation_to_submit = (
             1  # Start from generation 1 since 0 is handled in setup
@@ -5545,6 +5560,7 @@ class ShinkaEvolveRunner:
 
     async def _cleanup_async(self):
         """Cleanup async resources."""
+        unconfirmed_error: Optional[UnconfirmedJobCancellationError] = None
         try:
             proposal_tasks = list(self.active_proposal_tasks.values())
             for task in proposal_tasks:
@@ -5552,8 +5568,12 @@ class ShinkaEvolveRunner:
                     task.cancel()
 
             running_jobs = list(self.running_jobs)
+            retained_cancellations = dict(self._unconfirmed_job_cancellations)
             running_cancellation = asyncio.create_task(
-                self._cancel_job_ids([job.job_id for job in running_jobs])
+                self._cancel_job_ids(
+                    [job.job_id for job in running_jobs]
+                    + [target for target, _ in retained_cancellations.values()]
+                )
             )
 
             if proposal_tasks:
@@ -5563,34 +5583,71 @@ class ShinkaEvolveRunner:
             submission_results = await asyncio.gather(
                 *pending_submissions, return_exceptions=True
             )
-            for submission in pending_submissions:
+            failed_submission_workers = []
+            for submission, result in zip(pending_submissions, submission_results):
+                evaluation_worker_id = pending_submissions[submission]
+                if isinstance(result, BaseException):
+                    failed_submission_workers.append(evaluation_worker_id)
+                else:
+                    key = self._job_cancellation_key(result)
+                    self._unconfirmed_job_cancellations[key] = (
+                        result,
+                        evaluation_worker_id,
+                    )
                 self._pending_evaluation_submissions.pop(submission, None)
 
-            await running_cancellation
+            failed_running_cancellations = await running_cancellation
+            failed_running_keys = {
+                self._job_cancellation_key(job_id)
+                for job_id in failed_running_cancellations
+            }
+            for key, (_, evaluation_worker_id) in retained_cancellations.items():
+                if key in failed_running_keys:
+                    continue
+                self._unconfirmed_job_cancellations.pop(key, None)
+                if evaluation_worker_id is not None:
+                    await self.evaluation_slot_pool.release(evaluation_worker_id)
 
             known_jobs = {id(job) for job in running_jobs}
-            late_job_ids = [
-                job.job_id
-                for job in self.running_jobs
-                if id(job) not in known_jobs
+            late_jobs = [
+                job for job in self.running_jobs if id(job) not in known_jobs
             ]
-            submitted_during_shutdown = [
-                (result, pending_submissions[submission])
-                for submission, result in zip(pending_submissions, submission_results)
-                if not isinstance(result, BaseException)
-            ]
-            failed_submission_workers = [
-                pending_submissions[submission]
-                for submission, result in zip(pending_submissions, submission_results)
-                if isinstance(result, BaseException)
-            ]
-            late_job_ids.extend(job_id for job_id, _ in submitted_during_shutdown)
-            await self._cancel_job_ids(late_job_ids)
-            for _, evaluation_worker_id in submitted_during_shutdown:
+            new_retained_cancellations = {
+                key: value
+                for key, value in self._unconfirmed_job_cancellations.items()
+                if key not in retained_cancellations
+            }
+            late_job_ids = [job.job_id for job in late_jobs]
+            late_job_ids.extend(
+                job_id for job_id, _ in new_retained_cancellations.values()
+            )
+            failed_late_cancellations = await self._cancel_job_ids(late_job_ids)
+            failed_late_keys = {
+                self._job_cancellation_key(job_id)
+                for job_id in failed_late_cancellations
+            }
+            for key, (_, evaluation_worker_id) in new_retained_cancellations.items():
+                if key in failed_late_keys:
+                    continue
+                self._unconfirmed_job_cancellations.pop(key, None)
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
             for evaluation_worker_id in failed_submission_workers:
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
-            self.running_jobs = []
+            failed_job_keys = failed_running_keys | failed_late_keys
+            self.running_jobs = [
+                job
+                for job in self.running_jobs
+                if self._job_cancellation_key(job.job_id) in failed_job_keys
+            ]
+            if self.running_jobs or self._unconfirmed_job_cancellations:
+                unconfirmed_job_ids = [job.job_id for job in self.running_jobs]
+                unconfirmed_job_ids.extend(
+                    job_id
+                    for job_id, _ in self._unconfirmed_job_cancellations.values()
+                )
+                unconfirmed_error = UnconfirmedJobCancellationError(
+                    unconfirmed_job_ids
+                )
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:
@@ -5622,21 +5679,70 @@ class ShinkaEvolveRunner:
             self._finish_wandb_logging()
             await self.async_db.close_async()
 
-            # Cleanup scheduler
-            self.scheduler.shutdown()
+            if unconfirmed_error is None:
+                self.scheduler.shutdown()
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")
+        if unconfirmed_error is not None:
+            raise unconfirmed_error
 
-    async def _cancel_job_ids(self, job_ids: List[Union[str, Any]]) -> list:
-        """Cancel external jobs concurrently during shutdown."""
-        if not job_ids:
+    @staticmethod
+    def _job_cancellation_key(job_id: Union[str, Any]) -> Union[str, int]:
+        """Return a stable ownership key for an external job handle."""
+        return job_id if isinstance(job_id, str) else id(job_id)
+
+    async def _cancel_job_ids(
+        self, job_ids: List[Union[str, Any]]
+    ) -> List[Union[str, Any]]:
+        """Cancel external jobs, returning handles without confirmed cancellation."""
+        pending = {
+            self._job_cancellation_key(job_id): job_id for job_id in job_ids
+        }
+        if not pending:
             return []
-        logger.info(f"Cancelling {len(job_ids)} running job(s) during shutdown")
-        return await asyncio.gather(
-            *(self.scheduler.cancel_job_async(job_id) for job_id in job_ids),
-            return_exceptions=True,
-        )
+        logger.info(f"Cancelling {len(pending)} running job(s) during shutdown")
+        for attempt in range(1, JOB_CANCELLATION_ATTEMPTS + 1):
+            targets = list(pending.values())
+            results = await asyncio.gather(
+                *(self.scheduler.cancel_job_async(job_id) for job_id in targets),
+                return_exceptions=True,
+            )
+            unconfirmed = {
+                self._job_cancellation_key(job_id): job_id
+                for job_id, result in zip(targets, results)
+                if result is not True
+            }
+            if unconfirmed:
+                terminal_results = await asyncio.gather(
+                    *(
+                        self.scheduler.is_job_terminal_async(job_id)
+                        for job_id in unconfirmed.values()
+                    ),
+                    return_exceptions=True,
+                )
+                pending = {
+                    self._job_cancellation_key(job_id): job_id
+                    for job_id, terminal in zip(
+                        unconfirmed.values(), terminal_results
+                    )
+                    if terminal is not True
+                }
+            else:
+                pending = {}
+            if not pending:
+                break
+            logger.warning(
+                "Cancellation attempt %d/%d unconfirmed for %d job(s)",
+                attempt,
+                JOB_CANCELLATION_ATTEMPTS,
+                len(pending),
+            )
+            await asyncio.sleep(0)
+
+        for job_id in pending.values():
+            logger.error("Job cancellation remains unconfirmed: %s", job_id)
+        return list(pending.values())
 
     def _log_program_to_wandb(self, program: Program) -> None:
         wandb_logger = getattr(self, "wandb_logger", None)

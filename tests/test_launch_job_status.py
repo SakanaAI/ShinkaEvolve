@@ -10,6 +10,7 @@ Covers:
 """
 
 import asyncio
+import io
 import os
 import subprocess
 import threading
@@ -18,9 +19,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from shinka.launch import slurm
-from shinka.launch.local import submit
-from shinka.launch.scheduler import JobScheduler, SlurmCondaJobConfig
+from shinka.launch import local, slurm
+from shinka.launch.local import ProcessWithLogging, submit
+from shinka.launch.scheduler import (
+    JobScheduler,
+    LocalJobConfig,
+    SlurmCondaJobConfig,
+)
 
 
 class _FakeCompleted:
@@ -92,6 +97,28 @@ def test_squeue_error_transient_returns_unknown(monkeypatch):
 
     monkeypatch.setattr(slurm.subprocess, "run", fake_run)
     # Neither tool could answer -> unknown, so callers keep polling (not done).
+    assert slurm.get_job_status("999") is None
+
+
+def test_squeue_timeout_returns_unknown(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        assert kwargs["timeout"] == slurm.SLURM_COMMAND_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+
+    assert slurm.get_job_status("999") is None
+
+
+def test_sacct_timeout_returns_unknown(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        assert kwargs["timeout"] == slurm.SLURM_COMMAND_TIMEOUT_SECONDS
+        if cmd[0] == "squeue":
+            raise subprocess.CalledProcessError(1, cmd)
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+
     assert slurm.get_job_status("999") is None
 
 
@@ -176,3 +203,119 @@ def test_kill_terminates_child_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild survived process-group kill")
+
+
+def test_local_cancellation_reports_failure_when_process_cannot_be_killed(
+    monkeypatch,
+):
+    class _UnkillableProcess:
+        pid = 123
+        returncode = None
+
+        def kill(self):
+            raise PermissionError("child kill denied")
+
+        def poll(self):
+            return None
+
+    process = ProcessWithLogging(
+        _UnkillableProcess(),
+        (io.StringIO(), io.StringIO()),
+        (threading.Thread(), threading.Thread()),
+    )
+    monkeypatch.setattr(local.os, "getpgid", lambda _pid: 123)
+    monkeypatch.setattr(
+        local.os,
+        "killpg",
+        lambda _pgid, _signal: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    scheduler = JobScheduler("local", LocalJobConfig(), max_workers=1)
+
+    async def cancel():
+        return await scheduler.cancel_job_async(process)
+
+    try:
+        assert asyncio.run(cancel()) is False
+    finally:
+        scheduler.shutdown()
+
+
+def test_local_cancellation_signals_group_after_leader_exits(monkeypatch):
+    class _ExitedLeader:
+        pid = 123
+        returncode = 0
+
+        def kill(self):
+            raise AssertionError("direct child is already gone")
+
+        def wait(self, timeout):
+            return 0
+
+        def poll(self):
+            return 0
+
+    signals = []
+
+    def fake_killpg(process_group_id, sent_signal):
+        signals.append((process_group_id, sent_signal))
+        if sent_signal == 0:
+            raise ProcessLookupError
+
+    process = ProcessWithLogging(
+        _ExitedLeader(),
+        (io.StringIO(), io.StringIO()),
+        (threading.Thread(), threading.Thread()),
+    )
+    monkeypatch.setattr(
+        local.os,
+        "getpgid",
+        lambda _pid: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    monkeypatch.setattr(local.os, "killpg", fake_killpg)
+
+    assert process.kill() is True
+    assert signals[0] == (123, local.signal.SIGKILL)
+
+
+def test_local_timeout_retains_job_when_kill_is_unconfirmed(monkeypatch):
+    class _RunningProcess:
+        pid = 123
+        returncode = None
+
+        def poll(self):
+            return None
+
+    process = ProcessWithLogging(
+        _RunningProcess(),
+        (io.StringIO(), io.StringIO()),
+        (threading.Thread(), threading.Thread()),
+    )
+    monkeypatch.setattr(process, "kill", lambda: False)
+    scheduler = JobScheduler(
+        "local",
+        LocalJobConfig(time="00:00:01"),
+        max_workers=1,
+    )
+    job = SimpleNamespace(
+        job_id=process,
+        start_time=time.time() - 2,
+        generation=1,
+    )
+
+    try:
+        assert scheduler.check_job_status(job) is True
+    finally:
+        scheduler.shutdown()
+
+
+def test_local_monitor_raises_when_timeout_kill_is_unconfirmed(monkeypatch):
+    process = SimpleNamespace(
+        pid=123,
+        poll=lambda: None,
+        kill=lambda: False,
+    )
+    times = iter([0.0, 2.0])
+    monkeypatch.setattr(local.time, "time", lambda: next(times))
+
+    with pytest.raises(RuntimeError, match="Could not confirm termination"):
+        local.monitor(process, ".", timeout="00:00:01")

@@ -18,9 +18,13 @@ from shinka.core.runtime_slots import LogicalSlotPool
 class _FakeAsyncDB:
     def __init__(self, total_programs: int):
         self.total_programs = total_programs
+        self.closed = False
 
     async def get_total_program_count_async(self):
         return self.total_programs
+
+    async def close_async(self):
+        self.closed = True
 
 
 class _RecordingAsyncDB(_FakeAsyncDB):
@@ -66,16 +70,26 @@ class _FakeSlotPool:
 
 
 class _FakeScheduler:
-    def __init__(self, cancelled_job_ids=None):
+    def __init__(self, cancelled_job_ids=None, terminal_job_ids=None):
         self.cancelled_job_ids = []
         self._cancelled_job_ids = set(cancelled_job_ids or [])
+        self._terminal_job_ids = set(terminal_job_ids or [])
+        self.shutdown_called = False
 
     async def cancel_job_async(self, job_id):
+        if self.shutdown_called:
+            raise RuntimeError("scheduler is shut down")
         self.cancelled_job_ids.append(job_id)
         return job_id in self._cancelled_job_ids
 
     async def submit_async_nonblocking(self, exec_fname, results_dir):
         return f"job-for-{exec_fname}"
+
+    async def is_job_terminal_async(self, job_id):
+        return job_id in self._terminal_job_ids
+
+    def shutdown(self):
+        self.shutdown_called = True
 
 
 class _FakeAsyncDBWithGuard(_FakeAsyncDB):
@@ -168,6 +182,9 @@ def _build_runner(**overrides):
     runner.submitted_jobs = overrides.get("submitted_jobs", {})
     runner._pending_evaluation_submissions = overrides.get(
         "_pending_evaluation_submissions", {}
+    )
+    runner._unconfirmed_job_cancellations = overrides.get(
+        "_unconfirmed_job_cancellations", {}
     )
     runner.slot_available = overrides.get("slot_available", _FakeEvent())
     runner.should_stop = overrides.get("should_stop", _FakeEvent())

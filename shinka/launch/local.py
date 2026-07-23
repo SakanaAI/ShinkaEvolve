@@ -28,7 +28,7 @@ class ProcessWithLogging:
         """Delegate attribute access to the wrapped process."""
         return getattr(self.process, name)
 
-    def kill(self):
+    def kill(self) -> bool:
         """Kill the whole process group, not just the direct child.
 
         Eval commands are often wrappers (``conda run -n env python …`` or
@@ -38,13 +38,44 @@ class ProcessWithLogging:
         """
         pid = self.process.pid
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            # Group already gone or not a group leader; fall back to the child.
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except (PermissionError, OSError):
+            # Best effort for the direct child, but group ownership remains
+            # unconfirmed and is checked below.
             try:
                 self.process.kill()
-            except Exception as e:  # pragma: no cover - best effort
+            except Exception as e:
                 logger.error(f"Error killing process {pid}: {e}")
+                return False
+
+        try:
+            self.process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            logger.error(f"Process {pid} did not exit after SIGKILL")
+            return False
+        except Exception as e:
+            logger.error(f"Could not confirm process {pid} termination: {e}")
+            return False
+
+        deadline = time.monotonic() + 1.0
+        while self._process_group_exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.is_terminated()
+
+    def is_terminated(self) -> bool:
+        """Return whether both the leader and its process group are gone."""
+        return self.process.poll() is not None and not self._process_group_exists()
+
+    def _process_group_exists(self) -> bool:
+        try:
+            os.killpg(self.process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError):
+            return True
 
     def __str__(self):
         """Return a string representation showing the PID."""
@@ -196,7 +227,10 @@ def monitor(
                 logger.info(
                     f"Process {process.pid} exceeded timeout of {timeout}. Killing."
                 )
-            process.kill()
+            if not process.kill():
+                raise RuntimeError(
+                    f"Could not confirm termination of process group {process.pid}"
+                )
             break
 
         if verbose:

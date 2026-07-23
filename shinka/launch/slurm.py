@@ -633,8 +633,13 @@ def _query_sacct_state(job_id: str) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         return None
     for line in result.stdout.splitlines():
         state_field = line.partition("|")[0].strip()
@@ -668,6 +673,7 @@ def get_job_status(job_id: str) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError:
@@ -678,7 +684,7 @@ def get_job_status(job_id: str) -> Optional[str]:
         if state is None:
             return None
         return "" if state in _SLURM_TERMINAL_STATES else job_id
-    except FileNotFoundError:
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
 
 
