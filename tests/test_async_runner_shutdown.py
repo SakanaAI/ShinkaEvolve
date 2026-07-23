@@ -57,6 +57,155 @@ def test_request_stop_sets_shutdown_flags_and_is_idempotent():
     assert runner.should_stop.is_set()
 
 
+def test_request_stop_interrupts_run_after_stop_was_already_set():
+    async def _run():
+        runner = _build_runner()
+        runner._interrupted = False
+        runner.should_stop.set()
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        runner._run_task = run_task
+
+        runner._request_stop("SIGTERM")
+
+        assert runner._interrupted is True
+        with pytest.raises(asyncio.CancelledError):
+            await run_task
+
+    asyncio.run(_run())
+
+
+def test_repeated_cancellation_does_not_abort_finalizer():
+    async def _run():
+        runner = _build_runner()
+        runner._interrupted = True
+        allow_finalizer = asyncio.Event()
+        finalizer_finished = False
+
+        async def finalize():
+            nonlocal finalizer_finished
+            await allow_finalizer.wait()
+            finalizer_finished = True
+
+        finalizer_task = asyncio.create_task(finalize())
+        waiter = asyncio.create_task(
+            runner._await_finalizer_resiliently(finalizer_task)
+        )
+        await asyncio.sleep(0)
+
+        waiter.cancel()
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.sleep(0)
+        assert finalizer_task.cancelled() is False
+
+        allow_finalizer.set()
+        await waiter
+        assert finalizer_finished is True
+
+    asyncio.run(_run())
+
+
+def test_signal_during_initial_evaluation_cancels_owned_job():
+    async def _run():
+        monitor_started = asyncio.Event()
+
+        class _InitialEvaluationScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                return "initial-job"
+
+            async def get_job_results_async(self, job_id, results_dir):
+                monitor_started.set()
+                await asyncio.Event().wait()
+
+        scheduler = _InitialEvaluationScheduler(
+            cancelled_job_ids=["initial-job"]
+        )
+        slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=slot_pool,
+            prompt_db=None,
+        )
+        runner._interrupted = False
+        evaluation = asyncio.create_task(
+            runner._run_initial_evaluation("main.py", "results")
+        )
+        runner._run_task = evaluation
+        await monitor_started.wait()
+
+        runner._request_stop("SIGINT")
+
+        with pytest.raises(asyncio.CancelledError):
+            await evaluation
+        assert runner._unconfirmed_job_cancellations == {
+            "initial-job": ("initial-job", 0)
+        }
+
+        await runner._cleanup_async()
+
+        assert scheduler.cancelled_job_ids == ["initial-job"]
+        assert slot_pool.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_initial_result_failure_cancels_job_and_releases_slot():
+    async def _run():
+        class _FailedResultScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                return "failed-result-job"
+
+            async def get_job_results_async(self, job_id, results_dir):
+                raise RuntimeError("result retrieval failed")
+
+        scheduler = _FailedResultScheduler(
+            cancelled_job_ids=["failed-result-job"]
+        )
+        slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=slot_pool,
+        )
+
+        with pytest.raises(RuntimeError, match="result retrieval failed"):
+            await runner._run_initial_evaluation("main.py", "results")
+
+        assert scheduler.cancelled_job_ids == ["failed-result-job"]
+        assert runner._unconfirmed_job_cancellations == {}
+        assert slot_pool.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_initial_result_failure_aborts_when_cancellation_is_unconfirmed():
+    async def _run():
+        class _FailedResultScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                return "unconfirmed-job"
+
+            async def get_job_results_async(self, job_id, results_dir):
+                raise RuntimeError("result retrieval failed")
+
+        scheduler = _FailedResultScheduler()
+        slot_pool = _FakeSlotPool()
+        runner = _build_runner(
+            scheduler=scheduler,
+            evaluation_slot_pool=slot_pool,
+        )
+
+        with pytest.raises(
+            UnconfirmedJobCancellationError, match="unconfirmed-job"
+        ):
+            await runner._run_initial_evaluation("main.py", "results")
+
+        assert runner._unconfirmed_job_cancellations == {
+            "unconfirmed-job": ("unconfirmed-job", 0)
+        }
+        assert slot_pool.in_use == 1
+
+    asyncio.run(_run())
+
+
 def test_cleanup_cancels_running_jobs():
     async def _run():
         scheduler = _FakeScheduler(cancelled_job_ids=["j1", "j2"])

@@ -554,6 +554,7 @@ class ShinkaEvolveRunner:
         # Set when shutdown was triggered by a signal (SIGINT/SIGTERM) so we skip
         # slow optional finalization work and head straight to job cancellation.
         self._interrupted = False
+        self._run_task: Optional[asyncio.Task] = None
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
 
@@ -1021,13 +1022,16 @@ class ShinkaEvolveRunner:
         its cleanup, which cancels every running evaluation job. Idempotent, so a
         repeated signal is a no-op rather than a crash.
         """
-        if self.should_stop.is_set():
-            return
+        first_signal = not self._interrupted
         self._interrupted = True
-        logger.warning(f"Received signal {sig}; shutting down gracefully...")
+        if first_signal:
+            logger.warning(f"Received signal {sig}; shutting down gracefully...")
         self.should_stop.set()
         self.slot_available.set()
         self.finalization_complete.set()
+        run_task = getattr(self, "_run_task", None)
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
 
     def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> list:
         """Install SIGINT/SIGTERM handlers on the running loop; return the set."""
@@ -1044,6 +1048,7 @@ class ShinkaEvolveRunner:
 
     async def run_async(self):
         """Main async evolution loop."""
+        self._run_task = asyncio.current_task()
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
@@ -1199,9 +1204,35 @@ class ShinkaEvolveRunner:
                     "🏁 All final operations completed, proceeding to cleanup..."
                 )
 
+        except asyncio.CancelledError:
+            if not self._interrupted:
+                raise
         except Exception as e:
             logger.error(f"Error in async evolution run: {e}")
             raise
+        finally:
+            finalizer_task = asyncio.create_task(
+                self._finalize_async_run(tasks, signal_handlers),
+                name="run_finalizer",
+            )
+            try:
+                await self._await_finalizer_resiliently(finalizer_task)
+            finally:
+                self._run_task = None
+
+        # Print final summary
+        await self._print_final_summary()
+
+    async def _finalize_async_run(self, tasks: list, signal_handlers: list) -> None:
+        """Cancel background work and release owned resources exactly once."""
+        try:
+            await self._cancel_completed_job_batches()
+            await self._cancel_background_side_effect_worker()
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._cleanup_async()
         finally:
             loop = asyncio.get_running_loop()
             for sig in signal_handlers:
@@ -1209,17 +1240,20 @@ class ShinkaEvolveRunner:
                     loop.remove_signal_handler(sig)
                 except (NotImplementedError, RuntimeError, ValueError):
                     pass
-            await self._cancel_completed_job_batches()
-            await self._cancel_background_side_effect_worker()
-            # Ensure all tasks are cancelled on exit
-            for task in tasks:
-                task.cancel()
-            if tasks:  # Only gather if there are tasks
-                await asyncio.gather(*tasks, return_exceptions=True)
-            await self._cleanup_async()
 
-        # Print final summary
-        await self._print_final_summary()
+    async def _await_finalizer_resiliently(
+        self, finalizer_task: asyncio.Task
+    ) -> None:
+        """Keep finalization alive when the owning task is cancelled repeatedly."""
+        cancellation_received = False
+        while not finalizer_task.done():
+            try:
+                await asyncio.shield(finalizer_task)
+            except asyncio.CancelledError:
+                cancellation_received = True
+        finalizer_task.result()
+        if cancellation_received and not self._interrupted:
+            raise asyncio.CancelledError
 
     async def _setup_async(self):
         """Setup initial program (results directory already created)."""
@@ -1619,6 +1653,44 @@ class ShinkaEvolveRunner:
             code, "initial_program", "Initial program setup", 0.0
         )
 
+    async def _run_initial_evaluation(
+        self, exec_fname: str, results_dir: str
+    ) -> tuple[Dict[str, Any], float]:
+        """Run generation zero while retaining cancellation ownership."""
+        started_at = time.time()
+        (
+            job_id,
+            evaluation_worker_id,
+            _,
+            _,
+            _,
+        ) = await self._submit_evaluation_job_with_slot(
+            exec_fname,
+            results_dir,
+            sampling_worker_id=None,
+        )
+        key = self._job_cancellation_key(job_id)
+        self._unconfirmed_job_cancellations[key] = (
+            job_id,
+            evaluation_worker_id,
+        )
+        try:
+            results = await self.scheduler.get_job_results_async(job_id, results_dir)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed_cancellations = await self._cancel_job_ids([job_id])
+            if failed_cancellations:
+                raise UnconfirmedJobCancellationError(failed_cancellations)
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+            self._unconfirmed_job_cancellations.pop(key, None)
+            raise
+        await self.evaluation_slot_pool.release(evaluation_worker_id)
+        self._unconfirmed_job_cancellations.pop(key, None)
+        if results is None:
+            results = {"correct": {"correct": False}, "metrics": {}}
+        return results, time.time() - started_at
+
     async def _setup_initial_program_with_metadata(
         self,
         code: str,
@@ -1646,11 +1718,9 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Starting initial program evaluation: {exec_fname}")
 
-            # Run the evaluation synchronously for generation 0
-            loop = asyncio.get_event_loop()
             evaluation_started_at = time.time()
-            results, rtime = await loop.run_in_executor(
-                None, self.scheduler.run, exec_fname, results_dir
+            results, rtime = await self._run_initial_evaluation(
+                exec_fname, results_dir
             )
             evaluation_finished_at = time.time()
             postprocess_started_at = evaluation_finished_at
@@ -1735,6 +1805,8 @@ class ShinkaEvolveRunner:
                     f"combined_score: {initial_program.combined_score}"
                 )
 
+        except UnconfirmedJobCancellationError:
+            raise
         except Exception as e:
             logger.warning(f"Initial program evaluation failed: {e}")
             evaluation_finished_at = time.time()
