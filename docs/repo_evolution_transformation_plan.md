@@ -16,6 +16,19 @@ Minimum acceptable MVP:
 8. A future generation can sample that child as a parent.
 9. A focused end-to-end test passes.
 
+## Current Mainline Status (2026-07-21)
+
+The repo-only core MVP is implemented on `main` and the full test suite passes (`777 passed`). The import baseline, `Program` database naming with repo artifact fields, worktree policy checks, configured `.shinka/individual.md` summaries, `repo_path` evaluation, Headless session metadata, fake-agent end-to-end evolution, and focused recovery coverage are no longer open transformation tasks.
+
+This does **not** establish production readiness:
+
+1. Mainline validation uses fake agents; a model-backed generation has not yet been run end to end.
+2. The current worktree/evaluator path is trusted-local. `agent_hidden_paths` and immutable paths are not secrecy boundaries.
+3. Secure artifact, container, evaluator-process, and durable job work exists only in the unmerged `codex/sandbox-eval` branch. That branch is intentionally not merge-ready: it is a large, stale-base bundle that also contains unrelated benchmark and documentation changes.
+4. The Stockfish NNUE benchmark exists only in the unmerged `codex/assess-shinkaevolve-for-nnue` branch and must be rebased before integration.
+
+The phase descriptions below retain the original design rationale and acceptance criteria. Use the next-objectives section, rather than the historical task wording, to schedule remaining work.
+
 ## Phase 0: Make Repo Mode The Only Mode
 
 This repository should not support the legacy single-file mode. `Program` remains the database naming convention for an individual, but every active run requires a seed git repository, worktree mutation, and evaluator support for `--repo_path`.
@@ -308,15 +321,15 @@ After the repo path is green:
 6. Update docs to match actual behavior.
 7. Add a migration note for old run databases.
 
-## Suggested Next Ten Commits
+## Next Objectives
 
-1. Fix imports and `QueryResult` compatibility.
-2. Fix async headless provider and working-directory override.
-3. Standardize summary path to `.shinka/individual.md`.
-4. Add repo-only config validation.
-5. Keep `_run_patch_async()` as the active repo proposal path.
-6. Populate repo fields in `AsyncRunningJob` and persistence.
-7. Submit evaluation with `repo_path`.
-8. Fix database island copy and async round-trip for repo fields.
-9. Add fake-agent end-to-end repo evolution test.
-10. Update CLI and docs for one runnable repo-mode example.
+1. Create a clean branch from current `main` and split/rebase `codex/sandbox-eval`; do not merge its mixed 249-file change as-is.
+2. Integrate the smallest secure vertical slice: isolated mutation container, immutable candidate artifact, evaluator/candidate process boundary, durable local job record, and recovery/cleanup tests.
+3. Update public documentation to call the existing `repo_path` route trusted-local and reserve private or reward-hacking-sensitive evaluation for the secure runtime.
+4. Qualify a pinned universal Headless-agent image and persistent per-proposal agent home; record the image digest in the run manifest.
+5. Run one low-budget, model-backed canary on a public, non-sensitive task after the above integration.
+6. Rebase and review the NNUE benchmark as an independent feature branch.
+7. Recover the paper-task and open-problem benchmark catalog from the mixed sandbox branch as separate reviewable changes.
+8. Run the pre-registered pilot in [Repo-Agent Evaluation](repo_evolution_evaluation.md): paired seeds, fixed authoritative-evaluation budget, and public/sealed evaluation splits.
+9. Retire or quarantine repo-incompatible legacy paths such as `PaperEdit`; do not expand unsupported legacy behavior.
+10. Replace this historical plan and the status report with a release-oriented checklist after secure runtime integration.

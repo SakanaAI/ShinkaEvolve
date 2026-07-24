@@ -5,6 +5,8 @@ Audited task: `Run circle packing experiment` (`019f3e52-ab25-7681-b96a-7ae1ab0c
 Base repository commit: `fa8ff96`  
 Headless CLI reviewed: `@roberttlange/headless` 0.4.0
 
+> Historical note: this audit uses “hidden” to mean omitted from an agent's prompt-visible worktree. That is not a security boundary in current mainline; sealed evaluators and private data require the planned secure runtime.
+
 ## Executive conclusion
 
 The prior agent correctly recognized the required artifact boundary at first: a seed git repository, a coding agent editing an isolated worktree, and an evaluator outside the evolved repository. It also found several real repo-mode defects that should remain fixed.
@@ -58,7 +60,7 @@ The repository documents and the clarified project goal imply this model:
 1. An evolutionary individual is a git-backed repository state, not a source string.
 2. A coding agent runs with full tools in an isolated child worktree.
 3. The agent decides how to inspect, edit, test, and validate its candidate.
-4. The authoritative evaluator is outside the evolved repository or hidden from the agent.
+4. The authoritative evaluator is outside the evolved repository. Sensitive evaluators also require a separate secure runtime; prompt hiding alone is insufficient.
 5. The user defines mutable, immutable, and hidden paths when task-specific restrictions are needed.
 6. If the user does not specify a mutable allow-list, the default should be nearly whole-repository mutation.
 7. Shinka validates policy, records the diff and summary, commits the candidate, evaluates it, and persists lineage.
@@ -455,7 +457,7 @@ Use these defaults:
 ```text
 mutable_paths omitted/empty  => whole repository
 immutable_paths              => explicit user deny-list
-agent_hidden_paths           => evaluator/private assets removed from agent view
+agent_hidden_paths           => prompt-visible scope only; not a secret boundary
 always protected             => .git, Shinka-owned policy state, path escapes
 ```
 

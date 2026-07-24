@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the intended architecture for transforming ShinkaEvolve from a system that evolves single program strings into a system that evolves whole repositories with coding agents. The goal is to preserve as much of the original ShinkaEvolve loop as possible so results remain comparable to the upstream system, while changing the artifact being evolved from "one code string" to "one git-backed repository state".
+This document describes the repo-only architecture for ShinkaEvolve: it evolves whole repositories with coding agents while preserving the original evolutionary loop where possible. The artifact boundary changes from one code string to one git-backed repository state.
 
 For the controlled experiment required to support such a comparison, see
 [Evaluating Repo-Agent Shinka Against Original Shinka](repo_evolution_evaluation.md).
@@ -18,7 +18,7 @@ The upstream baseline is SakanaAI/ShinkaEvolve: https://github.com/SakanaAI/Shin
    The evolved artifact becomes a git commit in a worktree, represented compactly by a summary file. The rest of the system should interact with that artifact through stable interfaces.
 
 3. Agents edit files directly.
-   Coding agents such as Codex or Cursor should run inside an isolated child worktree and modify files there. ShinkaEvolve should not ask agents to emit diffs and should not apply patches to code strings.
+   Coding agents such as Codex or Cursor run in a child worktree and modify files there. ShinkaEvolve should not ask agents to emit diffs and should not apply patches to code strings. A worktree isolates lineage and mutation scope; it does not isolate secrets or untrusted code at an operating-system boundary.
 
 4. Summaries represent individuals.
    Each individual must include a compact `summary.md`-style document that captures the mutation idea, changed files, validation, risks, and lineage. The system should embed and compare this summary, not the full repository. The current `.shinka/` summary is an ignored sidecar persisted in the database, not part of the executable Git commit; retain both when reproducing a run.
@@ -27,7 +27,7 @@ The upstream baseline is SakanaAI/ShinkaEvolve: https://github.com/SakanaAI/Shin
    Each individual should correspond to a commit. The database stores commit identity, summary text, changed files, metrics, and lineage metadata.
 
 6. Evaluation must be isolated from mutation.
-   Agents should only be able to edit approved mutable paths. Evaluation scripts, scoring logic, and other immutable files must be protected before evaluation starts.
+   Path policy protects the candidate artifact, but it is not sufficient to protect evaluator secrets. Reward-hacking-sensitive tasks require a separate mutation sandbox and evaluator/candidate process boundary. Until that runtime is integrated, use only public, trusted-local evaluators.
 
 7. Long evaluations are first-class.
    Evaluation may take minutes, hours, or longer. Job state, worktree paths, commits, result locations, and summaries must be persisted enough to recover after process restarts.
@@ -71,7 +71,7 @@ RepoIndividual
   metadata
 ```
 
-The database can keep compatibility aliases such as `Program = Repo` and `code = repo_summary`, but the semantic artifact is no longer a code string. `repo_summary` is the searchable, embeddable individual representation. `repo_commit` is the reproducible executable artifact.
+The database continues to call the row model `Program` and table `programs`; it carries repo-specific fields such as `repo_commit` and `repo_summary`. The semantic artifact is no longer a code string. `repo_summary` is the searchable, embeddable individual representation, and `repo_commit` is the reproducible executable artifact.
 
 ## Worktree Lifecycle
 
@@ -200,6 +200,8 @@ The agent should be instructed to edit files directly in the current worktree an
 
 Repo-level evolution increases the attack surface. The system should treat path policy as part of the core architecture, not a prompt-only instruction.
 
+Path policy is not a secrecy mechanism. Hiding a path from an agent prompt or making it immutable in a worktree does not protect evaluator repositories, private data, credentials, or result stores from a malicious agent or candidate with host access. Keep sensitive tasks out of the current trusted-local path until the secure runtime is integrated.
+
 Minimum enforcement:
 
 1. Treat omitted or empty `mutable_paths` as whole-repository mutation. A non-empty list is an explicit user allow-list.
@@ -250,6 +252,8 @@ artifacts/
 ```
 
 The scheduler may keep backward-compatible `program_path` support for upstream-style tasks, but repo mode should submit `repo_path` and run with the worktree as the relevant execution directory.
+
+This contract describes the current trusted-local evaluator. It is appropriate for public evaluators and cooperative candidates, not sealed benchmarks. The planned secure contract must evaluate an immutable candidate artifact in a separate runtime and keep evaluator code, private inputs, scoring, and result publication outside the candidate's reach.
 
 For ML inference pipeline tasks, the evaluator should separate correctness, latency, throughput, memory, compile time, and stability. It should warm up models, control seeds, report hardware details, and use repeated measurements to reduce noise.
 
@@ -370,16 +374,21 @@ To compare fairly:
 1. Keep task objective, evaluator, metrics, population size, island count, archive behavior, and selection logic as close as possible.
 2. Change only mutation machinery and artifact representation.
 3. Store enough metadata to separate agent improvements from evolutionary algorithm changes.
-4. Support a legacy single-file mode or preserve an upstream branch for direct comparison.
+4. Preserve a pinned upstream branch or checkout for direct comparison; the active ShinkaEvolve path remains repo-only.
 5. Report both evaluation metrics and system metrics such as agent tokens, wall time, failed proposals, policy violations, and evaluation cost.
 
-## Open Decisions
+## Current Decisions And Remaining Work
 
-1. Whether the canonical summary path is `.shinka/individual.md` or repository-root `summary.md`.
-2. Whether the codebase should remain dual-mode or become repo-only.
-3. Which headless agent providers have real session/resume support.
-4. How aggressively to clean old worktrees and branches.
-5. Which task-specific repository paths should be immutable or hidden; whole-repository mutation is the default.
-6. How prompt evolution maps onto repo-agent context templates.
-7. How much evaluator isolation is required for reward-hacking-sensitive benchmarks.
-8. How to store large logs, diffs, and artifacts without bloating the main SQLite database.
+Decided:
+
+1. The summary path is `.shinka/individual.md`.
+2. The active system is repo-only; `Program` remains the database term.
+3. A committed worktree plus persisted summary/session metadata is the current reproducibility unit.
+4. `mutable_paths` is an allow-list when non-empty; immutable-path policy is enforced before evaluation.
+
+Still to complete:
+
+1. Integrate a secure mutation/evaluation runtime for sealed or adversarial tasks.
+2. Provide durable container-home/session continuity for repair turns across supported Headless providers.
+3. Define retention and external storage for large diffs, logs, artifacts, and long-running job state.
+4. Rebase and split the unmerged secure-runtime, benchmark-catalog, and NNUE work before merging it into main.

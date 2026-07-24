@@ -153,7 +153,7 @@ evo_conf = EvolutionConfig(
     seed_repo_path="examples/inference_pipeline_repo/seed_repo",
     mutable_paths=[],  # whole repository except immutable/hidden/protected paths
     immutable_paths=[],
-    agent_hidden_paths=["private_tests", "fixtures/private"],
+    agent_hidden_paths=["notes_for_agent"],  # prompt scope only, not a secret boundary
     llm_models=["headless/codex@gpt-5.5?effort=high"],
 )
 
@@ -237,7 +237,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `worktree_root` | `None` | `Optional[str]` | Directory where child worktrees are created. |
 | `mutable_paths` | `[]` | `List[str]` | Empty means whole-repository mutation; non-empty is a user allow-list. |
 | `immutable_paths` | `[]` | `List[str]` | Read-only paths in the agent view; changes are rejected during policy validation. |
-| `agent_hidden_paths` | `[]` | `List[str]` | Paths omitted from the agent generation view, for private tests/evaluator artifacts. Repo-relative `job.eval_program_path` is hidden automatically. |
+| `agent_hidden_paths` | `[]` | `List[str]` | Paths omitted from the agent generation view. This is a convenience and prompt-scope control, **not** a security boundary: do not use it to protect private tests, evaluator code, credentials, or results from an untrusted agent or candidate. |
 | `summary_filename` | `".shinka/individual.md"` | `str` | Per-individual summary file required in every child worktree. |
 | `results_dir` | `None` | `Optional[str]` | Directory to save results (auto-generated if None) |
 | `enable_wandb_logging` | `False` | `bool` | Mirror evolution metrics to W&B without disabling SQLite or WebUI logging |
@@ -358,7 +358,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 
 ### Evaluation Setup & Initial Solution 🏃
 
-Repo evolution uses an external **`evaluate.py`** plus a git-backed **`seed_repo/`**. Each individual is a repository commit edited by a Headless coding agent in an isolated worktree. Unless `mutable_paths` is explicitly non-empty, the agent may add, modify, rename, and delete normal repository files; evaluator/private paths remain hidden.
+Repo evolution uses an external **`evaluate.py`** plus a git-backed **`seed_repo/`**. Each individual is a repository commit edited by a Headless coding agent in a worktree. Unless `mutable_paths` is explicitly non-empty, the agent may add, modify, rename, and delete normal repository files. Hidden paths only reduce prompt-visible scope; use the current evaluator only with public, trusted-local tasks.
 
 <table>
 <tr>

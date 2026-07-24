@@ -41,7 +41,7 @@ headline changes.
 | Novelty | Embeddings and LLM novelty assessment use mutable code. | Embeddings and novelty assessment use `.shinka/individual.md`. | A semantic summary can change both false rejections and diversity, independently of mutation quality. |
 | Validity gate | Parse/apply and immutable-block checks precede evaluation. | A nonempty, schema-valid summary, policy checks, hidden-path checks, mutability checks, and a real diff are required before evaluation. | Proposal failures and the denominator for “sample efficiency” change. |
 | Search permissions | `EVOLVE-BLOCK` markers define the editable code. | `mutable_paths` controls files; empty defaults permit the whole repo, with deletions, lockfile changes, and binaries allowed by default. | Extra degrees of freedom can produce apparent gains or reward hacking. |
-| Agent visibility | The model receives generated text only. | The agent can inspect files and run cheap tests; evaluator/private paths can be hidden and immutable files made read-only. | Useful capability and safety control, but neither is present in the old interface. |
+| Agent visibility | The model receives generated text only. | The agent can inspect files and run cheap tests; prompt-visible scope can be reduced and immutable files made read-only. | Useful capability and policy control, but not a secrecy boundary. |
 | Accounting and scheduling | API token/call accounting around text proposals. | Headless sessions, worktree setup/copy/commit, route health/rate limits, two-hour default proposal timeout, and possibly unknown subscription usage. | Cost and latency are not directly comparable without full accounting. |
 | Persistence | Program text is the executable artifact. | Commit is executable; summary, diff, session metadata, and embedding are database artifacts. | Reproduction requires the commit *and* run database/export. |
 
@@ -74,10 +74,14 @@ the raw API and agent harness, label the treatment “model + harness,” not
 
 Pre-register a single task manifest and use it for every arm.
 
+### Security prerequisite for sealed evaluation
+
+The current mainline `repo_path` evaluator is a trusted-local path. Immutable paths and `agent_hidden_paths` constrain normal mutation but do not isolate evaluator code, private inputs, credentials, or results from an untrusted agent or candidate. Until the secure mutation/evaluation runtime is integrated, use only public evaluators and inputs for this experiment. Sealed holdouts require an evaluator/candidate process boundary, separate container or host isolation, and trusted result publication.
+
 | Hold constant | Practical rule |
 |---|---|
 | Starting point | Same seed implementation/commit, task description, dependencies, and allowed libraries. For a single-file baseline, place that exact implementation in one mutable repo file. |
-| Authoritative evaluation | Same evaluator commit, input distribution, scoring transform, time/memory limits, and correctness gate. Keep scoring code and hidden/private tests outside the candidate and invisible to every mutator. |
+| Authoritative evaluation | Same evaluator commit, input distribution, scoring transform, time/memory limits, and correctness gate. For sealed runs, keep scoring code and private tests outside the candidate through the secure evaluator boundary; before that runtime lands, use public inputs only. |
 | Search budget | Same cap on raw mutation requests, valid proposals, evaluated candidates, and retries; report all four rather than silently choosing the favorable denominator. |
 | Evolution algorithm | Same islands, archive size, parent/inspiration sampler, mutation-type mix, novelty threshold, meta-memory settings, and random seeds. Disable adaptive model selection for a clean mutator ablation, or use the same fixed model pool and update rule. |
 | Mutation capability | For an isolation study, match base model/version, temperature/reasoning setting, max output/turn budget, tool policy, editable files, and cheap-test budget. For native comparison, allow native tools but disclose them. |

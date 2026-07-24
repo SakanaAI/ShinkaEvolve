@@ -209,7 +209,7 @@ evo_config = EvolutionConfig(
     seed_repo_path="examples/inference_pipeline_repo/seed_repo",
     mutable_paths=[],  # whole repository unless the user supplies an allow-list
     immutable_paths=[],
-    agent_hidden_paths=["private_tests", "fixtures/private"],
+    agent_hidden_paths=["notes_for_agent"],  # prompt scope only, not a secret boundary
     language="python",
     task_sys_msg="You are optimizing an inference pipeline...",
 )

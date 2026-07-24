@@ -124,7 +124,7 @@ runner = ShinkaEvolveRunner(
         seed_repo_path="examples/inference_pipeline_repo/seed_repo",
         mutable_paths=[],  # whole repository by default
         immutable_paths=[],
-        agent_hidden_paths=["private_tests", "fixtures/private"],
+        agent_hidden_paths=["notes_for_agent"],  # prompt scope only, not a secret boundary
         llm_models=["headless/codex@gpt-5.5?effort=high"],
         num_generations=20,
     ),
