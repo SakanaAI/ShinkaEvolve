@@ -233,6 +233,19 @@ def test_informational_invocations_bypass_staging(args, monkeypatch):
     assert all("--docker" not in cmd for cmd in recorded)
 
 
+def test_unknown_agents_still_run_in_docker(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(
+        hd.subprocess, "call", lambda cmd, **kwargs: recorded.append(cmd) or 0
+    )
+
+    assert hd.main(["brand-new-agent", "--json"]) == 0
+
+    assert "--docker" in recorded[0]
+    assert "no auth seed paths known" in capsys.readouterr().err
+
+
 def test_main_stages_a_minimal_home_and_cleans_it_up(tmp_path, monkeypatch):
     host_home = _make_antigravity_home(tmp_path, bulk_files=50)
     monkeypatch.setenv("HOME", str(host_home))
