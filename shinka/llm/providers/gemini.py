@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 MAX_TRIES = BACKOFF_MAX_TRIES
 MAX_VALUE = BACKOFF_MAX_VALUE
 MAX_TIME = BACKOFF_MAX_TIME
+GEMINI_MODELS_WITHOUT_SAMPLING_PARAMS = frozenset({"gemini-3.6-flash"})
 
 
 def build_gemini_thinking_config(thinking_budget: int):
@@ -45,6 +46,32 @@ def build_gemini_afc_config():
 
     afc_config_cls = cast(Any, types.AutomaticFunctionCallingConfig)
     return afc_config_cls(**config_kwargs)
+
+
+def build_gemini_generation_config(
+    *,
+    model: str,
+    temperature: float,
+    top_p: float,
+    max_tokens: int,
+    system_instruction: str | None,
+    thinking_budget: int,
+):
+    """Build generation config while omitting deprecated Gemini 3.6 fields."""
+    config_kwargs: dict[str, object] = {
+        "max_output_tokens": int(max_tokens),
+        "system_instruction": system_instruction,
+        "automatic_function_calling": build_gemini_afc_config(),
+        "thinking_config": build_gemini_thinking_config(thinking_budget),
+    }
+    if model not in GEMINI_MODELS_WITHOUT_SAMPLING_PARAMS:
+        config_kwargs.update(
+            temperature=float(temperature),
+            top_p=float(top_p),
+        )
+
+    generation_config_cls = cast(Any, types.GenerateContentConfig)
+    return generation_config_cls(**config_kwargs)
 
 
 def get_gemini_costs(response, model):
@@ -175,13 +202,13 @@ def query_gemini(
     max_tokens = kwargs.get("max_tokens", 2048)
     thinking_budget = kwargs.get("thinking_budget", 1024)
 
-    generation_config = types.GenerateContentConfig(
-        temperature=float(temperature),
-        top_p=float(top_p),
-        max_output_tokens=int(max_tokens),
+    generation_config = build_gemini_generation_config(
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
         system_instruction=system_msg if system_msg else None,
-        automatic_function_calling=build_gemini_afc_config(),
-        thinking_config=build_gemini_thinking_config(thinking_budget),
+        thinking_budget=thinking_budget,
     )
 
     response = client.models.generate_content(
@@ -251,13 +278,13 @@ async def query_gemini_async(
     max_tokens = kwargs.get("max_tokens", 2048)
     thinking_budget = kwargs.get("thinking_budget", 0)
 
-    generation_config = types.GenerateContentConfig(
-        temperature=float(temperature),
-        top_p=float(top_p),
-        max_output_tokens=int(max_tokens),
+    generation_config = build_gemini_generation_config(
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
         system_instruction=system_msg if system_msg else None,
-        automatic_function_calling=build_gemini_afc_config(),
-        thinking_config=build_gemini_thinking_config(thinking_budget),
+        thinking_budget=thinking_budget,
     )
 
     response = await client.aio.models.generate_content(
