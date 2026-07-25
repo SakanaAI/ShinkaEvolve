@@ -266,6 +266,16 @@ def main(argv: list[str] | None = None) -> int:
         return subprocess.call([*base_command(), *args])
 
     agent = args[0]
+    if agent not in AGENT_SEED_PATHS:
+        # Still containerize. Falling back to a plain invocation would silently
+        # run the agent on the host, which is the opposite of what the caller
+        # asked for; an unauthenticated container fails loudly instead.
+        print(
+            f"headless-docker: no auth seed paths known for agent {agent!r}; "
+            f"set {EXTRA_SEED_ENV} if it needs credentials",
+            file=sys.stderr,
+        )
+
     host_home = Path(os.path.expanduser("~"))
     stage_home = Path(tempfile.mkdtemp(prefix="shinka-headless-home."))
     try:
