@@ -29,6 +29,7 @@ IMAGE_ENV = "SHINKA_HEADLESS_DOCKER_IMAGE"
 PLATFORM_ENV = "SHINKA_HEADLESS_DOCKER_PLATFORM"
 EXTRA_ARGS_ENV = "SHINKA_HEADLESS_DOCKER_ARGS"
 EXTRA_SEED_ENV = "SHINKA_HEADLESS_DOCKER_SEED_EXTRA"
+CODEX_SERVICE_TIER_ENV = "SHINKA_HEADLESS_DOCKER_CODEX_SERVICE_TIER"
 
 # Mirrors the ``seedPaths`` table of @roberttlange/headless. Kept local so the
 # wrapper does not pay an extra CLI round trip per proposal;
@@ -79,7 +80,6 @@ CODEX_CONFIG_KEYS = (
     "preferred_auth_method",
     "service_tier",
 )
-CODEX_CONFIG_DEFAULTS = ('service_tier = "fast"',)
 CODEX_SERVICE_TIERS = frozenset({"fast", "flex"})
 
 MAX_SEED_FILE_BYTES = 4 * 1024 * 1024
@@ -152,7 +152,17 @@ def _stage_directory_seed(
         )
 
 
-def _minimal_codex_config(source: Path) -> str:
+def _codex_service_tier() -> str:
+    service_tier = os.getenv(CODEX_SERVICE_TIER_ENV, "fast").strip()
+    if service_tier not in CODEX_SERVICE_TIERS:
+        raise ValueError(
+            f"{CODEX_SERVICE_TIER_ENV} must be one of "
+            f"{sorted(CODEX_SERVICE_TIERS)}."
+        )
+    return service_tier
+
+
+def _minimal_codex_config(source: Path, *, service_tier: str = "fast") -> str:
     lines: list[str] = []
     seen: set[str] = set()
     if source.is_file():
@@ -173,7 +183,8 @@ def _minimal_codex_config(source: Path) -> str:
                     continue
             seen.add(key)
             lines.append(f"{key} = {value}")
-    for default in CODEX_CONFIG_DEFAULTS:
+    defaults = (f'service_tier = "{service_tier}"',)
+    for default in defaults:
         key = default.split("=", 1)[0].strip()
         if key not in seen:
             lines.append(default)
@@ -200,7 +211,12 @@ def stage_auth_home(*, agent: str, host_home: Path, stage_home: Path) -> SeedBud
     if agent == "codex":
         config = stage_home / ".codex" / "config.toml"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(_minimal_codex_config(host_home / ".codex" / "config.toml"))
+        config.write_text(
+            _minimal_codex_config(
+                host_home / ".codex" / "config.toml",
+                service_tier=_codex_service_tier(),
+            )
+        )
         config.chmod(0o600)
     return budget
 

@@ -163,6 +163,21 @@ def test_codex_config_falls_back_to_defaults_without_host_config(tmp_path):
     )
 
 
+def test_codex_service_tier_can_use_flex(tmp_path, monkeypatch):
+    host_home = tmp_path / "home"
+    (host_home / ".codex").mkdir(parents=True)
+    (host_home / ".codex" / "auth.json").write_text("{}")
+    stage_home = tmp_path / "stage"
+    stage_home.mkdir()
+    monkeypatch.setenv(hd.CODEX_SERVICE_TIER_ENV, "flex")
+
+    hd.stage_auth_home(agent="codex", host_home=host_home, stage_home=stage_home)
+
+    assert (stage_home / ".codex" / "config.toml").read_text() == (
+        'service_tier = "flex"\n'
+    )
+
+
 def test_extra_seed_paths_can_be_added(tmp_path, monkeypatch):
     host_home = tmp_path / "home"
     (host_home / ".gemini").mkdir(parents=True)
