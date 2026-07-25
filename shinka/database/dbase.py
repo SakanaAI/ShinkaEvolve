@@ -2778,7 +2778,7 @@ class ProgramDatabase:
                 embeddings, method="pca", dims=3
             )
             cluster_ids = embedding_client.get_embedding_clusters(
-                embeddings, num_clusters=num_clusters
+                reduced_3d, num_clusters=num_clusters
             )
         except Exception as e:
             logger.error(f"Failed to recompute embedding features: {e}")
@@ -2874,7 +2874,7 @@ class ProgramDatabase:
 
                 logger.info(f"Computing GMM clustering with {num_clusters} clusters...")
                 cluster_ids = embedding_client.get_embedding_clusters(
-                    embeddings, num_clusters=num_clusters
+                    reduced_3d, num_clusters=num_clusters
                 )
                 logger.info("GMM clustering completed")
             except Exception as e:
