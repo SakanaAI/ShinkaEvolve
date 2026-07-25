@@ -119,6 +119,11 @@ export SHINKA_HEADLESS_COMMAND=shinka_headless_docker
 export SHINKA_HEADLESS_DOCKER_IMAGE=ghcr.io/roberttlange/headless:latest
 ```
 
+The selected image must contain the native CLI for every provider in use. The
+public Headless image supports the standard Codex and Cursor paths, but does
+not ship Antigravity's proprietary `agy` executable; use a provider image that
+includes it when running Antigravity models.
+
 Headless seeds agent credentials by mounting the agent's auth seed paths
 read-only under `/tmp/headless-host-home` and copying that tree into the
 container's tmpfs `$HOME`. Several agents keep credentials next to bulk state:
