@@ -113,7 +113,6 @@ def seed_paths(agent: str) -> tuple[str, ...]:
 class SeedBudget:
     def __init__(self, *, total_bytes: int = MAX_SEED_TOTAL_BYTES) -> None:
         self.remaining = total_bytes
-        self.staged: list[str] = []
         self.skipped: list[str] = []
 
     def copy(self, source: Path, destination: Path, label: str) -> None:
@@ -128,7 +127,6 @@ class SeedBudget:
         shutil.copyfile(source, destination)
         destination.chmod(0o600)
         self.remaining -= size
-        self.staged.append(label)
 
 
 def _stage_directory_seed(
@@ -143,7 +141,6 @@ def _stage_directory_seed(
         candidates = [source / name for name in allowlist]
     else:
         candidates = sorted(source.iterdir())
-    destination.mkdir(parents=True, exist_ok=True)
     for candidate in candidates:
         if candidate.is_symlink() or not candidate.is_file():
             continue
@@ -154,10 +151,10 @@ def _stage_directory_seed(
         )
 
 
-def _minimal_codex_config(source: Path | None) -> str:
+def _minimal_codex_config(source: Path) -> str:
     lines: list[str] = []
     seen: set[str] = set()
-    if source is not None and source.is_file():
+    if source.is_file():
         for raw_line in source.read_text(errors="replace").splitlines():
             line = raw_line.strip()
             if line.startswith("["):
