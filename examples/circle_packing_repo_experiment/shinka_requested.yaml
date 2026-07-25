@@ -25,12 +25,10 @@ evo:
   language: python
   generation_target_mode: evaluated_candidates
   llm_models:
-    - "headless/antigravity@Gemini 3.5 Flash (High)"
-    - "headless/antigravity@Gemini 3.1 Pro (High)"
+    - "headless/cursor@composer-2.5"
+    - "headless/codex@gpt-5.6-luna?effort=medium"
+    - "headless/antigravity@Gemini 3.6 Flash (Medium)"
     - "headless/antigravity@Claude Opus 4.6 (Thinking)"
-    - "headless/cursor@gpt-5.4?effort=xhigh"
-    # Headless 0.4.0 has no xhigh variant mapping for gpt-5.1-nano.
-    - "headless/cursor@gpt-5.1-nano"
   llm_dynamic_selection: ucb1
   llm_dynamic_selection_kwargs:
     exploration_coef: 1.0
@@ -46,25 +44,24 @@ evo:
   meta_rec_interval: 10
   meta_max_recommendations: 5
   meta_llm_models:
-    - gemini-3.5-flash
+    - gemini-3.6-flash
   meta_llm_kwargs:
     temperatures: [0.0]
     max_tokens: 16384
     reasoning_efforts: [high]
   novelty_llm_models:
-    - gemini-3.5-flash
+    - gemini-3.6-flash
   novelty_llm_kwargs:
     temperatures: [0.0]
     max_tokens: 16384
     reasoning_efforts: [high]
   embedding_model: gemini-embedding-2-preview
   code_embed_sim_threshold: 0.95
-  logging_methods: [webui, wandb]
   enable_wandb_logging: true
   wandb_project: shinka-evolve
   wandb_group: circle-packing-repo
-  wandb_name: circle-packing-requested
-  wandb_tags: [circle-packing, repo-mode, requested-config]
+  wandb_name: circle-packing-15gen-requested
+  wandb_tags: [circle-packing, repo-mode, composer-2.5, codex-gpt-5.6-luna-medium, gemini-3.6-flash-medium, opus-4.6]
   task_sys_msg: |
     Improve the 26-circle packing implementation in src/packing.py. The evaluator
     is outside the repository and maximizes the validated sum of circle radii

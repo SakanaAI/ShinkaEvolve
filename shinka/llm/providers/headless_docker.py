@@ -79,7 +79,8 @@ CODEX_CONFIG_KEYS = (
     "preferred_auth_method",
     "service_tier",
 )
-CODEX_CONFIG_DEFAULTS = ('service_tier = "default"',)
+CODEX_CONFIG_DEFAULTS = ('service_tier = "fast"',)
+CODEX_SERVICE_TIERS = frozenset({"fast", "flex"})
 
 MAX_SEED_FILE_BYTES = 4 * 1024 * 1024
 MAX_SEED_TOTAL_BYTES = 16 * 1024 * 1024
@@ -166,6 +167,10 @@ def _minimal_codex_config(source: Path) -> str:
             value = value.strip()
             if not value or value.startswith(("[", "{")):
                 continue
+            if key == "service_tier":
+                normalized_value = value.strip('"\'')
+                if normalized_value not in CODEX_SERVICE_TIERS:
+                    continue
             seen.add(key)
             lines.append(f"{key} = {value}")
     for default in CODEX_CONFIG_DEFAULTS:

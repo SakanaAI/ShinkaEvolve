@@ -123,7 +123,7 @@ def test_codex_config_keeps_model_keys_and_drops_host_sections(tmp_path):
             [
                 'model = "gpt-5.6-luna"',
                 'model_reasoning_effort = "xhigh"',
-                'service_tier = "priority"',
+                'service_tier = "default"',
                 "notify = [",
                 '  "/Users/someone/notify.sh",',
                 "]",
@@ -142,7 +142,7 @@ def test_codex_config_keeps_model_keys_and_drops_host_sections(tmp_path):
     config = (stage_home / ".codex" / "config.toml").read_text()
     assert 'model = "gpt-5.6-luna"' in config
     assert 'model_reasoning_effort = "xhigh"' in config
-    assert 'service_tier = "priority"' in config
+    assert 'service_tier = "fast"' in config
     assert "mcp_servers" not in config
     assert "desktop" not in config
     assert "notify" not in config
@@ -159,7 +159,7 @@ def test_codex_config_falls_back_to_defaults_without_host_config(tmp_path):
     hd.stage_auth_home(agent="codex", host_home=host_home, stage_home=stage_home)
 
     assert (stage_home / ".codex" / "config.toml").read_text() == (
-        'service_tier = "default"\n'
+        'service_tier = "fast"\n'
     )
 
 

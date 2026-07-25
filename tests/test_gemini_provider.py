@@ -57,3 +57,32 @@ def test_build_gemini_afc_config_sets_max_remote_calls_none(monkeypatch):
     gemini.build_gemini_afc_config()
 
     assert captured == {"disable": True, "maximum_remote_calls": None}
+
+
+def test_gemini_3_6_generation_config_omits_sampling_params(monkeypatch):
+    captured = {}
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(gemini.types, "GenerateContentConfig", FakeConfig)
+    monkeypatch.setattr(gemini, "build_gemini_afc_config", lambda: "afc")
+    monkeypatch.setattr(
+        gemini,
+        "build_gemini_thinking_config",
+        lambda budget: {"budget": budget},
+    )
+
+    gemini.build_gemini_generation_config(
+        model="gemini-3.6-flash",
+        temperature=0.0,
+        top_p=1.0,
+        max_tokens=4096,
+        system_instruction="system",
+        thinking_budget=1024,
+    )
+
+    assert "temperature" not in captured
+    assert "top_p" not in captured
+    assert captured["max_output_tokens"] == 4096
