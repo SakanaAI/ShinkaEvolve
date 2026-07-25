@@ -522,6 +522,11 @@ SHINKA_HEADLESS_DOCKER_IMAGE=ghcr.io/roberttlange/headless:latest \
 shinka_run --task-dir examples/sine_approx_headless ...
 ```
 
+The image must contain the native CLI for each provider you use. The public
+Headless image supports the standard Codex and Cursor paths, but does not ship
+Antigravity's proprietary `agy` executable; use a provider image that includes
+it when running Antigravity models.
+
 Headless seeds an agent's credentials by mounting its auth seed paths read-only under `/tmp/headless-host-home` and copying that tree into the container's tmpfs `$HOME`. Some agents keep credentials next to bulk state — `~/.gemini/antigravity-cli` also holds conversation and brain logs and routinely exceeds 500 MB — so seeding straight from your real home copies that entire tree into container RAM on every proposal. The wrapper stages a throwaway home containing only the credential files, sanitizes the Codex config so host-only desktop, marketplace, and MCP entries stay behind, and drops `--session`, which Headless rejects together with `--docker`.
 
 | Variable | Purpose |
