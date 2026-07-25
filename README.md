@@ -506,6 +506,25 @@ For a Python runner using both Codex and Claude through Headless:
 python examples/sine_approx_headless/run_evo.py
 ```
 
+#### Running Headless agents in Docker
+
+Point `SHINKA_HEADLESS_COMMAND` at the `shinka_headless_docker` wrapper to run every mutation inside a container:
+
+```bash
+SHINKA_HEADLESS_COMMAND=shinka_headless_docker \
+SHINKA_HEADLESS_DOCKER_IMAGE=ghcr.io/roberttlange/headless:latest \
+shinka_run --task-dir examples/sine_approx_headless ...
+```
+
+Headless seeds an agent's credentials by mounting its auth seed paths read-only under `/tmp/headless-host-home` and copying that tree into the container's tmpfs `$HOME`. Some agents keep credentials next to bulk state — `~/.gemini/antigravity-cli` also holds conversation and brain logs and routinely exceeds 500 MB — so seeding straight from your real home copies that entire tree into container RAM on every proposal. The wrapper stages a throwaway home containing only the credential files, sanitizes the Codex config so host-only desktop, marketplace, and MCP entries stay behind, and drops `--session`, which Headless rejects together with `--docker`.
+
+| Variable | Purpose |
+| --- | --- |
+| `SHINKA_HEADLESS_DOCKER_IMAGE` | Image to run. Defaults to the Headless CLI's own default. |
+| `SHINKA_HEADLESS_DOCKER_PLATFORM` | Forwarded as `docker run --platform`. |
+| `SHINKA_HEADLESS_DOCKER_ARGS` | Extra `docker run` arguments, parsed as a shell word list. |
+| `SHINKA_HEADLESS_DOCKER_SEED_EXTRA` | Additional home-relative paths to stage, separated by `os.pathsep`. |
+| `SHINKA_HEADLESS_DOCKER_BASE_COMMAND` | Headless CLI command. Defaults to `npx -y @roberttlange/headless`. |
 
 ## Interactive WebUI 🎨
 
