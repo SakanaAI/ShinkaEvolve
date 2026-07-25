@@ -69,6 +69,18 @@ def test_gemini_3_5_flash_pricing_is_registered():
     }
 
 
+def test_gemini_3_6_flash_pricing_is_registered():
+    resolved = resolve_model_backend("gemini-3.6-flash")
+    assert resolved.provider == "google"
+    assert resolved.api_model_name == "gemini-3.6-flash"
+
+    prices = get_model_prices("gemini-3.6-flash")
+    assert prices == {
+        "input_price": 1.5 / 1_000_000,
+        "output_price": 7.5 / 1_000_000,
+    }
+
+
 @pytest.mark.parametrize(
     ("model_name", "input_price", "output_price"),
     [

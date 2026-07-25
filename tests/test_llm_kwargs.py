@@ -46,6 +46,20 @@ def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs_without_temperature
     assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
 
 
+def test_gemini_3_6_flash_omits_deprecated_sampling_kwargs():
+    kwargs = sample_model_kwargs(
+        model_names=["gemini-3.6-flash"],
+        temperatures=[0.0],
+        max_tokens=[4096],
+        reasoning_efforts=["medium"],
+    )
+
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
+    assert kwargs["max_tokens"] == 4096
+    assert kwargs["thinking_budget"] == 1024
+
+
 def test_deepseek_v4_reasoning_kwargs_enable_thinking_mode():
     assert is_reasoning_model("deepseek-v4-pro")
 
