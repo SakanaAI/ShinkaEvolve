@@ -146,6 +146,7 @@ and drops `--session`, which Headless rejects together with `--docker`.
 | `SHINKA_HEADLESS_DOCKER_PLATFORM` | Forwarded as `docker run --platform`. |
 | `SHINKA_HEADLESS_DOCKER_ARGS` | Extra `docker run` arguments, parsed as a shell word list. |
 | `SHINKA_HEADLESS_DOCKER_SEED_EXTRA` | Additional home-relative paths to stage, separated by `os.pathsep`. |
+| `SHINKA_HEADLESS_DOCKER_CODEX_SERVICE_TIER` | Codex service tier: `fast` (default) or `flex`. |
 | `SHINKA_HEADLESS_DOCKER_BASE_COMMAND` | Headless CLI command. Defaults to `npx -y @roberttlange/headless`. |
 
 ### DatabaseConfig (`shinka.database.DatabaseConfig`)

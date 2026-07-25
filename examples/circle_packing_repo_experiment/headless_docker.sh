@@ -49,10 +49,18 @@ mkdir -p "$stage_home/.codex"
 if [ -f "$host_home/.codex/auth.json" ]; then
     cp "$host_home/.codex/auth.json" "$stage_home/.codex/auth.json"
 fi
-# Keep the reasoning and standard service tier explicit in Docker. The newer
-# Codex CLI accepts the host's default tier; the account rejects explicit flex.
-cat > "$stage_home/.codex/config.toml" <<'EOF'
-service_tier = "fast"
+# Keep the reasoning and service tier explicit in Docker. Codex accepts fast
+# and flex; flex avoids the fast service tier for smoke tests and experiments.
+codex_service_tier="${SHINKA_HEADLESS_DOCKER_CODEX_SERVICE_TIER:-fast}"
+case "$codex_service_tier" in
+    fast|flex) ;;
+    *)
+        echo "SHINKA_HEADLESS_DOCKER_CODEX_SERVICE_TIER must be fast or flex" >&2
+        exit 2
+        ;;
+esac
+cat > "$stage_home/.codex/config.toml" <<EOF
+service_tier = "$codex_service_tier"
 model_reasoning_effort = "medium"
 EOF
 export HOME="$stage_home"
