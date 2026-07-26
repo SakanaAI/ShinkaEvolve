@@ -550,3 +550,112 @@ def test_shinka_run_full_headless_cli_mutation_succeeds(tmp_path, monkeypatch):
         for path in metrics_files
     )
     assert best_score == pytest.approx(1.0)
+
+
+def test_extract_headless_text_content_strips_usage_json():
+    from shinka.llm.providers.headless import _extract_headless_text_content
+
+    stdout = "\n".join(
+        [
+            "NOVEL: different algorithmic strategy",
+            json.dumps(
+                {
+                    "usage": {
+                        "inputTokens": 1,
+                        "outputTokens": 2,
+                        "totalTokens": 3,
+                    }
+                }
+            ),
+        ]
+    )
+    assert (
+        _extract_headless_text_content(stdout)
+        == "NOVEL: different algorithmic strategy"
+    )
+
+
+def test_query_headless_text_mode_uses_scratch_dir_and_returns_message(
+    tmp_path, monkeypatch
+):
+    script = tmp_path / "text_headless.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "from pathlib import Path",
+                "if '--check' in sys.argv:",
+                "    raise SystemExit(0)",
+                "prompt_path = Path(sys.argv[sys.argv.index('--prompt-file') + 1])",
+                "work_dir = Path(sys.argv[sys.argv.index('--work-dir') + 1])",
+                "assert '--usage' in sys.argv",
+                "assert '--json' not in sys.argv",
+                "assert work_dir.exists()",
+                "assert (work_dir / '.shinka').is_dir()",
+                "prompt = prompt_path.read_text(encoding='utf-8')",
+                "assert 'Response Contract' in prompt",
+                "assert 'Active Repository' not in prompt",
+                "print('NOVEL: scratch-mode response')",
+                "print(json.dumps({'usage': {'inputTokens': 3, 'outputTokens': 4, "
+                "'totalTokens': 7, 'cost': {'total': 0.01}}}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHINKA_HEADLESS_COMMAND", _fake_headless_command(script))
+
+    scratch_parent = tmp_path / "scratch"
+    result = query_headless(
+        None,
+        "headless/codex@test-model",
+        "Are these summaries novel?",
+        "You are a novelty judge.",
+        [],
+        output_model=None,
+        headless_work_dir=str(scratch_parent),
+        headless_response_mode="text",
+        headless_timeout_seconds=10,
+    )
+
+    assert result.content == "NOVEL: scratch-mode response"
+    assert result.kwargs["headless_response_mode"] == "text"
+    assert result.kwargs["headless_output_mode"] == "usage"
+    assert result.input_tokens == 3
+    assert result.output_tokens == 4
+    assert Path(result.kwargs["headless_work_dir"]).parent == scratch_parent
+    # Scratch under a provided parent is retained for audit.
+    assert Path(result.kwargs["headless_work_dir"]).exists()
+
+
+def test_llm_client_kwargs_for_text_requests_enables_headless_text_mode(tmp_path):
+    from shinka.core.async_runner import _llm_client_kwargs_for_text_requests
+    from shinka.core.config import EvolutionConfig
+
+    evo_config = EvolutionConfig(
+        llm_models=["headless/cursor@composer-2.5"],
+        seed_repo_path=str(tmp_path / "seed"),
+        headless_cleanup_grace_seconds=12.0,
+    )
+    kwargs = _llm_client_kwargs_for_text_requests(
+        {"temperatures": [0.0]},
+        tmp_path / "results",
+        request_class="meta",
+        model_names=["headless/cursor@composer-2.5"],
+        evo_config=evo_config,
+    )
+    assert kwargs["headless_response_mode"] == "text"
+    assert kwargs["headless_output_mode"] == "usage"
+    assert kwargs["headless_cleanup_grace_seconds"] == 12.0
+    assert Path(kwargs["headless_work_dir"]).name == "meta"
+    assert kwargs["temperatures"] == [0.0]
+
+    api_kwargs = _llm_client_kwargs_for_text_requests(
+        {"temperatures": [0.0]},
+        tmp_path / "results",
+        request_class="novelty",
+        model_names=["gemini-3.6-flash"],
+        evo_config=evo_config,
+    )
+    assert "headless_response_mode" not in api_kwargs
+    assert api_kwargs["headless_work_dir"] == str(tmp_path / "results")

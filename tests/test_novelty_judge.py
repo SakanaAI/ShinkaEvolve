@@ -101,16 +101,13 @@ def test_should_check_novelty_requires_initialized_islands():
     )
 
 
-def test_assess_novelty_accepts_when_similarity_is_empty(tmp_path):
+def test_assess_novelty_accepts_when_similarity_is_empty():
     judge = NoveltyJudge(similarity_threshold=0.9, max_novelty_attempts=3)
     database = DummyDatabase([[]])
     parent_program = make_program()
 
-    exec_file = tmp_path / "candidate.py"
-    exec_file.write_text("def candidate():\n    return 123\n", encoding="utf-8")
-
     accepted, metadata = judge.assess_novelty_with_rejection_sampling(
-        exec_fname=str(exec_file),
+        proposed_summary="# Individual Summary\n\nCandidate summary",
         code_embedding=[0.1, 0.2],
         parent_program=parent_program,
         database=database,
@@ -122,16 +119,13 @@ def test_assess_novelty_accepts_when_similarity_is_empty(tmp_path):
     assert metadata["novelty_total_cost"] == 0.0
 
 
-def test_assess_novelty_rejects_after_exhausting_attempts(tmp_path):
+def test_assess_novelty_rejects_after_exhausting_attempts():
     judge = NoveltyJudge(similarity_threshold=0.9, max_novelty_attempts=3)
     database = DummyDatabase([[0.95], [0.96], [0.97]])
     parent_program = make_program()
 
-    exec_file = tmp_path / "candidate.py"
-    exec_file.write_text("def candidate():\n    return 1\n", encoding="utf-8")
-
     accepted, metadata = judge.assess_novelty_with_rejection_sampling(
-        exec_fname=str(exec_file),
+        proposed_summary="# Individual Summary\n\nCandidate summary",
         code_embedding=[0.3, 0.4],
         parent_program=parent_program,
         database=database,
@@ -143,7 +137,7 @@ def test_assess_novelty_rejects_after_exhausting_attempts(tmp_path):
     assert metadata["max_similarity"] == pytest.approx(0.97)
 
 
-def test_assess_novelty_accepts_high_similarity_when_llm_marks_novel(tmp_path):
+def test_assess_novelty_accepts_high_similarity_when_llm_marks_novel():
     novelty_llm = DummyNoveltyLLM(
         responses=[DummyResponse(content="NOVEL: meaningful redesign", cost=0.12)]
     )
@@ -162,18 +156,10 @@ def test_assess_novelty_accepts_high_similarity_when_llm_marks_novel(tmp_path):
         most_similar_program=most_similar_program,
     )
     parent_program = make_program(program_id="parent")
-
-    repo_dir = tmp_path / "candidate_repo"
-    summary_dir = repo_dir / ".shinka"
-    summary_dir.mkdir(parents=True)
     proposed_summary = "# Individual Summary\n\nProposed approach summary"
-    (summary_dir / "individual.md").write_text(proposed_summary, encoding="utf-8")
-
-    exec_file = repo_dir / "candidate.py"
-    exec_file.write_text("def candidate():\n    return 42\n", encoding="utf-8")
 
     accepted, metadata = judge.assess_novelty_with_rejection_sampling(
-        exec_fname=str(exec_file),
+        proposed_summary=proposed_summary,
         code_embedding=[0.5, 0.6],
         parent_program=parent_program,
         database=database,

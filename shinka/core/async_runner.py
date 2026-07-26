@@ -228,6 +228,42 @@ def _llm_kwargs_with_headless_work_dir(
     return {"headless_work_dir": str(results_dir), **llm_kwargs}
 
 
+def _llm_client_kwargs_for_text_requests(
+    llm_kwargs: Dict[str, Any],
+    results_dir: Path,
+    *,
+    request_class: str,
+    model_names: Optional[List[str]],
+    evo_config: EvolutionConfig,
+) -> Dict[str, Any]:
+    """Build AsyncLLMClient kwargs for meta/novelty/prompt pools.
+
+    When the pool uses Headless subscription agents, run them in text/scratch
+    mode so they act like chat completions without a real repository.
+    """
+    from shinka.llm.providers.headless import DEFAULT_HEADLESS_TEXT_TIMEOUT
+
+    kwargs = dict(llm_kwargs or {})
+    uses_headless = any(
+        isinstance(model, str) and model.startswith("headless/")
+        for model in (model_names or [])
+    )
+    if not uses_headless:
+        return _llm_kwargs_with_headless_work_dir(kwargs, results_dir)
+
+    scratch_parent = results_dir / "headless_scratch" / request_class
+    scratch_parent.mkdir(parents=True, exist_ok=True)
+    timeout = kwargs.pop("headless_timeout_seconds", DEFAULT_HEADLESS_TEXT_TIMEOUT)
+    return {
+        "headless_work_dir": str(scratch_parent),
+        "headless_response_mode": "text",
+        "headless_output_mode": "usage",
+        "headless_timeout_seconds": timeout,
+        "headless_cleanup_grace_seconds": evo_config.headless_cleanup_grace_seconds,
+        **kwargs,
+    }
+
+
 def _validate_evo_config_model_env_access(evo_config: EvolutionConfig) -> None:
     # TODO: sample from different harnesses
     llm_models = list(evo_config.llm_models or [])
@@ -516,9 +552,12 @@ class ShinkaEvolveRunner:
                 model_names=evo_config.meta_llm_models or evo_config.llm_models,
                 rate_limiter=self.llm_rate_limiter,
                 request_class="meta",
-                **_llm_kwargs_with_headless_work_dir(
+                **_llm_client_kwargs_for_text_requests(
                     evo_config.meta_llm_kwargs,
                     Path(self.results_dir),
+                    request_class="meta",
+                    model_names=evo_config.meta_llm_models,
+                    evo_config=evo_config,
                 ),
             )
             # Create sync summarizer for state management
@@ -543,9 +582,12 @@ class ShinkaEvolveRunner:
                 model_names=evo_config.novelty_llm_models,
                 rate_limiter=self.llm_rate_limiter,
                 request_class="novelty",
-                **_llm_kwargs_with_headless_work_dir(
+                **_llm_client_kwargs_for_text_requests(
                     evo_config.novelty_llm_kwargs,
                     Path(self.results_dir),
+                    request_class="novelty",
+                    model_names=evo_config.novelty_llm_models,
+                    evo_config=evo_config,
                 ),
             )
             sync_novelty_judge = NoveltyJudge(
@@ -580,9 +622,12 @@ class ShinkaEvolveRunner:
                 model_names=prompt_llm_models,
                 rate_limiter=self.llm_rate_limiter,
                 request_class="prompt",
-                **_llm_kwargs_with_headless_work_dir(
+                **_llm_client_kwargs_for_text_requests(
                     evo_config.prompt_llm_kwargs,
                     Path(self.results_dir),
+                    request_class="prompt",
+                    model_names=prompt_llm_models,
+                    evo_config=evo_config,
                 ),
             )
             logger.info(f"Prompt evolution enabled with models: {prompt_llm_models}")

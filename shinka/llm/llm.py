@@ -31,6 +31,7 @@ class LLMClient:
         headless_cleanup_grace_seconds: Optional[float] = None,
         headless_output_mode: Optional[str] = None,
         headless_model_timeouts: Optional[Dict[str, float]] = None,
+        headless_response_mode: Optional[str] = None,
     ):
         self.temperatures = temperatures
         self.max_tokens = max_tokens
@@ -47,6 +48,7 @@ class LLMClient:
         self.headless_cleanup_grace_seconds = headless_cleanup_grace_seconds
         self.headless_output_mode = headless_output_mode
         self.headless_model_timeouts = dict(headless_model_timeouts or {})
+        self.headless_response_mode = headless_response_mode
 
     def _headless_timeout_for_model(self, model_name: str) -> Optional[float]:
         if model_name in self.headless_model_timeouts:
@@ -68,6 +70,7 @@ class LLMClient:
             "headless_timeout_seconds": self._headless_timeout_for_model(model_name),
             "headless_cleanup_grace_seconds": self.headless_cleanup_grace_seconds,
             "headless_output_mode": self.headless_output_mode,
+            "headless_response_mode": self.headless_response_mode,
         }
         if self.headless_work_dir is not None:
             defaults["headless_work_dir"] = self.headless_work_dir
@@ -376,6 +379,7 @@ class AsyncLLMClient:
         headless_cleanup_grace_seconds: Optional[float] = None,
         headless_output_mode: Optional[str] = None,
         headless_model_timeouts: Optional[Dict[str, float]] = None,
+        headless_response_mode: Optional[str] = None,
         propagate_route_errors: bool = False,
         rate_limiter: Optional[AsyncProviderRateLimiter] = None,
         request_class: str = "general",
@@ -395,6 +399,7 @@ class AsyncLLMClient:
         self.headless_cleanup_grace_seconds = headless_cleanup_grace_seconds
         self.headless_output_mode = headless_output_mode
         self.headless_model_timeouts = dict(headless_model_timeouts or {})
+        self.headless_response_mode = headless_response_mode
         self.propagate_route_errors = propagate_route_errors
         self.rate_limiter = rate_limiter or AsyncProviderRateLimiter()
         self.request_class = request_class
@@ -419,6 +424,7 @@ class AsyncLLMClient:
             "headless_timeout_seconds": self._headless_timeout_for_model(model_name),
             "headless_cleanup_grace_seconds": self.headless_cleanup_grace_seconds,
             "headless_output_mode": self.headless_output_mode,
+            "headless_response_mode": self.headless_response_mode,
         }
         if self.headless_work_dir is not None:
             defaults["headless_work_dir"] = self.headless_work_dir

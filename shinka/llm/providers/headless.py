@@ -4,15 +4,17 @@ import asyncio
 import json
 import math
 import os
+import shutil
 import signal
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs
 
 from pydantic import BaseModel
@@ -35,7 +37,9 @@ HEADLESS_AGENT_TIMEOUT_ENV_PREFIX = "SHINKA_HEADLESS_TIMEOUT_"
 HEADLESS_CLEANUP_GRACE_ENV = "SHINKA_HEADLESS_CLEANUP_GRACE"
 HEADLESS_OUTPUT_MODE_ENV = "SHINKA_HEADLESS_OUTPUT_MODE"
 DEFAULT_HEADLESS_PROPOSAL_TIMEOUT = 7200.0
+DEFAULT_HEADLESS_TEXT_TIMEOUT = 900.0
 DEFAULT_HEADLESS_CLEANUP_GRACE = 60.0
+HeadlessResponseMode = Literal["worktree", "text"]
 
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh"}
 _THREAD_LOCK = threading.Lock()
@@ -179,14 +183,40 @@ def check_headless_available() -> None:
         raise ValueError(f"Headless availability check failed: {detail}")
 
 
+def _normalize_response_mode(response_mode: str | None) -> HeadlessResponseMode:
+    mode = (response_mode or "worktree").lower()
+    if mode not in {"worktree", "text"}:
+        raise ValueError(
+            "headless_response_mode must be 'worktree' or 'text', "
+            f"got {response_mode!r}"
+        )
+    return mode  # type: ignore[return-value]
+
+
 def _render_prompt(
     *,
     work_dir: Path,
     msg: str,
     system_msg: str,
     msg_history: list[dict],
+    response_mode: HeadlessResponseMode = "worktree",
 ) -> str:
     history_text = json.dumps(msg_history, indent=2, ensure_ascii=False)
+    if response_mode == "text":
+        return (
+            "# System Instructions\n\n"
+            f"{system_msg}\n\n"
+            "# Previous Messages\n\n"
+            f"{history_text}\n\n"
+            "# User Request\n\n"
+            f"{msg}\n\n"
+            "# Response Contract\n\n"
+            "Treat this as a text-only chat completion. Put your full answer in "
+            "the final assistant message. Do not edit, create, or delete files "
+            "unless the user request explicitly requires it. An empty scratch "
+            f"directory is available at `{work_dir}` if a working directory is "
+            "required by the agent runtime.\n"
+        )
     return (
         "# Active Repository\n\n"
         f"The proposal repository is `{work_dir}`. Begin every filesystem and "
@@ -208,6 +238,7 @@ def _write_prompt_file(
     msg: str,
     system_msg: str,
     msg_history: list[dict],
+    response_mode: HeadlessResponseMode = "worktree",
 ) -> Path:
     resolved_work_dir = Path(work_dir or os.getcwd()).absolute()
     prompt_dir = resolved_work_dir / ".shinka"
@@ -219,10 +250,38 @@ def _write_prompt_file(
             msg=msg,
             system_msg=system_msg,
             msg_history=msg_history,
+            response_mode=response_mode,
         ),
         encoding="utf-8",
     )
     return prompt_path
+
+
+def _prepare_headless_work_dir(
+    *,
+    headless_work_dir: str | None,
+    response_mode: HeadlessResponseMode,
+) -> tuple[Path, bool]:
+    """Return (work_dir, owns_directory).
+
+    Text mode always uses an ephemeral empty scratch directory so meta/novelty/
+    prompt calls do not need a real repository. The optional headless_work_dir
+    is treated as a parent for those scratch dirs.
+
+    When a parent under the run results is provided, the scratch is retained for
+    audit (owns_directory=False). System temp scratches are cleaned up.
+    """
+    if response_mode == "text":
+        if headless_work_dir:
+            parent = Path(headless_work_dir).absolute()
+            parent.mkdir(parents=True, exist_ok=True)
+            scratch = Path(
+                tempfile.mkdtemp(prefix="headless_chat_", dir=str(parent))
+            )
+            return scratch, False
+        scratch = Path(tempfile.mkdtemp(prefix="headless_chat_"))
+        return scratch, True
+    return Path(headless_work_dir or os.getcwd()).absolute(), False
 
 
 def _headless_log_paths(*, work_dir: Path) -> tuple[Path, Path]:
@@ -698,6 +757,90 @@ def _worktree_completion_content(work_dir: Path) -> str:
     return "Headless agent completed. Inspect the worktree for generated changes."
 
 
+def _extract_message_from_json_payload(payload: Any) -> str | None:
+    if isinstance(payload, str):
+        text = payload.strip()
+        return text or None
+    if isinstance(payload, list):
+        for item in reversed(payload):
+            extracted = _extract_message_from_json_payload(item)
+            if extracted:
+                return extracted
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    for key in (
+        "final_message",
+        "finalMessage",
+        "message",
+        "content",
+        "text",
+        "output_text",
+        "outputText",
+        "result",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (dict, list)):
+            extracted = _extract_message_from_json_payload(value)
+            if extracted:
+                return extracted
+    return None
+
+
+def _extract_headless_text_content(stdout: str) -> str:
+    """Extract the final assistant message from Headless stdout.
+
+    Prefer plain text (default / --usage modes). When --json is used, attempt to
+    recover a final message field from the streamed JSON payload.
+    """
+    text = (stdout or "").strip()
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    content_end = len(lines)
+    for index in range(len(lines) - 1, -1, -1):
+        trimmed = lines[index].strip()
+        if not trimmed:
+            content_end = index
+            continue
+        try:
+            parsed = json.loads(trimmed)
+        except json.JSONDecodeError:
+            break
+        if _headless_usage_payload(parsed) is not None:
+            content_end = index
+            continue
+        extracted = _extract_message_from_json_payload(parsed)
+        if extracted:
+            return extracted
+        break
+
+    content = "\n".join(lines[:content_end]).strip()
+    if content:
+        return content
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    return _extract_message_from_json_payload(parsed) or text
+
+
+def _resolve_text_output_mode(configured_mode: str | None) -> str:
+    """Prefer modes that emit the final assistant message for text responses."""
+    if configured_mode is None:
+        return "usage"
+    mode = headless_output_mode(configured_mode)
+    # --json streams native traces without a guaranteed extracted final message.
+    if mode == "json":
+        return "usage"
+    return mode
+
+
 def _query_result(
     *,
     content: str,
@@ -769,15 +912,25 @@ def query_headless(
     configured_timeout = kwargs.pop("headless_timeout_seconds", None)
     configured_grace = kwargs.pop("headless_cleanup_grace_seconds", None)
     configured_output_mode = kwargs.pop("headless_output_mode", None)
+    response_mode = _normalize_response_mode(kwargs.pop("headless_response_mode", None))
+    keep_scratch = bool(kwargs.pop("headless_keep_scratch", False))
     parsed_model = parse_headless_model(model)
+    if response_mode == "text" and configured_timeout is None:
+        configured_timeout = DEFAULT_HEADLESS_TEXT_TIMEOUT
     proposal_timeout = headless_timeout(parsed_model, configured_timeout)
     cleanup_grace = headless_cleanup_grace(configured_grace)
-    resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
+    if response_mode == "text":
+        configured_output_mode = _resolve_text_output_mode(configured_output_mode)
+    resolved_work_dir, owns_work_dir = _prepare_headless_work_dir(
+        headless_work_dir=headless_work_dir,
+        response_mode=response_mode,
+    )
     prompt_path = _write_prompt_file(
         work_dir=str(resolved_work_dir),
         msg=msg,
         system_msg=system_msg,
         msg_history=msg_history,
+        response_mode=response_mode,
     )
     command = _build_headless_command(
         model=parsed_model,
@@ -807,6 +960,54 @@ def query_headless(
         finally:
             if lock_acquired:
                 _THREAD_LOCK.release()
+
+        if completed.returncode != 0:
+            failure = _headless_failure(completed=completed)
+            failure.artifacts.update(
+                {
+                    "headless_prompt_path": str(prompt_path),
+                    "headless_stdout_path": str(stdout_path),
+                    "headless_stderr_path": str(stderr_path),
+                }
+            )
+            raise failure
+
+        headless_usage = _extract_headless_usage(completed.stdout)
+        query_usage = _query_usage_from_headless(headless_usage)
+        if response_mode == "text":
+            content = _extract_headless_text_content(completed.stdout)
+            if not content:
+                raise LLMExtractionError(
+                    "Headless text response was empty; expected a final assistant message."
+                )
+        else:
+            content = _worktree_completion_content(resolved_work_dir)
+        result_kwargs = {
+            **kwargs,
+            "model_name": model,
+            "headless_work_dir": str(resolved_work_dir),
+            "headless_prompt_path": str(prompt_path),
+            "headless_stdout_path": str(stdout_path),
+            "headless_stderr_path": str(stderr_path),
+            "headless_session_name": headless_session_name,
+            "headless_session_id": headless_session_name,
+            "headless_usage": headless_usage or None,
+            "headless_usage_unknown": not bool(headless_usage),
+            "headless_timeout_seconds": proposal_timeout,
+            "headless_cleanup_grace_seconds": cleanup_grace,
+            "headless_output_mode": headless_output_mode(configured_output_mode),
+            "headless_response_mode": response_mode,
+        }
+        return _query_result(
+            content=content,
+            usage=query_usage,
+            model=model,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+            kwargs=result_kwargs,
+            model_posteriors=model_posteriors,
+        )
     except subprocess.TimeoutExpired as exc:
         raise LLMTimeoutError(
             f"Headless query timed out after {proposal_timeout}s "
@@ -817,46 +1018,9 @@ def query_headless(
                 "headless_stderr_path": str(stderr_path),
             },
         ) from exc
-
-    if completed.returncode != 0:
-        failure = _headless_failure(completed=completed)
-        failure.artifacts.update(
-            {
-                "headless_prompt_path": str(prompt_path),
-                "headless_stdout_path": str(stdout_path),
-                "headless_stderr_path": str(stderr_path),
-            }
-        )
-        raise failure
-
-    headless_usage = _extract_headless_usage(completed.stdout)
-    query_usage = _query_usage_from_headless(headless_usage)
-    content = _worktree_completion_content(resolved_work_dir)
-    result_kwargs = {
-        **kwargs,
-        "model_name": model,
-        "headless_work_dir": str(resolved_work_dir),
-        "headless_prompt_path": str(prompt_path),
-        "headless_stdout_path": str(stdout_path),
-        "headless_stderr_path": str(stderr_path),
-        "headless_session_name": headless_session_name,
-        "headless_session_id": headless_session_name,
-        "headless_usage": headless_usage or None,
-        "headless_usage_unknown": not bool(headless_usage),
-        "headless_timeout_seconds": proposal_timeout,
-        "headless_cleanup_grace_seconds": cleanup_grace,
-        "headless_output_mode": headless_output_mode(configured_output_mode),
-    }
-    return _query_result(
-        content=content,
-        usage=query_usage,
-        model=model,
-        msg=msg,
-        system_msg=system_msg,
-        msg_history=msg_history,
-        kwargs=result_kwargs,
-        model_posteriors=model_posteriors,
-    )
+    finally:
+        if owns_work_dir and not keep_scratch:
+            shutil.rmtree(resolved_work_dir, ignore_errors=True)
 
 
 async def query_headless_async(
@@ -879,15 +1043,25 @@ async def query_headless_async(
     configured_timeout = kwargs.pop("headless_timeout_seconds", None)
     configured_grace = kwargs.pop("headless_cleanup_grace_seconds", None)
     configured_output_mode = kwargs.pop("headless_output_mode", None)
+    response_mode = _normalize_response_mode(kwargs.pop("headless_response_mode", None))
+    keep_scratch = bool(kwargs.pop("headless_keep_scratch", False))
     parsed_model = parse_headless_model(model)
+    if response_mode == "text" and configured_timeout is None:
+        configured_timeout = DEFAULT_HEADLESS_TEXT_TIMEOUT
     proposal_timeout = headless_timeout(parsed_model, configured_timeout)
     cleanup_grace = headless_cleanup_grace(configured_grace)
-    resolved_work_dir = Path(headless_work_dir or os.getcwd()).absolute()
+    if response_mode == "text":
+        configured_output_mode = _resolve_text_output_mode(configured_output_mode)
+    resolved_work_dir, owns_work_dir = _prepare_headless_work_dir(
+        headless_work_dir=headless_work_dir,
+        response_mode=response_mode,
+    )
     prompt_path = _write_prompt_file(
         work_dir=str(resolved_work_dir),
         msg=msg,
         system_msg=system_msg,
         msg_history=msg_history,
+        response_mode=response_mode,
     )
     command = _build_headless_command(
         model=parsed_model,
@@ -900,10 +1074,10 @@ async def query_headless_async(
     stdout_path, stderr_path = _headless_log_paths(work_dir=resolved_work_dir)
 
     lock_acquired = False
-    if _uses_shell_invocation(parsed_model):
-        await _acquire_cli_lock_async()
-        lock_acquired = True
     try:
+        if _uses_shell_invocation(parsed_model):
+            await _acquire_cli_lock_async()
+            lock_acquired = True
         try:
             completed = await _run_headless_command_async(
                 model=parsed_model,
@@ -923,46 +1097,60 @@ async def query_headless_async(
                     "headless_stderr_path": str(stderr_path),
                 },
             ) from exc
+        finally:
+            if lock_acquired:
+                _THREAD_LOCK.release()
+                lock_acquired = False
+
+        if completed.returncode != 0:
+            failure = _headless_failure(completed=completed)
+            failure.artifacts.update(
+                {
+                    "headless_prompt_path": str(prompt_path),
+                    "headless_stdout_path": str(stdout_path),
+                    "headless_stderr_path": str(stderr_path),
+                }
+            )
+            raise failure
+
+        headless_usage = _extract_headless_usage(completed.stdout)
+        query_usage = _query_usage_from_headless(headless_usage)
+        if response_mode == "text":
+            content = _extract_headless_text_content(completed.stdout)
+            if not content:
+                raise LLMExtractionError(
+                    "Headless text response was empty; expected a final assistant message."
+                )
+        else:
+            content = _worktree_completion_content(resolved_work_dir)
+        result_kwargs = {
+            **kwargs,
+            "model_name": model,
+            "headless_work_dir": str(resolved_work_dir),
+            "headless_prompt_path": str(prompt_path),
+            "headless_stdout_path": str(stdout_path),
+            "headless_stderr_path": str(stderr_path),
+            "headless_session_name": headless_session_name,
+            "headless_session_id": headless_session_name,
+            "headless_usage": headless_usage or None,
+            "headless_usage_unknown": not bool(headless_usage),
+            "headless_timeout_seconds": proposal_timeout,
+            "headless_cleanup_grace_seconds": cleanup_grace,
+            "headless_output_mode": headless_output_mode(configured_output_mode),
+            "headless_response_mode": response_mode,
+        }
+        return _query_result(
+            content=content,
+            usage=query_usage,
+            model=model,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+            kwargs=result_kwargs,
+            model_posteriors=model_posteriors,
+        )
     finally:
         if lock_acquired:
             _THREAD_LOCK.release()
-
-    if completed.returncode != 0:
-        failure = _headless_failure(completed=completed)
-        failure.artifacts.update(
-            {
-                "headless_prompt_path": str(prompt_path),
-                "headless_stdout_path": str(stdout_path),
-                "headless_stderr_path": str(stderr_path),
-            }
-        )
-        raise failure
-
-    headless_usage = _extract_headless_usage(completed.stdout)
-    query_usage = _query_usage_from_headless(headless_usage)
-    content = _worktree_completion_content(resolved_work_dir)
-    result_kwargs = {
-        **kwargs,
-        "model_name": model,
-        "headless_work_dir": str(resolved_work_dir),
-        "headless_prompt_path": str(prompt_path),
-        "headless_stdout_path": str(stdout_path),
-        "headless_stderr_path": str(stderr_path),
-        "headless_session_name": headless_session_name,
-        "headless_session_id": headless_session_name,
-        "headless_usage": headless_usage or None,
-        "headless_usage_unknown": not bool(headless_usage),
-        "headless_timeout_seconds": proposal_timeout,
-        "headless_cleanup_grace_seconds": cleanup_grace,
-        "headless_output_mode": headless_output_mode(configured_output_mode),
-    }
-    return _query_result(
-        content=content,
-        usage=query_usage,
-        model=model,
-        msg=msg,
-        system_msg=system_msg,
-        msg_history=msg_history,
-        kwargs=result_kwargs,
-        model_posteriors=model_posteriors,
-    )
+        if owns_work_dir and not keep_scratch:
+            shutil.rmtree(resolved_work_dir, ignore_errors=True)

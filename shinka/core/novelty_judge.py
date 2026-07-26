@@ -118,7 +118,7 @@ class NoveltyJudge:
 
     def assess_novelty_with_rejection_sampling(
         self,
-        exec_fname: str,
+        proposed_summary: str,
         code_embedding: List[float],
         parent_program: Program,
         database,
@@ -127,8 +127,8 @@ class NoveltyJudge:
         Perform novelty assessment with rejection sampling.
 
         Args:
-            exec_fname: Path to the individual repo summary or worktree
-            code_embedding: Embedding vector of the proposed code
+            proposed_summary: Proposed individual's repository summary text
+            code_embedding: Embedding vector of the proposed summary
             parent_program: Parent program for island-based similarity
             database: Database instance for similarity computation
 
@@ -142,6 +142,7 @@ class NoveltyJudge:
             "max_similarity": 0.0,
             "similarity_scores": [],
         }
+        summary_text = (proposed_summary or "").strip()
 
         for attempt in range(self.max_novelty_attempts):
             # Compute similarities with programs in island
@@ -186,9 +187,12 @@ class NoveltyJudge:
 
                 if most_similar_program:
                     try:
-                        proposed_summary = self.load_proposed_novelty_text(exec_fname)
+                        if not summary_text:
+                            raise ValueError(
+                                "Proposed repository summary is empty for novelty check"
+                            )
                         is_novel, explanation, cost = self.check_llm_novelty(
-                            proposed_summary, most_similar_program
+                            summary_text, most_similar_program
                         )
                         should_reject = not is_novel
                         novelty_cost = cost
@@ -196,7 +200,7 @@ class NoveltyJudge:
                         novelty_metadata["novelty_total_cost"] += cost
                         novelty_metadata["novelty_explanation"] = explanation
                     except Exception as e:
-                        logger.warning(f"Error reading repo summary for novelty check: {e}")
+                        logger.warning(f"Error during LLM novelty check: {e}")
                         should_reject = True  # Default to rejection on error
 
             if should_reject:

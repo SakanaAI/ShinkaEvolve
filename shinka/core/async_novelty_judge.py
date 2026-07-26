@@ -61,7 +61,7 @@ class AsyncNoveltyJudge:
 
     async def assess_novelty_with_rejection_sampling_async(
         self,
-        exec_fname: str,
+        proposed_summary: str,
         code_embedding: List[float],
         parent_program: Program,
         db,
@@ -69,8 +69,8 @@ class AsyncNoveltyJudge:
         """Async version of novelty assessment matching sync runner logic.
 
         Args:
-            exec_fname: Path to executable file
-            code_embedding: Code embedding vector
+            proposed_summary: Proposed individual's repository summary text
+            code_embedding: Summary embedding vector
             parent_program: Parent program
             db: Database instance
 
@@ -84,6 +84,7 @@ class AsyncNoveltyJudge:
             "max_similarity": 0.0,
             "similarity_scores": [],
         }
+        summary_text = (proposed_summary or "").strip()
 
         try:
             # Compute similarities with programs in island (same as sync version)
@@ -138,27 +139,24 @@ class AsyncNoveltyJudge:
 
                 if most_similar_program:
                     try:
-                        # Read the persisted repo summary for the proposed individual.
-                        loop = asyncio.get_event_loop()
-                        proposed_summary = await loop.run_in_executor(
-                            None, self.sync_judge.load_proposed_novelty_text, exec_fname
-                        )
-
-                        if proposed_summary:
-                            (
-                                is_novel,
-                                explanation,
-                                cost,
-                            ) = await self._check_llm_novelty_async(
-                                proposed_summary, most_similar_program
+                        if not summary_text:
+                            raise ValueError(
+                                "Proposed repository summary is empty for novelty check"
                             )
-                            should_reject = not is_novel
-                            novelty_cost = cost
-                            novelty_metadata["novelty_checks_performed"] = 1
-                            novelty_metadata["novelty_total_cost"] = cost
-                            novelty_metadata["novelty_explanation"] = explanation
+                        (
+                            is_novel,
+                            explanation,
+                            cost,
+                        ) = await self._check_llm_novelty_async(
+                            summary_text, most_similar_program
+                        )
+                        should_reject = not is_novel
+                        novelty_cost = cost
+                        novelty_metadata["novelty_checks_performed"] = 1
+                        novelty_metadata["novelty_total_cost"] = cost
+                        novelty_metadata["novelty_explanation"] = explanation
                     except Exception as e:
-                        logger.warning(f"Error reading repo summary for novelty check: {e}")
+                        logger.warning(f"Error during LLM novelty check: {e}")
                         should_reject = True  # Default to rejection on error
 
             if should_reject:
