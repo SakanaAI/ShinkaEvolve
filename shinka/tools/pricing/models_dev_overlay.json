@@ -83,6 +83,14 @@
   ],
   "llm_overrides": [
     {
+      "provider": "google",
+      "model_name": "gemini-3.6-flash",
+      "input_price": 1.5,
+      "output_price": 7.5,
+      "is_reasoning": true,
+      "think_temp_fixed": true
+    },
+    {
       "provider": "anthropic",
       "model_name": "claude-3-5-haiku-20241022",
       "input_price": 0.8,
