@@ -3,7 +3,7 @@ import openai
 import time
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .pricing import calculate_cost, model_exists
-from .result import QueryResult
+from .result import IncompleteResponseError, QueryResult
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,15 @@ def _sequence(value):
 
 
 def _extract_response_text(response) -> str:
+    status = _field(response, "status")
+    incomplete = _field(response, "incomplete_details")
+    incomplete_reason = _field(incomplete, "reason")
+    if status == "incomplete":
+        raise IncompleteResponseError(
+            "OpenAI response was incomplete; "
+            f"incomplete_reason={incomplete_reason}"
+        )
+
     output_text = _field(response, "output_text")
     if isinstance(output_text, str) and output_text.strip():
         return output_text
@@ -44,10 +53,7 @@ def _extract_response_text(response) -> str:
                 return text
 
     output_types = [_field(item, "type", type(item).__name__) for item in output]
-    status = _field(response, "status")
-    incomplete = _field(response, "incomplete_details")
-    incomplete_reason = _field(incomplete, "reason")
-    raise ValueError(
+    raise IncompleteResponseError(
         "OpenAI response contained no text output; "
         f"status={status}; output_types={output_types}; "
         f"incomplete_reason={incomplete_reason}"
@@ -177,8 +183,22 @@ def query_openai(
             ],
             **kwargs,
         )
-        content = _extract_response_text(response)
         thought = _extract_reasoning_summary(response)
+        try:
+            content = _extract_response_text(response)
+        except IncompleteResponseError as error:
+            error.query_result = QueryResult(
+                content="",
+                msg=msg,
+                system_msg=system_msg,
+                new_msg_history=msg_history,
+                model_name=model,
+                kwargs=kwargs,
+                **get_openai_costs(response, model),
+                thought=thought,
+                model_posteriors=model_posteriors,
+            )
+            raise
         new_msg_history.append({"role": "assistant", "content": content})
     else:
         response = client.responses.parse(
@@ -249,8 +269,22 @@ async def query_openai_async(
             ],
             **kwargs,
         )
-        content = _extract_response_text(response)
         thought = _extract_reasoning_summary(response)
+        try:
+            content = _extract_response_text(response)
+        except IncompleteResponseError as error:
+            error.query_result = QueryResult(
+                content="",
+                msg=msg,
+                system_msg=system_msg,
+                new_msg_history=msg_history,
+                model_name=model,
+                kwargs=kwargs,
+                **get_openai_costs(response, model),
+                thought=thought,
+                model_posteriors=model_posteriors,
+            )
+            raise
         new_msg_history.append({"role": "assistant", "content": content})
     else:
         response = await client.responses.parse(

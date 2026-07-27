@@ -6,6 +6,7 @@ import stat
 import sys
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ from shinka.llm.providers.headless import (
     query_headless,
     query_headless_async,
 )
+from shinka.llm.providers.result import IncompleteResponseError
 from shinka.llm.providers.model_resolver import resolve_model_backend
 from shinka.model_availability import validate_model_env_access
 
@@ -235,6 +237,44 @@ def test_query_headless_accepts_nested_cost_usage(tmp_path, monkeypatch):
     assert result.input_tokens == 1
     assert result.output_tokens == 2
     assert result.thinking_tokens == 3
+
+
+def test_query_headless_preserves_usage_for_empty_content(tmp_path, monkeypatch):
+    completed = SimpleNamespace(
+        returncode=0,
+        stderr="",
+        stdout=json.dumps(
+            {
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "cost": 0.04,
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "shinka.llm.providers.headless._run_headless_command_sync",
+        lambda **kwargs: completed,
+    )
+
+    with pytest.raises(IncompleteResponseError) as exc_info:
+        query_headless(
+            None,
+            "headless/codex",
+            "user request",
+            "system instructions",
+            [],
+            output_model=None,
+            headless_work_dir=str(tmp_path),
+        )
+
+    rejected = exc_info.value.query_result
+    assert rejected is not None
+    assert rejected.content == ""
+    assert rejected.input_tokens == 7
+    assert rejected.output_tokens == 3
+    assert rejected.cost == pytest.approx(0.04)
 
 
 def test_query_headless_serializes_claude_async_calls(tmp_path, monkeypatch):

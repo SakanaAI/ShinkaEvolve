@@ -7,6 +7,7 @@ from shinka.llm.providers.openai import (
     get_openai_costs,
     query_openai,
 )
+from shinka.llm.providers.result import IncompleteResponseError
 
 
 def _usage(
@@ -189,7 +190,7 @@ def test_query_openai_raises_clear_error_when_response_has_no_text():
     )
     response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
 
-    with pytest.raises(ValueError, match="OpenAI response contained no text output"):
+    with pytest.raises(IncompleteResponseError, match="OpenAI response was incomplete"):
         query_openai(
             _FakeOpenAIClient(response),
             "gpt-5-mini",
@@ -199,6 +200,36 @@ def test_query_openai_raises_clear_error_when_response_has_no_text():
             None,
             max_output_tokens=8192,
         )
+
+
+def test_query_openai_rejects_partial_text_and_preserves_usage():
+    response = _response(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[_content("partial answer")],
+            )
+        ],
+        status="incomplete",
+    )
+    response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
+
+    with pytest.raises(IncompleteResponseError) as exc_info:
+        query_openai(
+            _FakeOpenAIClient(response),
+            "gpt-5-mini",
+            "problem",
+            "system",
+            [],
+            None,
+            max_output_tokens=8192,
+        )
+
+    rejected = exc_info.value.query_result
+    assert rejected is not None
+    assert rejected.content == ""
+    assert rejected.input_tokens == 10
+    assert rejected.output_tokens == 20
 
 
 def test_query_openai_does_not_treat_reasoning_text_as_output():
@@ -214,7 +245,7 @@ def test_query_openai_does_not_treat_reasoning_text_as_output():
         status="incomplete",
     )
 
-    with pytest.raises(ValueError, match="OpenAI response contained no text output"):
+    with pytest.raises(IncompleteResponseError, match="OpenAI response was incomplete"):
         query_openai(
             _FakeOpenAIClient(response),
             "gpt-5-mini",

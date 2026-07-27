@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
-from .providers import IncompleteGeminiResponseError, QueryResult
+from .providers import IncompleteResponseError, QueryResult
 from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
@@ -19,10 +19,48 @@ class BatchResultCallbackError(RuntimeError):
     """Raised when a completed batch result cannot be processed."""
 
 
-def _rejected_gemini_result(error: Exception) -> Optional[QueryResult]:
-    if isinstance(error, IncompleteGeminiResponseError):
-        return error.query_result
-    return None
+class LLMQueryError(RuntimeError):
+    """Raised after a provider query exhausts its retry budget."""
+
+    def __init__(
+        self,
+        model_name: str,
+        attempts: int,
+        provider_error_type: str,
+    ):
+        self.model_name = model_name
+        self.attempts = attempts
+        self.provider_error_type = provider_error_type
+        super().__init__(
+            f"Query failed for model {model_name} after {attempts} attempts"
+        )
+
+
+def _completed_rejection(
+    error: Exception,
+) -> tuple[bool, Optional[QueryResult]]:
+    if isinstance(error, IncompleteResponseError):
+        return True, error.query_result
+    return False, None
+
+
+def _safe_model_label(model_name: str) -> str:
+    try:
+        resolved = resolve_model_backend(model_name)
+    except (TypeError, ValueError):
+        return "<unknown>"
+
+    api_model_name = resolved.api_model_name
+    if resolved.provider == "headless":
+        api_model_name = api_model_name.removeprefix("headless/")
+    api_model_name = api_model_name.split("?", 1)[0].split("@", 1)[0]
+    api_model_name = "".join(
+        character if character.isprintable() else "?"
+        for character in api_model_name
+    ).strip()
+    if not api_model_name:
+        api_model_name = "<unknown>"
+    return f"{resolved.provider}/{api_model_name[:100]}"
 
 
 class LLMClient:
@@ -112,7 +150,8 @@ class LLMClient:
                     final_results[idx] = result
                 except Exception as e:
                     logger.error(
-                        f"Error in batch query task {expected_idx}: {str(e)}"
+                        f"Error in batch query task {expected_idx}: "
+                        f"{type(e).__name__}"
                     )
 
             # Print batch total cost
@@ -173,7 +212,8 @@ class LLMClient:
                 default_probs = [1.0 / len(self.model_names)] * len(self.model_names)
                 probs_to_display = posterior if posterior is not None else default_probs
                 for name, prob in zip(self.model_names, probs_to_display):
-                    lines.append(f"  {name:<30} {prob:>8.4f}")
+                    model_label = _safe_model_label(name)
+                    lines.append(f"  {model_label:<30} {prob:>8.4f}")
                 logger.info("\n".join(lines))
             for i in range(len(msg)):
                 async_results.append(
@@ -205,7 +245,8 @@ class LLMClient:
                     final_results[idx] = result
                 except Exception as e:
                     logger.error(
-                        f"Error in batch query task {expected_idx}: {str(e)}"
+                        f"Error in batch query task {expected_idx}: "
+                        f"{type(e).__name__}"
                     )
 
             # Print batch total cost
@@ -240,7 +281,8 @@ class LLMClient:
             default_probs = [1.0 / len(self.model_names)] * len(self.model_names)
             probs_to_display = posterior if posterior is not None else default_probs
             for name, prob in zip(self.model_names, probs_to_display):
-                lines.append(f"  {name:<30} {prob:>8.4f}")
+                model_label = _safe_model_label(name)
+                lines.append(f"  {model_label:<30} {prob:>8.4f}")
             logger.info("\n".join(lines))
         return self._attach_headless_work_dir(
             sample_model_kwargs(
@@ -261,7 +303,29 @@ class LLMClient:
         model_sample_probs: Optional[List[float]] = None,
         model_posterior: Optional[List[float]] = None,
     ) -> Optional[QueryResult]:
-        """Execute a single query to the LLM.
+        """Execute a query, returning None after provider retries are exhausted."""
+        try:
+            return self.query_or_raise(
+                msg=msg,
+                system_msg=system_msg,
+                msg_history=msg_history,
+                llm_kwargs=llm_kwargs,
+                model_sample_probs=model_sample_probs,
+                model_posterior=model_posterior,
+            )
+        except LLMQueryError:
+            return None
+
+    def query_or_raise(
+        self,
+        msg: str,
+        system_msg: str,
+        msg_history: List[Dict] = [],
+        llm_kwargs: Optional[Dict] = None,
+        model_sample_probs: Optional[List[float]] = None,
+        model_posterior: Optional[List[float]] = None,
+    ) -> Optional[QueryResult]:
+        """Execute a single query and raise after provider retry exhaustion.
 
         Args:
             msg (str): The message to query the LLM with.
@@ -305,8 +369,10 @@ class LLMClient:
         else:
             llm_kwargs = self._attach_headless_work_dir(llm_kwargs)
         if self.verbose:
-            kwargs_str = [str(v) for v in llm_kwargs.values()]
-            logger.info(f"==> QUERYING: {kwargs_str}")
+            model_label = _safe_model_label(
+                llm_kwargs.get("model_name", "<unknown>")
+            )
+            logger.info(f"==> QUERYING: model={model_label}")
 
         # Create model_posteriors dict from full posterior (not one-hot)
         model_posteriors = None
@@ -314,6 +380,10 @@ class LLMClient:
             model_posteriors = dict(zip(self.model_names, model_posterior))
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
+        model_label = _safe_model_label(
+            llm_kwargs.get("model_name", "<unknown>")
+        )
+        provider_error_type = "UnknownProviderError"
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
@@ -329,16 +399,20 @@ class LLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
-                rejected_result = _rejected_gemini_result(e)
-                if rejected_result is not None:
+                response_completed, rejected_result = _completed_rejection(e)
+                if response_completed:
                     return rejected_result
-                model_name = llm_kwargs.get("model_name", "<unknown>")
+                provider_error_type = type(e).__name__
                 logger.error(
                     f"{try_count + 1}/{MAX_RETRIES} Error in query "
-                    f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
+                    f"for model={model_label}: {provider_error_type}"
                 )
                 try_count += 1
-        return None
+        raise LLMQueryError(
+            model_label,
+            MAX_RETRIES,
+            provider_error_type,
+        ) from None
 
 
 class AsyncLLMClient:
@@ -419,7 +493,10 @@ class AsyncLLMClient:
         final_results: List[Optional[QueryResult]] = [None] * len(results)
         for i, result in enumerate(results):
             if isinstance(result, BaseException):
-                logger.info(f"Error in batch query task {i}: {str(result)}")
+                logger.info(
+                    f"Error in batch query task {i}: "
+                    f"{type(result).__name__}"
+                )
             elif result is not None and len(result) > 1 and result[1] is not None:
                 final_results[result[0]] = result[1]
 
@@ -479,7 +556,8 @@ class AsyncLLMClient:
             default_probs = [1.0 / len(self.model_names)] * len(self.model_names)
             probs_to_display = posterior if posterior is not None else default_probs
             for name, prob in zip(self.model_names, probs_to_display):
-                lines.append(f"  {name:<30} {prob:>8.4f}")
+                model_label = _safe_model_label(name)
+                lines.append(f"  {model_label:<30} {prob:>8.4f}")
             logger.info("\n".join(lines))
 
         async def sample_and_report(index: int):
@@ -521,7 +599,10 @@ class AsyncLLMClient:
             if isinstance(result, BatchResultCallbackError):
                 raise result
             if isinstance(result, BaseException):
-                logger.info(f"Error in batch query task {i}: {str(result)}")
+                logger.info(
+                    f"Error in batch query task {i}: "
+                    f"{type(result).__name__}"
+                )
             elif result is not None and len(result) > 1 and result[1] is not None:
                 final_results[result[0]] = result[1]
 
@@ -557,7 +638,8 @@ class AsyncLLMClient:
             default_probs = [1.0 / len(self.model_names)] * len(self.model_names)
             probs_to_display = posterior if posterior is not None else default_probs
             for name, prob in zip(self.model_names, probs_to_display):
-                lines.append(f"  {name:<30} {prob:>8.4f}")
+                model_label = _safe_model_label(name)
+                lines.append(f"  {model_label:<30} {prob:>8.4f}")
             logger.info("\n".join(lines))
         return self._attach_headless_work_dir(
             sample_model_kwargs(
@@ -578,7 +660,29 @@ class AsyncLLMClient:
         model_sample_probs: Optional[List[float]] = None,
         model_posterior: Optional[List[float]] = None,
     ) -> Optional[QueryResult]:
-        """Execute a single query to the LLM asynchronously.
+        """Execute a query, returning None after provider retries are exhausted."""
+        try:
+            return await self.query_or_raise(
+                msg=msg,
+                system_msg=system_msg,
+                msg_history=msg_history,
+                llm_kwargs=llm_kwargs,
+                model_sample_probs=model_sample_probs,
+                model_posterior=model_posterior,
+            )
+        except LLMQueryError:
+            return None
+
+    async def query_or_raise(
+        self,
+        msg: str,
+        system_msg: str,
+        msg_history: List[Dict] = [],
+        llm_kwargs: Optional[Dict] = None,
+        model_sample_probs: Optional[List[float]] = None,
+        model_posterior: Optional[List[float]] = None,
+    ) -> Optional[QueryResult]:
+        """Execute a single query and raise after provider retry exhaustion.
 
         Args:
             msg (str): The message to query the LLM with.
@@ -622,8 +726,10 @@ class AsyncLLMClient:
         else:
             llm_kwargs = self._attach_headless_work_dir(llm_kwargs)
         if self.verbose:
-            kwargs_str = [str(v) for v in llm_kwargs.values()]
-            logger.info(f"==> QUERYING: {kwargs_str}")
+            model_label = _safe_model_label(
+                llm_kwargs.get("model_name", "<unknown>")
+            )
+            logger.info(f"==> QUERYING: model={model_label}")
 
         # Create model_posteriors dict from full posterior (not one-hot)
         model_posteriors = None
@@ -631,6 +737,10 @@ class AsyncLLMClient:
             model_posteriors = dict(zip(self.model_names, model_posterior))
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
+        model_label = _safe_model_label(
+            llm_kwargs.get("model_name", "<unknown>")
+        )
+        provider_error_type = "UnknownProviderError"
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
@@ -646,14 +756,22 @@ class AsyncLLMClient:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
             except Exception as e:
-                rejected_result = _rejected_gemini_result(e)
-                if rejected_result is not None:
+                response_completed, rejected_result = _completed_rejection(e)
+                if response_completed:
                     return rejected_result
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                provider_error_type = type(e).__name__
+                logger.info(
+                    f"{try_count + 1}/{MAX_RETRIES} Error in query "
+                    f"for model={model_label}: {provider_error_type}"
+                )
                 try_count += 1
                 if try_count < MAX_RETRIES:
                     await asyncio.sleep(1)
-        return None
+        raise LLMQueryError(
+            model_label,
+            MAX_RETRIES,
+            provider_error_type,
+        ) from None
 
     async def _query_async_with_retry(
         self,
@@ -666,8 +784,13 @@ class AsyncLLMClient:
     ) -> tuple[int, Optional[QueryResult]]:
         kwargs = self._attach_headless_work_dir(kwargs)
         if self.verbose:
-            kwargs_str = [str(v) for v in kwargs.values()]
-            logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
+            model_label = _safe_model_label(
+                kwargs.get("model_name", "<unknown>")
+            )
+            logger.info(
+                f"==> SAMPLING: {idx + 1}/{total_samples} "
+                f"model={model_label}"
+            )
 
         try_count = 0
         while try_count < MAX_RETRIES:
@@ -681,10 +804,13 @@ class AsyncLLMClient:
                 )
                 return idx, result
             except Exception as e:
-                rejected_result = _rejected_gemini_result(e)
-                if rejected_result is not None:
+                response_completed, rejected_result = _completed_rejection(e)
+                if response_completed:
                     return idx, rejected_result
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                logger.info(
+                    f"{try_count + 1}/{MAX_RETRIES} Error in query: "
+                    f"{type(e).__name__}"
+                )
                 try_count += 1
                 if try_count == MAX_RETRIES:
                     return idx, None
@@ -716,8 +842,13 @@ class AsyncLLMClient:
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
         if self.verbose:
-            kwargs_str = [str(v) for v in kwargs.values()]
-            logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
+            model_label = _safe_model_label(
+                kwargs.get("model_name", "<unknown>")
+            )
+            logger.info(
+                f"==> SAMPLING: {idx + 1}/{total_samples} "
+                f"model={model_label}"
+            )
 
         try_count = 0
         while try_count < MAX_RETRIES:
@@ -732,10 +863,13 @@ class AsyncLLMClient:
                 )
                 return idx, result
             except Exception as e:
-                rejected_result = _rejected_gemini_result(e)
-                if rejected_result is not None:
+                response_completed, rejected_result = _completed_rejection(e)
+                if response_completed:
                     return idx, rejected_result
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                logger.info(
+                    f"{try_count + 1}/{MAX_RETRIES} Error in query: "
+                    f"{type(e).__name__}"
+                )
                 try_count += 1
                 if try_count == MAX_RETRIES:
                     return idx, None
@@ -754,8 +888,13 @@ def query_fn(
     verbose: bool = False,
 ) -> tuple[int, Optional[QueryResult]]:
     if verbose:
-        kwargs_str = [str(v) for v in kwargs.values()]
-        logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
+        model_label = _safe_model_label(
+            kwargs.get("model_name", "<unknown>")
+        )
+        logger.info(
+            f"==> SAMPLING: {idx + 1}/{total_samples} "
+            f"model={model_label}"
+        )
     try_count = 0
     while try_count < MAX_RETRIES:
         try:
@@ -768,10 +907,13 @@ def query_fn(
             )
             return idx, result
         except Exception as e:
-            rejected_result = _rejected_gemini_result(e)
-            if rejected_result is not None:
+            response_completed, rejected_result = _completed_rejection(e)
+            if response_completed:
                 return idx, rejected_result
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+            logger.error(
+                f"{try_count + 1}/{MAX_RETRIES} Error in query: "
+                f"{type(e).__name__}"
+            )
             try_count += 1
             if try_count == MAX_RETRIES:
                 # Return None result after max retries
@@ -817,8 +959,13 @@ def sample_kwargs_query_fn(
         model_posteriors = dict(zip(model_names, model_sample_probs))
         model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
     if verbose:
-        kwargs_str = [str(v) for v in kwargs.values()]
-        logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
+        model_label = _safe_model_label(
+            kwargs.get("model_name", "<unknown>")
+        )
+        logger.info(
+            f"==> SAMPLING: {idx + 1}/{total_samples} "
+            f"model={model_label}"
+        )
     try_count = 0
     while try_count < MAX_RETRIES:
         try:
@@ -832,10 +979,13 @@ def sample_kwargs_query_fn(
             )
             return idx, result
         except Exception as e:
-            rejected_result = _rejected_gemini_result(e)
-            if rejected_result is not None:
+            response_completed, rejected_result = _completed_rejection(e)
+            if response_completed:
                 return idx, rejected_result
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+            logger.error(
+                f"{try_count + 1}/{MAX_RETRIES} Error in query: "
+                f"{type(e).__name__}"
+            )
             try_count += 1
             if try_count == MAX_RETRIES:
                 # Return None result after max retries

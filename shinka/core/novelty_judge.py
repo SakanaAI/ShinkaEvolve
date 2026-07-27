@@ -196,17 +196,20 @@ class NoveltyJudge:
         )
 
         try:
-            response = self.novelty_llm_client.query(
+            query_method = getattr(
+                self.novelty_llm_client,
+                "query_or_raise",
+                self.novelty_llm_client.query,
+            )
+            response = query_method(
                 msg=user_msg,
                 system_msg=NOVELTY_SYSTEM_MSG,
                 llm_kwargs=self.novelty_llm_client.get_kwargs(),
             )
 
             if response is None or response.content is None:
-                # Fail CLOSED: on a transient outage/empty response we must not
-                # silently accept the candidate as novel. Treat it as not-novel
-                # (reject) so a degraded novelty LLM cannot wave everything
-                # through. is_novel=False => should_reject=True in callers.
+                # Fail closed only for a completed query without a usable verdict.
+                # Provider failures remain exceptions and are handled below.
                 logger.warning(
                     "Novelty LLM returned empty response; rejecting as not novel"
                 )

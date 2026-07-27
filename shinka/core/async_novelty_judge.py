@@ -211,14 +211,19 @@ class AsyncNoveltyJudge:
         )
 
         try:
-            response = await self.async_llm_client.query(
+            query_method = getattr(
+                self.async_llm_client,
+                "query_or_raise",
+                self.async_llm_client.query,
+            )
+            response = await query_method(
                 msg=user_msg,
                 system_msg=NOVELTY_SYSTEM_MSG,
             )
 
             if response is None or response.content is None:
-                # Fail CLOSED: a transient outage/empty response must not be
-                # silently accepted as novel (is_novel=False => reject upstream).
+                # Fail closed only for a completed query without a usable verdict.
+                # Provider failures remain exceptions and are handled below.
                 logger.warning(
                     "Novelty LLM returned empty response; rejecting as not novel"
                 )
@@ -254,7 +259,12 @@ class AsyncNoveltyJudge:
             )
 
             # Query LLM asynchronously
-            response = await self.async_llm_client.query(
+            query_method = getattr(
+                self.async_llm_client,
+                "query_or_raise",
+                self.async_llm_client.query,
+            )
+            response = await query_method(
                 msg=novelty_prompt,
                 system_msg="You are a code novelty assessor. Determine if the new code is sufficiently different from the existing code.",
             )

@@ -1,6 +1,14 @@
 from typing import Dict, List, Optional
 
 
+class IncompleteResponseError(ValueError):
+    """A completed provider response without a usable model result."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.query_result: Optional["QueryResult"] = None
+
+
 class QueryResult:
     def __init__(
         self,

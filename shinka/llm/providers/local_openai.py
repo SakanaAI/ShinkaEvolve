@@ -4,7 +4,7 @@ import openai
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 
 from .pricing import calculate_cost, model_exists
-from .result import QueryResult
+from .result import IncompleteResponseError, QueryResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +40,12 @@ def _extract_local_openai_content(response) -> str:
     finish_reason = getattr(choice, "finish_reason", None)
 
     if finish_reason == "length":
-        raise ValueError(
+        raise IncompleteResponseError(
             "Local OpenAI completion was truncated (finish_reason='length'); "
             "treating as an incomplete generation."
         )
     if not content.strip():
-        raise ValueError(
+        raise IncompleteResponseError(
             "Local OpenAI completion contained no text output "
             f"(finish_reason={finish_reason})."
         )
@@ -63,6 +63,45 @@ def _extract_usage(response) -> tuple[int, int, int]:
     if completion_details is not None:
         thinking_tokens = int(getattr(completion_details, "reasoning_tokens", 0) or 0)
     return in_tokens, all_out_tokens, thinking_tokens
+
+
+def _build_query_result(
+    response,
+    content: str,
+    model: str,
+    msg: str,
+    system_msg: str,
+    msg_history,
+    kwargs,
+    model_posteriors,
+) -> QueryResult:
+    new_msg_history = msg_history
+    if content:
+        new_msg_history = msg_history + [
+            {"role": "user", "content": msg},
+            {"role": "assistant", "content": content},
+        ]
+    thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
+    in_tokens, all_out_tokens, thinking_tokens = _extract_usage(response)
+    out_tokens = max(all_out_tokens - thinking_tokens, 0)
+    input_cost, output_cost = _extract_costs(model, in_tokens, all_out_tokens)
+
+    return QueryResult(
+        content=content,
+        msg=msg,
+        system_msg=system_msg,
+        new_msg_history=new_msg_history,
+        model_name=model,
+        kwargs=kwargs,
+        input_tokens=in_tokens,
+        output_tokens=out_tokens,
+        thinking_tokens=thinking_tokens,
+        cost=input_cost + output_cost,
+        input_cost=input_cost,
+        output_cost=output_cost,
+        thought=thought,
+        model_posteriors=model_posteriors,
+    )
 
 
 @backoff.on_exception(
@@ -93,36 +132,39 @@ def query_local_openai(
             "Structured output is not supported for local OpenAI-compatible backends."
         )
 
-    new_msg_history = msg_history + [{"role": "user", "content": msg}]
     response = client.chat.completions.create(
         model=model,
-        messages=[{"role": "system", "content": system_msg}, *new_msg_history],
+        messages=[
+            {"role": "system", "content": system_msg},
+            *msg_history,
+            {"role": "user", "content": msg},
+        ],
         **kwargs,
         n=1,
     )
-    content = _extract_local_openai_content(response)
-    thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
-    new_msg_history.append({"role": "assistant", "content": content})
-
-    in_tokens, all_out_tokens, thinking_tokens = _extract_usage(response)
-    out_tokens = max(all_out_tokens - thinking_tokens, 0)
-    input_cost, output_cost = _extract_costs(model, in_tokens, all_out_tokens)
-
-    return QueryResult(
-        content=content,
-        msg=msg,
-        system_msg=system_msg,
-        new_msg_history=new_msg_history,
-        model_name=model,
-        kwargs=kwargs,
-        input_tokens=in_tokens,
-        output_tokens=out_tokens,
-        thinking_tokens=thinking_tokens,
-        cost=input_cost + output_cost,
-        input_cost=input_cost,
-        output_cost=output_cost,
-        thought=thought,
-        model_posteriors=model_posteriors,
+    try:
+        content = _extract_local_openai_content(response)
+    except IncompleteResponseError as error:
+        error.query_result = _build_query_result(
+            response,
+            "",
+            model,
+            msg,
+            system_msg,
+            msg_history,
+            kwargs,
+            model_posteriors,
+        )
+        raise
+    return _build_query_result(
+        response,
+        content,
+        model,
+        msg,
+        system_msg,
+        msg_history,
+        kwargs,
+        model_posteriors,
     )
 
 
@@ -154,34 +196,37 @@ async def query_local_openai_async(
             "Structured output is not supported for local OpenAI-compatible backends."
         )
 
-    new_msg_history = msg_history + [{"role": "user", "content": msg}]
     response = await client.chat.completions.create(
         model=model,
-        messages=[{"role": "system", "content": system_msg}, *new_msg_history],
+        messages=[
+            {"role": "system", "content": system_msg},
+            *msg_history,
+            {"role": "user", "content": msg},
+        ],
         **kwargs,
         n=1,
     )
-    content = _extract_local_openai_content(response)
-    thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
-    new_msg_history.append({"role": "assistant", "content": content})
-
-    in_tokens, all_out_tokens, thinking_tokens = _extract_usage(response)
-    out_tokens = max(all_out_tokens - thinking_tokens, 0)
-    input_cost, output_cost = _extract_costs(model, in_tokens, all_out_tokens)
-
-    return QueryResult(
-        content=content,
-        msg=msg,
-        system_msg=system_msg,
-        new_msg_history=new_msg_history,
-        model_name=model,
-        kwargs=kwargs,
-        input_tokens=in_tokens,
-        output_tokens=out_tokens,
-        thinking_tokens=thinking_tokens,
-        cost=input_cost + output_cost,
-        input_cost=input_cost,
-        output_cost=output_cost,
-        thought=thought,
-        model_posteriors=model_posteriors,
+    try:
+        content = _extract_local_openai_content(response)
+    except IncompleteResponseError as error:
+        error.query_result = _build_query_result(
+            response,
+            "",
+            model,
+            msg,
+            system_msg,
+            msg_history,
+            kwargs,
+            model_posteriors,
+        )
+        raise
+    return _build_query_result(
+        response,
+        content,
+        model,
+        msg,
+        system_msg,
+        msg_history,
+        kwargs,
+        model_posteriors,
     )

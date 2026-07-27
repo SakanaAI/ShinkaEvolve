@@ -8,19 +8,22 @@ Covers four verified correctness bugs:
   finished program instead of raising.
 * Q12 - ``extract_between`` returned the truthy string ``"none"`` on failure,
   so ``if result:`` callers treated a failed extraction as success.
-* Q17 - the novelty judge failed OPEN (accepted the candidate as novel) on an
-  empty/transient LLM response instead of failing closed.
+* Q17 - the novelty judge fails closed on completed empty responses while
+  provider failures remain fail-open.
 """
 
 import asyncio
+import logging
+import traceback
 from types import SimpleNamespace
 
 import pytest
 
 from google.genai import types
 
-from shinka.llm import AsyncLLMClient, extract_between
-from shinka.llm.providers.result import QueryResult
+from shinka.llm import AsyncLLMClient, LLMClient, LLMQueryError, extract_between
+from shinka.llm.llm import query_fn
+from shinka.llm.providers.result import IncompleteResponseError, QueryResult
 from shinka.llm.providers.gemini import (
     IncompleteGeminiResponseError,
     query_gemini,
@@ -118,14 +121,14 @@ class _FakeLocalClient:
 
 
 def test_extract_local_openai_content_raises_on_empty():
-    with pytest.raises(ValueError, match="no text output"):
+    with pytest.raises(IncompleteResponseError, match="no text output"):
         _extract_local_openai_content(_local_response(""))
-    with pytest.raises(ValueError, match="no text output"):
+    with pytest.raises(IncompleteResponseError, match="no text output"):
         _extract_local_openai_content(_local_response(None))
 
 
 def test_extract_local_openai_content_raises_on_truncation():
-    with pytest.raises(ValueError, match="truncated"):
+    with pytest.raises(IncompleteResponseError, match="truncated"):
         _extract_local_openai_content(
             _local_response("partial code", finish_reason="length")
         )
@@ -136,9 +139,24 @@ def test_extract_local_openai_content_returns_valid_text():
 
 
 def test_query_local_openai_raises_on_empty_content():
-    client = _FakeLocalClient(_local_response(""))
-    with pytest.raises(ValueError, match="no text output"):
+    response = _local_response("")
+    response.usage = SimpleNamespace(
+        prompt_tokens=7,
+        completion_tokens=5,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+    )
+    client = _FakeLocalClient(response)
+    with pytest.raises(
+        IncompleteResponseError, match="no text output"
+    ) as exc_info:
         query_local_openai(client, "dummy-model", "msg", "sys", [], None)
+
+    rejected = exc_info.value.query_result
+    assert rejected is not None
+    assert rejected.content == ""
+    assert rejected.input_tokens == 7
+    assert rejected.output_tokens == 3
+    assert rejected.thinking_tokens == 2
 
 
 def test_query_local_openai_returns_result_for_valid_content():
@@ -348,6 +366,301 @@ def test_async_llm_client_returns_rejected_usage_without_retry(monkeypatch):
     assert result.cost == pytest.approx(0.3)
 
 
+def test_llm_client_raises_after_provider_retries_are_exhausted(monkeypatch):
+    calls = 0
+
+    def fail_query(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("shinka.llm.llm.query", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 2)
+    client = LLMClient("gpt-5", verbose=False)
+
+    with pytest.raises(LLMQueryError, match="gpt-5") as exc_info:
+        client.query_or_raise("msg", "sys", llm_kwargs={"model_name": "gpt-5"})
+
+    assert calls == 2
+    assert exc_info.value.provider_error_type == "RuntimeError"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_llm_client_preserves_none_on_provider_retry_exhaustion(monkeypatch):
+    calls = 0
+
+    def fail_query(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("shinka.llm.llm.query", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 2)
+    client = LLMClient("gpt-5", verbose=False)
+
+    result = client.query(
+        "msg", "sys", llm_kwargs={"model_name": "gpt-5"}
+    )
+
+    assert result is None
+    assert calls == 2
+
+
+def test_async_llm_client_raises_after_provider_retries_are_exhausted(monkeypatch):
+    calls = 0
+
+    async def fail_query(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("network down")
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("shinka.llm.llm.query_async", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 2)
+    client = AsyncLLMClient("gpt-5", verbose=False)
+
+    async def query():
+        with pytest.raises(LLMQueryError, match="gpt-5") as exc_info:
+            await client.query_or_raise(
+                "msg", "sys", llm_kwargs={"model_name": "gpt-5"}
+            )
+        assert exc_info.value.provider_error_type == "RuntimeError"
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+
+    asyncio.run(query())
+
+    assert calls == 2
+
+
+def test_llm_client_returns_completed_empty_response_without_retry(monkeypatch):
+    calls = 0
+
+    def empty_response(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise IncompleteResponseError("no text output")
+
+    monkeypatch.setattr("shinka.llm.llm.query", empty_response)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 3)
+    client = LLMClient("gpt-5", verbose=False)
+
+    result = client.query_or_raise(
+        "msg", "sys", llm_kwargs={"model_name": "gpt-5"}
+    )
+
+    assert result is None
+    assert calls == 1
+
+
+def test_sync_batch_query_preserves_completed_response_usage(monkeypatch):
+    rejected = _make_result(output_tokens=3, thinking_tokens=2)
+    rejected.content = ""
+    rejected.cost = 0.4
+    error = IncompleteResponseError("no text output")
+    error.query_result = rejected
+
+    def empty_response(**kwargs):
+        raise error
+
+    monkeypatch.setattr("shinka.llm.llm.query", empty_response)
+
+    index, result = query_fn(
+        4,
+        "msg",
+        "sys",
+        kwargs={"model_name": "gpt-5"},
+    )
+
+    assert index == 4
+    assert result is rejected
+    assert result.cost == pytest.approx(0.4)
+
+
+def test_sync_batch_logs_redact_credentials(caplog, monkeypatch):
+    def fail_query(**kwargs):
+        raise RuntimeError("request failed with token=error-secret")
+
+    model_name = (
+        "local/model@https://user:url-secret@example.test/v1?token=url-secret"
+    )
+    monkeypatch.setattr("shinka.llm.llm.query", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 1)
+    caplog.set_level(logging.INFO)
+
+    query_fn(
+        0,
+        "msg",
+        "sys",
+        kwargs={
+            "model_name": model_name,
+            "extra_headers": {"Authorization": "Bearer header-secret"},
+        },
+        verbose=True,
+    )
+
+    assert "local_openai/model" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "url-secret" not in caplog.text
+    assert "header-secret" not in caplog.text
+    assert "error-secret" not in caplog.text
+
+
+def test_async_batch_logs_redact_credentials(caplog, monkeypatch):
+    async def fail_query(**kwargs):
+        raise RuntimeError("request failed with token=error-secret")
+
+    model_name = (
+        "local/model@https://user:url-secret@example.test/v1?token=url-secret"
+    )
+    monkeypatch.setattr("shinka.llm.llm.query_async", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 1)
+    caplog.set_level(logging.INFO)
+    client = AsyncLLMClient(model_name, verbose=True)
+
+    index, result = asyncio.run(
+        client._query_async_with_retry(
+            0,
+            "msg",
+            "sys",
+            kwargs={
+                "model_name": model_name,
+                "extra_headers": {"Authorization": "Bearer header-secret"},
+            },
+        )
+    )
+
+    assert index == 0
+    assert result is None
+    assert "local_openai/model" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "url-secret" not in caplog.text
+    assert "header-secret" not in caplog.text
+    assert "error-secret" not in caplog.text
+
+
+@pytest.mark.parametrize("client_class", [LLMClient, AsyncLLMClient])
+def test_get_kwargs_logs_redact_model_credentials(client_class, caplog):
+    model_name = (
+        "local/model@https://user:url-secret@example.test/v1?token=url-secret"
+    )
+    client = client_class(model_name, verbose=True)
+    caplog.set_level(logging.INFO)
+
+    client.get_kwargs()
+
+    assert "local_openai/model" in caplog.text
+    assert "url-secret" not in caplog.text
+    assert "example.test" not in caplog.text
+
+
+def test_sync_public_batch_logs_redact_model_credentials(caplog, monkeypatch):
+    class FakeAsyncResult:
+        def get(self):
+            return 0, None
+
+    class FakePool:
+        def __init__(self, processes):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def apply_async(self, function, args):
+            return FakeAsyncResult()
+
+    model_name = (
+        "local/model@https://user:url-secret@example.test/v1?token=url-secret"
+    )
+    monkeypatch.setattr("shinka.llm.llm.mp.Pool", FakePool)
+    caplog.set_level(logging.INFO)
+    client = LLMClient(model_name, verbose=True)
+
+    client.batch_kwargs_query(1, "msg", "sys")
+
+    assert "local_openai/model" in caplog.text
+    assert "url-secret" not in caplog.text
+    assert "example.test" not in caplog.text
+
+
+def test_async_public_batch_logs_redact_model_credentials(caplog, monkeypatch):
+    model_name = (
+        "local/model@https://user:url-secret@example.test/v1?token=url-secret"
+    )
+    client = AsyncLLMClient(model_name, verbose=True)
+
+    async def completed_query(index, *args, **kwargs):
+        return index, None
+
+    monkeypatch.setattr(
+        client,
+        "_sample_kwargs_query_async_with_retry",
+        completed_query,
+    )
+    caplog.set_level(logging.INFO)
+
+    asyncio.run(client.batch_kwargs_query(1, "msg", "sys"))
+
+    assert "local_openai/model" in caplog.text
+    assert "url-secret" not in caplog.text
+    assert "example.test" not in caplog.text
+
+
+def test_llm_query_error_redacts_local_endpoint_credentials(monkeypatch):
+    def fail_query(**kwargs):
+        raise RuntimeError(
+            "request failed: https://user:secret@example.test/v1?token=abc"
+        )
+
+    model_name = (
+        "local/model@https://user:secret@example.test/v1?token=abc"
+    )
+    monkeypatch.setattr("shinka.llm.llm.query", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 1)
+    client = LLMClient(model_name, verbose=False)
+
+    with pytest.raises(LLMQueryError) as exc_info:
+        client.query_or_raise(
+            "msg", "sys", llm_kwargs={"model_name": model_name}
+        )
+
+    error_text = str(exc_info.value)
+    traceback_text = "".join(
+        traceback.format_exception(exc_info.value)
+    )
+    assert "local_openai/model" in error_text
+    assert "secret" not in traceback_text
+    assert "token=abc" not in traceback_text
+    assert "example.test" not in traceback_text
+
+
+def test_llm_query_error_sanitizes_headless_model_label(monkeypatch):
+    def fail_query(**kwargs):
+        raise RuntimeError("provider failed")
+
+    model_name = "headless/co\ndex@gpt-5?token=secret"
+    monkeypatch.setattr("shinka.llm.llm.query", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 1)
+    client = LLMClient(model_name, verbose=False)
+
+    with pytest.raises(LLMQueryError) as exc_info:
+        client.query_or_raise(
+            "msg", "sys", llm_kwargs={"model_name": model_name}
+        )
+
+    error_text = str(exc_info.value)
+    assert "headless/co?dex" in error_text
+    assert "\n" not in error_text
+    assert "token=secret" not in error_text
+
+
 def test_async_batch_preserves_failed_response_position(monkeypatch):
     valid = _make_result(output_tokens=3, thinking_tokens=0)
     client = AsyncLLMClient("gemini-2.5-flash", verbose=False)
@@ -494,3 +807,48 @@ def test_async_check_llm_novelty_fails_closed_when_response_is_none():
     assert is_novel is False
     assert cost == 0.0
     assert "empty" in explanation.lower()
+
+
+def test_novelty_judge_fails_open_after_provider_retries_are_exhausted(monkeypatch):
+    def fail_query(**kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("shinka.llm.llm.query", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 1)
+    judge = NoveltyJudge(
+        novelty_llm_client=LLMClient("gpt-5", verbose=False),
+    )
+
+    is_novel, explanation, cost = judge.check_llm_novelty(
+        proposed_code="def g():\n    return 2\n",
+        most_similar_program=_similar_program(),
+    )
+
+    assert is_novel is True
+    assert "Query failed" in explanation
+    assert cost == 0.0
+
+
+def test_async_novelty_judge_fails_open_after_provider_retries_are_exhausted(
+    monkeypatch,
+):
+    async def fail_query(**kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("shinka.llm.llm.query_async", fail_query)
+    monkeypatch.setattr("shinka.llm.llm.MAX_RETRIES", 1)
+    async_judge = AsyncNoveltyJudge(
+        NoveltyJudge(),
+        async_llm_client=AsyncLLMClient("gpt-5", verbose=False),
+    )
+
+    is_novel, explanation, cost = asyncio.run(
+        async_judge._check_llm_novelty_async(
+            "def g():\n    return 2\n",
+            _similar_program(),
+        )
+    )
+
+    assert is_novel is True
+    assert "Query failed" in explanation
+    assert cost == 0.0

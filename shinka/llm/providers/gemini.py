@@ -4,7 +4,7 @@ from typing import Any, cast
 from google.genai import types
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .pricing import calculate_cost
-from .result import QueryResult
+from .result import IncompleteResponseError, QueryResult
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +14,8 @@ MAX_VALUE = BACKOFF_MAX_VALUE
 MAX_TIME = BACKOFF_MAX_TIME
 
 
-class IncompleteGeminiResponseError(ValueError):
+class IncompleteGeminiResponseError(IncompleteResponseError):
     """Non-retryable Gemini response rejection with billable usage attached."""
-
-    def __init__(self, message: str):
-        super().__init__(message)
-        self.query_result: QueryResult | None = None
 
 
 def _is_incomplete_response(error: Exception) -> bool:

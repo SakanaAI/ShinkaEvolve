@@ -1,4 +1,4 @@
-from .llm import LLMClient, AsyncLLMClient, extract_between
+from .llm import AsyncLLMClient, LLMClient, LLMQueryError, extract_between
 from .providers import QueryResult
 from .prioritization import (
     BanditBase,
@@ -10,6 +10,7 @@ from .prioritization import (
 __all__ = [
     "LLMClient",
     "AsyncLLMClient",
+    "LLMQueryError",
     "extract_between",
     "QueryResult",
     "EmbeddingClient",

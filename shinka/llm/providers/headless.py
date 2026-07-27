@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from shinka.llm.constants import TIMEOUT
 
-from .result import QueryResult
+from .result import IncompleteResponseError, QueryResult
 
 DEFAULT_HEADLESS_COMMAND = "npx -y @roberttlange/headless"
 HEADLESS_COMMAND_ENV = "SHINKA_HEADLESS_COMMAND"
@@ -329,7 +329,7 @@ def _numeric_values(value: Any) -> list[float]:
 def _parse_stdout(stdout: str) -> tuple[str, dict[str, Any]]:
     lines = [line for line in stdout.splitlines() if line.strip()]
     if not lines:
-        raise ValueError("Headless stdout was empty.")
+        raise IncompleteResponseError("Headless stdout was empty.")
 
     try:
         payload = json.loads(lines[-1])
@@ -341,9 +341,6 @@ def _parse_stdout(stdout: str) -> tuple[str, dict[str, Any]]:
         raise ValueError("Headless usage JSON must contain a top-level usage object.")
 
     content = "\n".join(lines[:-1]).strip()
-    if not content:
-        raise ValueError("Headless assistant content was empty.")
-
     return content, usage
 
 
@@ -358,11 +355,13 @@ def _query_result(
     kwargs: dict[str, Any],
     model_posteriors: dict[str, float] | None,
 ) -> QueryResult:
-    new_msg_history = [
-        *msg_history,
-        {"role": "user", "content": msg},
-        {"role": "assistant", "content": content},
-    ]
+    new_msg_history = msg_history
+    if content:
+        new_msg_history = [
+            *msg_history,
+            {"role": "user", "content": msg},
+            {"role": "assistant", "content": content},
+        ]
     nested_cost = usage.get("cost") if isinstance(usage.get("cost"), dict) else {}
     input_cost = _usage_float(usage, "input_cost", "prompt_cost")
     if input_cost == 0.0:
@@ -397,6 +396,14 @@ def _query_result(
         model_posteriors=model_posteriors,
         num_total_queries=_usage_int(usage, "num_total_queries", "total_queries") or 1,
     )
+
+
+def _require_content(result: QueryResult) -> QueryResult:
+    if result.content:
+        return result
+    error = IncompleteResponseError("Headless assistant content was empty.")
+    error.query_result = result
+    raise error
 
 
 def query_headless(
@@ -447,15 +454,17 @@ def query_headless(
         "model_name": model,
         "headless_prompt_path": str(prompt_path),
     }
-    return _query_result(
-        content=content,
-        usage=usage,
-        model=model,
-        msg=msg,
-        system_msg=system_msg,
-        msg_history=msg_history,
-        kwargs=result_kwargs,
-        model_posteriors=model_posteriors,
+    return _require_content(
+        _query_result(
+            content=content,
+            usage=usage,
+            model=model,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+            kwargs=result_kwargs,
+            model_posteriors=model_posteriors,
+        )
     )
 
 
@@ -510,13 +519,15 @@ async def query_headless_async(
         "model_name": model,
         "headless_prompt_path": str(prompt_path),
     }
-    return _query_result(
-        content=content,
-        usage=usage,
-        model=model,
-        msg=msg,
-        system_msg=system_msg,
-        msg_history=msg_history,
-        kwargs=result_kwargs,
-        model_posteriors=model_posteriors,
+    return _require_content(
+        _query_result(
+            content=content,
+            usage=usage,
+            model=model,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+            kwargs=result_kwargs,
+            model_posteriors=model_posteriors,
+        )
     )
