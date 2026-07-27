@@ -107,6 +107,54 @@ results directory is resumed, its `.wandb_run_id` is reused with
 without uploading. W&B failures are non-fatal and do not alter the existing
 database or WebUI path.
 
+### Headless Agent Models in Docker
+
+`headless/<agent>` model strings shell out to the Headless CLI, which Shinka
+invokes as `npx -y @roberttlange/headless` unless `SHINKA_HEADLESS_COMMAND`
+says otherwise. Setting that variable to `shinka_headless_docker` runs every
+mutation inside a container:
+
+```bash
+export SHINKA_HEADLESS_COMMAND=shinka_headless_docker
+export SHINKA_HEADLESS_DOCKER_IMAGE=ghcr.io/roberttlange/headless:latest
+```
+
+The selected image must contain the native CLI for every provider in use. The
+public Headless image supports the standard Codex and Cursor paths, but does
+not ship Antigravity's proprietary `agy` executable; use a provider image that
+includes it when running Antigravity models.
+
+Headless seeds agent credentials by mounting the agent's auth seed paths
+read-only under `/tmp/headless-host-home` and copying that tree into the
+container's tmpfs `$HOME`. Several agents keep credentials next to bulk state:
+`~/.gemini/antigravity-cli` holds the OAuth token alongside conversation and
+brain logs and routinely exceeds 500 MB, and `~/.codex/config.toml` records
+desktop themes, plugin marketplaces, and MCP server commands that only resolve
+on the host. Seeding straight from a real home therefore copies that state into
+container RAM on every proposal.
+
+`shinka_headless_docker` stages a throwaway home holding only the credential
+files, capped at 4 MiB per file and 16 MiB in total, and prints a warning for
+anything it skips. Directory seed paths are never copied wholesale. It also
+rewrites the Codex config down to its model keys, keeps npm pointed at the host
+cache so the staged home does not trigger a package re-download per proposal.
+By default it drops `--session` because the staged home is temporary. To keep
+Headless's native conversation state across disposable Docker containers, set
+`SHINKA_HEADLESS_DOCKER_SESSION_ROOT` to an absolute, private directory outside
+the proposal worktree. The wrapper then forwards `--session` and maps that
+directory to Headless's `HEADLESS_DOCKER_SESSION_ROOT`; Headless validates its
+ownership, permissions, and worktree separation.
+
+| Variable | Description |
+|----------|-------------|
+| `SHINKA_HEADLESS_DOCKER_IMAGE` | Image to run. Defaults to the Headless CLI's own default. |
+| `SHINKA_HEADLESS_DOCKER_PLATFORM` | Forwarded as `docker run --platform`. |
+| `SHINKA_HEADLESS_DOCKER_ARGS` | Extra `docker run` arguments, parsed as a shell word list. |
+| `SHINKA_HEADLESS_DOCKER_SEED_EXTRA` | Additional home-relative paths to stage, separated by `os.pathsep`. |
+| `SHINKA_HEADLESS_DOCKER_CODEX_SERVICE_TIER` | Codex service tier: `fast` (default) or `flex`. |
+| `SHINKA_HEADLESS_DOCKER_SESSION_ROOT` | Optional absolute root for durable Headless Docker sessions; must be private and outside proposal worktrees. |
+| `SHINKA_HEADLESS_DOCKER_BASE_COMMAND` | Headless CLI command. Defaults to `npx -y @roberttlange/headless`. |
+
 ### DatabaseConfig (`shinka.database.DatabaseConfig`)
 
 | Parameter | Type | Default | Description |
