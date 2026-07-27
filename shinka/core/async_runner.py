@@ -94,6 +94,12 @@ def _monotonic_time() -> float:
     return time.monotonic()
 
 
+@dataclass(frozen=True)
+class InstalledSignalHandler:
+    previous_process_handler: Any
+    installed_process_handler: Any
+
+
 class ApiCostAccountingError(RuntimeError):
     """Base class for failures that make budget enforcement unsafe."""
 
@@ -1219,7 +1225,16 @@ class ShinkaEvolveRunner:
             # asyncio.get_running_loop raises RuntimeError when no loop exists.
             if "no running event loop" not in str(exc):
                 raise
-        asyncio.run(self.run_async())
+        asyncio.run(self._run_async_with_signal_handlers())
+
+    async def _run_async_with_signal_handlers(self) -> None:
+        """Run from the synchronous entry point with owned process handlers."""
+        loop = asyncio.get_running_loop()
+        signal_handlers = self._install_signal_handlers(loop)
+        try:
+            await self.run_async()
+        finally:
+            self._restore_signal_handlers(loop, signal_handlers)
 
     def _request_stop(self, sig=None) -> None:
         """Trigger a graceful shutdown (used by the SIGINT/SIGTERM handlers).
@@ -1262,18 +1277,75 @@ class ShinkaEvolveRunner:
         if self._fatal_error is not None:
             raise self._fatal_error
 
-    def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> list:
-        """Install SIGINT/SIGTERM handlers on the running loop; return the set."""
-        installed = []
+    def _install_signal_handlers(
+        self,
+        loop: asyncio.AbstractEventLoop,
+    ) -> Dict[signal.Signals, InstalledSignalHandler]:
+        """Install owned handlers and retain callbacks displaced by them."""
+        installed: Dict[signal.Signals, InstalledSignalHandler] = {}
         for sig in (signal.SIGINT, signal.SIGTERM):
+            def request_stop(
+                received_signal,
+                _frame,
+                *,
+                owning_loop=loop,
+            ):
+                owning_loop.call_soon_threadsafe(
+                    self._request_stop,
+                    received_signal,
+                )
+
             try:
-                loop.add_signal_handler(sig, self._request_stop, sig)
-                installed.append(sig)
-            except (NotImplementedError, RuntimeError, ValueError):
+                previous_handler = signal.signal(sig, request_stop)
+                installed[sig] = InstalledSignalHandler(
+                    previous_process_handler=previous_handler,
+                    installed_process_handler=request_stop,
+                )
+            except (OSError, RuntimeError, ValueError):
                 # Unavailable off the main thread or on some platforms; there we
                 # simply fall back to the default (KeyboardInterrupt) behaviour.
                 pass
         return installed
+
+    def _restore_signal_handlers(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        installed: Dict[signal.Signals, InstalledSignalHandler],
+    ) -> None:
+        """Remove owned callbacks and restore the process handlers they replaced."""
+        for sig, registration in installed.items():
+            pthread_sigmask = getattr(signal, "pthread_sigmask", None)
+            previous_mask = None
+            try:
+                if pthread_sigmask is not None:
+                    previous_mask = pthread_sigmask(signal.SIG_BLOCK, {sig})
+                if (
+                    signal.getsignal(sig)
+                    is not registration.installed_process_handler
+                ):
+                    continue
+            except (NotImplementedError, OSError, RuntimeError, ValueError):
+                continue
+            else:
+                try:
+                    signal.signal(
+                        sig,
+                        registration.previous_process_handler,
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    logger.warning(
+                        "Could not restore previous handler for %s",
+                        sig,
+                    )
+            finally:
+                if pthread_sigmask is not None and previous_mask is not None:
+                    try:
+                        pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                    except (OSError, RuntimeError, ValueError):
+                        logger.warning(
+                            "Could not restore previous signal mask for %s",
+                            sig,
+                        )
 
     async def run_async(self):
         """Main async evolution loop."""
@@ -1282,12 +1354,6 @@ class ShinkaEvolveRunner:
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
-        try:
-            signal_handlers = self._install_signal_handlers(
-                asyncio.get_running_loop()
-            )
-        except RuntimeError:
-            signal_handlers = []
 
         try:
             # Setup initial program (results_dir now set)
@@ -1442,7 +1508,7 @@ class ShinkaEvolveRunner:
             raise
         finally:
             finalizer_task = asyncio.create_task(
-                self._finalize_async_run(tasks, signal_handlers),
+                self._finalize_async_run(tasks),
                 name="run_finalizer",
             )
             try:
@@ -1455,23 +1521,15 @@ class ShinkaEvolveRunner:
         # Print final summary
         await self._print_final_summary()
 
-    async def _finalize_async_run(self, tasks: list, signal_handlers: list) -> None:
+    async def _finalize_async_run(self, tasks: list) -> None:
         """Cancel background work and release owned resources exactly once."""
-        try:
-            await self._cancel_completed_job_batches()
-            await self._cancel_background_side_effect_worker()
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            await self._cleanup_async()
-        finally:
-            loop = asyncio.get_running_loop()
-            for sig in signal_handlers:
-                try:
-                    loop.remove_signal_handler(sig)
-                except (NotImplementedError, RuntimeError, ValueError):
-                    pass
+        await self._cancel_completed_job_batches()
+        await self._cancel_background_side_effect_worker()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._cleanup_async()
 
     async def _await_finalizer_resiliently(
         self, finalizer_task: asyncio.Task

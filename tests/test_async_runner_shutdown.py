@@ -271,7 +271,9 @@ def test_run_async_surfaces_ambiguous_background_submission_after_cleanup(
         )
         runner.pricing_snapshot = None
         runner.embedding_client = None
-        runner._install_signal_handlers = lambda _loop: []
+        runner._install_signal_handlers = lambda _loop: (_ for _ in ()).throw(
+            AssertionError("run_async must not install process signal handlers")
+        )
         runner._setup_async = AsyncMock()
         runner._verify_database_ready = AsyncMock()
         runner._cancel_completed_job_batches = AsyncMock()
@@ -752,3 +754,157 @@ def test_runner_has_signal_handler_api():
     # The handler-install helper must exist and tolerate a missing loop capability.
     assert hasattr(ShinkaEvolveRunner, "_install_signal_handlers")
     assert hasattr(ShinkaEvolveRunner, "_request_stop")
+
+
+def test_signal_handlers_restore_previous_callbacks(monkeypatch):
+    runner = _build_runner()
+    previous_handlers = {
+        async_runner_module.signal.SIGINT: object(),
+        async_runner_module.signal.SIGTERM: object(),
+    }
+    process_handlers = dict(previous_handlers)
+    restored = []
+
+    class _FakeLoop:
+        def __init__(self):
+            self.scheduled = []
+
+        def call_soon_threadsafe(self, callback, *args):
+            self.scheduled.append((callback, args))
+
+    loop = _FakeLoop()
+    monkeypatch.setattr(
+        async_runner_module.signal,
+        "getsignal",
+        lambda sig: process_handlers[sig],
+    )
+    def set_signal(sig, handler):
+        previous_handler = process_handlers[sig]
+        process_handlers[sig] = handler
+        if handler is previous_handlers[sig]:
+            restored.append((sig, handler))
+        return previous_handler
+
+    monkeypatch.setattr(async_runner_module.signal, "signal", set_signal)
+    monkeypatch.setattr(
+        async_runner_module.signal,
+        "pthread_sigmask",
+        lambda how, signals: set(),
+    )
+
+    installed = runner._install_signal_handlers(loop)
+    runner._restore_signal_handlers(loop, installed)
+
+    assert {
+        sig: registration.previous_process_handler
+        for sig, registration in installed.items()
+    } == previous_handlers
+    assert restored == list(previous_handlers.items())
+    assert process_handlers == previous_handlers
+
+
+def test_signal_restore_preserves_newer_process_callback(monkeypatch):
+    runner = _build_runner()
+    previous_handlers = {
+        async_runner_module.signal.SIGINT: object(),
+        async_runner_module.signal.SIGTERM: object(),
+    }
+    process_handlers = {
+        async_runner_module.signal.SIGINT: previous_handlers[
+            async_runner_module.signal.SIGINT
+        ],
+        async_runner_module.signal.SIGTERM: previous_handlers[
+            async_runner_module.signal.SIGTERM
+        ],
+    }
+
+    class _FakeLoop:
+        def __init__(self):
+            self.scheduled = []
+
+        def call_soon_threadsafe(self, callback, *args):
+            self.scheduled.append((callback, args))
+
+    loop = _FakeLoop()
+    monkeypatch.setattr(
+        async_runner_module.signal,
+        "getsignal",
+        lambda sig: process_handlers[sig],
+    )
+    def set_signal(sig, handler):
+        previous_handler = process_handlers[sig]
+        process_handlers[sig] = handler
+        return previous_handler
+
+    monkeypatch.setattr(async_runner_module.signal, "signal", set_signal)
+    monkeypatch.setattr(
+        async_runner_module.signal,
+        "pthread_sigmask",
+        lambda how, signals: set(),
+    )
+
+    installed = runner._install_signal_handlers(loop)
+    newer_handler = object()
+    set_signal(async_runner_module.signal.SIGINT, newer_handler)
+
+    runner._restore_signal_handlers(loop, installed)
+
+    assert (
+        process_handlers[async_runner_module.signal.SIGINT]
+        is newer_handler
+    )
+    assert (
+        process_handlers[async_runner_module.signal.SIGTERM]
+        is previous_handlers[async_runner_module.signal.SIGTERM]
+    )
+
+
+def test_newer_process_handler_survives_asyncio_loop_close():
+    runner = _build_runner()
+    previous_sigterm = async_runner_module.signal.getsignal(
+        async_runner_module.signal.SIGTERM
+    )
+
+    def newer_handler(_sig, _frame):
+        return None
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        installed = runner._install_signal_handlers(loop)
+        async_runner_module.signal.signal(
+            async_runner_module.signal.SIGTERM,
+            newer_handler,
+        )
+        runner._restore_signal_handlers(loop, installed)
+
+    try:
+        asyncio.run(_run())
+        assert (
+            async_runner_module.signal.getsignal(
+                async_runner_module.signal.SIGTERM
+            )
+            is newer_handler
+        )
+    finally:
+        async_runner_module.signal.signal(
+            async_runner_module.signal.SIGTERM,
+            previous_sigterm,
+        )
+
+
+def test_run_uses_signal_owning_wrapper():
+    runner = _build_runner()
+    calls = []
+
+    async def run_with_signals():
+        calls.append("wrapped")
+
+    async def run_without_signals():
+        raise AssertionError("run() must use the signal-owning wrapper")
+
+    runner._run_async_with_signal_handlers = run_with_signals
+    runner.run_async = run_without_signals
+
+    runner.run()
+
+    assert calls == ["wrapped"]
