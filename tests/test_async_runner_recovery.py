@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -2419,6 +2420,73 @@ def test_job_monitor_preserves_jobs_added_during_status_poll():
         await runner._job_monitor_task()
 
         assert runner.running_jobs == [first_job, second_job]
+
+    asyncio.run(_run())
+
+
+def test_job_monitor_fails_after_bounded_unknown_status_duration(
+    monkeypatch,
+    caplog,
+):
+    async def _run():
+        runner = _build_runner(
+            evo_config=SimpleNamespace(num_generations=10, max_api_costs=None),
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+        )
+        runner.cost_limit_reached = False
+        runner._has_persistence_work_in_progress = lambda: False
+        runner._cancel_surplus_inflight_work = lambda: asyncio.sleep(0, result=None)
+        runner._retry_failed_db_jobs = lambda: asyncio.sleep(0, result=None)
+        runner._record_progress = lambda: None
+
+        job = AsyncRunningJob(
+            job_id="job-unknown",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=1,
+        )
+        runner.running_jobs = [job]
+
+        class _UnknownScheduler:
+            def __init__(self):
+                self.calls = 0
+
+            async def batch_check_status_async(self, jobs):
+                self.calls += 1
+                if self.calls == 1:
+                    return [RuntimeError("scheduler-secret") for _ in jobs]
+                return [None for _ in jobs]
+
+        scheduler = _UnknownScheduler()
+        runner.scheduler = scheduler
+        monkeypatch.setattr(
+            "shinka.core.async_runner.JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS",
+            1.0,
+        )
+        monotonic_times = iter([100.0, 102.0])
+        monkeypatch.setattr(
+            "shinka.core.async_runner._monotonic_time",
+            lambda: next(monotonic_times),
+        )
+        caplog.set_level(logging.DEBUG)
+
+        await asyncio.wait_for(runner._job_monitor_task(), timeout=0.5)
+
+        assert scheduler.calls == 2
+        assert job.unknown_status_polls == 2
+        assert job.unknown_status_started_at == 100.0
+        assert runner.should_stop.is_set()
+        assert runner.finalization_complete.is_set()
+        assert runner.running_jobs == [job]
+        assert runner._fatal_error is not None
+        assert runner._fatal_error.__class__.__name__ == "JobStatusUnavailableError"
+        assert "RuntimeError" in caplog.text
+        assert "scheduler-secret" not in caplog.text
 
     asyncio.run(_run())
 

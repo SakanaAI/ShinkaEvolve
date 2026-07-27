@@ -123,6 +123,33 @@ def test_sacct_timeout_returns_unknown(monkeypatch):
     assert slurm.get_job_status("999") is None
 
 
+def test_sacct_success_without_rows_returns_unknown(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "squeue":
+            raise subprocess.CalledProcessError(1, cmd)
+        return _FakeCompleted("")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+
+    assert slurm.get_job_status("999") is None
+
+
+def test_scheduler_preserves_unknown_slurm_status(monkeypatch):
+    monkeypatch.setattr(slurm, "get_job_status", lambda _job_id: None)
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+
+    try:
+        status = scheduler.check_job_status(SimpleNamespace(job_id="999"))
+    finally:
+        scheduler.shutdown()
+
+    assert status is None
+
+
 def test_monitor_raises_when_status_remains_unknown(monkeypatch):
     monkeypatch.setattr(slurm, "get_job_status", lambda _job_id: None)
     monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)

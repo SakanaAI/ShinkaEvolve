@@ -40,6 +40,10 @@ from shinka.llm import (
 )
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
+from shinka.launch.slurm import (
+    JobStatusUnavailableError,
+    MAX_UNKNOWN_STATUS_POLLS,
+)
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -83,6 +87,11 @@ logger = logging.getLogger(__name__)
 # KillWait/epilog processing to settle while keeping shutdown bounded.
 JOB_CANCELLATION_ATTEMPTS = 6
 API_COST_CHECKPOINT_ATTEMPTS = 3
+JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS = MAX_UNKNOWN_STATUS_POLLS * 10.0
+
+
+def _monotonic_time() -> float:
+    return time.monotonic()
 
 
 class ApiCostAccountingError(RuntimeError):
@@ -202,6 +211,8 @@ class AsyncRunningJob:
     completion_detected_at: Optional[float] = None
     discard_if_completed: bool = False
     evaluation_slot_released: bool = False
+    unknown_status_polls: int = 0
+    unknown_status_started_at: Optional[float] = None
 
 
 @dataclass
@@ -2405,8 +2416,15 @@ class ShinkaEvolveRunner:
                             status_display = []
                             for i, job in enumerate(monitored_jobs):
                                 if i < len(status_results):
+                                    status_result = status_results[i]
+                                    if isinstance(status_result, BaseException):
+                                        status_label = type(status_result).__name__
+                                    elif status_result is None:
+                                        status_label = "unknown"
+                                    else:
+                                        status_label = str(status_result)
                                     status_display.append(
-                                        f"{job.generation} - {status_results[i]}"
+                                        f"{job.generation} - {status_label}"
                                     )
                                 else:
                                     status_display.append(
@@ -2429,11 +2447,38 @@ class ShinkaEvolveRunner:
                     for job, is_running in zip(monitored_jobs, status_results):
                         if id(job) not in current_job_ids:
                             continue
-                        if isinstance(is_running, Exception):
-                            logger.warning(
-                                f"Error checking job {job.job_id}: {is_running}"
+                        if isinstance(is_running, Exception) or is_running is None:
+                            now = _monotonic_time()
+                            if job.unknown_status_started_at is None:
+                                job.unknown_status_started_at = now
+                            job.unknown_status_polls += 1
+                            unknown_seconds = now - job.unknown_status_started_at
+                            detail = (
+                                type(is_running).__name__
+                                if isinstance(is_running, Exception)
+                                else "no scheduler data"
                             )
-                        elif not is_running:
+                            logger.warning(
+                                f"Status unknown for job {job.job_id} "
+                                f"(polls={job.unknown_status_polls}, "
+                                f"elapsed={unknown_seconds:.1f}s/"
+                                f"{JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS:.1f}s): "
+                                f"{detail}"
+                            )
+                            if (
+                                unknown_seconds
+                                >= JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS
+                            ):
+                                raise JobStatusUnavailableError(
+                                    f"Job {job.job_id} status unknown after "
+                                    f"{unknown_seconds:.1f} seconds "
+                                    f"({job.unknown_status_polls} polls)"
+                                )
+                            continue
+
+                        job.unknown_status_polls = 0
+                        job.unknown_status_started_at = None
+                        if not is_running:
                             completed_jobs.append(job)
                             runtime = time.time() - job.start_time
                             if self.verbose:
@@ -2746,8 +2791,7 @@ class ShinkaEvolveRunner:
 
             except Exception as e:
                 logger.error(f"Error in job monitor task: {e}")
-                self.should_stop.set()  # Stop on error
-                self.finalization_complete.set()
+                self._record_fatal_error(e)
                 break
 
             await asyncio.sleep(

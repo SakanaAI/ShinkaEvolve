@@ -9,6 +9,7 @@ Covers:
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,10 +17,14 @@ import pytest
 
 import shinka.core.async_runner as async_runner_module
 from shinka.core.async_runner import (
+    AsyncRunningJob,
     ShinkaEvolveRunner,
     UnconfirmedJobCancellationError,
 )
-from shinka.launch.slurm import AmbiguousSlurmSubmissionError
+from shinka.launch.slurm import (
+    AmbiguousSlurmSubmissionError,
+    JobStatusUnavailableError,
+)
 
 from test_async_runner_recovery import _FakeScheduler, _FakeSlotPool, _build_runner
 
@@ -292,6 +297,70 @@ def test_run_async_surfaces_ambiguous_background_submission_after_cleanup(
 
         assert exc_info.value is error
         runner._cleanup_async.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_run_async_surfaces_unknown_job_status_after_cancelling_job(
+    monkeypatch,
+):
+    async def _run():
+        class _UnknownScheduler(_FakeScheduler):
+            async def batch_check_status_async(self, jobs):
+                return [None for _ in jobs]
+
+        scheduler = _UnknownScheduler(cancelled_job_ids=["job-unknown"])
+        now = time.time()
+        running_job = AsyncRunningJob(
+            job_id="job-unknown",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=now,
+            proposal_started_at=now,
+            evaluation_submitted_at=now,
+            generation=1,
+        )
+        runner = _build_runner(
+            scheduler=scheduler,
+            running_jobs=[running_job],
+            slot_available=asyncio.Event(),
+            should_stop=asyncio.Event(),
+            finalization_complete=asyncio.Event(),
+        )
+        runner.pricing_snapshot = None
+        runner.embedding_client = None
+        runner._install_signal_handlers = lambda _loop: []
+        runner._setup_async = AsyncMock()
+        runner._verify_database_ready = AsyncMock()
+        runner._cancel_completed_job_batches = AsyncMock()
+        runner._cancel_background_side_effect_worker = AsyncMock()
+        runner._finish_wandb_logging = lambda: None
+        runner._has_persistence_work_in_progress = lambda: False
+        runner._cancel_surplus_inflight_work = AsyncMock()
+        runner._retry_failed_db_jobs = AsyncMock()
+        runner._record_progress = lambda: None
+
+        async def coordinator():
+            await asyncio.Event().wait()
+
+        runner._proposal_coordinator_task = coordinator
+        monkeypatch.setattr(
+            async_runner_module,
+            "activate_model_catalog",
+            lambda _snapshot: None,
+        )
+        monkeypatch.setattr(
+            async_runner_module,
+            "JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS",
+            0.0,
+        )
+
+        with pytest.raises(JobStatusUnavailableError):
+            await runner.run_async()
+
+        assert scheduler.cancelled_job_ids == ["job-unknown"]
+        assert scheduler.shutdown_called
+        assert runner.async_db.closed
 
     asyncio.run(_run())
 

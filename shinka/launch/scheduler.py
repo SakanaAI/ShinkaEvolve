@@ -337,13 +337,15 @@ class JobScheduler:
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 
-    def check_job_status(self, job) -> bool:
-        """Check if job is running. Returns True if running, False if done."""
+    def check_job_status(self, job) -> Optional[bool]:
+        """Return True if running, False if done, or None if unknown."""
         if self.job_type in ["slurm_docker", "slurm_conda"]:
             from .slurm import get_job_status
 
             if isinstance(job.job_id, str):
                 status = get_job_status(job.job_id)
+                if status is None:
+                    return None
                 return status != ""
             return False  # Should not happen with slurm
         else:
@@ -419,7 +421,7 @@ class JobScheduler:
             self.executor, self.submit_async, exec_fname_t, results_dir_t
         )
 
-    async def check_job_status_async(self, job) -> bool:
+    async def check_job_status_async(self, job) -> Optional[bool]:
         """Async version of job status checking."""
         loop = asyncio.get_event_loop()
 
@@ -435,7 +437,9 @@ class JobScheduler:
             self.executor, self.get_job_results, job_id, results_dir
         )
 
-    async def batch_check_status_async(self, jobs: List) -> List[bool]:
+    async def batch_check_status_async(
+        self, jobs: List
+    ) -> List[Union[bool, None, BaseException]]:
         """Check status of multiple jobs concurrently."""
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
