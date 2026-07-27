@@ -11,6 +11,8 @@ from .local import ProcessWithLogging
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
     SlurmJobName,
+    get_job_ids_by_name,
+    is_valid_slurm_job_id,
     get_job_status,
     get_job_status_by_name,
     submit_docker as submit_slurm_docker,
@@ -468,11 +470,14 @@ class JobScheduler:
                             and get_job_status_by_name(job_id.value) == ""
                         )
                     if isinstance(job_id, str):
+                        if not is_valid_slurm_job_id(job_id):
+                            logger.error("Refusing to cancel invalid Slurm job ID")
+                            return False
                         # For SLURM jobs, use scancel command
                         import subprocess
 
                         result = subprocess.run(
-                            ["scancel", job_id],
+                            ["scancel", "--", job_id],
                             capture_output=True,
                             text=True,
                             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
@@ -504,6 +509,8 @@ class JobScheduler:
                     return get_job_status_by_name(job_id.value) == ""
                 if not isinstance(job_id, str):
                     return False
+                if not is_valid_slurm_job_id(job_id):
+                    return False
                 return get_job_status(job_id) == ""
             if isinstance(job_id, ProcessWithLogging):
                 return job_id.is_terminated()
@@ -516,6 +523,20 @@ class JobScheduler:
         except Exception as e:
             logger.error(f"Error checking terminal state for job {job_id}: {e}")
             return False
+
+    async def get_job_ids_by_name_async(
+        self,
+        job_name: str,
+    ) -> Optional[List[str]]:
+        """Return active IDs for one unique Slurm submission name."""
+        if self.job_type not in ["slurm_docker", "slurm_conda"]:
+            return None
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.cancellation_executor,
+            get_job_ids_by_name,
+            job_name,
+        )
 
     def shutdown(self):
         """Shutdown the thread pool executor."""

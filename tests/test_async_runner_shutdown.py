@@ -16,8 +16,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 import shinka.core.async_runner as async_runner_module
+from shinka.database.async_dbase import EvaluationOwnershipConflictError
 from shinka.core.async_runner import (
     AsyncRunningJob,
+    PendingEvaluationSubmission,
     ShinkaEvolveRunner,
     UnconfirmedJobCancellationError,
 )
@@ -26,7 +28,12 @@ from shinka.launch.slurm import (
     JobStatusUnavailableError,
 )
 
-from test_async_runner_recovery import _FakeScheduler, _FakeSlotPool, _build_runner
+from test_async_runner_recovery import (
+    _FakeAsyncDB,
+    _FakeScheduler,
+    _FakeSlotPool,
+    _build_runner,
+)
 
 
 class _RealEvent:
@@ -148,11 +155,13 @@ def test_signal_during_initial_evaluation_cancels_owned_job():
         assert runner._unconfirmed_job_cancellations == {
             "initial-job": ("initial-job", 0)
         }
+        assert runner.async_db.evaluation_ownership[0]["phase"] == "active"
 
         await runner._cleanup_async()
 
         assert scheduler.cancelled_job_ids == ["initial-job"]
         assert slot_pool.in_use == 0
+        assert runner.async_db.evaluation_ownership[0]["phase"] == "resolved"
 
     asyncio.run(_run())
 
@@ -181,6 +190,83 @@ def test_initial_result_failure_cancels_job_and_releases_slot():
         assert scheduler.cancelled_job_ids == ["failed-result-job"]
         assert runner._unconfirmed_job_cancellations == {}
         assert slot_pool.in_use == 0
+        assert runner.async_db.evaluation_ownership[0]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_completed_initial_evaluation_keeps_ownership_until_program_persisted():
+    async def _run():
+        class _InitialEvaluationScheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                return "initial-job"
+
+            async def get_job_results_async(self, job_id, results_dir):
+                return {"correct": {"correct": True}, "metrics": {}}
+
+        scheduler = _InitialEvaluationScheduler(
+            terminal_job_ids=["initial-job"]
+        )
+        runner = _build_runner(scheduler=scheduler)
+
+        await runner._run_initial_evaluation("main.py", "results")
+
+        assert runner.async_db.evaluation_ownership[0]["phase"] == "active"
+        assert runner._unconfirmed_job_cancellations == {
+            "initial-job": ("initial-job", None)
+        }
+
+        await runner._cleanup_async()
+
+        assert runner.async_db.evaluation_ownership[0]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_initial_evaluation_ownership_conflict_is_fatal():
+    async def _run():
+        submitted = False
+
+        class _Scheduler(_FakeScheduler):
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                nonlocal submitted
+                submitted = True
+                return "unexpected-job"
+
+        runner = _build_runner(scheduler=_Scheduler())
+        runner.async_db.evaluation_ownership[0] = {
+            "generation": 0,
+            "phase": "active",
+            "job_type": "local",
+            "job_id": None,
+            "job_name": None,
+            "results_dir": "results",
+        }
+
+        with pytest.raises(EvaluationOwnershipConflictError):
+            await runner._run_initial_evaluation("main.py", "results")
+
+        assert submitted is False
+        assert runner.async_db.evaluation_ownership[0]["phase"] == "active"
+
+    asyncio.run(_run())
+
+
+def test_evolved_evaluation_ownership_conflict_is_fatal(tmp_path):
+    async def _run():
+        runner = _build_runner(results_dir=str(tmp_path))
+        runner.total_proposals_generated = 0
+        error = EvaluationOwnershipConflictError(
+            "Generation 1 already has active evaluation ownership"
+        )
+        runner._generate_evolved_proposal = AsyncMock(side_effect=error)
+
+        with pytest.raises(EvaluationOwnershipConflictError):
+            await runner._generate_proposal_async(1, "proposal-1")
+
+        assert runner._fatal_error is error
+        assert runner.should_stop.is_set()
+        assert runner.finalization_complete.is_set()
 
     asyncio.run(_run())
 
@@ -605,11 +691,12 @@ def test_cancelled_submission_cancels_eventual_external_job():
         )
 
         submission_task = asyncio.create_task(
-            runner._submit_evaluation_job_with_slot(
-                exec_fname="candidate.py",
-                results_dir="results",
-                sampling_worker_id=None,
-            )
+                runner._submit_evaluation_job_with_slot(
+                    exec_fname="candidate.py",
+                    results_dir="results",
+                    sampling_worker_id=None,
+                    generation=7,
+                )
         )
         await asyncio.wait_for(asyncio.to_thread(submit_started.wait, 1), timeout=2)
 
@@ -626,6 +713,193 @@ def test_cancelled_submission_cancels_eventual_external_job():
 
         assert scheduler.cancelled_job_ids == ["existing-job", "late-job"]
         assert runner.evaluation_slot_pool.in_use == 0
+        assert runner.async_db.evaluation_ownership[7]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_cancelled_slot_wait_creates_no_durable_ownership():
+    async def _run():
+        acquire_started = asyncio.Event()
+        release_acquire = asyncio.Event()
+
+        class _BlockedSlotPool(_FakeSlotPool):
+            async def acquire(self):
+                acquire_started.set()
+                await release_acquire.wait()
+                return 0
+
+        runner = _build_runner(
+            evaluation_slot_pool=_BlockedSlotPool(),
+            prompt_db=None,
+        )
+        submission = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="candidate.py",
+                results_dir="results",
+                sampling_worker_id=None,
+                generation=8,
+            )
+        )
+        await acquire_started.wait()
+
+        submission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await submission
+
+        assert runner.async_db.evaluation_ownership == {}
+
+    asyncio.run(_run())
+
+
+def test_cancelled_ownership_write_resolves_without_submitting():
+    async def _run():
+        ownership_started = asyncio.Event()
+        allow_ownership = asyncio.Event()
+
+        class _BlockingOwnershipDB(_FakeAsyncDB):
+            async def begin_evaluation_ownership_async(
+                self, generation, job_type, results_dir
+            ):
+                ownership_started.set()
+                await allow_ownership.wait()
+                await super().begin_evaluation_ownership_async(
+                    generation,
+                    job_type,
+                    results_dir,
+                )
+
+        async_db = _BlockingOwnershipDB(total_programs=0)
+        scheduler = _FakeScheduler()
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            prompt_db=None,
+        )
+        submission = asyncio.create_task(
+            runner._submit_evaluation_job_with_slot(
+                exec_fname="candidate.py",
+                results_dir="results",
+                sampling_worker_id=None,
+                generation=8,
+            )
+        )
+        await ownership_started.wait()
+
+        submission.cancel()
+        allow_ownership.set()
+        with pytest.raises(asyncio.CancelledError):
+            await submission
+
+        assert async_db.evaluation_ownership[8]["phase"] == "resolved"
+        assert scheduler.cancelled_job_ids == []
+
+    asyncio.run(_run())
+
+
+def test_cleanup_resolves_confirmed_active_local_ownership():
+    async def _run():
+        scheduler = _FakeScheduler(cancelled_job_ids=["local-job"])
+        scheduler.job_type = "local"
+        runner = _build_runner(
+            scheduler=scheduler,
+            running_jobs=[
+                SimpleNamespace(job_id="local-job", generation=9)
+            ],
+            prompt_db=None,
+        )
+        await runner.async_db.begin_evaluation_ownership_async(
+            generation=9,
+            job_type="local",
+            results_dir="results",
+        )
+        await runner.async_db.activate_evaluation_ownership_async(
+            generation=9,
+            job_id=None,
+            job_name=None,
+        )
+
+        await runner._cleanup_async()
+
+        assert runner.async_db.evaluation_ownership[9]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_cleanup_resolves_terminal_submitted_job_during_persistence():
+    async def _run():
+        scheduler = _FakeScheduler(terminal_job_ids=["completed-job"])
+        scheduler.job_type = "local"
+        job = AsyncRunningJob(
+            job_id="completed-job",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=10,
+        )
+        runner = _build_runner(
+            scheduler=scheduler,
+            running_jobs=[],
+            submitted_jobs={"completed-job": job},
+            prompt_db=None,
+        )
+        await runner.async_db.begin_evaluation_ownership_async(
+            generation=10,
+            job_type="local",
+            results_dir="results",
+        )
+        await runner.async_db.activate_evaluation_ownership_async(
+            generation=10,
+            job_id=None,
+            job_name=None,
+        )
+
+        await runner._cleanup_async()
+
+        assert runner.submitted_jobs == {}
+        assert runner.async_db.evaluation_ownership[10]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_cleanup_retains_submitted_job_when_cancellation_is_unconfirmed():
+    async def _run():
+        scheduler = _FakeScheduler()
+        scheduler.job_type = "local"
+        job = AsyncRunningJob(
+            job_id="processing-job",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=11,
+        )
+        runner = _build_runner(
+            scheduler=scheduler,
+            running_jobs=[],
+            submitted_jobs={"processing-job": job},
+            prompt_db=None,
+        )
+        await runner.async_db.begin_evaluation_ownership_async(
+            generation=11,
+            job_type="local",
+            results_dir="results",
+        )
+        await runner.async_db.activate_evaluation_ownership_async(
+            generation=11,
+            job_id=None,
+            job_name=None,
+        )
+
+        with pytest.raises(UnconfirmedJobCancellationError, match="processing-job"):
+            await runner._cleanup_async()
+
+        assert runner.running_jobs == [job]
+        assert runner.submitted_jobs == {"processing-job": job}
+        assert runner.async_db.evaluation_ownership[11]["phase"] == "active"
 
     asyncio.run(_run())
 
@@ -688,7 +962,9 @@ def test_cleanup_retains_late_submission_until_cancellation_is_confirmed():
         runner = _build_runner(
             scheduler=scheduler,
             evaluation_slot_pool=slot_pool,
-            _pending_evaluation_submissions={submission: 0},
+            _pending_evaluation_submissions={
+                submission: PendingEvaluationSubmission(0, None)
+            },
             prompt_db=None,
         )
 
@@ -732,7 +1008,9 @@ def test_cleanup_transfers_late_submission_ownership_before_cancellation():
         submission = asyncio.create_task(submitted_job())
         runner = _build_runner(
             scheduler=_BlockingScheduler(),
-            _pending_evaluation_submissions={submission: 0},
+            _pending_evaluation_submissions={
+                submission: PendingEvaluationSubmission(0, None)
+            },
             prompt_db=None,
         )
         cleanup_task = asyncio.create_task(runner._cleanup_async())

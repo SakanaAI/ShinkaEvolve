@@ -4,6 +4,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.database.async_dbase import AsyncProgramDatabase
 
@@ -227,6 +229,56 @@ def test_async_db_can_record_attempt_events(monkeypatch):
                 )
                 rows = [tuple(row) for row in sync_db.cursor.fetchall()]
                 assert rows == [(7, "proposal", "failed")]
+            finally:
+                await async_db.close_async()
+                sync_db.close()
+
+    asyncio.run(_run())
+
+
+def test_async_db_tracks_evaluation_ownership(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "evaluation_ownership.db"
+            sync_db = ProgramDatabase(
+                config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+                embedding_model="",
+            )
+            async_db = AsyncProgramDatabase(sync_db=sync_db)
+            try:
+                await async_db.begin_evaluation_ownership_async(
+                    generation=3,
+                    job_type="slurm_conda",
+                    results_dir="/results/gen_3/results",
+                )
+                await async_db.activate_evaluation_ownership_async(
+                    generation=3,
+                    job_id="job-123",
+                    job_name="conda-0123456789abcdef0123456789abcdef",
+                )
+
+                assert await async_db.get_active_evaluation_ownership_async() == [
+                    {
+                        "generation": 3,
+                        "phase": "active",
+                        "job_type": "slurm_conda",
+                        "job_id": "job-123",
+                        "job_name": "conda-0123456789abcdef0123456789abcdef",
+                        "results_dir": "/results/gen_3/results",
+                    }
+                ]
+
+                with pytest.raises(RuntimeError, match="already has active"):
+                    await async_db.begin_evaluation_ownership_async(
+                        generation=3,
+                        job_type="slurm_conda",
+                        results_dir="/results/gen_3/replacement",
+                    )
+
+                await async_db.resolve_evaluation_ownership_async(generation=3)
+                assert await async_db.get_active_evaluation_ownership_async() == []
             finally:
                 await async_db.close_async()
                 sync_db.close()

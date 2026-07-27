@@ -13,6 +13,7 @@ import asyncio
 import io
 import os
 import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -195,7 +196,7 @@ def test_cancellation_is_not_starved_by_submission_executor(monkeypatch):
         scheduler.shutdown()
 
     assert commands == [
-        ["scancel", "123"],
+        ["scancel", "--", "123"],
         ["squeue", "-j", "123", "--noheader"],
     ]
 
@@ -227,10 +228,119 @@ def test_scheduler_retains_known_job_id_until_it_disappears(monkeypatch):
         scheduler.shutdown()
 
     assert commands == [
-        ["scancel", "123"],
+        ["scancel", "--", "123"],
         ["squeue", "-j", "123", "--noheader"],
-        ["scancel", "123"],
+        ["scancel", "--", "123"],
         ["squeue", "-j", "123", "--noheader"],
+    ]
+
+
+def test_scheduler_rejects_invalid_slurm_job_id_before_subprocess(monkeypatch):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("must not invoke scancel"),
+    )
+
+    try:
+        assert asyncio.run(scheduler.cancel_job_async("--user=other")) is False
+    finally:
+        scheduler.shutdown()
+
+
+def test_local_post_launch_failure_reaps_process(monkeypatch, tmp_path):
+    spawned_pid = None
+    original_popen = local.subprocess.Popen
+
+    def tracking_popen(*args, **kwargs):
+        nonlocal spawned_pid
+        process = original_popen(*args, **kwargs)
+        spawned_pid = process.pid
+        return process
+
+    monkeypatch.setattr(local.subprocess, "Popen", tracking_popen)
+    monkeypatch.setattr(
+        local.threading.Thread,
+        "start",
+        lambda self: (_ for _ in ()).throw(RuntimeError("thread start failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        submit(
+            str(tmp_path),
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+        )
+
+    assert spawned_pid is not None
+    with pytest.raises(ProcessLookupError):
+        os.kill(spawned_pid, 0)
+
+
+@pytest.mark.parametrize(
+    "job_id",
+    ["123_4", "123+1", "123.batch", "123_4.extern", "123+1.2"],
+)
+def test_scheduler_accepts_supported_composite_slurm_job_ids(monkeypatch, job_id):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[0] == "scancel":
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    try:
+        assert asyncio.run(scheduler.cancel_job_async(job_id)) is True
+    finally:
+        scheduler.shutdown()
+
+    assert commands[0] == ["scancel", "--", job_id]
+
+
+def test_scheduler_finds_job_id_by_unique_submission_name(monkeypatch):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(stdout="123\n123\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    try:
+        job_ids = asyncio.run(
+            scheduler.get_job_ids_by_name_async(
+                "conda-0123456789abcdef0123456789abcdef"
+            )
+        )
+    finally:
+        scheduler.shutdown()
+
+    assert job_ids == ["123"]
+    assert commands == [
+        [
+            "squeue",
+            "--name",
+            "conda-0123456789abcdef0123456789abcdef",
+            "--noheader",
+            "--format=%A",
+        ]
     ]
 
 

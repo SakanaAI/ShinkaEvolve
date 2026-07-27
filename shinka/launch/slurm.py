@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
@@ -8,7 +9,7 @@ import uuid
 import threading
 from dataclasses import dataclass
 from shinka.utils import load_results
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,10 @@ SLURM_COMMAND_TIMEOUT_SECONDS = 30
 DOCKER_COMMAND_TIMEOUT_SECONDS = 600
 SUBMISSION_RECOVERY_ATTEMPTS = 3
 SUBMISSION_RECOVERY_DELAY_SECONDS = 1
+SLURM_ALLOCATION_ID_PATTERN = re.compile(r"[0-9]+")
+SLURM_JOB_ID_PATTERN = re.compile(
+    r"[0-9]+(?:_[0-9]+|\+[0-9]+)?(?:\.(?:batch|extern|[0-9]+))?"
+)
 
 
 class JobStatusUnavailableError(RuntimeError):
@@ -62,6 +67,20 @@ class SlurmJobName:
         return f"SlurmJobName({self.value})"
 
 
+class SlurmJobId(str):
+    """String-compatible Slurm ID carrying its unique submission name."""
+
+    job_name: str
+
+    def __new__(cls, value: str, job_name: str):
+        instance = super().__new__(cls, value)
+        instance.job_name = job_name
+        return instance
+
+    def __getnewargs__(self):
+        return str(self), self.job_name
+
+
 class AmbiguousSlurmSubmissionError(RuntimeError):
     """Raised when a timed-out submission cannot be recovered or cancelled."""
 
@@ -71,6 +90,14 @@ class AmbiguousSlurmSubmissionError(RuntimeError):
         super().__init__(
             f"Slurm submission outcome remains ambiguous for job name {job_name}"
         )
+
+
+def is_valid_slurm_job_id(job_id: str) -> bool:
+    return SLURM_JOB_ID_PATTERN.fullmatch(job_id) is not None
+
+
+def _is_valid_slurm_allocation_id(job_id: str) -> bool:
+    return SLURM_ALLOCATION_ID_PATTERN.fullmatch(job_id) is not None
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -248,7 +275,7 @@ def _recover_timed_out_submission(job_name: str) -> Optional[str]:
             result = None
 
         job_ids = result.stdout.split() if result is not None else []
-        if len(job_ids) == 1:
+        if len(job_ids) == 1 and _is_valid_slurm_allocation_id(job_ids[0]):
             logger.warning(
                 "Recovered Slurm job %s after sbatch response timeout", job_ids[0]
             )
@@ -309,7 +336,15 @@ def _submit_sbatch(sbatch_path: str, job_name: str) -> str:
 
     output_parts = result.stdout.strip().split()
     if output_parts:
-        return output_parts[-1].split(";", 1)[0]
+        job_id = output_parts[-1].split(";", 1)[0]
+        if _is_valid_slurm_allocation_id(job_id):
+            return job_id
+        recovered_job_id = _reconcile_ambiguous_submission(job_name)
+        if recovered_job_id is not None:
+            return recovered_job_id
+        raise RuntimeError(
+            f"Slurm returned no usable job ID for cancelled submission {job_name}"
+        )
 
     recovered_job_id = _reconcile_ambiguous_submission(job_name)
     if recovered_job_id is not None:
@@ -411,7 +446,7 @@ fi
     job_id = _submit_sbatch(sbatch_path, job_name)
     if verbose:
         logger.info(f"Submitted Docker job {job_id}")
-    return job_id
+    return SlurmJobId(job_id, job_name)
 
 
 def submit_conda(
@@ -494,7 +529,7 @@ def submit_conda(
 
     if verbose:
         logger.info(f"Submitted Conda job {job_id}")
-    return job_id
+    return SlurmJobId(job_id, job_name)
 
 
 def launch_local_subprocess(
@@ -713,6 +748,31 @@ def get_job_status_by_name(job_name: str) -> Optional[str]:
             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
         )
         return result.stdout.strip()
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        return None
+
+
+def get_job_ids_by_name(job_name: str) -> Optional[List[str]]:
+    """Return active allocation IDs for a unique name, or None on outage."""
+    try:
+        result = subprocess.run(
+            [
+                "squeue",
+                "--name",
+                job_name,
+                "--noheader",
+                "--format=%A",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+        )
+        return sorted(set(result.stdout.split()))
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,

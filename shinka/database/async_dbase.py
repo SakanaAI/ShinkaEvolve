@@ -18,6 +18,10 @@ from .dbase import Program, ProgramDatabase
 logger = logging.getLogger(__name__)
 
 
+class EvaluationOwnershipConflictError(RuntimeError):
+    """Raised when another runner already owns a generation."""
+
+
 # Debugging utilities
 class AsyncDBDebugger:
     """Simple debugging for async database operations."""
@@ -126,6 +130,12 @@ class AsyncProgramDatabase:
             logger.info("🔧 Async database deadlock monitoring started")
         else:
             logger.debug("Deadlock monitoring disabled")
+
+    def _require_db_path(self) -> str:
+        db_path = self.sync_db.config.db_path
+        if db_path is None:
+            raise RuntimeError("Database path is required for async persistence")
+        return db_path
 
     def _merge_runtime_metadata_from_db(self, source_db: ProgramDatabase) -> None:
         """Merge key in-memory metadata from a worker DB back to the shared sync DB."""
@@ -989,6 +999,128 @@ class AsyncProgramDatabase:
             self._debug_track_end(op_id, success=False)
             logger.error(f"Error in async generation event logging: {e}")
             raise
+
+    async def begin_evaluation_ownership_async(
+        self,
+        generation: int,
+        job_type: str,
+        results_dir: str,
+    ) -> None:
+        """Persist submission intent before starting an external job."""
+        db_path = self._require_db_path()
+
+        def begin_thread_safe() -> None:
+            with sqlite3.connect(
+                db_path,
+                check_same_thread=False,
+                timeout=60.0,
+            ) as conn:
+                conn.execute("PRAGMA busy_timeout = 60000;")
+                cursor = conn.execute(
+                    """
+                    INSERT INTO evaluation_ownership (
+                        generation, phase, job_type, job_id, job_name,
+                        results_dir, updated_at
+                    ) VALUES (?, 'submitting', ?, NULL, NULL, ?, ?)
+                    ON CONFLICT(generation) DO UPDATE SET
+                        phase = 'submitting',
+                        job_type = excluded.job_type,
+                        job_id = NULL,
+                        job_name = NULL,
+                        results_dir = excluded.results_dir,
+                        updated_at = excluded.updated_at
+                    WHERE evaluation_ownership.phase = 'resolved'
+                    """,
+                    (generation, job_type, results_dir, time.time()),
+                )
+                if cursor.rowcount != 1:
+                    raise EvaluationOwnershipConflictError(
+                        f"Generation {generation} already has active evaluation ownership"
+                    )
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self.executor, begin_thread_safe)
+
+    async def activate_evaluation_ownership_async(
+        self,
+        generation: int,
+        job_id: Optional[str],
+        job_name: Optional[str],
+    ) -> None:
+        """Attach a durable scheduler ID to a submitted evaluation."""
+        db_path = self._require_db_path()
+
+        def activate_thread_safe() -> None:
+            with sqlite3.connect(
+                db_path,
+                check_same_thread=False,
+                timeout=60.0,
+            ) as conn:
+                conn.execute("PRAGMA busy_timeout = 60000;")
+                cursor = conn.execute(
+                    """
+                    UPDATE evaluation_ownership
+                    SET phase = 'active', job_id = ?, job_name = ?, updated_at = ?
+                    WHERE generation = ? AND phase = 'submitting'
+                    """,
+                    (job_id, job_name, time.time(), generation),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(
+                        f"Generation {generation} has no pending evaluation ownership"
+                    )
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self.executor, activate_thread_safe)
+
+    async def resolve_evaluation_ownership_async(self, generation: int) -> None:
+        """Mark an evaluation safe for completed-generation recovery."""
+        db_path = self._require_db_path()
+
+        def resolve_thread_safe() -> None:
+            with sqlite3.connect(
+                db_path,
+                check_same_thread=False,
+                timeout=60.0,
+            ) as conn:
+                conn.execute("PRAGMA busy_timeout = 60000;")
+                conn.execute(
+                    """
+                    UPDATE evaluation_ownership
+                    SET phase = 'resolved', updated_at = ?
+                    WHERE generation = ?
+                    """,
+                    (time.time(), generation),
+                )
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self.executor, resolve_thread_safe)
+
+    async def get_active_evaluation_ownership_async(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Return unresolved external evaluation ownership records."""
+        db_path = self._require_db_path()
+
+        def get_thread_safe() -> List[Dict[str, Any]]:
+            with sqlite3.connect(
+                db_path,
+                check_same_thread=False,
+                timeout=60.0,
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT generation, phase, job_type, job_id, job_name, results_dir
+                    FROM evaluation_ownership
+                    WHERE phase != 'resolved'
+                    ORDER BY generation
+                    """
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, get_thread_safe)
 
     async def batch_sample_async(
         self, num_samples: int

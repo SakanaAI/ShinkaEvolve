@@ -11,6 +11,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class AmbiguousLocalSubmissionError(RuntimeError):
+    """Raised when a post-launch failure cannot confirm process termination."""
+
+    def __init__(self, process: "ProcessWithLogging"):
+        self.cancel_target = process
+        super().__init__(
+            f"Local submission outcome remains ambiguous for PID {process.pid}"
+        )
+
+
 class ProcessWithLogging:
     """Wrapper for subprocess.Popen with real-time logging capabilities."""
 
@@ -89,7 +99,11 @@ class ProcessWithLogging:
         """Clean up logging threads and files."""
         # Wait for logging threads to finish
         for thread in self.log_threads:
-            thread.join(timeout=1.0)
+            try:
+                thread.join(timeout=1.0)
+            except RuntimeError:
+                # A post-launch setup failure may leave a thread unstarted.
+                pass
 
         # Close log files
         for file_handle in self.log_files:
@@ -151,43 +165,56 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    # Use PIPE to capture output and redirect to files in real-time.
-    # start_new_session=True puts the child in its own process group so a
-    # timeout/cancel can kill the whole tree (see ProcessWithLogging.kill).
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # Line buffered
-        universal_newlines=True,
-        env=env,
-        start_new_session=True,
-    )
+    stdout_file = None
+    stderr_file = None
+    process = None
+    wrapped_process = None
+    try:
+        # Open logs before launch so filesystem failures cannot orphan a child.
+        stdout_file = open(stdout_path, "w", buffering=1)
+        stderr_file = open(stderr_path, "w", buffering=1)
 
-    # Open log files for writing with line buffering
-    stdout_file = open(stdout_path, "w", buffering=1)
-    stderr_file = open(stderr_path, "w", buffering=1)
+        # start_new_session=True puts the child in its own process group.
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            env=env,
+            start_new_session=True,
+        )
+        wrapped_process = ProcessWithLogging(
+            process,
+            (stdout_file, stderr_file),
+            (),
+        )
 
-    # Start threads to stream output to files in real-time
-    stdout_thread = threading.Thread(
-        target=_stream_output,
-        args=(process.stdout, stdout_file, "STDOUT" if verbose else None),
-        daemon=True,
-    )
-    stderr_thread = threading.Thread(
-        target=_stream_output,
-        args=(process.stderr, stderr_file, "STDERR" if verbose else None),
-        daemon=True,
-    )
-
-    stdout_thread.start()
-    stderr_thread.start()
-
-    # Create wrapper with logging capabilities
-    wrapped_process = ProcessWithLogging(
-        process, (stdout_file, stderr_file), (stdout_thread, stderr_thread)
-    )
+        stdout_thread = threading.Thread(
+            target=_stream_output,
+            args=(process.stdout, stdout_file, "STDOUT" if verbose else None),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=_stream_output,
+            args=(process.stderr, stderr_file, "STDERR" if verbose else None),
+            daemon=True,
+        )
+        wrapped_process.log_threads = (stdout_thread, stderr_thread)
+        stdout_thread.start()
+        stderr_thread.start()
+    except Exception:
+        if wrapped_process is not None:
+            if not wrapped_process.kill():
+                raise AmbiguousLocalSubmissionError(wrapped_process) from None
+            wrapped_process.cleanup_logging()
+        else:
+            if stdout_file is not None:
+                stdout_file.close()
+            if stderr_file is not None:
+                stderr_file.close()
+        raise
 
     if verbose:
         logger.info(f"Submitted local process with PID: {process.pid}")

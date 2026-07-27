@@ -6,6 +6,7 @@ Provides fully asynchronous evolution pipeline with concurrent LLM sampling.
 import json
 import asyncio
 import logging
+import re
 import shutil
 import signal
 import time
@@ -24,7 +25,10 @@ from rich.table import Table
 import rich.box
 
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
-from shinka.database.async_dbase import AsyncProgramDatabase
+from shinka.database.async_dbase import (
+    AsyncProgramDatabase,
+    EvaluationOwnershipConflictError,
+)
 from shinka.database.prompt_dbase import (
     SystemPromptDatabase,
     SystemPromptConfig,
@@ -43,6 +47,7 @@ from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.launch.slurm import (
     JobStatusUnavailableError,
     MAX_UNKNOWN_STATUS_POLLS,
+    SlurmJobName,
 )
 from shinka.edit.async_apply import (
     apply_patch_async,
@@ -88,6 +93,8 @@ logger = logging.getLogger(__name__)
 JOB_CANCELLATION_ATTEMPTS = 6
 API_COST_CHECKPOINT_ATTEMPTS = 3
 JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS = MAX_UNKNOWN_STATUS_POLLS * 10.0
+SLURM_JOB_ID_PATTERN = re.compile(r"[0-9]+")
+SLURM_JOB_NAME_PATTERN = re.compile(r"(?:conda|docker)-[0-9a-f]{32}")
 
 
 def _monotonic_time() -> float:
@@ -219,6 +226,14 @@ class AsyncRunningJob:
     evaluation_slot_released: bool = False
     unknown_status_polls: int = 0
     unknown_status_started_at: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PendingEvaluationSubmission:
+    """Ownership metadata for a scheduler call that has not returned."""
+
+    evaluation_worker_id: int
+    generation: Optional[int]
 
 
 @dataclass
@@ -578,9 +593,15 @@ class ShinkaEvolveRunner:
 
         # Runtime state
         self.running_jobs: List[AsyncRunningJob] = []
-        self._pending_evaluation_submissions: Dict[asyncio.Task, int] = {}
+        self._pending_evaluation_submissions: Dict[
+            asyncio.Task,
+            PendingEvaluationSubmission,
+        ] = {}
         self._unconfirmed_job_cancellations: Dict[
             Union[str, int], tuple[Union[str, Any], Optional[int]]
+        ] = {}
+        self._unconfirmed_job_cancellation_generations: Dict[
+            Union[str, int], int
         ] = {}
         self.completed_generations = 0
         self.next_generation_to_submit = (
@@ -749,6 +770,29 @@ class ShinkaEvolveRunner:
                 generation,
                 e,
             )
+
+    async def _resolve_evaluation_ownership(self, generation: int) -> None:
+        """Resolve ownership when this runner submitted the evaluation."""
+        async_db = getattr(self, "async_db", None)
+        resolver = getattr(
+            async_db,
+            "resolve_evaluation_ownership_async",
+            None,
+        )
+        if resolver is not None:
+            await resolver(generation)
+
+    def _forget_unconfirmed_ownership(self, generation: int) -> None:
+        keys = [
+            key
+            for key, owned_generation in (
+                self._unconfirmed_job_cancellation_generations.items()
+            )
+            if owned_generation == generation
+        ]
+        for key in keys:
+            self._unconfirmed_job_cancellation_generations.pop(key, None)
+            self._unconfirmed_job_cancellations.pop(key, None)
 
     def _validate_concurrency_settings(
         self,
@@ -1587,6 +1631,10 @@ class ShinkaEvolveRunner:
             else 0
         )
         resuming_run = program_count > 0
+        await self._reconcile_resume_evaluation_ownership()
+        generation_zero_dir = Path(self.results_dir) / f"{FOLDER_PREFIX}_0"
+        if not resuming_run and os.path.lexists(generation_zero_dir):
+            await self._archive_interrupted_generation_dirs([0])
 
         # Load bandit state if resuming
         if resuming_run:
@@ -1962,9 +2010,10 @@ class ShinkaEvolveRunner:
             _,
             _,
             _,
-        ) = await self._submit_evaluation_job_with_slot(
-            exec_fname,
-            results_dir,
+        ) = await self._submit_evaluation_job_with_ownership(
+            generation=0,
+            exec_fname=exec_fname,
+            results_dir=results_dir,
             sampling_worker_id=None,
         )
         key = self._job_cancellation_key(job_id)
@@ -1972,6 +2021,7 @@ class ShinkaEvolveRunner:
             job_id,
             evaluation_worker_id,
         )
+        self._unconfirmed_job_cancellation_generations[key] = 0
         try:
             results = await self.scheduler.get_job_results_async(job_id, results_dir)
         except asyncio.CancelledError:
@@ -1982,9 +2032,11 @@ class ShinkaEvolveRunner:
                 raise UnconfirmedJobCancellationError(failed_cancellations)
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             self._unconfirmed_job_cancellations.pop(key, None)
+            self._unconfirmed_job_cancellation_generations.pop(key, None)
+            await self._resolve_evaluation_ownership(0)
             raise
         await self.evaluation_slot_pool.release(evaluation_worker_id)
-        self._unconfirmed_job_cancellations.pop(key, None)
+        self._unconfirmed_job_cancellations[key] = (job_id, None)
         if results is None:
             results = {"correct": {"correct": False}, "metrics": {}}
         return results, time.time() - started_at
@@ -2106,6 +2158,8 @@ class ShinkaEvolveRunner:
 
         except UnconfirmedJobCancellationError:
             raise
+        except EvaluationOwnershipConflictError:
+            raise
         except ApiCostAccountingError:
             raise
         except Exception as e:
@@ -2184,6 +2238,8 @@ class ShinkaEvolveRunner:
 
         # Add to database
         await self.async_db.add_program_async(initial_program, verbose=self.verbose)
+        await self._resolve_evaluation_ownership(0)
+        self._forget_unconfirmed_ownership(0)
 
         # Add the initial program to meta memory tracking
         if self.meta_summarizer:
@@ -3128,6 +3184,9 @@ class ShinkaEvolveRunner:
                 active_proposals_at_start,
             )
 
+        except EvaluationOwnershipConflictError as error:
+            self._record_fatal_error(error)
+            raise
         except ApiCostAccountingError:
             raise
         except Exception as e:
@@ -3397,7 +3456,8 @@ class ShinkaEvolveRunner:
                     evaluation_submitted_at,
                     evaluation_started_at,
                     running_eval_jobs_at_submit,
-                ) = await self._submit_evaluation_job_with_slot(
+                ) = await self._submit_evaluation_job_with_ownership(
+                    generation=generation,
                     exec_fname=exec_fname,
                     results_dir=results_dir,
                     sampling_worker_id=sampling_worker_id,
@@ -3465,6 +3525,8 @@ class ShinkaEvolveRunner:
                 return running_job
 
             except Exception as e:
+                if isinstance(e, EvaluationOwnershipConflictError):
+                    raise
                 if getattr(e, "cancel_target", None) is not None:
                     logger.critical(
                         "Evaluation submission ownership is ambiguous: %s", e
@@ -5401,6 +5463,7 @@ class ShinkaEvolveRunner:
         persist_result = await self._persist_completed_job(job)
         if not persist_result.success:
             return False
+        await self._resolve_evaluation_ownership(job.generation)
 
         if persist_result.persisted_event is None:
             return True
@@ -5508,6 +5571,7 @@ class ShinkaEvolveRunner:
             for generation in range(1, self.evo_config.num_generations)
             if generation not in persisted_generations
         ]
+        await self._reconcile_resume_evaluation_ownership()
         await self._archive_interrupted_generation_dirs(
             resume_generation_queue
         )
@@ -5517,6 +5581,90 @@ class ShinkaEvolveRunner:
             if self._resume_generation_queue
             else self.evo_config.num_generations
         )
+
+    async def _reconcile_resume_evaluation_ownership(
+        self,
+    ) -> List[int]:
+        """Stop all durably owned external jobs before continuing a run."""
+        active_ownership = (
+            await self.async_db.get_active_evaluation_ownership_async()
+        )
+        persisted_generations = set(
+            await self.async_db.get_persisted_generation_ids_async()
+        )
+        scheduler_job_type = getattr(self.scheduler, "job_type", None)
+        reconciled_generations = []
+        failures = []
+        for ownership in active_ownership:
+            try:
+                generation = await self._reconcile_one_evaluation_ownership(
+                    ownership,
+                    scheduler_job_type,
+                    persisted_generations,
+                )
+            except Exception as error:
+                failures.append(error)
+            else:
+                reconciled_generations.append(generation)
+        if failures:
+            raise failures[0]
+        return reconciled_generations
+
+    async def _reconcile_one_evaluation_ownership(
+        self,
+        ownership: Dict[str, Any],
+        scheduler_job_type: Optional[str],
+        persisted_generations: Set[int],
+    ) -> int:
+        generation = int(ownership["generation"])
+        if generation in persisted_generations:
+            await self._resolve_evaluation_ownership(generation)
+            return generation
+
+        job_type = ownership["job_type"]
+        job_id = ownership["job_id"]
+        job_name = ownership["job_name"]
+        expected_results_dir = Path(self.results_dir) / (
+            f"{FOLDER_PREFIX}_{generation}/results"
+        )
+        if Path(ownership["results_dir"]).resolve() != expected_results_dir.resolve():
+            raise RuntimeError(
+                f"Evaluation ownership path mismatch for generation {generation}"
+            )
+        if job_type != scheduler_job_type:
+            raise RuntimeError(
+                f"Evaluation ownership scheduler mismatch for generation {generation}"
+            )
+        if (
+            ownership["phase"] != "active"
+            or not isinstance(job_id, str)
+            or not SLURM_JOB_ID_PATTERN.fullmatch(job_id)
+            or not isinstance(job_name, str)
+            or not SLURM_JOB_NAME_PATTERN.fullmatch(job_name)
+            or not job_type.startswith("slurm_")
+        ):
+            raise RuntimeError(
+                f"Evaluation ownership is ambiguous for generation {generation}; "
+                "refusing to replay"
+            )
+
+        active_job_ids = await self.scheduler.get_job_ids_by_name_async(job_name)
+        if active_job_ids is None:
+            raise JobStatusUnavailableError(
+                f"Could not verify Slurm identity for generation {generation}"
+            )
+        if active_job_ids:
+            if active_job_ids != [job_id]:
+                raise RuntimeError(
+                    f"Evaluation ownership identity mismatch for generation "
+                    f"{generation}"
+                )
+            cancel_target = SlurmJobName(job_name)
+            failed_cancellations = await self._cancel_job_ids([cancel_target])
+            if failed_cancellations:
+                raise UnconfirmedJobCancellationError(failed_cancellations)
+        await self._resolve_evaluation_ownership(generation)
+        return generation
 
     async def _archive_interrupted_generation_dirs(
         self,
@@ -5693,16 +5841,45 @@ class ShinkaEvolveRunner:
         exec_fname: str,
         results_dir: str,
         sampling_worker_id: Optional[int],
+        generation: Optional[int] = None,
     ) -> tuple[Union[str, Any], int, float, float, int]:
         """Reserve an evaluation slot before submitting the evaluation job."""
         if sampling_worker_id is not None:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        if generation is not None:
+            ownership_task = asyncio.create_task(
+                self.async_db.begin_evaluation_ownership_async(
+                    generation=generation,
+                    job_type=str(getattr(self.scheduler, "job_type", "unknown")),
+                    results_dir=results_dir,
+                )
+            )
+            try:
+                await asyncio.shield(ownership_task)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(ownership_task)
+                except Exception:
+                    pass
+                else:
+                    await self._resolve_evaluation_ownership(generation)
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+                raise
+            except BaseException:
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+                raise
+
         submission_task = asyncio.create_task(
             self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
         )
-        self._pending_evaluation_submissions[submission_task] = evaluation_worker_id
+        self._pending_evaluation_submissions[submission_task] = (
+            PendingEvaluationSubmission(
+                evaluation_worker_id=evaluation_worker_id,
+                generation=generation,
+            )
+        )
         try:
             job_id = await asyncio.shield(submission_task)
         except asyncio.CancelledError:
@@ -5716,11 +5893,36 @@ class ShinkaEvolveRunner:
                     cancel_target,
                     evaluation_worker_id,
                 )
+                if generation is not None:
+                    self._unconfirmed_job_cancellation_generations[key] = generation
                 self._record_fatal_error(error)
                 raise
+            if generation is not None:
+                await self._resolve_evaluation_ownership(generation)
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
         self._pending_evaluation_submissions.pop(submission_task, None)
+
+        if generation is not None:
+            durable_job_id = job_id if isinstance(job_id, str) else None
+            durable_job_name = getattr(job_id, "job_name", None)
+            try:
+                await self.async_db.activate_evaluation_ownership_async(
+                    generation=generation,
+                    job_id=durable_job_id,
+                    job_name=durable_job_name,
+                )
+            except BaseException:
+                failed_cancellations = await self._cancel_job_ids([job_id])
+                await self.evaluation_slot_pool.release(evaluation_worker_id)
+                if failed_cancellations:
+                    cancellation_error = UnconfirmedJobCancellationError(
+                        failed_cancellations
+                    )
+                    self._record_fatal_error(cancellation_error)
+                    raise cancellation_error
+                await self._resolve_evaluation_ownership(generation)
+                raise
 
         evaluation_submitted_at = time.time()
         evaluation_started_at = evaluation_submitted_at
@@ -5731,6 +5933,21 @@ class ShinkaEvolveRunner:
             evaluation_submitted_at,
             evaluation_started_at,
             running_eval_jobs_at_submit,
+        )
+
+    async def _submit_evaluation_job_with_ownership(
+        self,
+        generation: int,
+        exec_fname: str,
+        results_dir: str,
+        sampling_worker_id: Optional[int],
+    ) -> tuple[Union[str, Any], int, float, float, int]:
+        """Persist ownership around external evaluation submission."""
+        return await self._submit_evaluation_job_with_slot(
+            exec_fname=exec_fname,
+            results_dir=results_dir,
+            sampling_worker_id=sampling_worker_id,
+            generation=generation,
         )
 
     def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
@@ -5854,6 +6071,7 @@ class ShinkaEvolveRunner:
             for job in self.failed_jobs_for_retry.values():
                 job.discard_if_completed = True
                 self.submitted_jobs.pop(str(job.job_id), None)
+                await self._resolve_evaluation_ownership(job.generation)
             self.failed_jobs_for_retry.clear()
 
         if self.active_proposal_tasks:
@@ -5886,6 +6104,7 @@ class ShinkaEvolveRunner:
                     cancelled_jobs.append(job)
                     self.submitted_jobs.pop(str(job.job_id), None)
                     await self._release_evaluation_slot_once(job)
+                    await self._resolve_evaluation_ownership(job.generation)
                 else:
                     surviving_jobs.append(job)
 
@@ -6127,6 +6346,7 @@ class ShinkaEvolveRunner:
     async def _cleanup_async(self):
         """Cleanup async resources."""
         unconfirmed_error: Optional[UnconfirmedJobCancellationError] = None
+        resolved_ownership_generations: Set[int] = set()
         try:
             proposal_tasks = list(self.active_proposal_tasks.values())
             for task in proposal_tasks:
@@ -6134,10 +6354,19 @@ class ShinkaEvolveRunner:
                     task.cancel()
 
             running_jobs = list(self.running_jobs)
+            running_job_objects = {id(job) for job in running_jobs}
+            submitted_only_jobs = [
+                job
+                for job in self.submitted_jobs.values()
+                if id(job) not in running_job_objects
+                and hasattr(job, "job_id")
+                and hasattr(job, "generation")
+            ]
+            owned_jobs = running_jobs + submitted_only_jobs
             retained_cancellations = dict(self._unconfirmed_job_cancellations)
             running_cancellation = asyncio.create_task(
                 self._cancel_job_ids(
-                    [job.job_id for job in running_jobs]
+                    [job.job_id for job in owned_jobs]
                     + [target for target, _ in retained_cancellations.values()]
                 )
             )
@@ -6151,23 +6380,36 @@ class ShinkaEvolveRunner:
             )
             failed_submission_workers = []
             for submission, result in zip(pending_submissions, submission_results):
-                evaluation_worker_id = pending_submissions[submission]
+                pending_ownership = pending_submissions[submission]
+                evaluation_worker_id = pending_ownership.evaluation_worker_id
+                generation = pending_ownership.generation
                 if isinstance(result, BaseException):
                     cancel_target = getattr(result, "cancel_target", None)
                     if cancel_target is None:
                         failed_submission_workers.append(evaluation_worker_id)
+                        if (
+                            generation is not None
+                            and not isinstance(result, asyncio.CancelledError)
+                        ):
+                            resolved_ownership_generations.add(generation)
                     else:
                         key = self._job_cancellation_key(cancel_target)
                         self._unconfirmed_job_cancellations[key] = (
                             cancel_target,
                             evaluation_worker_id,
                         )
+                        if generation is not None:
+                            self._unconfirmed_job_cancellation_generations[key] = (
+                                generation
+                            )
                 else:
                     key = self._job_cancellation_key(result)
                     self._unconfirmed_job_cancellations[key] = (
                         result,
                         evaluation_worker_id,
                     )
+                    if generation is not None:
+                        self._unconfirmed_job_cancellation_generations[key] = generation
                 self._pending_evaluation_submissions.pop(submission, None)
 
             failed_running_cancellations = await running_cancellation
@@ -6175,10 +6417,27 @@ class ShinkaEvolveRunner:
                 self._job_cancellation_key(job_id)
                 for job_id in failed_running_cancellations
             }
+            resolved_ownership_generations.update(
+                generation
+                for job in owned_jobs
+                if (generation := getattr(job, "generation", None)) is not None
+                if self._job_cancellation_key(job.job_id)
+                not in failed_running_keys
+            )
+            for job in submitted_only_jobs:
+                if self._job_cancellation_key(job.job_id) in failed_running_keys:
+                    continue
+                self.submitted_jobs.pop(str(job.job_id), None)
+                await self._release_evaluation_slot_once(job)
             for key, (_, evaluation_worker_id) in retained_cancellations.items():
                 if key in failed_running_keys:
                     continue
                 self._unconfirmed_job_cancellations.pop(key, None)
+                retained_generation = (
+                    self._unconfirmed_job_cancellation_generations.pop(key, None)
+                )
+                if retained_generation is not None:
+                    resolved_ownership_generations.add(retained_generation)
                 if evaluation_worker_id is not None:
                     await self.evaluation_slot_pool.release(evaluation_worker_id)
 
@@ -6204,15 +6463,33 @@ class ShinkaEvolveRunner:
                 if key in failed_late_keys:
                     continue
                 self._unconfirmed_job_cancellations.pop(key, None)
+                retained_generation = (
+                    self._unconfirmed_job_cancellation_generations.pop(key, None)
+                )
+                if retained_generation is not None:
+                    resolved_ownership_generations.add(retained_generation)
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
+            resolved_ownership_generations.update(
+                generation
+                for job in late_jobs
+                if (generation := getattr(job, "generation", None)) is not None
+                if self._job_cancellation_key(job.job_id)
+                not in failed_late_keys
+            )
             for evaluation_worker_id in failed_submission_workers:
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
             failed_job_keys = failed_running_keys | failed_late_keys
+            failed_submitted_jobs = [
+                job
+                for job in submitted_only_jobs
+                if self._job_cancellation_key(job.job_id)
+                in failed_running_keys
+            ]
             self.running_jobs = [
                 job
                 for job in self.running_jobs
                 if self._job_cancellation_key(job.job_id) in failed_job_keys
-            ]
+            ] + failed_submitted_jobs
             if self.running_jobs or self._unconfirmed_job_cancellations:
                 unconfirmed_job_ids = [job.job_id for job in self.running_jobs]
                 unconfirmed_job_ids.extend(
@@ -6222,6 +6499,9 @@ class ShinkaEvolveRunner:
                 unconfirmed_error = UnconfirmedJobCancellationError(
                     unconfirmed_job_ids
                 )
+
+            for generation in sorted(resolved_ownership_generations):
+                await self._resolve_evaluation_ownership(generation)
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:

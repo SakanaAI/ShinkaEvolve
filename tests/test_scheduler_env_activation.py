@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
+import pickle
 import subprocess
 import sys
 
@@ -36,6 +38,11 @@ def test_submit_conda_sources_activate_script(
         assert cmd[0] == "sbatch"
         script_path = Path(cmd[1])
         captured["script"] = script_path.read_text(encoding="utf-8")
+        captured["job_name"] = next(
+            line.split("=", 1)[1]
+            for line in str(captured["script"]).splitlines()
+            if line.startswith("#SBATCH --job-name")
+        )
         captured["timeout"] = kwargs.get("timeout")
         return subprocess.CompletedProcess(
             cmd,
@@ -58,6 +65,10 @@ def test_submit_conda_sources_activate_script(
     )
 
     assert job_id == "123"
+    assert job_id.job_name == captured["job_name"]
+    assert copy.copy(job_id).job_name == captured["job_name"]
+    assert copy.deepcopy(job_id).job_name == captured["job_name"]
+    assert pickle.loads(pickle.dumps(job_id)).job_name == captured["job_name"]
     script = captured["script"]
     assert isinstance(script, str)
     assert 'source ".venv/bin/activate"' in script
@@ -106,6 +117,47 @@ def test_submit_conda_recovers_job_id_after_sbatch_timeout(
     )
 
     assert job_id == "456"
+
+
+def test_submit_conda_reconciles_invalid_sbatch_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    submitted_job_name = ""
+
+    def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        nonlocal submitted_job_name
+        if cmd[0] == "sbatch":
+            script = Path(cmd[1]).read_text(encoding="utf-8")
+            job_name_line = next(
+                line for line in script.splitlines() if line.startswith("#SBATCH --job-name")
+            )
+            submitted_job_name = job_name_line.split("=", 1)[1]
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="Submitted batch job --user=other\n",
+                stderr="",
+            )
+        if cmd[0] == "squeue":
+            return subprocess.CompletedProcess(cmd, 0, stdout="456\n", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+
+    job_id = submit_conda(
+        log_dir=str(tmp_path / "logs"),
+        cmd=["python", "evaluate.py"],
+        time="00:10:00",
+        partition="gpu",
+        cpus=1,
+        gpus=0,
+        mem="8G",
+        activate_script=".venv/bin/activate",
+    )
+
+    assert job_id == "456"
+    assert job_id.job_name == submitted_job_name
 
 
 def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(

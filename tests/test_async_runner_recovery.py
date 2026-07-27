@@ -16,12 +16,15 @@ from shinka.core.async_runner import (
     InvalidApiCostError,
     PersistedProgramEvent,
     ShinkaEvolveRunner,
+    UnconfirmedJobCancellationError,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.summarizer import MetaSummarizer
 from shinka.database import Program
+from shinka.database.async_dbase import EvaluationOwnershipConflictError
 from shinka.llm import AsyncLLMClient
+from shinka.launch.slurm import SlurmJobName
 from shinka.database.prompt_dbase import (
     SystemPromptConfig,
     SystemPromptDatabase,
@@ -33,12 +36,56 @@ class _FakeAsyncDB:
     def __init__(self, total_programs: int):
         self.total_programs = total_programs
         self.closed = False
+        self.evaluation_ownership: dict[int, dict[str, object]] = {}
+        self.evaluation_ownership_events: list[tuple[str, int]] = []
 
     async def get_total_program_count_async(self):
         return self.total_programs
 
+    async def get_persisted_generation_ids_async(self):
+        return []
+
     async def close_async(self):
         self.closed = True
+
+    async def begin_evaluation_ownership_async(
+        self, generation, job_type, results_dir
+    ):
+        existing = self.evaluation_ownership.get(generation)
+        if existing is not None and existing["phase"] != "resolved":
+            raise EvaluationOwnershipConflictError(
+                f"Generation {generation} already has active evaluation ownership"
+            )
+        self.evaluation_ownership_events.append(("begin", generation))
+        self.evaluation_ownership[generation] = {
+            "generation": generation,
+            "phase": "submitting",
+            "job_type": job_type,
+            "job_id": None,
+            "job_name": None,
+            "results_dir": results_dir,
+        }
+
+    async def activate_evaluation_ownership_async(
+        self, generation, job_id, job_name=None
+    ):
+        self.evaluation_ownership_events.append(("activate", generation))
+        self.evaluation_ownership[generation]["phase"] = "active"
+        self.evaluation_ownership[generation]["job_id"] = job_id
+        self.evaluation_ownership[generation]["job_name"] = job_name
+
+    async def resolve_evaluation_ownership_async(self, generation):
+        self.evaluation_ownership_events.append(("resolve", generation))
+        ownership = self.evaluation_ownership.get(generation)
+        if ownership is not None:
+            ownership["phase"] = "resolved"
+
+    async def get_active_evaluation_ownership_async(self):
+        return [
+            dict(ownership)
+            for ownership in self.evaluation_ownership.values()
+            if ownership["phase"] != "resolved"
+        ]
 
 
 class _RecordingAsyncDB(_FakeAsyncDB):
@@ -84,23 +131,40 @@ class _FakeSlotPool:
 
 
 class _FakeScheduler:
-    def __init__(self, cancelled_job_ids=None, terminal_job_ids=None):
+    def __init__(
+        self,
+        cancelled_job_ids=None,
+        terminal_job_ids=None,
+        job_ids_by_name=None,
+    ):
         self.cancelled_job_ids = []
-        self._cancelled_job_ids = set(cancelled_job_ids or [])
-        self._terminal_job_ids = set(terminal_job_ids or [])
+        self._cancelled_job_ids = {
+            job_id.value if isinstance(job_id, SlurmJobName) else job_id
+            for job_id in (cancelled_job_ids or [])
+        }
+        self._terminal_job_ids = {
+            job_id.value if isinstance(job_id, SlurmJobName) else job_id
+            for job_id in (terminal_job_ids or [])
+        }
+        self._job_ids_by_name = dict(job_ids_by_name or {})
         self.shutdown_called = False
 
     async def cancel_job_async(self, job_id):
         if self.shutdown_called:
             raise RuntimeError("scheduler is shut down")
         self.cancelled_job_ids.append(job_id)
-        return job_id in self._cancelled_job_ids
+        job_key = job_id.value if isinstance(job_id, SlurmJobName) else job_id
+        return job_key in self._cancelled_job_ids
 
     async def submit_async_nonblocking(self, exec_fname, results_dir):
         return f"job-for-{exec_fname}"
 
     async def is_job_terminal_async(self, job_id):
-        return job_id in self._terminal_job_ids
+        job_key = job_id.value if isinstance(job_id, SlurmJobName) else job_id
+        return job_key in self._terminal_job_ids
+
+    async def get_job_ids_by_name_async(self, job_name):
+        return self._job_ids_by_name.get(job_name, [])
 
     def shutdown(self):
         self.shutdown_called = True
@@ -178,6 +242,34 @@ class _TrackedScheduler:
 def _build_runner(**overrides):
     runner = object.__new__(ShinkaEvolveRunner)
     runner.async_db = overrides.get("async_db", _FakeAsyncDB(0))
+    if not hasattr(runner.async_db, "begin_evaluation_ownership_async"):
+        async def begin_evaluation_ownership_async(*args, **kwargs):
+            return None
+
+        runner.async_db.begin_evaluation_ownership_async = (
+            begin_evaluation_ownership_async
+        )
+    if not hasattr(runner.async_db, "activate_evaluation_ownership_async"):
+        async def activate_evaluation_ownership_async(*args, **kwargs):
+            return None
+
+        runner.async_db.activate_evaluation_ownership_async = (
+            activate_evaluation_ownership_async
+        )
+    if not hasattr(runner.async_db, "resolve_evaluation_ownership_async"):
+        async def resolve_evaluation_ownership_async(*args, **kwargs):
+            return None
+
+        runner.async_db.resolve_evaluation_ownership_async = (
+            resolve_evaluation_ownership_async
+        )
+    if not hasattr(runner.async_db, "get_active_evaluation_ownership_async"):
+        async def get_active_evaluation_ownership_async():
+            return []
+
+        runner.async_db.get_active_evaluation_ownership_async = (
+            get_active_evaluation_ownership_async
+        )
     runner.db = overrides.get("db", SimpleNamespace(last_iteration=0))
     runner.db_config = overrides.get("db_config", SimpleNamespace(num_islands=1))
     runner.job_config = overrides.get("job_config", SimpleNamespace(time=None))
@@ -206,6 +298,9 @@ def _build_runner(**overrides):
     )
     runner._unconfirmed_job_cancellations = overrides.get(
         "_unconfirmed_job_cancellations", {}
+    )
+    runner._unconfirmed_job_cancellation_generations = overrides.get(
+        "_unconfirmed_job_cancellation_generations", {}
     )
     runner._fatal_error = overrides.get("_fatal_error")
     runner._job_cancellation_retry_delay_seconds = overrides.get(
@@ -277,6 +372,336 @@ def test_restore_resume_progress_replays_missing_generation_directory(tmp_path):
         assert (archived[0] / "partial.txt").read_text(encoding="utf-8") == (
             "preserve me"
         )
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_cancels_live_slurm_job_before_archive(tmp_path):
+    class _ResumeDB(_FakeAsyncDB):
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1]
+
+    async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        (interrupted_dir / "partial.txt").write_text("active", encoding="utf-8")
+        async_db = _ResumeDB(total_programs=2)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "123",
+            "job_name": "conda-0123456789abcdef0123456789abcdef",
+            "results_dir": str(interrupted_dir / "results"),
+        }
+        scheduler = _FakeScheduler(
+            cancelled_job_ids=["conda-0123456789abcdef0123456789abcdef"],
+            job_ids_by_name={
+                "conda-0123456789abcdef0123456789abcdef": ["123"]
+            },
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            evo_config=SimpleNamespace(num_generations=3),
+            results_dir=str(tmp_path),
+        )
+
+        await runner._restore_resume_progress()
+
+        assert scheduler.cancelled_job_ids == [
+            SlurmJobName("conda-0123456789abcdef0123456789abcdef")
+        ]
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
+        assert not interrupted_dir.exists()
+        assert runner._resume_generation_queue == [2]
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_refuses_ambiguous_submission(tmp_path):
+    class _ResumeDB(_FakeAsyncDB):
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1]
+
+    async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        async_db = _ResumeDB(total_programs=2)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": None,
+            "results_dir": str(interrupted_dir / "results"),
+        }
+        scheduler = _FakeScheduler()
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            evo_config=SimpleNamespace(num_generations=3),
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(RuntimeError, match="ownership is ambiguous"):
+            await runner._restore_resume_progress()
+
+        assert interrupted_dir.exists()
+        assert runner._resume_generation_queue == []
+
+    asyncio.run(_run())
+
+
+def test_resume_reconciles_later_jobs_before_raising_earlier_ambiguity(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=1)
+        async_db.evaluation_ownership[1] = {
+            "generation": 1,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": None,
+            "results_dir": str(tmp_path / "gen_1" / "results"),
+        }
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "123",
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(
+            cancelled_job_ids=[job_name],
+            job_ids_by_name={job_name: ["123"]},
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(RuntimeError, match="ownership is ambiguous"):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert scheduler.cancelled_job_ids == [SlurmJobName(job_name)]
+        assert async_db.evaluation_ownership[1]["phase"] == "submitting"
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_preserves_directory_until_cancel_confirmed(tmp_path):
+    class _ResumeDB(_FakeAsyncDB):
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1]
+
+    async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        async_db = _ResumeDB(total_programs=2)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "123",
+            "job_name": "conda-0123456789abcdef0123456789abcdef",
+            "results_dir": str(interrupted_dir / "results"),
+        }
+        scheduler = _FakeScheduler(
+            job_ids_by_name={
+                "conda-0123456789abcdef0123456789abcdef": ["123"]
+            }
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            evo_config=SimpleNamespace(num_generations=3),
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(UnconfirmedJobCancellationError):
+            await runner._restore_resume_progress()
+
+        assert interrupted_dir.exists()
+        assert async_db.evaluation_ownership[2]["phase"] == "active"
+        assert runner._resume_generation_queue == []
+
+    asyncio.run(_run())
+
+
+def test_resume_rejects_untrusted_slurm_job_id_without_cancelling(tmp_path):
+    async def _run():
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "--user=other",
+            "job_name": "conda-0123456789abcdef0123456789abcdef",
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler()
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(RuntimeError, match="ownership is ambiguous"):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert scheduler.cancelled_job_ids == []
+
+    asyncio.run(_run())
+
+
+def test_resume_rejects_slurm_name_to_id_mismatch(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "123",
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(job_ids_by_name={job_name: ["999"]})
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(RuntimeError, match="identity mismatch"):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert scheduler.cancelled_job_ids == []
+
+    asyncio.run(_run())
+
+
+def test_resume_reconciles_ownership_outside_generation_budget(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[99] = {
+            "generation": 99,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "123",
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_99" / "results"),
+        }
+        scheduler = _FakeScheduler(job_ids_by_name={job_name: []})
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            evo_config=SimpleNamespace(num_generations=3),
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [99]
+        assert async_db.evaluation_ownership[99]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_resume_reconciles_generation_zero_before_fresh_setup(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[0] = {
+            "generation": 0,
+            "phase": "active",
+            "job_type": "slurm_conda",
+            "job_id": "123",
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_0" / "results"),
+        }
+        scheduler = _FakeScheduler(job_ids_by_name={job_name: []})
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [0]
+        assert async_db.evaluation_ownership[0]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("generation", [0, 2])
+def test_resume_resolves_local_ownership_for_persisted_generation(
+    tmp_path,
+    generation,
+):
+    async def _run():
+        class _PersistedDB(_FakeAsyncDB):
+            async def get_persisted_generation_ids_async(self):
+                return [generation]
+
+        async_db = _PersistedDB(total_programs=1)
+        async_db.evaluation_ownership[generation] = {
+            "generation": generation,
+            "phase": "active",
+            "job_type": "local",
+            "job_id": None,
+            "job_name": None,
+            "results_dir": str(
+                tmp_path / f"gen_{generation}" / "results"
+            ),
+        }
+        scheduler = _FakeScheduler()
+        scheduler.job_type = "local"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [generation]
+        assert async_db.evaluation_ownership[generation]["phase"] == "resolved"
+        assert scheduler.cancelled_job_ids == []
+
+    asyncio.run(_run())
+
+
+def test_fresh_setup_archives_existing_generation_zero_without_active_row(tmp_path):
+    async def _run():
+        gen_dir = tmp_path / "gen_0"
+        gen_dir.mkdir()
+        (gen_dir / "stale.txt").write_text("stale", encoding="utf-8")
+        runner = _build_runner(results_dir=str(tmp_path))
+
+        assert await runner._reconcile_resume_evaluation_ownership() == []
+        await runner._archive_interrupted_generation_dirs([0])
+
+        assert not gen_dir.exists()
+        archived = list(
+            (tmp_path / ".interrupted_generations").glob("gen_0-*")
+        )
+        assert len(archived) == 1
+        assert (archived[0] / "stale.txt").read_text(encoding="utf-8") == "stale"
 
     asyncio.run(_run())
 
@@ -2308,6 +2733,90 @@ def test_submit_evaluation_job_acquires_slot_before_submitting():
     asyncio.run(_run())
 
 
+def test_submit_evaluation_job_persists_ownership_before_external_submit():
+    async def _run():
+        events = []
+
+        class _OwnershipDB(_FakeAsyncDB):
+            async def begin_evaluation_ownership_async(
+                self, generation, job_type, results_dir
+            ):
+                events.append("ownership.begin")
+                await super().begin_evaluation_ownership_async(
+                    generation,
+                    job_type,
+                    results_dir,
+                )
+
+            async def activate_evaluation_ownership_async(
+                self, generation, job_id, job_name=None
+            ):
+                events.append("ownership.activate")
+                await super().activate_evaluation_ownership_async(
+                    generation,
+                    job_id,
+                    job_name,
+                )
+
+        scheduler = _TrackedScheduler(events)
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=_OwnershipDB(total_programs=0),
+            scheduler=scheduler,
+            evaluation_slot_pool=_TrackedSlotPool(events, "eval"),
+            sampling_slot_pool=_TrackedSlotPool(events, "sampling"),
+        )
+
+        await runner._submit_evaluation_job_with_ownership(
+            generation=4,
+            exec_fname="program.py",
+            results_dir="results",
+            sampling_worker_id=7,
+        )
+
+        assert events == [
+            "sampling.release:7",
+            "eval.acquire",
+            "ownership.begin",
+            "submit:program.py:results",
+            "ownership.activate",
+        ]
+
+    asyncio.run(_run())
+
+
+def test_submit_evaluation_job_cancels_when_ownership_activation_fails():
+    async def _run():
+        class _ActivationFailDB(_FakeAsyncDB):
+            async def activate_evaluation_ownership_async(
+                self, generation, job_id, job_name=None
+            ):
+                raise sqlite3.OperationalError("write failed")
+
+        scheduler = _FakeScheduler(cancelled_job_ids=["job-for-program.py"])
+        scheduler.job_type = "slurm_conda"
+        evaluation_pool = _FakeSlotPool()
+        runner = _build_runner(
+            async_db=_ActivationFailDB(total_programs=0),
+            scheduler=scheduler,
+            evaluation_slot_pool=evaluation_pool,
+        )
+
+        with pytest.raises(sqlite3.OperationalError, match="write failed"):
+            await runner._submit_evaluation_job_with_ownership(
+                generation=4,
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+
+        assert scheduler.cancelled_job_ids == ["job-for-program.py"]
+        assert evaluation_pool.released == [0]
+        assert runner.async_db.evaluation_ownership[4]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
 def test_generate_evolved_proposal_uses_slot_reservation_helper():
     async def _run():
         helper_calls = []
@@ -2315,7 +2824,12 @@ def test_generate_evolved_proposal_uses_slot_reservation_helper():
         async def sample_with_fix_mode_async(**kwargs):
             return SimpleNamespace(id="parent", generation=0), [], [], False
 
-        async def submit_with_slot(exec_fname, results_dir, sampling_worker_id):
+        async def submit_with_slot(
+            exec_fname,
+            results_dir,
+            sampling_worker_id,
+            generation=None,
+        ):
             helper_calls.append((exec_fname, results_dir, sampling_worker_id))
             return "job-123", 9, 10.0, 10.0, 1
 
@@ -2474,6 +2988,17 @@ def test_cancel_surplus_inflight_work_cancels_backlog_once_target_hit():
             assigned_generations={51, 52, 53},
             submitted_jobs={"job-1": job_1, "job-2": job_2},
         )
+        for job in (job_1, job_2):
+            await runner.async_db.begin_evaluation_ownership_async(
+                generation=job.generation,
+                job_type="local",
+                results_dir=job.results_dir,
+            )
+            await runner.async_db.activate_evaluation_ownership_async(
+                generation=job.generation,
+                job_id=None,
+                job_name=None,
+            )
 
         await runner._cancel_surplus_inflight_work()
 
@@ -2484,6 +3009,44 @@ def test_cancel_surplus_inflight_work_cancels_backlog_once_target_hit():
         assert runner.assigned_generations == set()
         assert scheduler.cancelled_job_ids == ["job-1", "job-2"]
         assert eval_pool.released == [3, 4]
+        assert all(
+            ownership["phase"] == "resolved"
+            for ownership in runner.async_db.evaluation_ownership.values()
+        )
+
+    asyncio.run(_run())
+
+
+def test_cancel_surplus_resolves_dropped_retry_ownership():
+    async def _run():
+        job = AsyncRunningJob(
+            job_id="retry-job",
+            exec_fname="program.py",
+            results_dir="results",
+            start_time=time.time(),
+            proposal_started_at=time.time(),
+            evaluation_submitted_at=time.time(),
+            generation=53,
+        )
+        runner = _build_runner(
+            failed_jobs_for_retry={"retry-job": job},
+            submitted_jobs={"retry-job": job},
+        )
+        await runner.async_db.begin_evaluation_ownership_async(
+            generation=53,
+            job_type="local",
+            results_dir="results",
+        )
+        await runner.async_db.activate_evaluation_ownership_async(
+            generation=53,
+            job_id=None,
+            job_name=None,
+        )
+
+        await runner._cancel_surplus_inflight_work()
+
+        assert runner.failed_jobs_for_retry == {}
+        assert runner.async_db.evaluation_ownership[53]["phase"] == "resolved"
 
     asyncio.run(_run())
 

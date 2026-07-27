@@ -504,6 +504,20 @@ class ProgramDatabase:
         )
         self.cursor.execute(
             """
+            CREATE TABLE IF NOT EXISTS evaluation_ownership (
+                generation INTEGER PRIMARY KEY,
+                phase TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                job_id TEXT,
+                job_name TEXT,
+                results_dir TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                CHECK (phase IN ('submitting', 'active', 'resolved'))
+            )
+            """
+        )
+        self.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS attempt_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 generation INTEGER NOT NULL,
