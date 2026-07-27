@@ -1,4 +1,5 @@
 import importlib.util
+import errno
 import json
 import os
 import time
@@ -21,6 +22,10 @@ DEFAULT_METRICS_ON_ERROR = {
     "num_valid_runs": 0,
     "num_invalid_runs": 0,
     "all_validation_errors": [],
+}
+UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
+    errno.EINVAL,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
 }
 
 
@@ -79,6 +84,31 @@ def _extract_early_stop_score(
     return None
 
 
+def _fsync_directory(directory: str) -> None:
+    """Durably publish directory-entry changes where the filesystem supports it."""
+    if os.name == "nt":
+        return
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        try:
+            os.fsync(directory_fd)
+        except OSError as error:
+            if error.errno not in UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+                raise
+    finally:
+        os.close(directory_fd)
+
+
+def _invalidate_correctness_marker(results_dir: str) -> None:
+    """Remove any success marker before a new result can be published."""
+    correct_file = os.path.join(results_dir, "correct.json")
+    try:
+        os.unlink(correct_file)
+    except FileNotFoundError:
+        return
+    _fsync_directory(results_dir)
+
+
 def save_json_results(
     results_dir: str,
     metrics: Dict[str, Any],
@@ -95,6 +125,7 @@ def save_json_results(
     score as ``correct=True, combined_score=0.0``.
     """
     os.makedirs(results_dir, exist_ok=True)
+    _invalidate_correctness_marker(results_dir)
 
     metrics_file = os.path.join(results_dir, "metrics.json")
     with open(metrics_file, "w") as f:
@@ -110,6 +141,14 @@ def save_json_results(
         json.dump(correct_payload, f, indent=4)
         f.flush()
         os.fsync(f.fileno())
+    try:
+        _fsync_directory(results_dir)
+    except OSError:
+        try:
+            _invalidate_correctness_marker(results_dir)
+        except OSError:
+            pass
+        raise
     if verbose:
         print(f"Correctness and error status saved to {correct_file}")
 
@@ -192,6 +231,9 @@ def run_shinka_eval(
         raise ValueError("run_workers must be >= 1")
     if max_workers_cap is not None and max_workers_cap < 1:
         raise ValueError("max_workers_cap must be >= 1 when provided")
+
+    os.makedirs(results_dir, exist_ok=True)
+    _invalidate_correctness_marker(results_dir)
 
     effective_run_workers = run_workers
     if max_workers_cap is not None:
