@@ -1178,7 +1178,7 @@ class AsyncProgramDatabase:
         except Exception as e:
             self._debug_track_end(op_id, success=False)
             logger.error(f"Error in get_persisted_generation_ids_async: {e}")
-            return []
+            raise
 
     async def get_top_programs_async(
         self, n: int = 10, correct_only: bool = True

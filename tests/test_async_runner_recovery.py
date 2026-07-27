@@ -185,6 +185,9 @@ def _build_runner(**overrides):
     runner.evo_config = overrides.get("evo_config", SimpleNamespace(num_generations=10))
     runner.completed_generations = overrides.get("completed_generations", 0)
     runner.next_generation_to_submit = overrides.get("next_generation_to_submit", 1)
+    runner._resume_generation_queue = overrides.get(
+        "_resume_generation_queue", []
+    )
     runner.running_jobs = overrides.get("running_jobs", [])
     runner.active_proposal_tasks = overrides.get("active_proposal_tasks", {})
     runner._active_proposal_costs = overrides.get("_active_proposal_costs", {})
@@ -237,19 +240,224 @@ def _build_runner(**overrides):
     return runner
 
 
-def test_restore_resume_progress_uses_actual_program_count():
+def test_restore_resume_progress_replays_missing_generation_directory(tmp_path):
+    class _ResumeDB:
+        async def get_total_program_count_async(self):
+            return 4
+
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1, 3, 4]
+
     async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        (interrupted_dir / ".generation_lock").write_text("", encoding="utf-8")
+        (interrupted_dir / "partial.txt").write_text(
+            "preserve me",
+            encoding="utf-8",
+        )
         runner = _build_runner(
-            async_db=_FakeAsyncDB(total_programs=7),
-            db=SimpleNamespace(last_iteration=8),
-            db_config=SimpleNamespace(num_islands=2),
-            evo_config=SimpleNamespace(num_generations=10),
+            async_db=_ResumeDB(),
+            db=SimpleNamespace(last_iteration=4),
+            db_config=SimpleNamespace(num_islands=1),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(tmp_path),
         )
 
         await runner._restore_resume_progress()
 
-        assert runner.completed_generations == 6
-        assert runner.next_generation_to_submit == 9
+        assert runner.completed_generations == 4
+        assert runner.next_generation_to_submit == 2
+        assert runner._resume_generation_queue == [2]
+        assert interrupted_dir.exists() is False
+        archived = list(
+            (tmp_path / ".interrupted_generations").glob("gen_2-*")
+        )
+        assert len(archived) == 1
+        assert (archived[0] / "partial.txt").read_text(encoding="utf-8") == (
+            "preserve me"
+        )
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_preserves_files_when_generation_query_fails(
+    tmp_path,
+):
+    class _FailingResumeDB:
+        async def get_total_program_count_async(self):
+            return 4
+
+        async def get_persisted_generation_ids_async(self):
+            raise OSError("database unavailable")
+
+    async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        (interrupted_dir / "partial.txt").write_text(
+            "preserve me",
+            encoding="utf-8",
+        )
+        runner = _build_runner(
+            async_db=_FailingResumeDB(),
+            db=SimpleNamespace(last_iteration=4),
+            db_config=SimpleNamespace(num_islands=1),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(OSError, match="database unavailable"):
+            await runner._restore_resume_progress()
+
+        assert runner._resume_generation_queue == []
+        assert (interrupted_dir / "partial.txt").read_text(
+            encoding="utf-8"
+        ) == "preserve me"
+        assert (tmp_path / ".interrupted_generations").exists() is False
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_refuses_symlinked_archive(tmp_path):
+    class _ResumeDB:
+        async def get_total_program_count_async(self):
+            return 4
+
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1, 3, 4]
+
+    async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        (interrupted_dir / "partial.txt").write_text(
+            "preserve me",
+            encoding="utf-8",
+        )
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        (tmp_path / ".interrupted_generations").symlink_to(
+            outside_dir,
+            target_is_directory=True,
+        )
+        runner = _build_runner(
+            async_db=_ResumeDB(),
+            db=SimpleNamespace(last_iteration=4),
+            db_config=SimpleNamespace(num_islands=1),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(OSError):
+            await runner._restore_resume_progress()
+
+        assert runner._resume_generation_queue == []
+        assert (interrupted_dir / "partial.txt").exists()
+        assert list(outside_dir.iterdir()) == []
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_refuses_symlinked_results_root(tmp_path):
+    class _ResumeDB:
+        async def get_total_program_count_async(self):
+            return 4
+
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1, 3, 4]
+
+    async def _run():
+        real_root = tmp_path / "real-results"
+        real_root.mkdir()
+        interrupted_dir = real_root / "gen_2"
+        interrupted_dir.mkdir()
+        results_link = tmp_path / "results-link"
+        results_link.symlink_to(real_root, target_is_directory=True)
+        runner = _build_runner(
+            async_db=_ResumeDB(),
+            db=SimpleNamespace(last_iteration=4),
+            db_config=SimpleNamespace(num_islands=1),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(results_link),
+        )
+
+        with pytest.raises(OSError):
+            await runner._restore_resume_progress()
+
+        assert interrupted_dir.exists()
+        assert runner._resume_generation_queue == []
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_refuses_writable_results_root(tmp_path):
+    class _ResumeDB:
+        async def get_total_program_count_async(self):
+            return 4
+
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1, 3, 4]
+
+    async def _run():
+        results_root = tmp_path / "results"
+        results_root.mkdir(mode=0o700)
+        interrupted_dir = results_root / "gen_2"
+        interrupted_dir.mkdir()
+        results_root.chmod(0o777)
+        runner = _build_runner(
+            async_db=_ResumeDB(),
+            db=SimpleNamespace(last_iteration=4),
+            db_config=SimpleNamespace(num_islands=1),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(results_root),
+        )
+
+        try:
+            with pytest.raises(PermissionError, match="group/world writable"):
+                await runner._restore_resume_progress()
+        finally:
+            results_root.chmod(0o700)
+
+        assert interrupted_dir.exists()
+        assert runner._resume_generation_queue == []
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_fails_closed_without_secure_archive_support(
+    tmp_path,
+    monkeypatch,
+):
+    class _ResumeDB:
+        async def get_total_program_count_async(self):
+            return 4
+
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1, 3, 4]
+
+    async def _run():
+        interrupted_dir = tmp_path / "gen_2"
+        interrupted_dir.mkdir()
+        (interrupted_dir / "partial.txt").write_text(
+            "preserve me",
+            encoding="utf-8",
+        )
+        runner = _build_runner(
+            async_db=_ResumeDB(),
+            db=SimpleNamespace(last_iteration=4),
+            db_config=SimpleNamespace(num_islands=1),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(tmp_path),
+        )
+        monkeypatch.delattr(
+            "shinka.core.async_runner.os.O_NOFOLLOW",
+        )
+
+        with pytest.raises(RuntimeError, match="unsupported"):
+            await runner._restore_resume_progress()
+
+        assert interrupted_dir.exists()
+        assert runner._resume_generation_queue == []
+        assert list(tmp_path.glob(".interrupted_generations*")) == []
 
     asyncio.run(_run())
 
@@ -1653,6 +1861,40 @@ def test_start_proposals_does_not_assign_generation_past_target():
         assert len(runner.active_proposal_tasks) == 1
 
         await asyncio.gather(*runner.active_proposal_tasks.values(), return_exceptions=True)
+        await runner._cleanup_completed_proposal_tasks()
+
+    asyncio.run(_run())
+
+
+def test_start_proposals_assigns_only_missing_resume_generations():
+    async def _run():
+        runner = _build_runner(
+            evo_config=SimpleNamespace(num_generations=6, max_api_costs=None),
+            next_generation_to_submit=2,
+            _resume_generation_queue=[2, 5],
+            max_proposal_jobs=4,
+        )
+
+        async def _fake_generate(_generation, _task_id):
+            await asyncio.sleep(0)
+            return None
+
+        runner._generate_proposal_async = _fake_generate
+
+        await runner._start_proposals(3)
+
+        assert runner.next_generation_to_submit == 6
+        assert runner._resume_generation_queue == []
+        assert runner.assigned_generations == {2, 5}
+        assert sorted(
+            int(task.get_name().split("_", 1)[1])
+            for task in runner.active_proposal_tasks.values()
+        ) == [2, 5]
+
+        await asyncio.gather(
+            *runner.active_proposal_tasks.values(),
+            return_exceptions=True,
+        )
         await runner._cleanup_completed_proposal_tasks()
 
     asyncio.run(_run())

@@ -580,6 +580,7 @@ class ShinkaEvolveRunner:
         self.next_generation_to_submit = (
             1  # Start from generation 1 since 0 is handled in setup
         )
+        self._resume_generation_queue: List[int] = []
         self.assigned_generations: Set[int] = set()  # Track assigned gens
         self.best_program_id: Optional[str] = None
         self.lang_ext = get_language_extension(evo_config.language)
@@ -2937,8 +2938,11 @@ class ShinkaEvolveRunner:
             if len(self.active_proposal_tasks) >= self.max_proposal_jobs:
                 break
 
-            # Assign generation atomically to prevent duplicates
-            generation = self.next_generation_to_submit
+            # Resume gaps first; otherwise continue normal sequential assignment.
+            if self._resume_generation_queue:
+                generation = self._resume_generation_queue[0]
+            else:
+                generation = self.next_generation_to_submit
 
             if generation >= self.evo_config.num_generations:
                 break
@@ -2950,7 +2954,15 @@ class ShinkaEvolveRunner:
 
             # Mark generation as assigned and increment counter
             self.assigned_generations.add(generation)
-            self.next_generation_to_submit += 1
+            if self._resume_generation_queue:
+                self._resume_generation_queue.pop(0)
+                self.next_generation_to_submit = (
+                    self._resume_generation_queue[0]
+                    if self._resume_generation_queue
+                    else self.evo_config.num_generations
+                )
+            else:
+                self.next_generation_to_submit += 1
 
             # Create proposal task
             task_id = str(uuid.uuid4())
@@ -5430,7 +5442,112 @@ class ShinkaEvolveRunner:
     async def _restore_resume_progress(self) -> None:
         """Restore progress counters from persisted database state."""
         self.completed_generations = await self._count_completed_generations_from_db()
-        self.next_generation_to_submit = max(self.db.last_iteration + 1, 1)
+        persisted_generations = set(
+            await self.async_db.get_persisted_generation_ids_async()
+        )
+        resume_generation_queue = [
+            generation
+            for generation in range(1, self.evo_config.num_generations)
+            if generation not in persisted_generations
+        ]
+        await self._archive_interrupted_generation_dirs(
+            resume_generation_queue
+        )
+        self._resume_generation_queue = resume_generation_queue
+        self.next_generation_to_submit = (
+            self._resume_generation_queue[0]
+            if self._resume_generation_queue
+            else self.evo_config.num_generations
+        )
+
+    async def _archive_interrupted_generation_dirs(
+        self,
+        generations: List[int],
+    ) -> None:
+        """Move incomplete generation directories aside before replay."""
+        if not generations:
+            return
+
+        def archive_directories() -> None:
+            results_root = Path(self.results_dir)
+            archive_name = ".interrupted_generations"
+            no_follow = getattr(os, "O_NOFOLLOW", None)
+            directory_flag = getattr(os, "O_DIRECTORY", None)
+            if no_follow is None or directory_flag is None:
+                raise RuntimeError(
+                    "Secure interrupted-generation recovery is unsupported "
+                    "on this platform"
+                )
+
+            root_fd = os.open(
+                results_root,
+                os.O_RDONLY | directory_flag | no_follow,
+            )
+            archive_fd: Optional[int] = None
+            try:
+                root_stat = os.fstat(root_fd)
+                if hasattr(os, "geteuid") and root_stat.st_uid != os.geteuid():
+                    raise PermissionError("Results directory is owned by another user")
+                if root_stat.st_mode & 0o022:
+                    raise PermissionError(
+                        "Results directory is group/world writable"
+                    )
+
+                for generation in generations:
+                    source_name = f"{FOLDER_PREFIX}_{generation}"
+                    try:
+                        os.stat(
+                            source_name,
+                            dir_fd=root_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError:
+                        continue
+
+                    if archive_fd is None:
+                        try:
+                            os.mkdir(archive_name, mode=0o700, dir_fd=root_fd)
+                        except FileExistsError:
+                            pass
+                        archive_fd = os.open(
+                            archive_name,
+                            os.O_RDONLY | directory_flag | no_follow,
+                            dir_fd=root_fd,
+                        )
+                        archive_stat = os.fstat(archive_fd)
+                        if (
+                            hasattr(os, "geteuid")
+                            and archive_stat.st_uid != os.geteuid()
+                        ):
+                            raise PermissionError(
+                                "Interruption archive is owned by another user"
+                            )
+                        if archive_stat.st_mode & 0o022:
+                            raise PermissionError(
+                                "Interruption archive is group/world writable"
+                            )
+
+                    target_name = (
+                        f"{FOLDER_PREFIX}_{generation}-{uuid.uuid4().hex}"
+                    )
+                    os.rename(
+                        source_name,
+                        target_name,
+                        src_dir_fd=root_fd,
+                        dst_dir_fd=archive_fd,
+                    )
+                    logger.warning(
+                        "Archived interrupted generation %s at %s/%s",
+                        generation,
+                        results_root / archive_name,
+                        target_name,
+                    )
+            finally:
+                if archive_fd is not None:
+                    os.close(archive_fd)
+                os.close(root_fd)
+
+        await asyncio.to_thread(archive_directories)
 
     def _get_in_flight_work_count(self) -> int:
         """Return work that is expected to complete without new proposals."""
@@ -5460,6 +5577,8 @@ class ShinkaEvolveRunner:
 
     def _get_remaining_generation_slots(self) -> int:
         """Return how many proposal generations can still be assigned."""
+        if self._resume_generation_queue:
+            return len(self._resume_generation_queue)
         return max(0, self.evo_config.num_generations - self.next_generation_to_submit)
 
     def _mark_surplus_completed_jobs_for_discard(
