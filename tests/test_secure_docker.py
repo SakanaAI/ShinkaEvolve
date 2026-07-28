@@ -365,11 +365,12 @@ print('evaluator stdout')
         check=True,
     )
     with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:") as archive:
-        entries = {
-            member.name: archive.extractfile(member).read()
-            for member in archive
-            if member.isfile()
-        }
+        entries: dict[str, bytes] = {}
+        for member in archive:
+            if member.isfile():
+                source = archive.extractfile(member)
+                assert source is not None
+                entries[member.name] = source.read()
 
     assert json.loads(entries["meta.json"]) == {
         "output_limited": False,
@@ -414,7 +415,9 @@ def test_secure_runner_enforces_its_own_wall_time(tmp_path: Path) -> None:
         timeout=10,
     )
     with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:") as archive:
-        metadata = json.loads(archive.extractfile("meta.json").read())
+        metadata_file = archive.extractfile("meta.json")
+        assert metadata_file is not None
+        metadata = json.loads(metadata_file.read())
 
     assert metadata["timed_out"] is True
     assert metadata["returncode"] != 0

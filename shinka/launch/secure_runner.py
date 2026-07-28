@@ -20,7 +20,7 @@ import tarfile
 import tempfile
 import threading
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO
 
 _CHUNK_SIZE = 64 * 1024
 _RESULT_FILES = ("metrics.json", "correct.json")
@@ -58,7 +58,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def _capture_stream(
-    pipe: Optional[BinaryIO],
+    pipe: BinaryIO | None,
     destination: BinaryIO,
     budget: _OutputBudget,
     process: subprocess.Popen[bytes],
@@ -105,7 +105,7 @@ def _add_open_file(
     archive.addfile(info, file_handle)
 
 
-def _read_regular_result(path: Path, max_bytes: int) -> Optional[bytes]:
+def _read_regular_result(path: Path, max_bytes: int) -> bytes | None:
     try:
         initial = path.lstat()
     except FileNotFoundError:
@@ -164,7 +164,7 @@ def main() -> int:
         tempfile.TemporaryFile(mode="w+b") as stdout_capture,
         tempfile.TemporaryFile(mode="w+b") as stderr_capture,
     ):
-        process: Optional[subprocess.Popen[bytes]] = None
+        process: subprocess.Popen[bytes] | None = None
         try:
             process = subprocess.Popen(
                 [

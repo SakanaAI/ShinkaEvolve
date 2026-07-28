@@ -25,8 +25,9 @@ import tarfile
 import tempfile
 import threading
 import uuid
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Mapping, Optional, TextIO
+from typing import Any, BinaryIO, TextIO
 
 _PINNED_IMAGE_RE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 _SAFE_USER_RE = re.compile(r"^[1-9][0-9]*:[1-9][0-9]*$")
@@ -214,7 +215,7 @@ def _default_sandbox_user() -> str:
     return f"{uid}:{gid}"
 
 
-def _validate_sandbox_user(value: Optional[str]) -> str:
+def _validate_sandbox_user(value: str | None) -> str:
     if value is not None and not isinstance(value, str):
         raise SecureDockerError("sandbox_user must be a non-root numeric UID:GID pair")
     user = _default_sandbox_user() if value is None else value.strip()
@@ -291,13 +292,13 @@ def _preflight(
     if (
         platform.system() == "Linux"
         and require_rootless
+        and not allow_rootful_dedicated_vm
         and not any("rootless" in option for option in normalized_options)
     ):
-        if not allow_rootful_dedicated_vm:
-            raise SecureDockerError(
-                "secure_docker requires a rootless Docker engine on Linux. "
-                "Set allow_rootful_dedicated_vm=true only for a dedicated container VM."
-            )
+        raise SecureDockerError(
+            "secure_docker requires a rootless Docker engine on Linux. "
+            "Set allow_rootful_dedicated_vm=true only for a dedicated container VM."
+        )
 
 
 def _safe_eval_environment(values: Mapping[str, str]) -> list[str]:
@@ -578,8 +579,12 @@ class SecureDockerProcess:
         self._transport_limited = threading.Event()
         self._removed = False
         self._cleaned = False
-        self._response_file = tempfile.TemporaryFile(mode="w+b")
-        self._docker_stderr_file = tempfile.TemporaryFile(mode="w+b")
+        # These handles span the attached process lifetime and are closed in
+        # ``cleanup_logging`` rather than a lexical context-manager scope.
+        self._response_file = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
+        self._docker_stderr_file = tempfile.TemporaryFile(  # noqa: SIM115
+            mode="w+b"
+        )
         self._threads = (
             threading.Thread(
                 target=self._capture_transport,
@@ -603,16 +608,14 @@ class SecureDockerProcess:
         return self.process.pid
 
     @property
-    def returncode(self) -> Optional[int]:
+    def returncode(self) -> int | None:
         return self.process.returncode
 
     @property
     def output_limited(self) -> bool:
         return self._transport_limited.is_set()
 
-    def _capture_transport(
-        self, pipe: Optional[BinaryIO], file_handle: BinaryIO
-    ) -> None:
+    def _capture_transport(self, pipe: BinaryIO | None, file_handle: BinaryIO) -> None:
         if pipe is None:
             return
         try:
@@ -642,10 +645,10 @@ class SecureDockerProcess:
             self._removed = True
         _remove_container(self.executable, self.container_id)
 
-    def poll(self) -> Optional[int]:
+    def poll(self) -> int | None:
         return self.process.poll()
 
-    def wait(self, timeout: Optional[float] = None) -> int:
+    def wait(self, timeout: float | None = None) -> int:
         return self.process.wait(timeout=timeout)
 
     def kill(self) -> None:
@@ -731,7 +734,7 @@ class SecureDockerProcess:
         self._response_file.seek(0)
         seen: set[str] = set()
         log_bytes = 0
-        metadata: Optional[Mapping[str, Any]] = None
+        metadata: Mapping[str, Any] | None = None
         try:
             with tarfile.open(fileobj=self._response_file, mode="r:") as archive:
                 for member in archive:
@@ -836,12 +839,12 @@ def submit(
     log_dir: str,
     program_path: str,
     eval_program_path: str,
-    evaluator_root: Optional[str],
+    evaluator_root: str | None,
     image: str,
     container_executable: str,
     extra_cmd_args: Mapping[str, Any],
     eval_environment: Mapping[str, str],
-    sandbox_user: Optional[str],
+    sandbox_user: str | None,
     memory_bytes: int,
     cpus: float,
     pids_limit: int,
@@ -927,8 +930,8 @@ def submit(
     if not container_id:
         raise SecureDockerError("Docker did not return a container ID")
 
-    stdout_file: Optional[TextIO] = None
-    stderr_file: Optional[TextIO] = None
+    stdout_file: TextIO | None = None
+    stderr_file: TextIO | None = None
     try:
         _verify_container(
             executable=executable,

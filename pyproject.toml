@@ -106,3 +106,7 @@ markers = [
     "models_dev_live: live models.dev catalog contract coverage",
     "requires_secrets: tests that need CI secrets or private credentials",
 ]
+
+[tool.ruff.lint]
+# Keep CI's established baseline explicit across Ruff releases.
+select = ["E4", "E7", "E9", "F"]
