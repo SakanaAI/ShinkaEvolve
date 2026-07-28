@@ -13,7 +13,7 @@ uses the dedicated non-root `65532:65532` identity. Shinka invokes the selected
 route as:
 
 ```text
-headless <agent> [--model <model>] [--reasoning-effort <effort>] --allow yolo --json
+headless <agent> [--model <model>] [--reasoning-effort <effort>] --allow yolo --json --usage
 ```
 
 The manual `Publish Headless agents image` GitHub workflow builds AMD64 and
@@ -23,7 +23,7 @@ immutable manifest digest. A local equivalent is:
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --tag registry.example/shinka/headless-agents:0.4.0 \
+  --tag registry.example/shinka/headless-agents:0.5.0 \
   --push \
   containers/headless-agents
 ```
