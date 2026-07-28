@@ -117,7 +117,12 @@ For the simplest setup with default settings, you only need to specify the evalu
 ```python
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
-from shinka.launch import LocalJobConfig, SlurmCondaJobConfig, SlurmDockerJobConfig
+from shinka.launch import (
+    LocalJobConfig,
+    SecureDockerJobConfig,
+    SlurmCondaJobConfig,
+    SlurmDockerJobConfig,
+)
 
 # Minimal - only specify what's required
 job_conf = LocalJobConfig(eval_program_path="evaluate.py")
@@ -146,6 +151,14 @@ job_conf = LocalJobConfig(eval_program_path="evaluate.py")
 #     gpus=1,
 #     mem="8G",
 # )
+# Or isolate the existing single-file evaluator and candidate in a hardened,
+# networkless local container. The image must be pre-pulled by digest and
+# include Python, Shinka, evaluator dependencies, and the candidate toolchain.
+# job_conf = SecureDockerJobConfig(
+#     eval_program_path="evaluate.py",
+#     image="registry.example/shinka/evaluator@sha256:<64-hex-digest>",
+# )
+# Use EvolutionConfig(..., job_type="secure_docker") with this backend.
 db_conf = DatabaseConfig()
 evo_conf = EvolutionConfig(init_program_path="initial.py")
 
@@ -213,7 +226,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `num_generations` | `50` | `int` | Number of evolution generations to run |
 | `max_patch_resamples` | `3` | `int` | Max times to resample a patch if it fails |
 | `max_patch_attempts` | `1` | `int` | Max attempts to generate a valid patch |
-| `job_type` | `"local"` | `str` | Job execution type: "local", "slurm_docker", "slurm_conda" |
+| `job_type` | `"local"` | `str` | Job execution type: "local", "secure_docker", "slurm_docker", "slurm_conda" |
 | `language` | `"python"` | `str` | Programming language for evolution |
 | `llm_models` | `["gpt-5-mini", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gpt-5.4"]` | `List[str]` | List of LLM models for code generation |
 | `llm_dynamic_selection` | `"ucb"` | `Optional[Union[str, BanditBase]]` | Dynamic model selection strategy |
@@ -310,6 +323,11 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | `time` | `None` | `Optional[str]` | Time limit for job execution |
 | `conda_env` | `None` | `Optional[str]` | Conda environment to run jobs in |
 | `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
+
+**SecureDockerJobConfig** (hardened local execution): set
+`EvolutionConfig.job_type="secure_docker"`, provide a locally available pinned
+`image`, and see [Hardened Docker Evaluation](docs/secure_docker.md) for the
+full configuration and security boundary.
 
 **SlurmDockerJobConfig** (for SLURM with Docker):
 | Key | Default Value | Type | Explanation |

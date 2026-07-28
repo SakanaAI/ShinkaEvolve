@@ -38,6 +38,20 @@ SLURM-backed execution where the evaluator runs in a container.
 
 ---
 
+## `SecureDockerJobConfig`
+
+Local hardened Docker execution for the existing single-file
+`evaluate.py --program_path --results_dir` interface. See [Hardened Docker
+Evaluation](../secure_docker.md) for its security model and compatibility
+limits.
+
+::: shinka.launch.scheduler.SecureDockerJobConfig
+    handler: python
+    options:
+      show_source: false
+
+---
+
 ## `JobScheduler`
 
 Lower-level scheduler abstraction for submitting and monitoring evaluation jobs

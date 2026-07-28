@@ -1,6 +1,7 @@
 from .scheduler import JobScheduler, JobConfig
 from .scheduler import (
     LocalJobConfig,
+    SecureDockerJobConfig,
     SlurmDockerJobConfig,
     SlurmCondaJobConfig,
     SlurmEnvJobConfig,
@@ -11,6 +12,7 @@ __all__ = [
     "JobScheduler",
     "JobConfig",
     "LocalJobConfig",
+    "SecureDockerJobConfig",
     "SlurmDockerJobConfig",
     "SlurmCondaJobConfig",
     "SlurmEnvJobConfig",

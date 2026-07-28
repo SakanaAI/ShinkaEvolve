@@ -94,6 +94,7 @@ nav:
       - Agentic Usage: agentic_usage.md
       - CLI Usage: cli_usage.md
       - Configuration: configuration.md
+      - Hardened Docker Evaluation: secure_docker.md
       - Local Models: support_local_models.md
   - WebUI: webui.md
   - API Reference:

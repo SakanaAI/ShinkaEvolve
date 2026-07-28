@@ -37,7 +37,12 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.embed import AsyncEmbeddingClient
-from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
+from shinka.launch import (
+    JobScheduler,
+    JobConfig,
+    LocalJobConfig,
+    SecureDockerJobConfig,
+)
 from shinka.edit.async_apply import (
     apply_patch_async,
     get_code_embedding_async,
@@ -757,16 +762,21 @@ class ShinkaEvolveRunner:
         return max_evaluation_jobs, max_proposal_jobs, max_db_workers
 
     def _configure_local_job_runtime(self, cpu_count: int) -> None:
-        """Tune local evaluation subprocess runtime defaults for scaling."""
-        if not isinstance(self.job_config, LocalJobConfig):
+        """Tune local-style evaluation runtime defaults for scaling."""
+        if not isinstance(self.job_config, (LocalJobConfig, SecureDockerJobConfig)):
             return
 
         if self.job_config.numeric_threads_per_job is None:
             numeric_threads = max(1, cpu_count // max(1, self.max_evaluation_jobs))
+            if isinstance(self.job_config, SecureDockerJobConfig):
+                numeric_threads = min(
+                    numeric_threads,
+                    max(1, int(self.job_config.cpus)),
+                )
             self.job_config.numeric_threads_per_job = numeric_threads
             if self.verbose:
                 logger.info(
-                    "Configured local numeric thread cap per eval process: %s",
+                    "Configured numeric thread cap per eval process: %s",
                     numeric_threads,
                 )
 

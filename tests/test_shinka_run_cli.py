@@ -272,6 +272,41 @@ def test_shinka_run_parses_json_overrides(tmp_path, monkeypatch):
     assert job_config.extra_cmd_args == {"seed": 42}
 
 
+def test_shinka_run_selects_secure_docker_and_keeps_evaluator_tree(
+    tmp_path, monkeypatch
+):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    (task_dir / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    results_dir = tmp_path / "results_secure"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+    image = "registry.example/shinka/evaluator@sha256:" + "a" * 64
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "3",
+            "--set",
+            "evo.job_type=secure_docker",
+            "--set",
+            f"job.image={image}",
+            "--set",
+            "job.require_rootless=false",
+        ]
+    )
+
+    assert _DummyRunner.last_kwargs is not None
+    job_config = _DummyRunner.last_kwargs["job_config"]
+    assert isinstance(job_config, cli_run.SecureDockerJobConfig)
+    assert job_config.eval_program_path == str(task_dir / "evaluate.py")
+    assert job_config.require_rootless is False
+    assert _DummyRunner.last_kwargs["evaluate_str"] is None
+
+
 def test_shinka_run_parses_activate_script_override(tmp_path, monkeypatch):
     _reset_dummy_runner()
     task_dir = _make_task_dir(tmp_path)

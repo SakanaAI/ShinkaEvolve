@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Union, get_args, get_origin
 
 from shinka.core import ShinkaEvolveRunner, EvolutionConfig
 from shinka.database import DatabaseConfig
-from shinka.launch import LocalJobConfig
+from shinka.launch import JobConfig, LocalJobConfig, SecureDockerJobConfig
 from shinka.cli.run_config import load_optional_yaml_config
 
 SUPPORTED_INITIAL_EXTENSIONS: dict[str, str] = {
@@ -211,10 +211,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _field_types() -> Dict[str, Dict[str, Any]]:
+    job_fields: Dict[str, Any] = {}
+    for config_type in (LocalJobConfig, SecureDockerJobConfig):
+        for config_field in fields(config_type):
+            # Preserve the existing local CLI coercion for shared fields such
+            # as Optional[python_executable]; secure-only fields are added.
+            job_fields.setdefault(config_field.name, config_field.type)
     return {
         "evo": {field.name: field.type for field in fields(EvolutionConfig)},
         "db": {field.name: field.type for field in fields(DatabaseConfig)},
-        "job": {field.name: field.type for field in fields(LocalJobConfig)},
+        "job": job_fields,
     }
 
 
@@ -395,6 +401,18 @@ def _build_default_job_values(evaluate_path: Path) -> Dict[str, Any]:
     return asdict(LocalJobConfig(eval_program_path=str(evaluate_path)))
 
 
+def _build_secure_docker_job_values(evaluate_path: Path) -> Dict[str, Any]:
+    # Build dataclass defaults without making the required image optional.
+    values = asdict(
+        SecureDockerJobConfig(
+            eval_program_path=str(evaluate_path),
+            image="bootstrap-only",
+        )
+    )
+    values["image"] = ""
+    return values
+
+
 def _validate_task_dir(task_dir: Path) -> tuple[Path, Path]:
     if not task_dir.exists():
         raise FileNotFoundError(f"Task dir does not exist: {task_dir}")
@@ -412,9 +430,9 @@ def _build_runner(
     args: argparse.Namespace,
     evo_config: EvolutionConfig,
     db_config: DatabaseConfig,
-    job_config: LocalJobConfig,
+    job_config: JobConfig,
     init_program_str: str,
-    evaluate_str: str,
+    evaluate_str: Optional[str],
 ) -> ShinkaEvolveRunner:
     runner_kwargs: Dict[str, Any] = {
         "evo_config": evo_config,
@@ -468,10 +486,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         db_values.update(file_overrides["db"])
         db_values.update(parsed_overrides["db"])
 
-        job_values = _build_default_job_values(evaluate_path)
-        job_values.update(file_overrides["job"])
-        job_values.update(parsed_overrides["job"])
-
         if args.max_evaluation_jobs is None:
             args.max_evaluation_jobs = runner_config.get("max_evaluation_jobs")
         if args.max_proposal_jobs is None:
@@ -485,10 +499,34 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         evo_config = EvolutionConfig(**evo_values)
         db_config = DatabaseConfig(**db_values)
-        job_config = LocalJobConfig(**job_values)
+        job_overrides = {**file_overrides["job"], **parsed_overrides["job"]}
+        if evo_config.job_type == "secure_docker":
+            secure_field_names = {
+                field.name for field in fields(SecureDockerJobConfig)
+            }
+            incompatible = sorted(set(job_overrides) - secure_field_names)
+            if incompatible:
+                raise ValueError(
+                    "These job settings are not supported by secure_docker: "
+                    + ", ".join(incompatible)
+                )
+            job_values = _build_secure_docker_job_values(evaluate_path)
+            job_values.update(job_overrides)
+            job_config = SecureDockerJobConfig(**job_values)
+        else:
+            job_values = _build_default_job_values(evaluate_path)
+            job_values.update(job_overrides)
+            job_config = LocalJobConfig(**job_values)
 
         init_program_str = initial_path.read_text(encoding="utf-8")
-        evaluate_str = evaluate_path.read_text(encoding="utf-8")
+        # Secure Docker mounts the evaluator's real directory read-only. Keeping
+        # the script in place preserves sibling imports and task assets while
+        # retaining the existing evaluate.py CLI contract.
+        evaluate_str = (
+            None
+            if isinstance(job_config, SecureDockerJobConfig)
+            else evaluate_path.read_text(encoding="utf-8")
+        )
 
         runner = _build_runner(
             args=args,

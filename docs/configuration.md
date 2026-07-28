@@ -11,7 +11,7 @@ Configuration values are resolved in this order (later wins):
 1. Dataclass defaults in code:
    - `shinka/core/config.py` (`EvolutionConfig`)
    - `shinka/database/dbase.py` (`DatabaseConfig`)
-   - `shinka/launch/scheduler.py` (`LocalJobConfig`, `SlurmDockerJobConfig`, `SlurmCondaJobConfig`)
+   - `shinka/launch/scheduler.py` (`LocalJobConfig`, `SecureDockerJobConfig`, `SlurmDockerJobConfig`, `SlurmCondaJobConfig`)
 2. Hydra preset YAMLs in `shinka/configs/`
 3. Task/cluster/variant overrides from Hydra composition
 4. CLI overrides (`shinka_launch ... key=value`, or `shinka_run --set ...`)
@@ -33,7 +33,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `num_generations` | `int` | `50` | Target number of generations. |
 | `max_patch_resamples` | `int` | `3` | Max patch resample loops per novelty attempt. |
 | `max_patch_attempts` | `int` | `1` | Max attempts to produce a syntactically valid patch. |
-| `job_type` | `str` | `'local'` | Job backend: `local`, `slurm_docker`, `slurm_conda`. |
+| `job_type` | `str` | `'local'` | Job backend: `local`, `secure_docker`, `slurm_docker`, `slurm_conda`. |
 | `language` | `str` | `'python'` | Language tag for prompts + file handling. |
 | `llm_models` | `List[str]` | `['gpt-5-mini', 'gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gpt-5.4']` | Mutation model pool. |
 | `llm_dynamic_selection` | `Optional[Union[str, BanditBase]]` | `'ucb'` | Dynamic model selection (`fixed`, `ucb`, `ucb1`, `thompson`, or bandit object). |
@@ -150,6 +150,28 @@ database or WebUI path.
 | `time` | `Optional[str]` | `None` | Optional timeout (`HH:MM:SS`). |
 | `conda_env` | `Optional[str]` | `None` | Optional conda env for local execution. |
 | `activate_script` | `Optional[str]` | `None` | Optional sourceable env script, e.g. `.venv/bin/activate`. |
+
+`SecureDockerJobConfig` adds a hardened local Docker execution mode. It keeps
+the ordinary single-file `evaluate.py --program_path --results_dir` interface;
+see [Hardened Docker Evaluation](secure_docker.md) for the security boundary.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `image` | `str` | required | Locally available immutable `@sha256:` image reference. |
+| `evaluator_root` | `Optional[str]` | `None` | Read-only evaluator tree; defaults to `evaluate.py`'s parent. |
+| `container_executable` | `str` | `'docker'` | Docker-compatible CLI executable. |
+| `python_executable` | `str` | `'python'` | Python command inside the evaluator image. |
+| `time` | `str` | `'00:05:00'` | Required wall-time limit (`HH:MM:SS`). |
+| `memory_bytes` | `int` | `2147483648` | Container memory limit. |
+| `cpus` | `float` | `1.0` | Container CPU limit. |
+| `pids_limit` | `int` | `256` | Maximum process count. |
+| `open_files_limit` | `int` | `1024` | Maximum open file descriptors. |
+| `max_output_bytes` | `int` | `8388608` | Combined stdout/stderr cap; overflow terminates the container. |
+| `tmpfs_bytes` | `int` | `536870912` | Writable temporary-filesystem cap. |
+| `result_tmpfs_bytes` | `int` | `67108864` | Isolated evaluator-result tmpfs cap; no host result directory is mounted. |
+| `sandbox_user` | `Optional[str]` | current non-root UID:GID | Container user; must be a non-root numeric UID:GID. |
+| `require_rootless` | `bool` | `True` | Require a rootless Docker engine on Linux. |
+| `allow_rootful_dedicated_vm` | `bool` | `False` | Explicit exception for a dedicated container VM. |
 
 `SlurmDockerJobConfig` adds:
 

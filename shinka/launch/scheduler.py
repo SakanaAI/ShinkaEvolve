@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
+from .secure_docker import SecureDockerProcess, submit as submit_secure_docker
 from .slurm import (
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
@@ -85,6 +86,54 @@ class LocalJobConfig(JobConfig):
 
 
 @dataclass
+class SecureDockerJobConfig(JobConfig):
+    """Run the existing single-file evaluator in a hardened local container.
+
+    ``evaluate.py`` keeps its usual ``--program_path`` and ``--results_dir``
+    arguments. The image must contain Python, the evaluator's dependencies, and
+    any compiler/runtime required by the candidate language.
+    """
+
+    image: str = ""
+    evaluator_root: Optional[str] = None
+    container_executable: str = "docker"
+    python_executable: str = "python"
+    time: str = "00:05:00"
+    memory_bytes: int = 2 * 1024 * 1024 * 1024
+    cpus: float = 1.0
+    pids_limit: int = 256
+    open_files_limit: int = 1024
+    max_output_bytes: int = 8 * 1024 * 1024
+    tmpfs_bytes: int = 512 * 1024 * 1024
+    result_tmpfs_bytes: int = 64 * 1024 * 1024
+    sandbox_user: Optional[str] = None
+    require_rootless: bool = True
+    allow_rootful_dedicated_vm: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.image, str) or not self.image.strip():
+            raise ValueError("SecureDockerJobConfig.image is required")
+        if not isinstance(self.time, str) or not self.time:
+            raise ValueError("SecureDockerJobConfig.time is required")
+        if parse_time_to_seconds(self.time) <= 0:
+            raise ValueError("SecureDockerJobConfig.time must be positive")
+        if self.memory_bytes <= 0:
+            raise ValueError("memory_bytes must be positive")
+        if self.cpus <= 0:
+            raise ValueError("cpus must be positive")
+        if self.pids_limit <= 0:
+            raise ValueError("pids_limit must be positive")
+        if self.open_files_limit <= 0:
+            raise ValueError("open_files_limit must be positive")
+        if self.max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be positive")
+        if self.tmpfs_bytes <= 0:
+            raise ValueError("tmpfs_bytes must be positive")
+        if self.result_tmpfs_bytes <= 0:
+            raise ValueError("result_tmpfs_bytes must be positive")
+
+
+@dataclass
 class SlurmDockerJobConfig(JobConfig):
     """Configuration for SLURM jobs using Docker"""
 
@@ -126,6 +175,7 @@ class JobScheduler:
         job_type: str,
         config: Union[
             LocalJobConfig,
+            SecureDockerJobConfig,
             SlurmDockerJobConfig,
             SlurmCondaJobConfig,
         ],
@@ -139,14 +189,15 @@ class JobScheduler:
         if self.job_type == "slurm_env":
             self.job_type = "slurm_conda"
 
-        if self.job_type == "local":
+        if self.job_type in ["local", "secure_docker"]:
             self.monitor = monitor_local
         elif self.job_type in ["slurm_docker", "slurm_conda"]:
             self.monitor = monitor_slurm
         else:
             raise ValueError(
                 f"Unknown job type: {job_type}. "
-                f"Must be 'local', 'slurm_docker', 'slurm_conda', or 'slurm_env'"
+                "Must be 'local', 'secure_docker', 'slurm_docker', "
+                "'slurm_conda', or 'slurm_env'"
             )
 
     def _build_command(self, exec_fname_t: str, results_dir_t: str) -> List[str]:
@@ -193,7 +244,9 @@ class JobScheduler:
                     *python_cmd,
                 ]
             if _has_value(self.config.activate_script):
-                activate_script = self.config.activate_script.strip().replace('"', '\\"')
+                activate_script = self.config.activate_script.strip().replace(
+                    '"', '\\"'
+                )
                 return [
                     "bash",
                     "-lc",
@@ -205,9 +258,8 @@ class JobScheduler:
     def _build_eval_env(self) -> Dict[str, str]:
         """Environment for the eval subprocess: verbosity + numeric-thread caps.
 
-        Shared by both the local path (Popen env overrides) and the SLURM path
-        (exported inside the batch script), so behaviour is identical across
-        job types.
+        Shared by the local, secure Docker, and SLURM paths so evaluator
+        verbosity and numeric-thread behavior remain consistent.
         """
         env: Dict[str, str] = {
             "SHINKA_EVAL_VERBOSE": "1" if self.config.eval_verbose else "0",
@@ -221,74 +273,35 @@ class JobScheduler:
             return None
         return self._build_eval_env()
 
-    def run(
+    def _submit_job(
         self, exec_fname_t: str, results_dir_t: str
-    ) -> Tuple[Dict[str, Any], float]:
-        job_id: Union[str, ProcessWithLogging]
-        cmd = self._build_command(exec_fname_t, results_dir_t)
-        start_time = time.time()
-
-        if self.job_type == "local":
-            assert isinstance(self.config, LocalJobConfig)
-            job_id = submit_local(
-                results_dir_t,
-                cmd,
-                verbose=self.verbose,
-                env_overrides=self._build_local_env_overrides(),
+    ) -> Union[str, ProcessWithLogging, SecureDockerProcess]:
+        """Submit one evaluation to the backend selected by ``job_type``."""
+        if self.job_type == "secure_docker":
+            assert isinstance(self.config, SecureDockerJobConfig)
+            return submit_secure_docker(
+                log_dir=results_dir_t,
+                program_path=exec_fname_t,
+                eval_program_path=self.config.eval_program_path or "evaluate.py",
+                evaluator_root=self.config.evaluator_root,
+                image=self.config.image,
+                container_executable=self.config.container_executable,
+                extra_cmd_args=self.config.extra_cmd_args,
+                eval_environment=self._build_eval_env(),
+                sandbox_user=self.config.sandbox_user,
+                memory_bytes=self.config.memory_bytes,
+                cpus=self.config.cpus,
+                pids_limit=self.config.pids_limit,
+                open_files_limit=self.config.open_files_limit,
+                max_output_bytes=self.config.max_output_bytes,
+                timeout_seconds=parse_time_to_seconds(self.config.time),
+                tmpfs_bytes=self.config.tmpfs_bytes,
+                result_tmpfs_bytes=self.config.result_tmpfs_bytes,
+                python_executable=self.config.python_executable,
+                require_rootless=self.config.require_rootless,
+                allow_rootful_dedicated_vm=self.config.allow_rootful_dedicated_vm,
             )
-        elif self.job_type == "slurm_docker":
-            assert isinstance(self.config, SlurmDockerJobConfig)
-            job_id = submit_slurm_docker(
-                results_dir_t,
-                cmd,
-                self.config.time,
-                self.config.partition,
-                self.config.cpus,
-                self.config.gpus,
-                self.config.mem,
-                self.config.docker_flags,
-                self.config.image,
-                image_tar_path=self.config.image_tar_path,
-                verbose=self.verbose,
-                eval_env=self._build_eval_env(),
-            )
-        elif self.job_type == "slurm_conda":
-            assert isinstance(self.config, SlurmCondaJobConfig)
-            job_id = submit_slurm_conda(
-                results_dir_t,
-                cmd,
-                self.config.time,
-                self.config.partition,
-                self.config.cpus,
-                self.config.gpus,
-                self.config.mem,
-                self.config.conda_env,
-                self.config.activate_script,
-                self.config.modules,
-                verbose=self.verbose,
-                eval_env=self._build_eval_env(),
-            )
-        else:
-            raise ValueError(f"Unknown job type: {self.job_type}")
 
-        if isinstance(job_id, str):
-            results = monitor_slurm(job_id, results_dir_t)
-        else:
-            results = monitor_local(job_id, results_dir_t)
-
-        end_time = time.time()
-        rtime = end_time - start_time
-
-        # Ensure results is not None
-        if results is None:
-            results = {"correct": {"correct": False}, "metrics": {}}
-
-        return results, rtime
-
-    def submit_async(
-        self, exec_fname_t: str, results_dir_t: str
-    ) -> Union[str, ProcessWithLogging]:
-        """Submit a job asynchronously and return the job ID or process."""
         cmd = self._build_command(exec_fname_t, results_dir_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
@@ -298,7 +311,7 @@ class JobScheduler:
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
             )
-        elif self.job_type == "slurm_docker":
+        if self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
             return submit_slurm_docker(
                 results_dir_t,
@@ -314,7 +327,7 @@ class JobScheduler:
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
             )
-        elif self.job_type == "slurm_conda":
+        if self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
             return submit_slurm_conda(
                 results_dir_t,
@@ -332,6 +345,43 @@ class JobScheduler:
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 
+    def run(
+        self, exec_fname_t: str, results_dir_t: str
+    ) -> Tuple[Dict[str, Any], float]:
+        job_id: Union[str, ProcessWithLogging, SecureDockerProcess]
+        start_time = time.time()
+        job_id = self._submit_job(exec_fname_t, results_dir_t)
+
+        if isinstance(job_id, str):
+            results = monitor_slurm(job_id, results_dir_t)
+        else:
+            timeout = (
+                self.config.time
+                if isinstance(self.config, SecureDockerJobConfig)
+                else None
+            )
+            results = monitor_local(
+                job_id,
+                results_dir_t,
+                verbose=self.verbose,
+                timeout=timeout,
+            )
+
+        end_time = time.time()
+        rtime = end_time - start_time
+
+        # Ensure results is not None
+        if results is None:
+            results = {"correct": {"correct": False}, "metrics": {}}
+
+        return results, rtime
+
+    def submit_async(
+        self, exec_fname_t: str, results_dir_t: str
+    ) -> Union[str, ProcessWithLogging, SecureDockerProcess]:
+        """Submit a job asynchronously and return the job ID or process."""
+        return self._submit_job(exec_fname_t, results_dir_t)
+
     def check_job_status(self, job) -> bool:
         """Check if job is running. Returns True if running, False if done."""
         if self.job_type in ["slurm_docker", "slurm_conda"]:
@@ -342,10 +392,10 @@ class JobScheduler:
                 return status != ""
             return False  # Should not happen with slurm
         else:
-            if isinstance(job.job_id, ProcessWithLogging):
+            if isinstance(job.job_id, (ProcessWithLogging, SecureDockerProcess)):
                 if (
-                    isinstance(self.config, LocalJobConfig)
-                    and self.config.time
+                    isinstance(self.config, (LocalJobConfig, SecureDockerJobConfig))
+                    and getattr(self.config, "time", None)
                     and job.start_time
                 ):
                     timeout = parse_time_to_seconds(self.config.time)
@@ -388,14 +438,16 @@ class JobScheduler:
             return False
 
     def get_job_results(
-        self, job_id: Union[str, ProcessWithLogging], results_dir: str
+        self,
+        job_id: Union[str, ProcessWithLogging, SecureDockerProcess],
+        results_dir: str,
     ) -> Optional[Dict[str, Any]]:
         """Get results from a completed job."""
         if self.job_type in ["slurm_docker", "slurm_conda"]:
             if isinstance(job_id, str):
                 return monitor_slurm(job_id, results_dir, verbose=self.verbose)
         else:
-            if isinstance(job_id, ProcessWithLogging):
+            if isinstance(job_id, (ProcessWithLogging, SecureDockerProcess)):
                 job_id.wait()
                 return monitor_local(
                     job_id,
@@ -407,7 +459,7 @@ class JobScheduler:
 
     async def submit_async_nonblocking(
         self, exec_fname_t: str, results_dir_t: str
-    ) -> Union[str, ProcessWithLogging]:
+    ) -> Union[str, ProcessWithLogging, SecureDockerProcess]:
         """Submit a job asynchronously without blocking the event loop."""
         loop = asyncio.get_event_loop()
 
@@ -422,7 +474,9 @@ class JobScheduler:
         return await loop.run_in_executor(self.executor, self.check_job_status, job)
 
     async def get_job_results_async(
-        self, job_id: Union[str, ProcessWithLogging], results_dir: str
+        self,
+        job_id: Union[str, ProcessWithLogging, SecureDockerProcess],
+        results_dir: str,
     ) -> Optional[Dict[str, Any]]:
         """Async version of getting job results."""
         loop = asyncio.get_event_loop()
@@ -436,7 +490,9 @@ class JobScheduler:
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def cancel_job_async(self, job_id: Union[str, ProcessWithLogging]) -> bool:
+    async def cancel_job_async(
+        self, job_id: Union[str, ProcessWithLogging, SecureDockerProcess]
+    ) -> bool:
         """Cancel a running job asynchronously."""
         loop = asyncio.get_event_loop()
 
@@ -454,7 +510,7 @@ class JobScheduler:
                         return result.returncode == 0
                 else:
                     # For local jobs, kill the process
-                    if isinstance(job_id, ProcessWithLogging):
+                    if isinstance(job_id, (ProcessWithLogging, SecureDockerProcess)):
                         job_id.kill()
                         return True
                 return False
