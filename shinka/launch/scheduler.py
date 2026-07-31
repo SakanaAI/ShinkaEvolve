@@ -26,7 +26,6 @@ from .slurm import (
     get_job_ids_by_name,
     is_valid_slurm_job_id,
     get_job_status,
-    get_job_status_by_name,
     recover_submission_by_name,
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
@@ -549,7 +548,8 @@ class JobScheduler:
                         )
                         return (
                             result.returncode == 0
-                            and get_job_status_by_name(job_id.value) == ""
+                            and recover_submission_by_name(job_id.value).state
+                            == SlurmSubmissionRecoveryState.TERMINAL
                         )
                     if isinstance(job_id, str):
                         if not is_valid_slurm_job_id(job_id):
@@ -594,7 +594,10 @@ class JobScheduler:
         def is_terminal() -> bool:
             if self.job_type in ["slurm_docker", "slurm_conda"]:
                 if isinstance(job_id, SlurmJobName):
-                    return get_job_status_by_name(job_id.value) == ""
+                    return (
+                        recover_submission_by_name(job_id.value).state
+                        == SlurmSubmissionRecoveryState.TERMINAL
+                    )
                 if not isinstance(job_id, str):
                     return False
                 if not is_valid_slurm_job_id(job_id):

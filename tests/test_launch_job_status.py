@@ -856,7 +856,7 @@ def test_scheduler_treats_unexpected_named_job_output_as_unknown(
     assert slurm.get_job_ids_by_name("conda-" + "a" * 32) is None
 
 
-def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
+def test_scheduler_keeps_absent_submission_name_ambiguous(monkeypatch):
     scheduler = JobScheduler(
         "slurm_conda",
         SlurmCondaJobConfig(),
@@ -875,7 +875,46 @@ def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
         "shinka.launch.scheduler._get_current_user_id", lambda: "1000"
     )
     monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
-    target = SlurmJobName("conda-unique")
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+    job_name = "conda-" + "a" * 32
+    target = SlurmJobName(job_name)
+
+    async def reconcile():
+        assert await scheduler.cancel_job_async(target) is False
+        assert await scheduler.is_job_terminal_async(target) is False
+
+    try:
+        asyncio.run(reconcile())
+    finally:
+        scheduler.shutdown()
+
+    assert commands[0] == [
+        "scancel",
+        "--name",
+        job_name,
+        "--user",
+        "1000",
+        "--quiet",
+    ]
+    assert {command[0] for command in commands[1:]} == {"squeue", "sacct"}
+
+
+def test_scheduler_confirms_terminal_submission_name(monkeypatch):
+    scheduler = JobScheduler(
+        "slurm_conda",
+        SlurmCondaJobConfig(),
+        max_workers=1,
+    )
+    target = SlurmJobName("conda-" + "a" * 32)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        "shinka.launch.scheduler.recover_submission_by_name",
+        lambda _job_name: slurm.SlurmSubmissionRecovery.terminal("123"),
+    )
 
     async def reconcile():
         assert await scheduler.cancel_job_async(target) is True
@@ -885,28 +924,6 @@ def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
         asyncio.run(reconcile())
     finally:
         scheduler.shutdown()
-
-    assert commands == [
-        ["scancel", "--name", "conda-unique", "--user", "1000", "--quiet"],
-        [
-            "squeue",
-            "--name",
-            "conda-unique",
-            "--user",
-            "1000",
-            "--noheader",
-            "--format=%A|%U",
-        ],
-        [
-            "squeue",
-            "--name",
-            "conda-unique",
-            "--user",
-            "1000",
-            "--noheader",
-            "--format=%A|%U",
-        ],
-    ]
 
 
 def test_scheduler_retains_ambiguous_name_while_job_is_active(monkeypatch):

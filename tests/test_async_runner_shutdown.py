@@ -26,7 +26,10 @@ from shinka.core.async_runner import (
 from shinka.launch.slurm import (
     AmbiguousSlurmSubmissionError,
     JobStatusUnavailableError,
+    SlurmJobName,
 )
+from shinka.launch.scheduler import JobScheduler, SlurmCondaJobConfig
+from shinka.launch import slurm
 
 from test_async_runner_recovery import (
     _FakeAsyncDB,
@@ -341,6 +344,69 @@ def test_ambiguous_submission_name_remains_owned_until_cleanup():
         assert scheduler.cancelled_job_ids == [error.cancel_target]
         assert runner._unconfirmed_job_cancellations == {}
         assert slot_pool.in_use == 0
+
+    asyncio.run(_run())
+
+
+def test_cleanup_retains_dispatched_slurm_name_when_scheduler_reports_absent(
+    monkeypatch,
+):
+    job_name = "conda-" + "a" * 32
+    target = SlurmJobName(job_name)
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "scancel":
+            return SimpleNamespace(returncode=0, stdout="")
+        assert cmd[0] in {"squeue", "sacct"}
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "shinka.launch.scheduler._get_current_user_id", lambda: "1000"
+    )
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+
+    async def _run():
+        scheduler = JobScheduler(
+            "slurm_conda",
+            SlurmCondaJobConfig(),
+            max_workers=1,
+        )
+        async_db = _FakeAsyncDB(0)
+        async_db.evaluation_ownership[7] = {
+            "generation": 7,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": "results",
+            "dispatch_state": 2,
+            "updated_at": time.time(),
+        }
+        slot_pool = _FakeSlotPool()
+        slot_pool.in_use = 1
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            evaluation_slot_pool=slot_pool,
+            _unconfirmed_job_cancellations={id(target): (target, 0)},
+            _unconfirmed_job_cancellation_generations={id(target): 7},
+            prompt_db=None,
+        )
+
+        try:
+            with pytest.raises(UnconfirmedJobCancellationError, match=job_name):
+                await runner._cleanup_async()
+
+            assert runner._unconfirmed_job_cancellations == {
+                id(target): (target, 0)
+            }
+            assert async_db.evaluation_ownership[7]["phase"] == "submitting"
+            assert async_db.evaluation_ownership[7]["dispatch_state"] == 2
+            assert slot_pool.in_use == 1
+        finally:
+            scheduler.shutdown()
 
     asyncio.run(_run())
 
