@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import signal
+import stat
 import time
 import uuid
 import os
@@ -106,6 +107,97 @@ LOCAL_JOB_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 def _monotonic_time() -> float:
     return time.monotonic()
+
+
+def _validate_results_root_stat(root_stat: os.stat_result) -> None:
+    if hasattr(os, "geteuid") and root_stat.st_uid != os.geteuid():
+        raise PermissionError("Results directory is owned by another user")
+    if root_stat.st_mode & 0o002:
+        raise PermissionError("Results directory is world writable")
+    if root_stat.st_mode & 0o020:
+        if not hasattr(os, "getegid") or not hasattr(os, "getgroups"):
+            raise PermissionError("Cannot verify group-writable results directory")
+        trusted_groups = {os.getegid(), *os.getgroups()}
+        if root_stat.st_gid not in trusted_groups:
+            raise PermissionError(
+                "Results directory is writable by an untrusted group"
+            )
+
+
+def _validate_results_ancestor_stat(
+    ancestor_stat: os.stat_result,
+    ancestor_path: Path,
+) -> None:
+    current_user_id = os.geteuid()
+    if ancestor_stat.st_uid not in {0, current_user_id}:
+        raise PermissionError(
+            f"Results path ancestor is owned by another user: {ancestor_path}"
+        )
+    sticky = ancestor_stat.st_mode & stat.S_ISVTX
+    trusted_groups = {os.getegid(), *os.getgroups()}
+    world_replaceable = bool(ancestor_stat.st_mode & 0o002) and not sticky
+    group_replaceable = (
+        bool(ancestor_stat.st_mode & 0o020)
+        and ancestor_stat.st_gid not in trusted_groups
+        and not sticky
+    )
+    if world_replaceable or group_replaceable:
+        raise PermissionError(
+            f"Results path ancestor is replaceable by another user: {ancestor_path}"
+        )
+
+
+def _prepare_posix_results_root(results_root: Path, create: bool) -> bool:
+    """Traverse/create a results root through no-follow directory descriptors."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise RuntimeError("Secure results-root validation is unsupported")
+    open_flags = os.O_RDONLY | directory_flag | no_follow
+    absolute_root = Path(os.path.abspath(results_root))
+    path_parts = absolute_root.parts
+    current_path = Path(path_parts[0])
+    current_fd = os.open(current_path, open_flags)
+    try:
+        if len(path_parts) == 1:
+            _validate_results_root_stat(os.fstat(current_fd))
+            return True
+        for index, path_part in enumerate(path_parts[1:], start=1):
+            is_results_root = index == len(path_parts) - 1
+            try:
+                child_fd = os.open(path_part, open_flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    return False
+                try:
+                    os.mkdir(path_part, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                child_fd = os.open(path_part, open_flags, dir_fd=current_fd)
+
+            child_path = current_path / path_part
+            try:
+                child_stat = os.fstat(child_fd)
+                if is_results_root:
+                    _validate_results_root_stat(child_stat)
+                else:
+                    _validate_results_ancestor_stat(child_stat, child_path)
+            except BaseException:
+                os.close(child_fd)
+                raise
+            os.close(current_fd)
+            current_fd = child_fd
+            current_path = child_path
+        return True
+    finally:
+        os.close(current_fd)
+
+
+def _prepare_results_root(results_root: Path, create: bool) -> bool:
+    """Prepare a trusted results root before any child I/O."""
+    if os.name == "nt":
+        raise RuntimeError("Secure results directories are unsupported on Windows")
+    return _prepare_posix_results_root(results_root, create)
 
 
 @dataclass(frozen=True)
@@ -338,21 +430,24 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
+        if evo_config.results_dir is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_dir = Path(f"results_{timestamp}")
+        else:
+            results_dir = Path(evo_config.results_dir)
+        existing_results_root = _prepare_results_root(results_dir, create=False)
+
         pricing_snapshot = (
-            load_run_pricing_snapshot(Path(evo_config.results_dir))
-            if evo_config.results_dir is not None
+            load_run_pricing_snapshot(results_dir)
+            if evo_config.results_dir is not None and existing_results_root
             else None
         )
         pricing_snapshot = pricing_snapshot or refresh_model_catalog()
         _validate_evo_config_model_env_access(evo_config)
+        _prepare_results_root(results_dir, create=True)
 
         self.verbose = verbose
-        # Setup results directory first
-        if evo_config.results_dir is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.results_dir = f"results_{timestamp}"
-        else:
-            self.results_dir = Path(evo_config.results_dir)
+        self.results_dir = results_dir
 
         self.evo_config = evo_config
         self.job_config = job_config
@@ -364,8 +459,6 @@ class ShinkaEvolveRunner:
 
         if self.verbose:
             # Set up logging like the sync version
-            Path(self.results_dir).mkdir(parents=True, exist_ok=True)
-
             # Configure logging with console output
             from rich.logging import RichHandler
 
@@ -383,10 +476,6 @@ class ShinkaEvolveRunner:
                 ],
                 force=True,  # Override any existing logging config
             )
-        else:
-            # Ensure results directory exists even when not verbose
-            Path(self.results_dir).mkdir(parents=True, exist_ok=True)
-
         self.pricing_snapshot = pricing_snapshot
         write_run_pricing_snapshot(pricing_snapshot, Path(self.results_dir))
         logger.info(
@@ -5803,23 +5892,7 @@ class ShinkaEvolveRunner:
             )
             archive_fd: Optional[int] = None
             try:
-                root_stat = os.fstat(root_fd)
-                if hasattr(os, "geteuid") and root_stat.st_uid != os.geteuid():
-                    raise PermissionError("Results directory is owned by another user")
-                if root_stat.st_mode & 0o002:
-                    raise PermissionError("Results directory is world writable")
-                if root_stat.st_mode & 0o020:
-                    if not hasattr(os, "getegid") or not hasattr(os, "getgroups"):
-                        raise PermissionError(
-                            "Cannot verify group-writable results directory"
-                        )
-                    trusted_groups = {os.getegid(), *os.getgroups()}
-                    if root_stat.st_gid not in trusted_groups:
-                        raise PermissionError(
-                            "Results directory is writable by an untrusted group"
-                        )
-                    # Group collaborators are inside the trust boundary. The
-                    # archive itself remains owner-only and is accessed by fd.
+                _validate_results_root_stat(os.fstat(root_fd))
 
                 for generation in generations:
                     source_name = f"{FOLDER_PREFIX}_{generation}"

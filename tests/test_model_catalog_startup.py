@@ -112,12 +112,186 @@ def test_runner_refreshes_catalog_before_model_validation(
     assert events == ["refresh", "validate"]
 
 
+def test_runner_rejects_untrusted_results_root_before_catalog_io(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "results"
+    results_root.mkdir(mode=0o700)
+    results_root.chmod(0o777)
+    catalog_io_started = False
+
+    def reject_catalog_io(*_args, **_kwargs):
+        nonlocal catalog_io_started
+        catalog_io_started = True
+        raise AssertionError("catalog I/O must follow results-root validation")
+
+    monkeypatch.setattr(async_runner, "load_run_pricing_snapshot", reject_catalog_io)
+    monkeypatch.setattr(async_runner, "refresh_model_catalog", reject_catalog_io)
+
+    try:
+        with pytest.raises(PermissionError, match="world writable"):
+            ShinkaEvolveRunner(
+                evo_config=EvolutionConfig(
+                    llm_models=["gpt-5-mini"],
+                    llm_dynamic_selection=None,
+                    meta_rec_interval=None,
+                    embedding_model=None,
+                    num_generations=1,
+                    results_dir=str(results_root),
+                ),
+                job_config=LocalJobConfig(),
+                db_config=DatabaseConfig(),
+                verbose=False,
+            )
+    finally:
+        results_root.chmod(0o700)
+
+    assert catalog_io_started is False
+    assert list(results_root.iterdir()) == []
+
+
+def test_runner_rejects_symlinked_results_path_ancestor_before_catalog_io(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    results_root = linked_parent / "results"
+
+    def reject_catalog_io(*_args, **_kwargs):
+        raise AssertionError("catalog I/O must follow results-root validation")
+
+    monkeypatch.setattr(async_runner, "load_run_pricing_snapshot", reject_catalog_io)
+    monkeypatch.setattr(async_runner, "refresh_model_catalog", reject_catalog_io)
+
+    with pytest.raises(OSError):
+        ShinkaEvolveRunner(
+            evo_config=EvolutionConfig(
+                llm_models=["gpt-5-mini"],
+                llm_dynamic_selection=None,
+                meta_rec_interval=None,
+                embedding_model=None,
+                num_generations=1,
+                results_dir=str(results_root),
+            ),
+            job_config=LocalJobConfig(),
+            db_config=DatabaseConfig(),
+            verbose=False,
+        )
+
+    assert not results_root.exists()
+
+
+def test_runner_creates_every_missing_results_path_component_owner_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "missing-parent" / "results"
+
+    class ValidationStopped(Exception):
+        pass
+
+    monkeypatch.setattr(async_runner, "refresh_model_catalog", lambda: object())
+    monkeypatch.setattr(
+        async_runner,
+        "_validate_evo_config_model_env_access",
+        lambda _config: None,
+    )
+
+    def stop_after_root_creation(*_args, **_kwargs):
+        raise ValidationStopped
+
+    monkeypatch.setattr(
+        async_runner,
+        "write_run_pricing_snapshot",
+        stop_after_root_creation,
+    )
+
+    with pytest.raises(ValidationStopped):
+        ShinkaEvolveRunner(
+            evo_config=EvolutionConfig(
+                llm_models=["gpt-5-mini"],
+                llm_dynamic_selection=None,
+                meta_rec_interval=None,
+                embedding_model=None,
+                num_generations=1,
+                results_dir=str(results_root),
+            ),
+            job_config=LocalJobConfig(),
+            db_config=DatabaseConfig(),
+            verbose=False,
+        )
+
+    assert (results_root.parent.stat().st_mode & 0o777) == 0o700
+    assert (results_root.stat().st_mode & 0o777) == 0o700
+
+
+@pytest.mark.parametrize("create", [False, True])
+def test_windows_results_root_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    create: bool,
+):
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    monkeypatch.setattr(async_runner.os, "name", "nt")
+    monkeypatch.setattr(async_runner.os, "O_NOFOLLOW", None)
+    monkeypatch.setattr(async_runner.os, "O_DIRECTORY", None)
+
+    with pytest.raises(RuntimeError, match="unsupported on Windows"):
+        async_runner._prepare_results_root(results_root, create=create)
+
+
+def test_missing_results_root_skips_snapshot_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "missing-results"
+    snapshot_read = False
+
+    class ValidationStopped(Exception):
+        pass
+
+    def load_snapshot(_results_dir: Path):
+        nonlocal snapshot_read
+        snapshot_read = True
+
+    def stop_catalog_refresh():
+        raise ValidationStopped
+
+    monkeypatch.setattr(async_runner, "load_run_pricing_snapshot", load_snapshot)
+    monkeypatch.setattr(async_runner, "refresh_model_catalog", stop_catalog_refresh)
+
+    with pytest.raises(ValidationStopped):
+        ShinkaEvolveRunner(
+            evo_config=EvolutionConfig(
+                llm_models=["gpt-5-mini"],
+                llm_dynamic_selection=None,
+                meta_rec_interval=None,
+                embedding_model=None,
+                num_generations=1,
+                results_dir=str(results_root),
+            ),
+            job_config=LocalJobConfig(),
+            db_config=DatabaseConfig(),
+            verbose=False,
+        )
+
+    assert snapshot_read is False
+    assert not results_root.exists()
+
+
 def test_runner_resume_uses_snapshot_without_network_refresh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     events: list[str] = []
     snapshot = get_catalog()
+    results_root = tmp_path / "results"
+    results_root.mkdir()
 
     class ValidationStopped(Exception):
         pass
@@ -149,7 +323,7 @@ def test_runner_resume_uses_snapshot_without_network_refresh(
                 meta_rec_interval=None,
                 embedding_model=None,
                 num_generations=1,
-                results_dir=str(tmp_path / "results"),
+                results_dir=str(results_root),
             ),
             job_config=LocalJobConfig(),
             db_config=DatabaseConfig(),
