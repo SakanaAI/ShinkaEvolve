@@ -96,6 +96,7 @@ nav:
       - Configuration: configuration.md
       - Local Models: support_local_models.md
   - WebUI: webui.md
+  - Technical Review: deepreview.md
   - API Reference:
       - Overview: reference/index.md
       - Core Runtime: reference/core_api.md
