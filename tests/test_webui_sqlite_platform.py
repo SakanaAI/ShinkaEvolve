@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import os
 import sqlite3
 import stat
@@ -307,6 +308,47 @@ def test_database_snapshot_rejects_oversized_source_before_copy(
         pass
 
     assert not copied
+
+
+@requires_descriptor_traversal
+def test_database_snapshot_retries_staging_parent_after_enospc(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "programs.sqlite"
+    first_staging_parent = tmp_path / "first-staging"
+    second_staging_parent = tmp_path / "second-staging"
+    first_staging_parent.mkdir()
+    second_staging_parent.mkdir()
+    _create_stats_database(database_path)
+    handler = _handler(tmp_path)
+    copy_database_descriptor = handler._copy_database_descriptor
+    copy_attempts = 0
+
+    def fail_first_copy(*args, **kwargs):
+        nonlocal copy_attempts
+        copy_attempts += 1
+        if copy_attempts == 1:
+            raise OSError(errno.ENOSPC, "staging filesystem full")
+        return copy_database_descriptor(*args, **kwargs)
+
+    monkeypatch.setattr(
+        handler,
+        "_database_staging_parents",
+        lambda path: [
+            os.fspath(first_staging_parent),
+            os.fspath(second_staging_parent),
+        ],
+    )
+    monkeypatch.setattr(handler, "_copy_database_descriptor", fail_first_copy)
+
+    with handler._connect_database_within_root(
+        database_path,
+        timeout=5.0,
+    ) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM programs").fetchone()[0] == 0
+
+    assert copy_attempts == 2
+    assert not list(first_staging_parent.iterdir())
 
 
 @pytest.mark.parametrize(

@@ -941,36 +941,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 raise sqlite3.OperationalError(
                     "no secure writable staging directory exists"
                 )
-            temp_directory = tempfile.TemporaryDirectory(
-                prefix="shinka-webui-main-",
-                dir=staging_parents[0],
+            temp_directory, cached_path = self._copy_database_main_to_staging(
+                staging_parents,
+                database_descriptor,
+                database_stat,
             )
-            directory_descriptor = None
-            try:
-                directory_descriptor = os.open(
-                    temp_directory.name,
-                    self._directory_open_flags(),
-                )
-                self._copy_database_descriptor(
-                    database_descriptor,
-                    directory_descriptor,
-                    "database.sqlite",
-                    expected_stat=database_stat,
-                )
-                cached_path = os.path.join(
-                    temp_directory.name,
-                    "database.sqlite",
-                )
-                os.chmod(cached_path, 0o400)
-            except Exception:
-                if directory_descriptor is not None:
-                    os.close(directory_descriptor)
-                    directory_descriptor = None
-                temp_directory.cleanup()
-                raise
-            finally:
-                if directory_descriptor is not None:
-                    os.close(directory_descriptor)
 
             cached = _DatabaseMainSnapshot(
                 cache_key,
@@ -987,6 +962,60 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self._database_main_cache[source_key] = cached
             self._cleanup_database_snapshots(discarded)
             return cached
+
+    def _copy_database_main_to_staging(
+        self,
+        staging_parents: list[str],
+        database_descriptor: int,
+        database_stat: os.stat_result,
+    ) -> Tuple[tempfile.TemporaryDirectory, str]:
+        retry_errors = {
+            errno.EACCES,
+            errno.EPERM,
+            errno.ENOSPC,
+            errno.EROFS,
+            getattr(errno, "EDQUOT", -1),
+        }
+        last_error = None
+        for staging_parent in staging_parents:
+            temp_directory = None
+            directory_descriptor = None
+            succeeded = False
+            try:
+                temp_directory = tempfile.TemporaryDirectory(
+                    prefix="shinka-webui-main-",
+                    dir=staging_parent,
+                )
+                directory_descriptor = os.open(
+                    temp_directory.name,
+                    self._directory_open_flags(),
+                )
+                self._copy_database_descriptor(
+                    database_descriptor,
+                    directory_descriptor,
+                    "database.sqlite",
+                    expected_stat=database_stat,
+                )
+                cached_path = os.path.join(
+                    temp_directory.name,
+                    "database.sqlite",
+                )
+                os.chmod(cached_path, 0o400)
+                succeeded = True
+                return temp_directory, cached_path
+            except OSError as exc:
+                if exc.errno not in retry_errors:
+                    raise
+                last_error = exc
+            finally:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+                if temp_directory is not None and not succeeded:
+                    temp_directory.cleanup()
+
+        raise sqlite3.OperationalError(
+            "no secure staging directory has enough space for the database snapshot"
+        ) from last_error
 
     @classmethod
     def _evict_database_main_cache_entries(
