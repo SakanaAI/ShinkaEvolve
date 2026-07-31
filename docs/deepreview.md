@@ -1,8 +1,9 @@
 # ShinkaEvolve — Deep Technical Review
 
 **Date:** 2026-07-17
+**Reviewed revision:** `b67a07328ab7e21e999d9e20a44f4f0054a4b83c`
 **Scope:** Full repository — `shinka/` package (~40k LOC Python + ~21.6k LOC web UI), `tests/` (~15k), `examples/` (~4.3k), CI workflows, git hooks.
-**Method:** Five parallel role-based review agents (security, correctness/concurrency, performance, code-duplication, web-UI), each reading source directly. Headline findings in this report were independently spot-verified against the code; two `apply_diff` bugs (C1, C2) were reproduced by executing the real code.
+**Method:** Five parallel role-based review agents (security, correctness/concurrency, performance, code-duplication, web-UI), each reading source directly. Headline findings in this report were independently spot-verified against the code; two `apply_diff` bugs (Q1, Q2) were reproduced by executing the real code.
 
 > ShinkaEvolve is a research framework for LLM-driven evolutionary program search. It queries LLM APIs, writes generated programs to disk, **executes them locally or via Slurm**, stores results in SQLite, and serves a web UI for visualization. This execution-of-generated-code model is intentional and shapes the security analysis below.
 
@@ -226,4 +227,51 @@ The repo combines sync delegates with hand-maintained async implementations acro
 
 ## Appendix — methodology & confidence
 
-Findings were produced by five parallel role agents reading the source directly, then cross-checked. The two `apply_diff` bugs (Q1, Q2) were reproduced by executing the real code. This synthesizer independently re-verified the headline claims against the code, confirming each: the `0.0.0.0` bind and CORS wildcard (`visualization.py:1740/1681`), the no-op path sanitizer (428–430), the substring `.find()` and newline-requiring `PATCH_PATTERN` (`apply_diff.py:75/12–15`), the missing `combined_score`/`correct` indexes (`dbase.py:453–465`), the `correct.json`-before-`metrics.json` write order (`wrap_eval.py:94–100`), the async `json.dumps` NaN drift (`async_dbase.py:918/971` vs `dbase.py:700`), the truthy-`"none"` return (`llm.py:835`), and the `or -inf` best-program sort (`dbase.py:1615`). Line numbers reflect the repository state at the review date; they will shift as fixes land.
+Findings were produced by five parallel role agents reading the source directly, then cross-checked. The two `apply_diff` bugs (Q1, Q2) were reproduced by executing the real code. This synthesizer independently re-verified the headline claims against the code, confirming each: the `0.0.0.0` bind and CORS wildcard (`visualization.py:1740/1681`), the no-op path sanitizer (428–430), the substring `.find()` and newline-requiring `PATCH_PATTERN` (`apply_diff.py:75/12–15`), the missing `combined_score`/`correct` indexes (`dbase.py:453–465`), the `correct.json`-before-`metrics.json` write order (`wrap_eval.py:94–100`), the async `json.dumps` NaN drift (`async_dbase.py:918/971` vs `dbase.py:700`), the truthy-`"none"` return (`llm.py:835`), and the `or -inf` best-program sort (`dbase.py:1615`). Line numbers reflect the reviewed revision and will shift as fixes land.
+
+### Reproduce Q1 and Q2
+
+Run this from a clean checkout of the reviewed revision:
+
+```bash
+uv run python - <<'PY'
+from shinka.edit.apply_diff import apply_diff_patch
+
+search = "<" * 7 + " SEARCH"
+separator = "=" * 7
+replace = ">" * 7 + " REPLACE"
+original = """# EVOLVE-BLOCK-START
+maxval = 100
+result = 5
+# EVOLVE-BLOCK-END"""
+substring_patch = f"""{search}
+xval = 10
+{separator}
+xval = 999
+{replace}"""
+updated, count, _, error, _, _ = apply_diff_patch(
+    substring_patch, original_str=original, verbose=False
+)
+assert "maxval = 9990" in updated
+assert count == 1 and error is None
+
+original = """# EVOLVE-BLOCK-START
+keep = 1
+remove = 2
+# EVOLVE-BLOCK-END"""
+deletion_patch = f"""{search}
+keep = 1
+{separator}
+keep = 9
+{replace}
+{search}
+remove = 2
+{separator}
+{replace}"""
+updated, count, _, error, _, _ = apply_diff_patch(
+    deletion_patch, original_str=original, verbose=False
+)
+assert "keep = 9" in updated and "remove = 2" in updated
+assert count == 1 and error is None
+PY
+```
