@@ -916,12 +916,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             pdf_bytes = self._generate_pdf(content, processed_count)
 
             if pdf_bytes is None:
-                print("[SERVER] All PDF generation methods failed, serving text")
-                # Fall back to serving formatted text with PDF headers
-                formatted_content = (
-                    f"Meta Generation {processed_count}\n{'=' * 50}\n\n{content}"
-                )
-                pdf_bytes = formatted_content.encode("utf-8")
+                print("[SERVER] All PDF generation methods failed")
+                self.send_error(500, "PDF generation failed")
+                return
 
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
@@ -1557,15 +1554,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 except (NameError, OSError):
                     pass
 
-            # Pandoc's plain reader treats LLM output as text rather than raw
-            # HTML, so local-file and remote-resource elements cannot become
-            # fetchable document nodes in the fallback renderer.
+            # Pandoc receives the same resource-free HTML as wkhtmltopdf and
+            # runs with its own file-access sandbox enabled.
             try:
                 with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
-                ) as text_file:
-                    text_file.write(content)
-                    text_file_path = text_file.name
+                    mode="w", suffix=".html", delete=False, encoding="utf-8"
+                ) as pandoc_html_file:
+                    pandoc_html_file.write(html_full)
+                    pandoc_html_path = pandoc_html_file.name
 
                 with tempfile.NamedTemporaryFile(
                     suffix=".pdf", delete=False
@@ -1573,7 +1569,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     pdf_file_path = pdf_file.name
 
                 result = subprocess.run(
-                    ["pandoc", text_file_path, "--from=plain", "-o", pdf_file_path],
+                    [
+                        "pandoc",
+                        pandoc_html_path,
+                        "--from=html",
+                        "--sandbox",
+                        "-o",
+                        pdf_file_path,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -1592,7 +1595,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             finally:
                 # Clean up temp files
                 try:
-                    os.unlink(text_file_path)
+                    os.unlink(pandoc_html_path)
                     os.unlink(pdf_file_path)
                 except (NameError, OSError):
                     pass
