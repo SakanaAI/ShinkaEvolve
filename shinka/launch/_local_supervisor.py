@@ -11,6 +11,8 @@ import psutil
 
 LOCAL_PROCESS_TOKEN_ENV = "SHINKA_LOCAL_JOB_TOKEN"
 TERMINATION_GRACE_SECONDS = 1.0
+GROUP_POLL_INTERVAL_SECONDS = 0.1
+GROUP_QUIESCENCE_SECONDS = 0.2
 PR_SET_PDEATHSIG = 1
 
 
@@ -108,6 +110,8 @@ def main(status_fd: int, command: list[str]) -> int:
         return 127
     _report_launch_status(status_fd, "READY")
 
+    evaluator_returncode = None
+    group_empty_since = None
     while True:
         if received_signal is not None:
             if _terminate_group(received_signal):
@@ -115,9 +119,18 @@ def main(status_fd: int, command: list[str]) -> int:
                 return 128 + received_signal
             time.sleep(0.1)
             continue
-        evaluator_returncode = evaluator.poll()
+        if evaluator_returncode is None:
+            evaluator_returncode = evaluator.poll()
         if evaluator_returncode is not None:
-            return evaluator_returncode
+            if _group_has_members() is False:
+                if group_empty_since is None:
+                    group_empty_since = time.monotonic()
+                elif time.monotonic() - group_empty_since >= GROUP_QUIESCENCE_SECONDS:
+                    return evaluator_returncode
+            else:
+                group_empty_since = None
+            time.sleep(GROUP_POLL_INTERVAL_SECONDS)
+            continue
         time.sleep(0.01)
 
 

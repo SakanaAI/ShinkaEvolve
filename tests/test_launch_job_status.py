@@ -871,6 +871,47 @@ def test_local_submission_fails_closed_off_linux(monkeypatch, tmp_path, platform
     assert not (tmp_path / "logs").exists()
 
 
+def test_local_supervisor_waits_for_entire_process_group(tmp_path):
+    child_pid_file = tmp_path / "child.pid"
+    proc = submit(
+        str(tmp_path),
+        [
+            "bash",
+            "-c",
+            f"sleep 1 & echo $! > {child_pid_file}; exit 7",
+        ],
+    )
+
+    child_pid = None
+    try:
+        deadline = time.time() + 5
+        while not child_pid_file.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        child_pid = int(child_pid_file.read_text())
+        os.kill(child_pid, 0)
+
+        supervisor = local.psutil.Process(proc.pid)
+        deadline = time.time() + 5
+        while supervisor.children() and time.time() < deadline:
+            time.sleep(0.01)
+        assert supervisor.children() == []
+        assert proc.poll() is None
+
+        assert proc.wait(timeout=5) == 7
+        try:
+            child = local.psutil.Process(child_pid)
+        except local.psutil.NoSuchProcess:
+            pass
+        else:
+            assert child.status() == local.psutil.STATUS_ZOMBIE
+    finally:
+        if proc.poll() is None:
+            terminated = proc.kill()
+            if not terminated and child_pid is not None:
+                os.kill(child_pid, signal.SIGKILL)
+        proc.cleanup_logging()
+
+
 def test_local_cancellation_reports_failure_when_process_cannot_be_killed(
     monkeypatch,
 ):
