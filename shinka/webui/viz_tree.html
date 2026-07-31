@@ -2916,7 +2916,7 @@ ${'='.repeat(80)}
                 
                 // First line should be the program name (after the **Program Name: prefix)
                 const programName = lines[0].replace(/\*\*$/, '').trim();
-                entryHtml += `<div class="meta-name" style="font-weight: bold; color: #2c3e50; margin-bottom: 12px; font-size: 16px;">Program Name: ${programName}</div>`;
+                entryHtml += `<div class="meta-name" style="font-weight: bold; color: #2c3e50; margin-bottom: 12px; font-size: 16px;">Program Name: ${escapeHtml(programName)}</div>`;
                 
                 // Process the rest of the lines
                 let currentField = '';
@@ -2959,7 +2959,8 @@ ${'='.repeat(80)}
         
         // Helper function to process simple markdown formatting
         function processSimpleMarkdown(text) {
-            return text
+            const escapedText = escapeHtml(text);
+            return escapedText
                 // Convert **text** to <strong>text</strong>
                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                 // Convert *text* to <em>text</em>
