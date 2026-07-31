@@ -21,9 +21,9 @@ The codebase is capable and feature-rich, with genuinely good foundations in pla
 | **Correctness** | `apply_diff` corrupts programs silently (substring match; dropped deletion hunks) and accepts them as valid evolutions; multiple `correct=True, score=0.0` corruption paths | Critical |
 | **Concurrency** | Job-monitor race drops running jobs + leaks eval slots → potential deadlock; Ctrl-C orphans subprocesses/Slurm jobs; timeout kills only the direct child | High |
 | **Performance** | Two missing indexes on the hottest columns; per-request full-DB re-serialization in the web UI; O(N²) novelty scan; per-call DB reconstruction in the async loop | High |
-| **Duplication** | ~3,300+ duplicated lines dominated by **hand-copied sync↔async twinning**; the sync copies are unit-tested but dead in production while the live async copies are untested and have drifted, producing ~13 latent bugs | High |
+| **Duplication** | ~3,300+ duplicated lines, including sync/async implementations and wrapper layers with uneven parity and failure-path coverage; drift contributed to several latent bugs | High |
 
-**The single most important structural fact:** in the core subsystems (database events, summarizer, novelty judge, prompt evolver, LLM providers) the framework ships a synchronous class and a hand-copied asynchronous twin. Tests cover the **sync** copies. Production runs the **async** copies. The copies have drifted, so several bugs listed below live specifically in the untested, live path.
+**The single most important structural fact:** the core subsystems mix synchronous state-management delegates with asynchronous wrappers, alongside genuinely duplicated sync/async implementations in database events, prompt evolution, and LLM providers. Both paths have tests, but parity and failure-edge coverage are uneven. Several bugs listed below arose where duplicated behavior drifted or an async-only branch lacked an equivalent safety check.
 
 ---
 
@@ -154,10 +154,10 @@ Verified **already-correct** (not flagged): WAL + tuned PRAGMAs on writer connec
 
 ## 4. Code duplication
 
-**~3,300+ verified duplicated/near-duplicate lines**, dominated by one pattern: **hand-copied sync↔async twinning**. The copies have drifted, and because the async copy is the one that runs in production while only the sync copy is tested, the drift has produced **~13 latent bugs** — the ones cross-listed in §2 and below.
+**~3,300+ verified duplicated/near-duplicate lines**, with a large cluster in sync/async implementations and wrapper layers. Some asynchronous components reuse synchronous delegates for state management, while others duplicate database, prompt, provider, and error-handling behavior. Tests exercise both sync and async paths, but uneven parity and edge-case coverage allowed several defects cross-listed in §2 and below.
 
 ### The dominant theme and its drift-bugs
-The repo systematically ships a sync class and a hand-maintained async twin (database events, summarizer, novelty judge, prompt evolver, LLM clients/providers, embeddings, client factories). The live async copies have drifted from the tested sync copies. Concrete, mostly one-to-few-line bugs traceable to the drift (each verified):
+The repo combines sync delegates with hand-maintained async implementations across database events, summarization, novelty judging, prompt evolution, LLM clients/providers, embeddings, and client factories. The audit found the following concrete defects in or adjacent to that duplication cluster:
 
 1. **Async DB event log emits invalid JSON** — `async_dbase.py:918/971` `json.dumps(details)` vs sync `dbase.py:700/725` `json.dumps(clean_nan_values(details))`; NaN/Inf metrics produce non-standard `NaN`/`Infinity` tokens that crash strict re-parse. *(Verified — async path is missing the `clean_nan_values` wrapper.)*
 2. **Parent sampling crashes on corrupt JSON** — `parents.py:307–348` re-parses 9 JSON columns with no try/except, unlike the canonical `_program_from_row`.
@@ -173,11 +173,11 @@ The repo systematically ships a sync class and a hand-maintained async twin (dat
 12. Web-UI dead shadowed functions (`escapeHtml` ×3 with divergent falsy behavior, `getSelectedNodeId` ×2, `formatScore` divergent).
 13. Pricing overlay (`embedding_overrides`/`provider_aliases`) applied only at CSV-build time, never by the runtime normalizer → pinned prices silently drift on a models.dev refresh.
 
-> **The most alarming structural fact:** in the core cluster, the tested copies are dead and the live copies are untested. Adding async-path tests should precede any consolidation.
+> **The structural risk:** shared behavior is split across delegates, wrappers, and duplicated implementations without systematic parity tests. Add targeted async failure-path and sync/async contract tests before consolidating the duplicated logic.
 
 ### High-impact duplication clusters (consolidation targets)
 - **Database:** async event-logging re-implements the INSERT SQL (~100 lines, DB-H1, bug #1); row→object JSON deserialization copied 3× (~210 lines, DB-H2, bug #2). → extract `serialization.py` + route async through the sync `record_*_event`.
-- **Core sync/async twins:** `MetaSummarizer`/`AsyncMetaSummarizer` (~288), `NoveltyJudge`/`Async…` (~194), `SystemPromptEvolver`/`Async…` (~231), `_run_fix_patch_async`/`_run_patch_async` (~200) plus a 3rd copy in `_generate_initial_program`. → collapse each twin to one implementation; **add async tests first**.
+- **Core sync/async paths:** `MetaSummarizer`/`AsyncMetaSummarizer` (~288), `NoveltyJudge`/`Async…` (~194), `SystemPromptEvolver`/`Async…` (~231), `_run_fix_patch_async`/`_run_patch_async` (~200) plus a 3rd copy in `_generate_initial_program`. → preserve the shared state delegates, extract duplicated prompt/result handling, and add parity tests before consolidation.
 - **LLM providers:** `@backoff.on_exception` decorator (10 copies), `backoff_handler` (5 copies; only `openai.py` honors `Retry-After`), per-provider query bodies (~250), cost/usage extraction (5 divergent impls), client factories (~110). → new `shinka/llm/providers/_retry.py` + shared `extract_costs`/`build_result` + a `{provider: (sync, async)}` registry.
 - **Pricing:** two parallel models.dev→priced-row interpreters (runtime `pricing/` vs build-time `generate_csvs.py`, which even keeps two disagreeing row producers). → make `generate_csvs.py` a thin driver over `shinka.pricing`; apply overlay sections at runtime.
 - **Plots:** five near-identical `*_compare` functions (>100 lines), the tab10 palette copied verbatim 5×, an axis-styling epilogue repeated 10+×. → `plots/style.py` (`apply_axis_style` + palette) + one `_plot_series_comparison`.
@@ -218,7 +218,7 @@ The repo systematically ships a sync class and a hand-maintained async twin (dat
 14. Web UI: lightweight count poll + cache `/get_programs_summary` (P9, P10); adaptive batched Slurm poll (P8); memoize LLM clients (P6).
 
 **Tier 4 — Duplication / maintainability (reduces future drift-bugs at the source).**
-15. **Add async-path tests, then** collapse the sync/async twins (core, providers, database, factories).
+15. Add targeted async failure-path and sync/async parity tests, then consolidate duplicated core, provider, database, and factory behavior while preserving shared state delegates.
 16. Extract `_retry.py`, `serialization.py`, `plots/style.py`, `shinka-common.css`/`shinka-utils.js`, and a shared `shinka.eval` example harness; parametrize `test_edit_*` and populate `conftest.py`.
 17. Break up the 18k-line `viz_tree.html`.
 
