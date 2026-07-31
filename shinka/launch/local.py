@@ -1,8 +1,11 @@
 import subprocess
+import sys
 import time
 import threading
 import os
 import re
+import select
+import signal
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +17,8 @@ import logging
 logger = logging.getLogger(__name__)
 LOCAL_PROCESS_TOKEN_ENV = "SHINKA_LOCAL_JOB_TOKEN"
 LOCAL_PROCESS_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
+LOCAL_SUPERVISOR_PATH = Path(__file__).with_name("_local_supervisor.py")
+LOCAL_SUPERVISOR_START_TIMEOUT_SECONDS = 5.0
 
 
 def _process_group_exists(pid: int) -> bool:
@@ -165,6 +170,24 @@ class LocalProcessIdentity:
             time.sleep(0.01)
         return self.is_terminated()
 
+    def send_signal(self, signum: int) -> bool:
+        """Signal authenticated evaluator members while retaining the supervisor."""
+        group_members, token_present, inspection_blocked = (
+            self._process_group_members()
+        )
+        if inspection_blocked or not token_present:
+            return False
+        for process in group_members:
+            if process.pid == self.pid:
+                continue
+            try:
+                process.send_signal(signum)
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            except (psutil.AccessDenied, OSError):
+                return False
+        return True
+
     def is_terminated(self) -> bool:
         group_members, _token_present, inspection_blocked = (
             self._process_group_members()
@@ -233,6 +256,18 @@ class ProcessWithLogging:
             return False
 
         return self.is_terminated()
+
+    def send_signal(self, signum: int) -> None:
+        """Signal evaluator members without discarding the durable supervisor."""
+        if signum == getattr(signal, "SIGKILL", None):
+            if not self.kill():
+                raise RuntimeError("Could not kill local evaluation process group")
+            return
+        if self.identity is None or not self.identity.send_signal(signum):
+            raise RuntimeError("Could not signal local evaluation process group")
+
+    def terminate(self) -> None:
+        self.send_signal(signal.SIGTERM)
 
     def is_terminated(self) -> bool:
         """Return whether both the leader and its process group are gone."""
@@ -325,6 +360,8 @@ def submit_with_token(
     Returns:
         ProcessWithLogging: Wrapper containing the Popen object and logging.
     """
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("Secure local evaluation submission requires Linux")
     log_dir_path = Path(log_dir)
     log_dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -345,14 +382,23 @@ def submit_with_token(
     stderr_file = None
     process = None
     wrapped_process = None
+    status_read_fd = None
+    status_write_fd = None
     try:
         # Open logs before launch so filesystem failures cannot orphan a child.
         stdout_file = open(stdout_path, "w", buffering=1)
         stderr_file = open(stderr_path, "w", buffering=1)
 
         # start_new_session=True puts the child in its own process group.
+        status_read_fd, status_write_fd = os.pipe()
+        popen_command = [
+            sys.executable,
+            str(LOCAL_SUPERVISOR_PATH),
+            str(status_write_fd),
+            *cmd,
+        ]
         process = subprocess.Popen(
-            cmd,
+            popen_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -360,13 +406,39 @@ def submit_with_token(
             universal_newlines=True,
             env=env,
             start_new_session=True,
+            pass_fds=(status_write_fd,),
         )
+        if status_write_fd is not None:
+            os.close(status_write_fd)
+            status_write_fd = None
         wrapped_process = ProcessWithLogging(
             process,
             (stdout_file, stderr_file),
             (),
             identity=LocalProcessIdentity(process.pid, local_job_token),
         )
+        if status_read_fd is not None:
+            readable, _, _ = select.select(
+                [status_read_fd],
+                [],
+                [],
+                LOCAL_SUPERVISOR_START_TIMEOUT_SECONDS,
+            )
+            if not readable:
+                raise TimeoutError("Local evaluator supervisor did not report launch")
+            launch_status = os.read(status_read_fd, 4096).decode(
+                "utf-8", errors="replace"
+            )
+            os.close(status_read_fd)
+            status_read_fd = None
+            if launch_status != "READY":
+                process.wait(timeout=5)
+                error_parts = launch_status.split(":", 2)
+                if len(error_parts) == 3 and error_parts[0] == "ERROR":
+                    raise OSError(int(error_parts[1]), error_parts[2])
+                raise RuntimeError(
+                    "Local evaluator supervisor exited before launch"
+                )
 
         stdout_thread = threading.Thread(
             target=_stream_output,
@@ -382,6 +454,10 @@ def submit_with_token(
         stdout_thread.start()
         stderr_thread.start()
     except Exception:
+        if status_read_fd is not None:
+            os.close(status_read_fd)
+        if status_write_fd is not None:
+            os.close(status_write_fd)
         if wrapped_process is not None:
             if not wrapped_process.kill():
                 raise AmbiguousLocalSubmissionError(wrapped_process) from None

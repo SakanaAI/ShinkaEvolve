@@ -12,6 +12,7 @@ Covers:
 import asyncio
 import io
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -712,6 +713,162 @@ def test_kill_terminates_child_process_group(tmp_path):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild survived process-group kill")
+
+
+def test_local_identity_survives_evaluator_environment_sanitization(tmp_path):
+    ready_file = tmp_path / "sanitized.ready"
+    proc = submit(
+        str(tmp_path),
+        [
+            "env",
+            "-i",
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; import os, time; "
+                f"Path({str(ready_file)!r}).write_text("
+                "os.environ.get('SHINKA_LOCAL_JOB_TOKEN', 'missing')); "
+                "time.sleep(60)"
+            ),
+        ],
+    )
+
+    try:
+        deadline = time.time() + 5
+        while not ready_file.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        assert ready_file.read_text() == "missing"
+        assert proc.kill() is True
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, 9)
+            proc.wait(timeout=5)
+        proc.cleanup_logging()
+
+
+def test_local_supervisor_preserves_synchronous_launch_errors(tmp_path):
+    with pytest.raises(FileNotFoundError, match="No such file or directory"):
+        submit(str(tmp_path), ["/definitely/missing/shinka-command"])
+
+
+def test_local_supervisor_preserves_permission_launch_errors(tmp_path):
+    command = tmp_path / "not-executable"
+    command.write_text("#!/bin/sh\n")
+    command.chmod(0o600)
+
+    with pytest.raises(PermissionError, match="Permission denied"):
+        submit(str(tmp_path), [str(command)])
+
+
+@pytest.mark.parametrize(
+    "termination",
+    ["api", "supervisor_signal", "supervisor_sigkill"],
+)
+def test_supervisor_termination_reaps_sanitized_evaluator(tmp_path, termination):
+    evaluator_pid_file = tmp_path / "evaluator.pid"
+    proc = submit(
+        str(tmp_path),
+        [
+            "env",
+            "-i",
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; import os, time; "
+                f"Path({str(evaluator_pid_file)!r}).write_text(str(os.getpid())); "
+                "time.sleep(60)"
+            ),
+        ],
+    )
+
+    try:
+        deadline = time.time() + 5
+        while not evaluator_pid_file.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        evaluator_pid = int(evaluator_pid_file.read_text())
+
+        if termination == "api":
+            proc.terminate()
+        elif termination == "supervisor_sigkill":
+            os.kill(proc.pid, signal.SIGKILL)
+        else:
+            os.kill(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=5)
+
+        try:
+            evaluator = local.psutil.Process(evaluator_pid)
+        except local.psutil.NoSuchProcess:
+            pass
+        else:
+            deadline = time.time() + 2
+            while (
+                evaluator.is_running()
+                and evaluator.status() != local.psutil.STATUS_ZOMBIE
+                and time.time() < deadline
+            ):
+                time.sleep(0.01)
+            assert (
+                not evaluator.is_running()
+                or evaluator.status() == local.psutil.STATUS_ZOMBIE
+            )
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, 9)
+            proc.wait(timeout=5)
+        proc.cleanup_logging()
+
+
+def test_supervisor_survives_closed_readiness_pipe(tmp_path):
+    status_read_fd, status_write_fd = os.pipe()
+    os.close(status_read_fd)
+    ready_file = tmp_path / "ready"
+    supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            str(local.LOCAL_SUPERVISOR_PATH),
+            str(status_write_fd),
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; import time; "
+                f"Path({str(ready_file)!r}).write_text('ready'); time.sleep(60)"
+            ),
+        ],
+        env={**os.environ, local.LOCAL_PROCESS_TOKEN_ENV: "a" * 32},
+        start_new_session=True,
+        pass_fds=(status_write_fd,),
+    )
+    os.close(status_write_fd)
+
+    try:
+        deadline = time.time() + 5
+        while not ready_file.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        assert ready_file.exists()
+        assert supervisor.poll() is None
+    finally:
+        os.kill(supervisor.pid, signal.SIGTERM)
+        supervisor.wait(timeout=5)
+
+
+def test_local_supervisor_readiness_has_timeout(monkeypatch, tmp_path):
+    stalled_supervisor = tmp_path / "stalled_supervisor.py"
+    stalled_supervisor.write_text("import time; time.sleep(60)\n")
+    monkeypatch.setattr(local, "LOCAL_SUPERVISOR_PATH", stalled_supervisor)
+    monkeypatch.setattr(local, "LOCAL_SUPERVISOR_START_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(TimeoutError, match="did not report launch"):
+        submit(str(tmp_path), [sys.executable, "-c", "pass"])
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_local_submission_fails_closed_off_linux(monkeypatch, tmp_path, platform):
+    monkeypatch.setattr(local.sys, "platform", platform)
+
+    with pytest.raises(RuntimeError, match="requires Linux"):
+        submit(str(tmp_path / "logs"), [sys.executable, "-c", "pass"])
+
+    assert not (tmp_path / "logs").exists()
 
 
 def test_local_cancellation_reports_failure_when_process_cannot_be_killed(

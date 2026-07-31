@@ -57,7 +57,7 @@ uv pip install -e .
 ```
 
 !!! note
-    The async runner's secure results-directory and durable-resume workflow
+    The async runner's secure results-directory, durable-resume, and local-job workflow
     currently requires Linux. It fails closed on macOS and Windows because
     equivalent native ACL and reparse-point validation is not yet implemented.
 
