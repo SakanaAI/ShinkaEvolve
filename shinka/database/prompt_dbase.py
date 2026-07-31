@@ -227,6 +227,7 @@ class SystemPromptDatabase:
         self,
         config: SystemPromptConfig,
         read_only: bool = False,
+        connection: Optional[sqlite3.Connection] = None,
     ):
         self.config = config
         self.conn: Optional[sqlite3.Connection] = None
@@ -238,7 +239,9 @@ class SystemPromptDatabase:
 
         db_path_str = getattr(self.config, "db_path", None)
 
-        if db_path_str:
+        if connection is not None:
+            self.conn = connection
+        elif db_path_str:
             db_file = Path(db_path_str).resolve()
             if not read_only:
                 # Robustness check for unclean shutdown with WAL

@@ -8,6 +8,7 @@ It serves a web interface for exploring evolution databases and meta files.
 
 import argparse
 import base64
+import contextlib
 import errno
 import http.server
 import ipaddress
@@ -27,8 +28,8 @@ import time
 import urllib.parse
 import webbrowser
 import weakref
-from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, Callable
+from pathlib import Path, PureWindowsPath
+from typing import Optional, Dict, Any, Tuple, Callable, Literal
 
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
@@ -45,7 +46,33 @@ class PathValidationError(ValueError):
     """Raised when a user-supplied path escapes the served search root."""
 
 
+class DatabaseViewRaceError(sqlite3.OperationalError):
+    """Raised when SQLite sidecars rotate while a stable view is being built."""
+
+
+class _DatabaseMainSnapshot:
+    def __init__(
+        self,
+        version: Tuple[int, int, int],
+        directory: tempfile.TemporaryDirectory,
+        path: str,
+    ):
+        self.version = version
+        self.directory = directory
+        self.path = path
+        self.lock = threading.Lock()
+        self.leases = 0
+        self.evicted = False
+
+
 class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
+    _database_main_cache_lock = threading.Lock()
+    _database_main_cache: Dict[Tuple[int, int], _DatabaseMainSnapshot] = {}
+    _database_main_cache_build_locks: Dict[Tuple[int, int], threading.Lock] = {}
+    _database_main_cache_limit = 2
+    # Soft target: retain one oversized active DB to avoid recopying it every poll.
+    _database_main_cache_target_bytes = 2 * 1024**3
+
     def __init__(
         self,
         *args,
@@ -281,9 +308,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         include_code: bool = False,
         generation: Optional[int] = None,
     ) -> list[Dict[str, Any]]:
-        conn = sqlite3.connect(abs_db_path, timeout=5.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        try:
+        with self._connect_database_within_root(
+            abs_db_path, timeout=5.0, isolation_level=None
+        ) as conn:
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("PRAGMA busy_timeout = 5000;")
             query = """
@@ -315,10 +343,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     details=details,
                     include_code=include_code,
                 )
-
             return [selected[g] for g in sorted(selected)]
-        finally:
-            conn.close()
 
     # Host header values allowed when the server is bound to loopback. Overwritten
     # per-instance via the handler factory when an explicit external host is used.
@@ -627,6 +652,719 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         with os.fdopen(descriptor, "rb") as file:
             return file.read()
 
+    @classmethod
+    def _copy_database_descriptor(
+        cls,
+        source_descriptor: int,
+        destination_descriptor: int,
+        destination_name: str,
+        *,
+        expected_stat: os.stat_result,
+    ) -> None:
+        source_stat = os.fstat(source_descriptor)
+        if not cls._same_database_file(source_stat, expected_stat, contents=True):
+            raise DatabaseViewRaceError("Database changed before snapshotting")
+
+        destination = os.open(
+            destination_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=destination_descriptor,
+        )
+        try:
+            offset = 0
+            while True:
+                chunk = os.pread(source_descriptor, 1024 * 1024, offset)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination, view)
+                    if written == 0:
+                        raise OSError("Unable to write database snapshot")
+                    view = view[written:]
+                offset += len(chunk)
+        finally:
+            os.close(destination)
+
+        source_stat = os.fstat(source_descriptor)
+        if not cls._same_database_file(source_stat, expected_stat, contents=True):
+            raise DatabaseViewRaceError("Database changed while snapshotting")
+
+    def _copy_optional_database_sidecar(
+        self,
+        parent_descriptor: int,
+        source_name: str,
+        destination_descriptor: int,
+        destination_name: str,
+    ) -> Optional[os.stat_result]:
+        try:
+            source_descriptor = os.open(
+                source_name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise PathValidationError(
+                    f"Database sidecar changed during access: {source_name!r}"
+                ) from exc
+            raise
+        try:
+            source_stat = os.fstat(source_descriptor)
+            if not stat.S_ISREG(source_stat.st_mode):
+                raise PathValidationError(
+                    f"Database sidecar is not a file: {source_name!r}"
+                )
+            self._copy_database_descriptor(
+                source_descriptor,
+                destination_descriptor,
+                destination_name,
+                expected_stat=source_stat,
+            )
+            return source_stat
+        finally:
+            os.close(source_descriptor)
+
+    @staticmethod
+    def _stat_optional_database_sidecar(
+        parent_descriptor: int,
+        source_name: str,
+    ) -> Optional[os.stat_result]:
+        try:
+            source_stat = os.stat(
+                source_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise PathValidationError(
+                f"Database sidecar is not a file: {source_name!r}"
+            )
+        return source_stat
+
+    @classmethod
+    def _rollback_journal_is_hot(
+        cls,
+        parent_descriptor: int,
+        source_name: str,
+        expected_stat: os.stat_result,
+    ) -> bool:
+        try:
+            source_descriptor = os.open(
+                source_name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        except FileNotFoundError as exc:
+            raise DatabaseViewRaceError(
+                "Rollback journal changed while snapshotting"
+            ) from exc
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise PathValidationError(
+                    f"Database sidecar changed during access: {source_name!r}"
+                ) from exc
+            raise
+        try:
+            if not cls._same_database_file(
+                os.fstat(source_descriptor), expected_stat, contents=True
+            ):
+                raise DatabaseViewRaceError(
+                    "Rollback journal changed while snapshotting"
+                )
+            header = os.pread(source_descriptor, 8, 0)
+            if not cls._same_database_file(
+                os.fstat(source_descriptor), expected_stat, contents=True
+            ):
+                raise DatabaseViewRaceError(
+                    "Rollback journal changed while snapshotting"
+                )
+        finally:
+            os.close(source_descriptor)
+        return header == b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7"
+
+    @contextlib.contextmanager
+    def _database_staging_directory(self, resolved_database_path: str):
+        for staging_parent in self._database_staging_parents(
+            resolved_database_path,
+        ):
+            try:
+                temp_directory = tempfile.TemporaryDirectory(
+                    prefix="shinka-webui-db-",
+                    dir=staging_parent,
+                )
+            except OSError:
+                continue
+            directory_descriptor = None
+            try:
+                directory_descriptor = os.open(
+                    temp_directory.name,
+                    self._directory_open_flags(),
+                )
+                yield directory_descriptor, temp_directory.name
+                return
+            finally:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+                temp_directory.cleanup()
+
+        raise sqlite3.OperationalError("no secure writable staging directory exists")
+
+    @classmethod
+    def _database_staging_parents(
+        cls,
+        resolved_database_path: str,
+    ) -> list[str]:
+        database_parent = os.path.dirname(resolved_database_path)
+        candidates = [
+            tempfile.gettempdir(),
+            "/var/tmp",
+            "/tmp",
+            "/dev/shm",
+        ]
+        candidates.extend(
+            os.fspath(parent)
+            for parent in reversed(Path(database_parent).parents)
+        )
+
+        staging_parents = []
+        seen = set()
+        for candidate in candidates:
+            canonical_candidate = os.path.realpath(candidate)
+            if canonical_candidate in seen or canonical_candidate == database_parent:
+                continue
+            seen.add(canonical_candidate)
+            try:
+                os.stat(canonical_candidate)
+            except OSError:
+                continue
+            if not cls._is_secure_staging_parent(canonical_candidate):
+                continue
+            if not os.access(canonical_candidate, os.W_OK | os.X_OK):
+                continue
+            staging_parents.append(canonical_candidate)
+        return staging_parents
+
+    @staticmethod
+    def _database_cache_key(
+        database_stat: os.stat_result,
+    ) -> Tuple[int, int, int]:
+        return (
+            database_stat.st_size,
+            database_stat.st_mtime_ns,
+            database_stat.st_ctime_ns,
+        )
+
+    def _cached_database_main(
+        self,
+        resolved_database_path: str,
+        database_descriptor: int,
+        database_stat: os.stat_result,
+    ) -> _DatabaseMainSnapshot:
+        source_key = (database_stat.st_dev, database_stat.st_ino)
+        cache_key = self._database_cache_key(database_stat)
+        with self._database_main_cache_lock:
+            build_lock = self._database_main_cache_build_locks.setdefault(
+                source_key,
+                threading.Lock(),
+            )
+
+        with build_lock:
+            discarded: list[_DatabaseMainSnapshot] = []
+            with self._database_main_cache_lock:
+                cached = self._database_main_cache.pop(source_key, None)
+                if cached is not None and cached.version == cache_key:
+                    cached.leases += 1
+                    self._database_main_cache[source_key] = cached
+                    return cached
+                if cached is not None:
+                    cached.evicted = True
+                    discarded.append(cached)
+                self._evict_database_main_cache_entries(
+                    incoming_size=database_stat.st_size,
+                    discarded=discarded,
+                )
+            self._cleanup_database_snapshots(discarded)
+
+            staging_parents = self._database_staging_parents(
+                resolved_database_path,
+            )
+            if not staging_parents:
+                raise sqlite3.OperationalError(
+                    "no secure writable staging directory exists"
+                )
+            temp_directory = tempfile.TemporaryDirectory(
+                prefix="shinka-webui-main-",
+                dir=staging_parents[0],
+            )
+            directory_descriptor = None
+            try:
+                directory_descriptor = os.open(
+                    temp_directory.name,
+                    self._directory_open_flags(),
+                )
+                self._copy_database_descriptor(
+                    database_descriptor,
+                    directory_descriptor,
+                    "database.sqlite",
+                    expected_stat=database_stat,
+                )
+                cached_path = os.path.join(
+                    temp_directory.name,
+                    "database.sqlite",
+                )
+                os.chmod(cached_path, 0o400)
+            except Exception:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+                    directory_descriptor = None
+                temp_directory.cleanup()
+                raise
+            finally:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+
+            cached = _DatabaseMainSnapshot(
+                cache_key,
+                temp_directory,
+                cached_path,
+            )
+            cached.leases = 1
+            discarded = []
+            with self._database_main_cache_lock:
+                self._evict_database_main_cache_entries(
+                    incoming_size=database_stat.st_size,
+                    discarded=discarded,
+                )
+                self._database_main_cache[source_key] = cached
+            self._cleanup_database_snapshots(discarded)
+            return cached
+
+    @classmethod
+    def _evict_database_main_cache_entries(
+        cls,
+        *,
+        incoming_size: int,
+        discarded: list[_DatabaseMainSnapshot],
+    ) -> None:
+        cached_bytes = sum(
+            entry.version[0] for entry in cls._database_main_cache.values()
+        )
+        while cls._database_main_cache and (
+            len(cls._database_main_cache) >= cls._database_main_cache_limit
+            or cached_bytes + incoming_size > cls._database_main_cache_target_bytes
+        ):
+            oldest_key = next(iter(cls._database_main_cache))
+            evicted = cls._database_main_cache.pop(oldest_key)
+            evicted.evicted = True
+            cached_bytes -= evicted.version[0]
+            discarded.append(evicted)
+
+    @staticmethod
+    def _cleanup_database_snapshots(
+        snapshots: list[_DatabaseMainSnapshot],
+    ) -> None:
+        for snapshot in snapshots:
+            if snapshot.leases == 0:
+                snapshot.directory.cleanup()
+
+    @classmethod
+    def _release_database_main_snapshot(
+        cls,
+        snapshot: _DatabaseMainSnapshot,
+    ) -> None:
+        cleanup = False
+        with cls._database_main_cache_lock:
+            snapshot.leases -= 1
+            cleanup = snapshot.evicted and snapshot.leases == 0
+        if cleanup:
+            snapshot.directory.cleanup()
+
+    @classmethod
+    def clear_database_snapshot_cache(cls) -> None:
+        with cls._database_main_cache_lock:
+            cached = list(cls._database_main_cache.values())
+            cls._database_main_cache.clear()
+            cls._database_main_cache_build_locks.clear()
+            for snapshot in cached:
+                snapshot.evicted = True
+        cls._cleanup_database_snapshots(cached)
+
+    @classmethod
+    def _stage_cached_database_main(
+        cls,
+        cached_path: str,
+        destination_descriptor: int,
+    ) -> None:
+        try:
+            os.link(
+                cached_path,
+                "database.sqlite",
+                dst_dir_fd=destination_descriptor,
+                follow_symlinks=False,
+            )
+            return
+        except OSError as exc:
+            if exc.errno not in {
+                errno.EACCES,
+                errno.EPERM,
+                errno.EXDEV,
+                errno.EMLINK,
+                errno.ENOSYS,
+                errno.EROFS,
+                getattr(errno, "ENOTSUP", errno.EINVAL),
+                getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+            }:
+                raise
+
+        cached_descriptor = os.open(
+            cached_path,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            cached_stat = os.fstat(cached_descriptor)
+            cls._copy_database_descriptor(
+                cached_descriptor,
+                destination_descriptor,
+                "database.sqlite",
+                expected_stat=cached_stat,
+            )
+        finally:
+            os.close(cached_descriptor)
+
+    @staticmethod
+    def _is_secure_staging_parent(candidate: str) -> bool:
+        effective_uid = getattr(os, "geteuid", lambda: -1)()
+        trusted_uids = {0, effective_uid}
+        current = candidate
+        while True:
+            try:
+                current_stat = os.stat(current)
+            except OSError:
+                return False
+            if not stat.S_ISDIR(current_stat.st_mode):
+                return False
+            if current_stat.st_uid not in trusted_uids:
+                return False
+            untrusted_writable = current_stat.st_mode & 0o022
+            if untrusted_writable and not current_stat.st_mode & stat.S_ISVTX:
+                return False
+            parent = os.path.dirname(current)
+            if parent == current:
+                return True
+            current = parent
+
+    @staticmethod
+    def _verify_database_sidecars(
+        parent_descriptor: int,
+        expected_sidecars: Dict[str, Optional[os.stat_result]],
+        *,
+        verify_contents: bool,
+    ) -> None:
+        for source_name, expected_stat in expected_sidecars.items():
+            try:
+                current_stat = os.stat(
+                    source_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                current_stat = None
+            if expected_stat is None and current_stat is None:
+                continue
+            if expected_stat is None or current_stat is None:
+                raise DatabaseViewRaceError(
+                    f"Database sidecar changed while pinning {source_name!r}"
+                )
+            sidecar_contents_matter = verify_contents and not source_name.endswith(
+                "-shm"
+            )
+            if not DatabaseRequestHandler._same_database_file(
+                current_stat,
+                expected_stat,
+                contents=sidecar_contents_matter,
+            ):
+                raise DatabaseViewRaceError(
+                    f"Database sidecar changed while pinning {source_name!r}"
+                )
+
+    @staticmethod
+    def _same_database_file(
+        current_stat: os.stat_result,
+        expected_stat: os.stat_result,
+        *,
+        contents: bool,
+    ) -> bool:
+        if (
+            current_stat.st_dev != expected_stat.st_dev
+            or current_stat.st_ino != expected_stat.st_ino
+            or not stat.S_ISREG(current_stat.st_mode)
+        ):
+            return False
+        if not contents:
+            return True
+        return (
+            current_stat.st_size == expected_stat.st_size
+            and current_stat.st_mtime_ns == expected_stat.st_mtime_ns
+            and current_stat.st_ctime_ns == expected_stat.st_ctime_ns
+        )
+
+    @staticmethod
+    def _sqlite_read_only_uri(path: os.PathLike[str] | str) -> str:
+        path_string = os.fspath(path)
+        if re.match(r"^[A-Za-z]:[\\/]", path_string):
+            uri = PureWindowsPath(path_string).as_uri()
+        else:
+            uri = Path(path_string).as_uri()
+        return uri + "?mode=ro"
+
+    @classmethod
+    def _sqlite_read_only_target(
+        cls,
+        path: os.PathLike[str] | str,
+    ) -> Tuple[str, bool]:
+        path_string = os.fspath(path)
+        if path_string.startswith("\\\\"):
+            return path_string, False
+        return cls._sqlite_read_only_uri(path_string), True
+
+    def _stage_database_view(
+        self,
+        *,
+        cached_main_path: str,
+        parent_descriptor: int,
+        source_name: str,
+        destination_descriptor: int,
+    ) -> Dict[str, Optional[os.stat_result]]:
+        self._stage_cached_database_main(
+            cached_main_path,
+            destination_descriptor,
+        )
+
+        sidecars = {}
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar_name = source_name + suffix
+            if suffix == "-wal":
+                sidecar_stat = self._copy_optional_database_sidecar(
+                    parent_descriptor,
+                    sidecar_name,
+                    destination_descriptor,
+                    "database.sqlite" + suffix,
+                )
+            else:
+                sidecar_stat = self._stat_optional_database_sidecar(
+                    parent_descriptor,
+                    sidecar_name,
+                )
+                if (
+                    suffix == "-journal"
+                    and sidecar_stat is not None
+                    and self._rollback_journal_is_hot(
+                        parent_descriptor,
+                        sidecar_name,
+                        sidecar_stat,
+                    )
+                ):
+                    raise DatabaseViewRaceError(
+                        "Rollback journal is active while snapshotting"
+                    )
+            sidecars[sidecar_name] = sidecar_stat
+        return sidecars
+
+    def _verify_database_view(
+        self,
+        *,
+        database_descriptor: int,
+        database_stat: os.stat_result,
+        parent_descriptor: int,
+        source_name: str,
+        sidecars: Dict[str, Optional[os.stat_result]],
+    ) -> None:
+        try:
+            current_database_stat = os.stat(
+                source_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as exc:
+            raise DatabaseViewRaceError(
+                "Database path changed while pinning SQLite sidecars"
+            ) from exc
+        if not self._same_database_file(
+            current_database_stat,
+            database_stat,
+            contents=False,
+        ):
+            raise DatabaseViewRaceError(
+                "Database path changed while pinning SQLite sidecars"
+            )
+        if not self._same_database_file(
+            os.fstat(database_descriptor), database_stat, contents=True
+        ):
+            raise DatabaseViewRaceError("Database changed while snapshotting")
+        self._verify_database_sidecars(
+            parent_descriptor,
+            sidecars,
+            verify_contents=True,
+        )
+
+    @contextlib.contextmanager
+    def _connect_database_within_root(
+        self,
+        path: os.PathLike[str] | str,
+        *,
+        timeout: float,
+        isolation_level: Optional[
+            Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"]
+        ] = None,
+    ):
+        if not self._supports_descriptor_traversal():
+            resolved_path = self._resolve_within_root(os.fspath(path))
+            connection_target, use_uri = self._sqlite_read_only_target(resolved_path)
+            connection = sqlite3.connect(
+                connection_target,
+                uri=use_uri,
+                timeout=timeout,
+                isolation_level=isolation_level,
+            )
+            try:
+                if not use_uri:
+                    connection.execute("PRAGMA query_only = ON")
+                yield connection
+            finally:
+                connection.close()
+            return
+
+        resolved_path = self._resolve_within_root(os.fspath(path))
+        database_descriptor = self._open_descriptor_within_root(
+            resolved_path, os.O_RDONLY
+        )
+        parent_descriptor = None
+        try:
+            database_stat = os.fstat(database_descriptor)
+            if not stat.S_ISREG(database_stat.st_mode):
+                raise PathValidationError(f"Database is not a file: {path!r}")
+            parent_descriptor = self._open_descriptor_within_root(
+                os.path.dirname(resolved_path),
+                os.O_RDONLY | os.O_DIRECTORY,
+            )
+            source_name = os.path.basename(resolved_path)
+            race_attempts = 0
+            while race_attempts < 3:
+                attempt_database_stat = os.fstat(database_descriptor)
+                try:
+                    cached_main = self._cached_database_main(
+                        resolved_path,
+                        database_descriptor,
+                        attempt_database_stat,
+                    )
+                    with contextlib.ExitStack() as snapshot_stack:
+                        snapshot_stack.callback(
+                            self._release_database_main_snapshot,
+                            cached_main,
+                        )
+                        snapshot_stack.enter_context(cached_main.lock)
+                        staging_descriptor, staging_path = snapshot_stack.enter_context(
+                            self._database_staging_directory(resolved_path)
+                        )
+                        sidecars = self._stage_database_view(
+                            cached_main_path=cached_main.path,
+                            parent_descriptor=parent_descriptor,
+                            source_name=source_name,
+                            destination_descriptor=staging_descriptor,
+                        )
+                        self._verify_database_view(
+                            database_descriptor=database_descriptor,
+                            database_stat=attempt_database_stat,
+                            parent_descriptor=parent_descriptor,
+                            source_name=source_name,
+                            sidecars=sidecars,
+                        )
+                        stable_path = os.path.join(staging_path, "database.sqlite")
+                        connection = None
+                        try:
+                            connection = sqlite3.connect(
+                                self._sqlite_read_only_uri(stable_path),
+                                uri=True,
+                                timeout=timeout,
+                                isolation_level=isolation_level,
+                            )
+                            connection.execute("BEGIN")
+                            connection.execute("PRAGMA schema_version").fetchone()
+                        except sqlite3.DatabaseError:
+                            try:
+                                self._verify_database_view(
+                                    database_descriptor=database_descriptor,
+                                    database_stat=attempt_database_stat,
+                                    parent_descriptor=parent_descriptor,
+                                    source_name=source_name,
+                                    sidecars=sidecars,
+                                )
+                            finally:
+                                if connection is not None:
+                                    connection.close()
+                            raise
+                        try:
+                            self._verify_database_view(
+                                database_descriptor=database_descriptor,
+                                database_stat=attempt_database_stat,
+                                parent_descriptor=parent_descriptor,
+                                source_name=source_name,
+                                sidecars=sidecars,
+                            )
+                        except Exception:
+                            connection.close()
+                            raise
+                        try:
+                            yield connection
+                        finally:
+                            connection.close()
+                        return
+                except DatabaseViewRaceError:
+                    race_attempts += 1
+                    if race_attempts == 3:
+                        raise sqlite3.OperationalError(
+                            "database is busy while pinning SQLite sidecars"
+                        )
+        finally:
+            if parent_descriptor is not None:
+                os.close(parent_descriptor)
+            os.close(database_descriptor)
+
+    @contextlib.contextmanager
+    def _open_program_database_within_root(self, path: os.PathLike[str] | str):
+        with self._connect_database_within_root(path, timeout=60.0) as connection:
+            database = ProgramDatabase(
+                DatabaseConfig(db_path=os.fspath(path)),
+                read_only=True,
+                connection=connection,
+            )
+            try:
+                yield database
+            finally:
+                database.close()
+
+    @contextlib.contextmanager
+    def _open_prompt_database_within_root(self, path: os.PathLike[str] | str):
+        with self._connect_database_within_root(path, timeout=30.0) as connection:
+            database = SystemPromptDatabase(
+                SystemPromptConfig(db_path=os.fspath(path)),
+                read_only=True,
+                connection=connection,
+            )
+            try:
+                yield database
+            finally:
+                database.close()
+
     def _list_directory_within_root(
         self, path: os.PathLike[str] | str
     ) -> list[str]:
@@ -784,26 +1522,21 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         max_retries = 8
         delay = 0.2
         for i in range(max_retries):
-            db = None
             try:
-                config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                with self._open_program_database_within_root(abs_db_path) as db:
+                    # Set WAL mode compatible settings for read-only connections
+                    # Longer busy_timeout for concurrent access during evolution
+                    if db.cursor:
+                        db.cursor.execute("PRAGMA busy_timeout = 30000;")
 
-                # Set WAL mode compatible settings for read-only connections
-                # Longer busy_timeout for concurrent access during evolution
-                if db.cursor:
-                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
-                    try:
-                        db.cursor.execute("PRAGMA journal_mode = WAL;")
-                    except sqlite3.OperationalError:
-                        pass
+                    programs = db.get_all_programs()
 
-                programs = db.get_all_programs()
-
-                # Convert Program objects to dicts for JSON
-                programs_dict = [p.to_dict() for p in programs]
+                    # Convert Program objects to dicts for JSON
+                    programs_dict = [p.to_dict() for p in programs]
                 programs_dict.extend(
-                    self._load_failed_proposal_nodes(abs_db_path, include_code=False)
+                    self._load_failed_proposal_nodes(
+                        abs_db_path, include_code=False
+                    )
                 )
 
                 # Update cache
@@ -817,6 +1550,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 print(success_msg)
                 return  # Success, exit the retry loop
 
+            except PathValidationError:
+                raise
             except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
                 error_str = str(e).lower()
                 is_retryable = (
@@ -858,14 +1593,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 print(f"[SERVER] An unexpected error occurred: {e}")
                 self.send_error(500, f"An unexpected error occurred: {str(e)}")
                 return  # Don't retry on unknown errors
-            finally:
-                # Ensure database connection is properly closed
-                if db and hasattr(db, "close"):
-                    try:
-                        db.close()
-                    except Exception as e:
-                        print(f"[SERVER] Warning: Error closing database: {e}")
-
     def handle_get_programs_summary(self, db_path: str):
         """Fetch lightweight program summaries (no code, no embeddings)."""
         print(f"[SERVER] Fetching program summaries from DB: {db_path}")
@@ -880,21 +1607,16 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         max_retries = 8
         delay = 0.2
         for i in range(max_retries):
-            db = None
             try:
-                config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                with self._open_program_database_within_root(abs_db_path) as db:
+                    if db.cursor:
+                        db.cursor.execute("PRAGMA busy_timeout = 30000;")
 
-                if db.cursor:
-                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
-                    try:
-                        db.cursor.execute("PRAGMA journal_mode = WAL;")
-                    except sqlite3.OperationalError:
-                        pass
-
-                summaries = db.get_programs_summary()
+                    summaries = db.get_programs_summary()
                 summaries.extend(
-                    self._load_failed_proposal_nodes(abs_db_path, include_code=False)
+                    self._load_failed_proposal_nodes(
+                        abs_db_path, include_code=False
+                    )
                 )
                 self.send_json_response(summaries)
                 print(
@@ -931,13 +1653,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 print(f"[SERVER] Error fetching program summaries: {e}")
                 self.send_error(500, f"Error: {str(e)}")
                 return
-            finally:
-                if db and hasattr(db, "close"):
-                    try:
-                        db.close()
-                    except Exception:
-                        pass
-
     def handle_get_program_count(self, db_path: str):
         """Get program count and max timestamp for efficient change detection."""
         print(f"[SERVER] Fetching program count from DB: {db_path}")
@@ -952,19 +1667,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         max_retries = 8
         delay = 0.2
         for i in range(max_retries):
-            db = None
             try:
-                config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                with self._open_program_database_within_root(abs_db_path) as db:
+                    if db.cursor:
+                        db.cursor.execute("PRAGMA busy_timeout = 30000;")
 
-                if db.cursor:
-                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
-                    try:
-                        db.cursor.execute("PRAGMA journal_mode = WAL;")
-                    except sqlite3.OperationalError:
-                        pass
-
-                result = db.get_program_count_and_timestamp()
+                    result = db.get_program_count_and_timestamp()
                 failed_nodes = self._load_failed_proposal_nodes(
                     abs_db_path, include_code=False
                 )
@@ -1011,13 +1719,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 print(f"[SERVER] Error fetching program count: {e}")
                 self.send_error(500, f"Error: {str(e)}")
                 return
-            finally:
-                if db and hasattr(db, "close"):
-                    try:
-                        db.close()
-                    except Exception:
-                        pass
-
     def handle_get_program_details(self, db_path: str, program_id: str):
         """Get full details for a single program (including code and embeddings)."""
         print(f"[SERVER] Fetching program details for ID: {program_id}")
@@ -1055,19 +1756,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         max_retries = 8
         delay = 0.2
         for i in range(max_retries):
-            db = None
             try:
-                config = DatabaseConfig(db_path=abs_db_path)
-                db = ProgramDatabase(config, read_only=True)
+                with self._open_program_database_within_root(abs_db_path) as db:
+                    if db.cursor:
+                        db.cursor.execute("PRAGMA busy_timeout = 30000;")
 
-                if db.cursor:
-                    db.cursor.execute("PRAGMA busy_timeout = 30000;")
-                    try:
-                        db.cursor.execute("PRAGMA journal_mode = WAL;")
-                    except sqlite3.OperationalError:
-                        pass
-
-                program = db.get(program_id)
+                    program = db.get(program_id)
                 if program is None:
                     self.send_error(404, f"Program not found: {program_id}")
                     return
@@ -1075,6 +1769,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response(program.to_dict())
                 return
 
+            except PathValidationError:
+                raise
             except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
                 error_str = str(e).lower()
                 is_retryable = (
@@ -1101,12 +1797,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 print(f"[SERVER] Error fetching program details: {e}")
                 self.send_error(500, f"Error: {str(e)}")
                 return
-            finally:
-                if db and hasattr(db, "close"):
-                    try:
-                        db.close()
-                    except Exception:
-                        pass
 
     def handle_get_meta_files(self, db_path: str):
         """List available meta files keyed by processed-count suffix."""
@@ -1402,18 +2092,16 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         max_retries = 8
         delay = 0.2
         for i in range(max_retries):
-            prompt_db = None
             try:
-                config = SystemPromptConfig(db_path=prompts_db_path)
-                prompt_db = SystemPromptDatabase(config, read_only=True)
+                with self._open_prompt_database_within_root(
+                    prompts_db_path
+                ) as prompt_db:
+                    # Set WAL mode compatible settings for read-only connections
+                    # Longer busy_timeout for concurrent access during evolution
+                    if prompt_db.cursor:
+                        prompt_db.cursor.execute("PRAGMA busy_timeout = 30000;")
 
-                # Set WAL mode compatible settings for read-only connections
-                # Longer busy_timeout for concurrent access during evolution
-                if prompt_db.cursor:
-                    prompt_db.cursor.execute("PRAGMA busy_timeout = 30000;")
-                    prompt_db.cursor.execute("PRAGMA journal_mode = WAL;")
-
-                prompts = prompt_db.get_all_prompts()
+                    prompts = prompt_db.get_all_prompts()
 
                 # Convert SystemPrompt objects to dicts for JSON
                 prompts_dict = [p.to_dict() for p in prompts]
@@ -1468,6 +2156,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json_response([])
                     return
 
+            except PathValidationError:
+                raise
             except Exception as e:
                 print(f"[SERVER] Error fetching system prompts: {e}")
                 import traceback
@@ -1476,13 +2166,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 # Return empty list instead of 500 - prompts are optional
                 self.send_json_response([])
                 return
-            finally:
-                if prompt_db and hasattr(prompt_db, "close"):
-                    try:
-                        prompt_db.close()
-                    except Exception as e:
-                        print(f"[SERVER] Warning: Error closing prompts database: {e}")
-
     def handle_get_database_stats(self, db_path: str):
         """Get quick aggregate stats for a database (count, best score, cost)."""
         actual_db_path = self._get_actual_db_path(db_path)
@@ -1499,9 +2182,16 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         max_retries = 3
         delay = 0.1
         for i in range(max_retries):
+            stack = contextlib.ExitStack()
             conn = None
             try:
-                conn = sqlite3.connect(abs_db_path, timeout=5.0, isolation_level=None)
+                conn = stack.enter_context(
+                    self._connect_database_within_root(
+                        abs_db_path,
+                        timeout=5.0,
+                        isolation_level=None,
+                    )
+                )
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA busy_timeout = 5000;")
@@ -1607,8 +2297,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 # Check for prompts.db in the same directory
                 if os.path.exists(prompts_db_path):
                     try:
-                        pconn = sqlite3.connect(
-                            prompts_db_path, timeout=2.0, isolation_level=None
+                        pconn = stack.enter_context(
+                            self._connect_database_within_root(
+                                prompts_db_path,
+                                timeout=2.0,
+                                isolation_level=None,
+                            )
                         )
                         pconn.row_factory = sqlite3.Row
                         pcursor = pconn.cursor()
@@ -1635,7 +2329,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         """)
                         pcost_row = pcursor.fetchone()
                         stats["prompt_evo_cost"] = pcost_row["prompt_cost"] or 0
-                        pconn.close()
+                    except PathValidationError:
+                        raise
                     except Exception as pe:
                         print(f"[SERVER] Warning: Error reading prompts.db: {pe}")
 
@@ -1661,6 +2356,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     }
                 )
                 return
+            except PathValidationError:
+                raise
             except Exception as e:
                 self.send_json_response(
                     {
@@ -1674,11 +2371,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 )
                 return
             finally:
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                stack.close()
 
     def _generate_pdf(self, content: str, generation: str) -> bytes:
         """Generate PDF from markdown content using available methods."""
@@ -2281,7 +2974,10 @@ def start_server(
                     print(f"[SERVER] Readiness callback failed: {exc}")
 
             threading.Thread(target=notify_ready, daemon=True).start()
-        httpd.serve_forever()
+        try:
+            httpd.serve_forever()
+        finally:
+            DatabaseRequestHandler.clear_database_snapshot_cache()
 
 
 def main():
