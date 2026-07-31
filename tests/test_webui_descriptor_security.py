@@ -4,7 +4,6 @@ import pytest
 
 from shinka.webui.visualization import DatabaseRequestHandler, PathValidationError
 
-
 requires_descriptor_traversal = pytest.mark.skipif(
     not (
         os.open in os.supports_dir_fd

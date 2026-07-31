@@ -132,7 +132,7 @@ def test_readiness_callback_can_request_server(tmp_path):
             response = connection.getresponse()
             response.read()
             assert response.status == 200
-        except Exception as exc:
+        except (AssertionError, OSError, http.client.HTTPException) as exc:
             errors.append(exc)
         finally:
             connection.close()
