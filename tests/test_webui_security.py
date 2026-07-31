@@ -17,6 +17,8 @@ import pytest
 from shinka.webui.visualization import (
     DatabaseRequestHandler,
     PathValidationError,
+    _allowed_hosts_for_bind,
+    _is_loopback_host,
     create_handler_factory,
 )
 
@@ -75,6 +77,43 @@ def test_resolve_rejects_sibling_prefix_dir(tmp_path):
     handler = _handler(served)
     with pytest.raises(PathValidationError):
         handler._resolve_within_root("../served_bak/leak.db")
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("localhost", True),
+        ("LOCALHOST", True),
+        ("127.0.0.1", True),
+        ("127.0.0.2", True),
+        ("127.255.255.255", True),
+        ("::1", True),
+        ("", False),
+        ("0.0.0.0", False),
+        ("::", False),
+        ("192.168.1.20", False),
+    ],
+)
+def test_loopback_host_classification(host, expected):
+    assert _is_loopback_host(host) is expected
+
+
+def test_custom_loopback_bind_allows_its_host_header():
+    allowed_hosts = _allowed_hosts_for_bind("127.0.0.2", "127.0.0.2")
+
+    assert allowed_hosts is not None
+    assert "127.0.0.2" in allowed_hosts
+
+
+def test_resolved_loopback_alias_keeps_host_protection():
+    allowed_hosts = _allowed_hosts_for_bind("127.1", "127.0.0.1")
+
+    assert allowed_hosts is not None
+    assert {"127.1", "127.0.0.1"} <= allowed_hosts
+
+
+def test_wildcard_bind_disables_local_host_allowlist():
+    assert _allowed_hosts_for_bind("", "0.0.0.0") is None
 
 
 def test_failed_node_language_defaults_when_artifact_directory_is_missing(tmp_path):

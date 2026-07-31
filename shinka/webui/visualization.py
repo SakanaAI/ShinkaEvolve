@@ -10,6 +10,7 @@ import argparse
 import base64
 import errno
 import http.server
+import ipaddress
 import json
 import markdown
 import os
@@ -327,7 +328,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if self.allowed_hosts is None:
             return True  # Explicit external bind: operator opted out of the check.
         host_header = self.headers.get("Host", "")
-        hostname = host_header.rsplit(":", 1)[0] if host_header else ""
+        hostname = host_header.rsplit(":", 1)[0].casefold() if host_header else ""
         return hostname in self.allowed_hosts
 
     def do_GET(self):
@@ -2048,7 +2049,27 @@ def create_handler_factory(search_root, allowed_hosts=...):
 
 
 def _is_loopback_host(host: str) -> bool:
-    return host in ("127.0.0.1", "localhost", "::1", "")
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _allowed_hosts_for_bind(
+    requested_host: str, bound_host: str
+) -> Optional[frozenset[str]]:
+    if not _is_loopback_host(bound_host):
+        return None
+
+    allowed_hosts = set(DatabaseRequestHandler.allowed_hosts)
+    for host in (requested_host, bound_host):
+        normalized_host = host.casefold()
+        allowed_hosts.add(normalized_host)
+        if ":" in normalized_host:
+            allowed_hosts.add(f"[{normalized_host}]")
+    return frozenset(allowed_hosts)
 
 
 def start_server(
@@ -2076,15 +2097,17 @@ def start_server(
 
     # On a loopback bind, enforce the Host-header allowlist (anti DNS-rebinding).
     # On an explicit external bind the operator has opted in, so disable it.
-    allowed_hosts = ... if _is_loopback_host(host) else None
-    handler_factory = create_handler_factory(search_root, allowed_hosts=allowed_hosts)
-
     class ReusableTCPServer(socketserver.TCPServer):
         allow_reuse_address = True
 
-    with ReusableTCPServer((host, port), handler_factory) as httpd:
+    with ReusableTCPServer((host, port), DatabaseRequestHandler) as httpd:
+        bound_host = str(httpd.server_address[0])
+        allowed_hosts = _allowed_hosts_for_bind(host, bound_host)
+        httpd.RequestHandlerClass = create_handler_factory(
+            search_root, allowed_hosts=allowed_hosts
+        )
         msg = f"\n[*] Serving http://{host}:{port}  (Ctrl+C to stop)"
-        if not _is_loopback_host(host):
+        if not _is_loopback_host(bound_host):
             msg += (
                 "\n[!] Bound to a non-loopback address: the evolution database "
                 "is reachable from the network with no authentication."
