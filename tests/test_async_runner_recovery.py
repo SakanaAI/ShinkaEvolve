@@ -24,6 +24,7 @@ from shinka.core.summarizer import MetaSummarizer
 from shinka.database import Program
 from shinka.database.async_dbase import EvaluationOwnershipConflictError
 from shinka.llm import AsyncLLMClient
+from shinka.launch import LocalProcessIdentity, ProcessWithLogging
 from shinka.launch.slurm import SlurmJobName
 from shinka.database.prompt_dbase import (
     SystemPromptConfig,
@@ -644,6 +645,36 @@ def test_resume_reconciles_generation_zero_before_fresh_setup(tmp_path):
 
         assert reconciled == [0]
         assert async_db.evaluation_ownership[0]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_resume_cancels_owned_local_evaluation(tmp_path):
+    async def _run():
+        identity = LocalProcessIdentity(pid=4321, token="a" * 32)
+        durable_job_id, durable_job_name = identity.to_storage()
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "active",
+            "job_type": "local",
+            "job_id": durable_job_id,
+            "job_name": durable_job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(cancelled_job_ids=[identity])
+        scheduler.job_type = "local"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [2]
+        assert scheduler.cancelled_job_ids == [identity]
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
 
     asyncio.run(_run())
 
@@ -2781,6 +2812,37 @@ def test_submit_evaluation_job_persists_ownership_before_external_submit():
             "submit:program.py:results",
             "ownership.activate",
         ]
+
+    asyncio.run(_run())
+
+
+def test_submit_evaluation_job_persists_local_process_identity():
+    async def _run():
+        identity = LocalProcessIdentity(pid=4321, token="b" * 32)
+        process = ProcessWithLogging(SimpleNamespace(pid=identity.pid), (), ())
+        process.identity = identity
+
+        class _LocalScheduler(_FakeScheduler):
+            job_type = "local"
+
+            async def submit_async_nonblocking(self, exec_fname, results_dir):
+                return process
+
+        async_db = _FakeAsyncDB(total_programs=0)
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=_LocalScheduler(),
+        )
+
+        await runner._submit_evaluation_job_with_ownership(
+            generation=4,
+            exec_fname="program.py",
+            results_dir="results",
+            sampling_worker_id=None,
+        )
+
+        ownership = async_db.evaluation_ownership[4]
+        assert (ownership["job_id"], ownership["job_name"]) == identity.to_storage()
 
     asyncio.run(_run())
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from .local import submit as submit_local, monitor as monitor_local
-from .local import ProcessWithLogging
+from .local import LocalProcessIdentity, ProcessWithLogging
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
     SlurmJobName,
@@ -447,7 +447,13 @@ class JobScheduler:
         return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def cancel_job_async(
-        self, job_id: Union[str, ProcessWithLogging, SlurmJobName]
+        self,
+        job_id: Union[
+            str,
+            LocalProcessIdentity,
+            ProcessWithLogging,
+            SlurmJobName,
+        ],
     ) -> bool:
         """Cancel a running job asynchronously."""
         loop = asyncio.get_event_loop()
@@ -488,7 +494,7 @@ class JobScheduler:
                         )
                 else:
                     # For local jobs, kill the process
-                    if isinstance(job_id, ProcessWithLogging):
+                    if isinstance(job_id, (LocalProcessIdentity, ProcessWithLogging)):
                         return job_id.kill()
                 return False
             except Exception as e:
@@ -498,7 +504,13 @@ class JobScheduler:
         return await loop.run_in_executor(self.cancellation_executor, cancel_job)
 
     async def is_job_terminal_async(
-        self, job_id: Union[str, ProcessWithLogging, SlurmJobName]
+        self,
+        job_id: Union[
+            str,
+            LocalProcessIdentity,
+            ProcessWithLogging,
+            SlurmJobName,
+        ],
     ) -> bool:
         """Return whether a job is confirmed to have reached a terminal state."""
         loop = asyncio.get_event_loop()
@@ -512,7 +524,7 @@ class JobScheduler:
                 if not is_valid_slurm_job_id(job_id):
                     return False
                 return get_job_status(job_id) == ""
-            if isinstance(job_id, ProcessWithLogging):
+            if isinstance(job_id, (LocalProcessIdentity, ProcessWithLogging)):
                 return job_id.is_terminated()
             return False
 

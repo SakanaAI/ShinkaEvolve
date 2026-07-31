@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from shinka.launch import local, slurm
-from shinka.launch.local import ProcessWithLogging, submit
+from shinka.launch.local import LocalProcessIdentity, ProcessWithLogging, submit
 from shinka.launch.slurm import SlurmJobName
 from shinka.launch.scheduler import (
     JobScheduler,
@@ -33,6 +33,54 @@ from shinka.launch.scheduler import (
 class _FakeCompleted:
     def __init__(self, stdout: str) -> None:
         self.stdout = stdout
+
+
+def test_local_process_identity_does_not_signal_token_mismatch():
+    env = os.environ.copy()
+    env["SHINKA_LOCAL_JOB_TOKEN"] = "actual-token"
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        env=env,
+        start_new_session=True,
+    )
+    identity = LocalProcessIdentity(pid=process.pid, token="different-token")
+
+    try:
+        assert identity.kill() is False
+        assert process.poll() is None
+    finally:
+        os.killpg(process.pid, 9)
+        process.wait(timeout=5)
+
+
+def test_local_process_identity_reauthenticates_each_group_snapshot(monkeypatch):
+    class _Process:
+        def __init__(self, pid):
+            self.pid = pid
+            self.kill_calls = 0
+
+        def kill(self):
+            self.kill_calls += 1
+
+    owned_process = _Process(123)
+    replacement_process = _Process(456)
+    snapshots = iter(
+        [
+            ([owned_process], True, False),
+            ([replacement_process], False, False),
+        ]
+    )
+    monkeypatch.setattr(
+        LocalProcessIdentity,
+        "_process_group_members",
+        lambda _identity: next(snapshots),
+    )
+
+    identity = LocalProcessIdentity(pid=123, token="a" * 32)
+
+    assert identity.kill() is False
+    assert owned_process.kill_calls == 1
+    assert replacement_process.kill_calls == 0
 
 
 def test_local_job_pending_gpu_reports_running(monkeypatch):
@@ -418,7 +466,11 @@ def test_kill_terminates_child_process_group(tmp_path):
     pidfile = tmp_path / "child.pid"
     proc = submit(
         str(tmp_path),
-        ["bash", "-c", f"sleep 60 & echo $! > {pidfile}; wait"],
+        [
+            "bash",
+            "-c",
+            f'env -i PATH="$PATH" sleep 60 & echo $! > {pidfile}; wait',
+        ],
     )
 
     deadline = time.time() + 5.0
@@ -477,41 +529,42 @@ def test_local_cancellation_reports_failure_when_process_cannot_be_killed(
         scheduler.shutdown()
 
 
-def test_local_cancellation_signals_group_after_leader_exits(monkeypatch):
-    class _ExitedLeader:
+def test_local_cancellation_uses_durable_identity(monkeypatch):
+    class _RunningLeader:
         pid = 123
-        returncode = 0
-
-        def kill(self):
-            raise AssertionError("direct child is already gone")
+        returncode = None
 
         def wait(self, timeout):
-            return 0
+            self.returncode = -9
+            return self.returncode
 
         def poll(self):
-            return 0
+            return self.returncode
 
-    signals = []
+    class _Identity:
+        def __init__(self):
+            self.kill_calls = 0
 
-    def fake_killpg(process_group_id, sent_signal):
-        signals.append((process_group_id, sent_signal))
-        if sent_signal == 0:
-            raise ProcessLookupError
+        def kill(self):
+            self.kill_calls += 1
+            return True
 
+        def is_terminated(self):
+            return True
+
+    identity = _Identity()
     process = ProcessWithLogging(
-        _ExitedLeader(),
+        _RunningLeader(),
         (io.StringIO(), io.StringIO()),
         (threading.Thread(), threading.Thread()),
+        identity=identity,
     )
     monkeypatch.setattr(
-        local.os,
-        "getpgid",
-        lambda _pid: (_ for _ in ()).throw(ProcessLookupError),
+        local.os, "killpg", lambda *_args: pytest.fail("unsafe process-group signal")
     )
-    monkeypatch.setattr(local.os, "killpg", fake_killpg)
 
     assert process.kill() is True
-    assert signals[0] == (123, local.signal.SIGKILL)
+    assert identity.kill_calls == 1
 
 
 def test_local_timeout_retains_job_when_kill_is_unconfirmed(monkeypatch):

@@ -1,14 +1,130 @@
 import subprocess
-import signal
 import time
 import threading
 import os
+import re
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
+import psutil
 from shinka.utils import load_results, parse_time_to_seconds
 import logging
 
 logger = logging.getLogger(__name__)
+LOCAL_PROCESS_TOKEN_ENV = "SHINKA_LOCAL_JOB_TOKEN"
+LOCAL_PROCESS_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
+
+
+def _process_group_exists(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+
+
+@dataclass(frozen=True)
+class LocalProcessIdentity:
+    """Durable identity for one local evaluation process group."""
+
+    pid: int
+    token: str
+
+    @classmethod
+    def from_storage(cls, job_id: object, job_name: object) -> "LocalProcessIdentity":
+        if not isinstance(job_id, str) or not job_id.isdecimal():
+            raise ValueError("Invalid local process ID")
+        if (
+            not isinstance(job_name, str)
+            or LOCAL_PROCESS_TOKEN_PATTERN.fullmatch(job_name) is None
+        ):
+            raise ValueError("Invalid local process token")
+        pid = int(job_id)
+        if pid <= 0:
+            raise ValueError("Invalid local process ID")
+        return cls(pid=pid, token=job_name)
+
+    def to_storage(self) -> tuple[str, str]:
+        return str(self.pid), self.token
+
+    def _process_group_members(
+        self,
+    ) -> tuple[list[psutil.Process], bool, bool]:
+        """Return live group members, token presence, and inspection ambiguity."""
+        if not hasattr(os, "getpgid"):
+            return [], False, True
+
+        tokenless_members = []
+        token_members = []
+        inspection_blocked = False
+        for process in psutil.process_iter(["pid"]):
+            try:
+                process_group_id = os.getpgid(process.pid)
+            except ProcessLookupError:
+                continue
+            except (PermissionError, OSError):
+                inspection_blocked = True
+                continue
+
+            if process_group_id != self.pid:
+                continue
+
+            try:
+                if process.status() == psutil.STATUS_ZOMBIE:
+                    continue
+                process_token = process.environ().get(LOCAL_PROCESS_TOKEN_ENV)
+                if process_token == self.token:
+                    token_members.append(process)
+                else:
+                    tokenless_members.append(process)
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            except (psutil.AccessDenied, PermissionError, OSError):
+                inspection_blocked = True
+
+        tokenless_members.sort(key=lambda process: process.pid == self.pid)
+        token_members.sort(key=lambda process: process.pid == self.pid)
+        group_members = [*tokenless_members, *token_members]
+        return group_members, bool(token_members), inspection_blocked
+
+    def kill(self) -> bool:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            group_members, token_present, inspection_blocked = (
+                self._process_group_members()
+            )
+            if inspection_blocked:
+                return False
+            if not group_members:
+                return True
+            if not token_present:
+                return False
+
+            # Authenticate every snapshot, then kill tokenless descendants
+            # before token-bearing members so the proof survives until last.
+            for process in group_members:
+                try:
+                    # psutil rechecks the process creation time immediately
+                    # before signaling and refuses a PID already known as reused.
+                    process.kill()
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except (psutil.AccessDenied, OSError):
+                    return False
+            time.sleep(0.01)
+        return self.is_terminated()
+
+    def is_terminated(self) -> bool:
+        group_members, _token_present, inspection_blocked = (
+            self._process_group_members()
+        )
+        return not group_members and not inspection_blocked
+
+    def __str__(self) -> str:
+        return f"LocalProcessIdentity(PID: {self.pid})"
 
 
 class AmbiguousLocalSubmissionError(RuntimeError):
@@ -28,37 +144,36 @@ class ProcessWithLogging:
         self,
         process: subprocess.Popen,
         log_files: Tuple[TextIO, TextIO],
-        log_threads: Tuple[threading.Thread, threading.Thread],
+        log_threads: Tuple[threading.Thread, ...],
+        identity: Optional[LocalProcessIdentity] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
+        self.identity = identity
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
         return getattr(self.process, name)
 
     def kill(self) -> bool:
-        """Kill the whole process group, not just the direct child.
+        """Kill token-verified processes belonging to this local evaluation.
 
         Eval commands are often wrappers (``conda run -n env python …`` or
-        ``bash -lc "… docker run …"``) that fork the real worker; killing only
-        the direct child would orphan a GPU-holding process. The child is
-        started with ``start_new_session=True`` so it leads its own group.
+        ``bash -lc "… docker run …"``) that fork the real worker. The durable
+        identity authenticates each group snapshot before signaling its stable
+        process handles, narrowing PID/PGID reuse races while still terminating
+        inherited-token children.
         """
         pid = self.process.pid
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except (PermissionError, OSError):
-            # Best effort for the direct child, but group ownership remains
-            # unconfirmed and is checked below.
-            try:
-                self.process.kill()
-            except Exception as e:
-                logger.error(f"Error killing process {pid}: {e}")
-                return False
+        if self.identity is None:
+            if self.is_terminated():
+                return True
+            logger.error(f"Refusing to kill process {pid} without durable identity")
+            return False
+        if not self.identity.kill():
+            logger.error(f"Could not verify ownership while killing process {pid}")
+            return False
 
         try:
             self.process.wait(timeout=1.0)
@@ -69,23 +184,16 @@ class ProcessWithLogging:
             logger.error(f"Could not confirm process {pid} termination: {e}")
             return False
 
-        deadline = time.monotonic() + 1.0
-        while self._process_group_exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
         return self.is_terminated()
 
     def is_terminated(self) -> bool:
         """Return whether both the leader and its process group are gone."""
-        return self.process.poll() is not None and not self._process_group_exists()
+        if self.identity is None:
+            return self.process.poll() is not None and not self._process_group_exists()
+        return self.process.poll() is not None and self.identity.is_terminated()
 
     def _process_group_exists(self) -> bool:
-        try:
-            os.killpg(self.process.pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except (PermissionError, OSError):
-            return True
+        return _process_group_exists(self.process.pid)
 
     def __str__(self):
         """Return a string representation showing the PID."""
@@ -164,6 +272,8 @@ def submit(
     env["PYTHONIOENCODING"] = "utf-8"  # Ensure proper encoding
     if env_overrides:
         env.update(env_overrides)
+    local_job_token = uuid.uuid4().hex
+    env[LOCAL_PROCESS_TOKEN_ENV] = local_job_token
 
     stdout_file = None
     stderr_file = None
@@ -189,6 +299,7 @@ def submit(
             process,
             (stdout_file, stderr_file),
             (),
+            identity=LocalProcessIdentity(process.pid, local_job_token),
         )
 
         stdout_thread = threading.Thread(

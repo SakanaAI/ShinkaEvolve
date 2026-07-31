@@ -43,7 +43,13 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.embed import AsyncEmbeddingClient
-from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
+from shinka.launch import (
+    JobScheduler,
+    JobConfig,
+    LocalJobConfig,
+    LocalProcessIdentity,
+    ProcessWithLogging,
+)
 from shinka.launch.slurm import (
     JobStatusUnavailableError,
     MAX_UNKNOWN_STATUS_POLLS,
@@ -5635,6 +5641,17 @@ class ShinkaEvolveRunner:
             raise RuntimeError(
                 f"Evaluation ownership scheduler mismatch for generation {generation}"
             )
+        if job_type == "local" and ownership["phase"] == "active":
+            try:
+                cancel_target = LocalProcessIdentity.from_storage(job_id, job_name)
+            except ValueError:
+                pass
+            else:
+                failed_cancellations = await self._cancel_job_ids([cancel_target])
+                if failed_cancellations:
+                    raise UnconfirmedJobCancellationError(failed_cancellations)
+                await self._resolve_evaluation_ownership(generation)
+                return generation
         if (
             ownership["phase"] != "active"
             or not isinstance(job_id, str)
@@ -5904,9 +5921,14 @@ class ShinkaEvolveRunner:
         self._pending_evaluation_submissions.pop(submission_task, None)
 
         if generation is not None:
-            durable_job_id = job_id if isinstance(job_id, str) else None
-            durable_job_name = getattr(job_id, "job_name", None)
             try:
+                if isinstance(job_id, ProcessWithLogging):
+                    if job_id.identity is None:
+                        raise RuntimeError("Local process identity is unavailable")
+                    durable_job_id, durable_job_name = job_id.identity.to_storage()
+                else:
+                    durable_job_id = job_id if isinstance(job_id, str) else None
+                    durable_job_name = getattr(job_id, "job_name", None)
                 await self.async_db.activate_evaluation_ownership_async(
                     generation=generation,
                     job_id=durable_job_id,

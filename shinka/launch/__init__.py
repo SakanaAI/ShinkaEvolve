@@ -5,7 +5,7 @@ from .scheduler import (
     SlurmCondaJobConfig,
     SlurmEnvJobConfig,
 )
-from .local import ProcessWithLogging
+from .local import LocalProcessIdentity, ProcessWithLogging
 
 __all__ = [
     "JobScheduler",
@@ -14,5 +14,6 @@ __all__ = [
     "SlurmDockerJobConfig",
     "SlurmCondaJobConfig",
     "SlurmEnvJobConfig",
+    "LocalProcessIdentity",
     "ProcessWithLogging",
 ]
