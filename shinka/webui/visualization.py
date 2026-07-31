@@ -1212,6 +1212,27 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
     def _sqlite_read_only_uri(path: os.PathLike[str] | str) -> str:
         path_string = os.fspath(path)
+        extended_prefix = "\\\\?\\"
+        if path_string.startswith("\\\\.\\"):
+            raise PathValidationError("Windows device paths are not supported")
+        if path_string.startswith(extended_prefix):
+            extended_path = path_string[len(extended_prefix) :]
+            if extended_path.casefold().startswith("unc\\"):
+                path_string = "\\\\" + extended_path[4:]
+            elif re.match(r"^[A-Za-z]:[\\/]", extended_path):
+                path_string = extended_path
+            else:
+                raise PathValidationError("Windows device paths are not supported")
+
+        if path_string.startswith("\\\\"):
+            # Keep the URI authority empty. SQLite rejects remote authorities
+            # unless built with SQLITE_ALLOW_URI_AUTHORITY, while the Windows
+            # VFS accepts an absolute //server/share path as UNC.
+            quoted_path = urllib.parse.quote(
+                path_string.replace("\\", "/"),
+                safe="/:",
+            )
+            return "file://" + quoted_path + "?mode=ro"
         if re.match(r"^[A-Za-z]:[\\/]", path_string):
             uri = PureWindowsPath(path_string).as_uri()
         else:
@@ -1223,10 +1244,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         cls,
         path: os.PathLike[str] | str,
     ) -> Tuple[str, bool]:
-        path_string = os.fspath(path)
-        if path_string.startswith("\\\\"):
-            return path_string, False
-        return cls._sqlite_read_only_uri(path_string), True
+        return cls._sqlite_read_only_uri(path), True
 
     def _stage_database_view(
         self,

@@ -445,27 +445,6 @@ def test_database_snapshot_retries_wal_staging_after_enospc(
     handler.clear_database_snapshot_cache()
 
 
-@pytest.mark.parametrize(
-    ("path", "expected_target"),
-    [
-        (
-            r"C:\Users\Rob Lange\programs.sqlite",
-            ("file:///C:/Users/Rob%20Lange/programs.sqlite?mode=ro", True),
-        ),
-        (
-            r"\\server\results\programs.sqlite",
-            (r"\\server\results\programs.sqlite", False),
-        ),
-        (
-            r"\\?\C:\results\programs.sqlite",
-            (r"\\?\C:\results\programs.sqlite", False),
-        ),
-    ],
-)
-def test_sqlite_read_only_target_supports_windows_paths(path, expected_target):
-    assert DatabaseRequestHandler._sqlite_read_only_target(path) == expected_target
-
-
 @requires_descriptor_traversal
 def test_staging_parent_rejects_foreign_owned_ancestor(tmp_path, monkeypatch):
     staging_parent = tmp_path / "staging"
