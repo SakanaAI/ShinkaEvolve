@@ -222,12 +222,20 @@ def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(
         if cmd[0] in {"squeue", "sacct"}:
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
         if cmd[0] == "scancel":
-            assert cmd == ["scancel", "--name", submitted_job_name, "--quiet"]
+            assert cmd == [
+                "scancel",
+                "--name",
+                submitted_job_name,
+                "--user",
+                "1000",
+                "--quiet",
+            ]
             cancelled_by_name = True
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         raise AssertionError(cmd)
 
     monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+    monkeypatch.setattr("shinka.launch.slurm._get_current_user_id", lambda: "1000")
     monkeypatch.setattr("shinka.launch.slurm.time.sleep", lambda _seconds: None)
 
     with pytest.raises(AmbiguousSlurmSubmissionError) as exc_info:

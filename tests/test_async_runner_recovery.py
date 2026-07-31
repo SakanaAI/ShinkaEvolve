@@ -442,7 +442,7 @@ def test_restore_resume_progress_cancels_live_slurm_job_before_archive(tmp_path)
             "results_dir": str(interrupted_dir / "results"),
         }
         scheduler = _FakeScheduler(
-            cancelled_job_ids=["conda-0123456789abcdef0123456789abcdef"],
+            cancelled_job_ids=["123"],
             job_ids_by_name={
                 "conda-0123456789abcdef0123456789abcdef": ["123"]
             },
@@ -457,9 +457,7 @@ def test_restore_resume_progress_cancels_live_slurm_job_before_archive(tmp_path)
 
         await runner._restore_resume_progress()
 
-        assert scheduler.cancelled_job_ids == [
-            SlurmJobName("conda-0123456789abcdef0123456789abcdef")
-        ]
+        assert scheduler.cancelled_job_ids == ["123"]
         assert async_db.evaluation_ownership[2]["phase"] == "resolved"
         assert not interrupted_dir.exists()
         assert runner._resume_generation_queue == [2]
@@ -680,7 +678,7 @@ def test_resume_reconciles_later_jobs_before_raising_earlier_ambiguity(tmp_path)
             "results_dir": str(tmp_path / "gen_2" / "results"),
         }
         scheduler = _FakeScheduler(
-            cancelled_job_ids=[job_name],
+            cancelled_job_ids=["123"],
             job_ids_by_name={job_name: ["123"]},
         )
         scheduler.job_type = "slurm_conda"
@@ -693,7 +691,7 @@ def test_resume_reconciles_later_jobs_before_raising_earlier_ambiguity(tmp_path)
         with pytest.raises(RuntimeError, match="ownership is ambiguous"):
             await runner._reconcile_resume_evaluation_ownership()
 
-        assert scheduler.cancelled_job_ids == [SlurmJobName(job_name)]
+        assert scheduler.cancelled_job_ids == ["123"]
         assert async_db.evaluation_ownership[1]["phase"] == "submitting"
         assert async_db.evaluation_ownership[2]["phase"] == "resolved"
 

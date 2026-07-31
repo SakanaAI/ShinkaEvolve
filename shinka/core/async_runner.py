@@ -57,7 +57,6 @@ from shinka.launch import (
 from shinka.launch.slurm import (
     JobStatusUnavailableError,
     MAX_UNKNOWN_STATUS_POLLS,
-    SlurmJobName,
 )
 from shinka.edit.async_apply import (
     apply_patch_async,
@@ -5971,11 +5970,7 @@ class ShinkaEvolveRunner:
                     f"Evaluation ownership identity mismatch for generation "
                     f"{generation}"
                 )
-            cancel_target: Union[str, SlurmJobName]
-            if phase == "submitting":
-                cancel_target = active_job_ids[0]
-            else:
-                cancel_target = SlurmJobName(job_name)
+            cancel_target = active_job_ids[0]
             failed_cancellations = await self._cancel_job_ids([cancel_target])
             if failed_cancellations:
                 raise UnconfirmedJobCancellationError(failed_cancellations)

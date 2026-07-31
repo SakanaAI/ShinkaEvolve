@@ -400,9 +400,10 @@ def recover_submission_by_name(job_name: str) -> Optional[str]:
 
 def _cancel_ambiguous_submission(job_name: str) -> bool:
     """Cancel any accepted job by its unique submission name."""
+    user_id = _get_current_user_id()
     try:
         result = subprocess.run(
-            ["scancel", "--name", job_name, "--quiet"],
+            ["scancel", "--name", job_name, "--user", user_id, "--quiet"],
             capture_output=True,
             text=True,
             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
@@ -840,41 +841,47 @@ def get_job_status(job_id: str) -> Optional[str]:
 
 
 def get_job_status_by_name(job_name: str) -> Optional[str]:
-    """Return active jobs for a unique name, empty when absent, or None."""
-    try:
-        result = subprocess.run(
-            ["squeue", "--name", job_name, "--noheader"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
-        )
-        return result.stdout.strip()
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-    ):
+    """Return current-user active IDs for a name, empty when absent, or None."""
+    job_ids = get_job_ids_by_name(job_name)
+    if job_ids is None:
         return None
+    return "\n".join(job_ids)
 
 
 def get_job_ids_by_name(job_name: str) -> Optional[List[str]]:
-    """Return active allocation IDs for a unique name, or None on outage."""
+    """Return current-user allocation IDs for a unique name, or None on outage."""
+    user_id = _get_current_user_id()
     try:
         result = subprocess.run(
             [
                 "squeue",
                 "--name",
                 job_name,
+                "--user",
+                user_id,
                 "--noheader",
-                "--format=%A",
+                "--format=%A|%U",
             ],
             capture_output=True,
             text=True,
             check=True,
             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
         )
-        return sorted(set(result.stdout.split()))
+        job_ids = set()
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            fields = line.split("|")
+            if len(fields) != 2:
+                return None
+            job_id, reported_user_id = (field.strip() for field in fields)
+            if (
+                reported_user_id != user_id
+                or not _is_valid_slurm_allocation_id(job_id)
+            ):
+                return None
+            job_ids.add(job_id)
+        return sorted(job_ids)
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,

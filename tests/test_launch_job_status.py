@@ -588,9 +588,10 @@ def test_scheduler_finds_job_id_by_unique_submission_name(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         commands.append(cmd)
-        return SimpleNamespace(stdout="123\n123\n")
+        return SimpleNamespace(stdout="123|1000\n123|1000\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
 
     try:
         job_ids = asyncio.run(
@@ -607,10 +608,27 @@ def test_scheduler_finds_job_id_by_unique_submission_name(monkeypatch):
             "squeue",
             "--name",
             "conda-0123456789abcdef0123456789abcdef",
+            "--user",
+            "1000",
             "--noheader",
-            "--format=%A",
+            "--format=%A|%U",
         ]
     ]
+
+
+@pytest.mark.parametrize("stdout", ["malformed\n", "999|2000\n", "bad|1000\n"])
+def test_scheduler_treats_unexpected_named_job_output_as_unknown(
+    monkeypatch,
+    stdout,
+):
+    monkeypatch.setattr(
+        slurm.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=stdout),
+    )
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+
+    assert slurm.get_job_ids_by_name("conda-" + "a" * 32) is None
 
 
 def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
@@ -628,6 +646,10 @@ def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
         return SimpleNamespace(stdout="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "shinka.launch.scheduler._get_current_user_id", lambda: "1000"
+    )
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
     target = SlurmJobName("conda-unique")
 
     async def reconcile():
@@ -640,9 +662,25 @@ def test_scheduler_cancels_and_reconciles_ambiguous_job_name(monkeypatch):
         scheduler.shutdown()
 
     assert commands == [
-        ["scancel", "--name", "conda-unique", "--quiet"],
-        ["squeue", "--name", "conda-unique", "--noheader"],
-        ["squeue", "--name", "conda-unique", "--noheader"],
+        ["scancel", "--name", "conda-unique", "--user", "1000", "--quiet"],
+        [
+            "squeue",
+            "--name",
+            "conda-unique",
+            "--user",
+            "1000",
+            "--noheader",
+            "--format=%A|%U",
+        ],
+        [
+            "squeue",
+            "--name",
+            "conda-unique",
+            "--user",
+            "1000",
+            "--noheader",
+            "--format=%A|%U",
+        ],
     ]
 
 

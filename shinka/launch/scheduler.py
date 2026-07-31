@@ -17,6 +17,7 @@ from .local import (
 )
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
+    _get_current_user_id,
     SlurmJobName,
     create_slurm_job_name,
     get_job_ids_by_name,
@@ -524,7 +525,14 @@ class JobScheduler:
                         import subprocess
 
                         result = subprocess.run(
-                            ["scancel", "--name", job_id.value, "--quiet"],
+                            [
+                                "scancel",
+                                "--name",
+                                job_id.value,
+                                "--user",
+                                _get_current_user_id(),
+                                "--quiet",
+                            ],
                             capture_output=True,
                             text=True,
                             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
