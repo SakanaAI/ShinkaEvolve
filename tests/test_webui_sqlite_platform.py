@@ -124,7 +124,7 @@ def test_fallback_program_count_does_not_change_journal_mode(tmp_path, monkeypat
 
 
 @requires_descriptor_traversal
-def test_database_stats_reuses_connection_for_hardlinked_prompts(
+def test_database_stats_reads_path_specific_wal_for_hardlinked_prompts(
     tmp_path, monkeypatch
 ):
     database_path = tmp_path / "programs.sqlite"
@@ -142,8 +142,12 @@ def test_database_stats_reuses_connection_for_hardlinked_prompts(
             """
         )
         connection.execute("CREATE TABLE system_prompts (metadata TEXT)")
-        connection.execute("INSERT INTO system_prompts VALUES ('{}')")
     os.link(database_path, prompts_path)
+    prompt_writer = sqlite3.connect(prompts_path)
+    prompt_writer.execute("PRAGMA journal_mode = WAL")
+    prompt_writer.execute("PRAGMA wal_autocheckpoint = 0")
+    prompt_writer.execute("INSERT INTO system_prompts VALUES ('{}')")
+    prompt_writer.commit()
 
     handler = _handler(tmp_path)
     connect_database = handler._connect_database_within_root
@@ -163,11 +167,17 @@ def test_database_stats_reuses_connection_for_hardlinked_prompts(
     monkeypatch.setattr(handler, "_connect_database_within_root", count_connections)
     handler.send_json_response = capture_response
 
-    handler.handle_get_database_stats("programs.sqlite")
+    try:
+        handler.handle_get_database_stats("programs.sqlite")
 
-    assert response is not None
-    assert response["prompt_count"] == 1
-    assert connected_paths == [os.fspath(database_path)]
+        assert response is not None
+        assert response["prompt_count"] == 1
+        assert connected_paths == [
+            os.fspath(database_path),
+            os.fspath(prompts_path),
+        ]
+    finally:
+        prompt_writer.close()
 
 
 @requires_descriptor_traversal

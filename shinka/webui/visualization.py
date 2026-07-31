@@ -652,43 +652,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         with os.fdopen(descriptor, "rb") as file:
             return file.read()
 
-    def _same_file_within_root(
-        self,
-        first_path: os.PathLike[str] | str,
-        second_path: os.PathLike[str] | str,
-    ) -> bool:
-        if not self._supports_descriptor_traversal():
-            try:
-                return os.path.samefile(
-                    self._resolve_within_root(os.fspath(first_path)),
-                    self._resolve_within_root(os.fspath(second_path)),
-                )
-            except FileNotFoundError:
-                return False
-
-        first_descriptor = self._open_descriptor_within_root(
-            first_path,
-            os.O_RDONLY,
-        )
-        try:
-            second_descriptor = self._open_descriptor_within_root(
-                second_path,
-                os.O_RDONLY,
-            )
-            try:
-                first_stat = os.fstat(first_descriptor)
-                second_stat = os.fstat(second_descriptor)
-                return (
-                    first_stat.st_dev == second_stat.st_dev
-                    and first_stat.st_ino == second_stat.st_ino
-                )
-            finally:
-                os.close(second_descriptor)
-        except FileNotFoundError:
-            return False
-        finally:
-            os.close(first_descriptor)
-
     @classmethod
     def _copy_database_descriptor(
         cls,
@@ -2335,22 +2298,23 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "has_prompt_evo": False,
                 }
 
+                # Prompt WAL sidecars are pathname-specific. Release the main
+                # snapshot before opening the sibling prompt database, even when
+                # both names are hardlinks to the same main inode.
+                stack.close()
+                stack = contextlib.ExitStack()
+                conn = None
+
                 # Check for prompts.db in the same directory
                 if os.path.exists(prompts_db_path):
                     try:
-                        if self._same_file_within_root(
-                            abs_db_path,
-                            prompts_db_path,
-                        ):
-                            pconn = conn
-                        else:
-                            pconn = stack.enter_context(
-                                self._connect_database_within_root(
-                                    prompts_db_path,
-                                    timeout=2.0,
-                                    isolation_level=None,
-                                )
+                        pconn = stack.enter_context(
+                            self._connect_database_within_root(
+                                prompts_db_path,
+                                timeout=2.0,
+                                isolation_level=None,
                             )
+                        )
                         pconn.row_factory = sqlite3.Row
                         pcursor = pconn.cursor()
                         pcursor.execute("PRAGMA busy_timeout = 2000;")
