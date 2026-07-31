@@ -31,6 +31,9 @@ import rich.box
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
 from shinka.database.async_dbase import (
     AsyncProgramDatabase,
+    EVALUATION_DISPATCH_LEGACY_UNKNOWN,
+    EVALUATION_DISPATCH_PARENT_BOUND,
+    EVALUATION_DISPATCH_PREPARED,
     EvaluationOwnershipConflictError,
 )
 from shinka.database.prompt_dbase import (
@@ -57,6 +60,8 @@ from shinka.launch import (
 from shinka.launch.slurm import (
     JobStatusUnavailableError,
     MAX_UNKNOWN_STATUS_POLLS,
+    SlurmSubmissionRecovery,
+    SlurmSubmissionRecoveryState,
 )
 from shinka.edit.async_apply import (
     apply_patch_async,
@@ -5849,6 +5854,24 @@ class ShinkaEvolveRunner:
             raise RuntimeError(
                 f"Evaluation ownership scheduler mismatch for generation {generation}"
             )
+        dispatch_state = ownership.get(
+            "dispatch_state", EVALUATION_DISPATCH_LEGACY_UNKNOWN
+        )
+        if dispatch_state not in {
+            EVALUATION_DISPATCH_PREPARED,
+            EVALUATION_DISPATCH_LEGACY_UNKNOWN,
+            EVALUATION_DISPATCH_PARENT_BOUND,
+        }:
+            raise RuntimeError(
+                f"Evaluation ownership dispatch state is invalid for generation "
+                f"{generation}"
+            )
+        if (
+            ownership["phase"] == "submitting"
+            and dispatch_state == EVALUATION_DISPATCH_PREPARED
+        ):
+            await self._resolve_evaluation_ownership(generation)
+            return generation
         if job_type == "local":
             return await self._reconcile_local_evaluation_ownership(
                 ownership,
@@ -5941,16 +5964,42 @@ class ShinkaEvolveRunner:
             )
 
         if phase == "submitting":
-            recovered_job_id = await self.scheduler.recover_job_id_by_name_async(
+            recovery = await self.scheduler.recover_submission_by_name_async(
                 job_name
             )
-            if recovered_job_id is None:
-                raise JobStatusUnavailableError(
-                    f"Could not verify Slurm identity for generation {generation}"
+            if not isinstance(recovery, SlurmSubmissionRecovery):
+                raise RuntimeError(
+                    f"Evaluation ownership recovery mismatch for generation "
+                    f"{generation}"
                 )
-            if not SLURM_JOB_ID_PATTERN.fullmatch(recovered_job_id):
+            if recovery.state == SlurmSubmissionRecoveryState.UNAVAILABLE:
+                raise JobStatusUnavailableError(
+                    f"Could not query Slurm identity for generation {generation}"
+                )
+            if recovery.state == SlurmSubmissionRecoveryState.AMBIGUOUS:
                 raise RuntimeError(
                     f"Evaluation ownership identity mismatch for generation "
+                    f"{generation}"
+                )
+            if recovery.state == SlurmSubmissionRecoveryState.CONFIRMED_ABSENT:
+                raise JobStatusUnavailableError(
+                    f"Slurm dispatch may still settle for generation {generation}"
+                )
+            recovered_job_id = recovery.job_id
+            if (
+                not isinstance(recovered_job_id, str)
+                or not SLURM_JOB_ID_PATTERN.fullmatch(recovered_job_id)
+            ):
+                raise RuntimeError(
+                    f"Evaluation ownership identity mismatch for generation "
+                    f"{generation}"
+                )
+            if recovery.state == SlurmSubmissionRecoveryState.TERMINAL:
+                await self._resolve_evaluation_ownership(generation)
+                return generation
+            if recovery.state != SlurmSubmissionRecoveryState.ACTIVE:
+                raise RuntimeError(
+                    f"Evaluation ownership recovery mismatch for generation "
                     f"{generation}"
                 )
             active_job_ids = [recovered_job_id]
@@ -6185,11 +6234,18 @@ class ShinkaEvolveRunner:
                 results_dir,
             )
         else:
-            submission = self.scheduler.submit_prepared_async_nonblocking(
-                prepared_submission,
-                exec_fname,
-                results_dir,
-            )
+            async def dispatch_prepared_submission():
+                assert generation is not None
+                return await self.scheduler.submit_prepared_async_nonblocking(
+                    prepared_submission,
+                    exec_fname,
+                    results_dir,
+                    on_dispatch_start=lambda: (
+                        self.async_db.mark_evaluation_dispatch_started(generation)
+                    ),
+                )
+
+            submission = dispatch_prepared_submission()
         submission_task = asyncio.create_task(submission)
         self._pending_evaluation_submissions[submission_task] = (
             PendingEvaluationSubmission(

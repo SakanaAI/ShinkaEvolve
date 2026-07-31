@@ -25,7 +25,13 @@ from shinka.database import Program
 from shinka.database.async_dbase import EvaluationOwnershipConflictError
 from shinka.llm import AsyncLLMClient
 from shinka.launch import LocalProcessIdentity, ProcessWithLogging
-from shinka.launch.slurm import JobStatusUnavailableError, SlurmJobId, SlurmJobName
+from shinka.launch.slurm import (
+    AmbiguousSlurmSubmissionError,
+    JobStatusUnavailableError,
+    SlurmJobId,
+    SlurmJobName,
+    SlurmSubmissionRecovery,
+)
 from shinka.database.prompt_dbase import (
     SystemPromptConfig,
     SystemPromptDatabase,
@@ -65,7 +71,17 @@ class _FakeAsyncDB:
             "job_id": None,
             "job_name": job_name,
             "results_dir": results_dir,
+            "dispatch_state": 0,
+            "updated_at": time.time(),
         }
+
+    async def mark_evaluation_dispatch_started_async(self, generation):
+        self.mark_evaluation_dispatch_started(generation)
+
+    def mark_evaluation_dispatch_started(self, generation):
+        self.evaluation_ownership_events.append(("dispatch", generation))
+        self.evaluation_ownership[generation]["dispatch_state"] = 2
+        self.evaluation_ownership[generation]["updated_at"] = time.time()
 
     async def activate_evaluation_ownership_async(
         self, generation, job_id, job_name=None
@@ -141,7 +157,7 @@ class _FakeScheduler:
         terminal_job_ids=None,
         job_ids_by_name=None,
         local_identities_by_token=None,
-        recovered_job_ids_by_name=None,
+        recovered_submissions_by_name=None,
         prepared_job_name=None,
     ):
         self.cancelled_job_ids = []
@@ -155,7 +171,9 @@ class _FakeScheduler:
         }
         self._job_ids_by_name = dict(job_ids_by_name or {})
         self._local_identities_by_token = dict(local_identities_by_token or {})
-        self._recovered_job_ids_by_name = dict(recovered_job_ids_by_name or {})
+        self._recovered_submissions_by_name = dict(
+            recovered_submissions_by_name or {}
+        )
         self.prepared_job_name = prepared_job_name
         self.shutdown_called = False
 
@@ -180,8 +198,14 @@ class _FakeScheduler:
         return f"job-for-{exec_fname}"
 
     async def submit_prepared_async_nonblocking(
-        self, prepared_submission, exec_fname, results_dir
+        self,
+        prepared_submission,
+        exec_fname,
+        results_dir,
+        on_dispatch_start=None,
     ):
+        if on_dispatch_start is not None:
+            on_dispatch_start()
         job_id = await self.submit_async_nonblocking(exec_fname, results_dir)
         if isinstance(job_id, str):
             return SlurmJobId(job_id, prepared_submission.job_name)
@@ -194,8 +218,10 @@ class _FakeScheduler:
     async def get_job_ids_by_name_async(self, job_name):
         return self._job_ids_by_name.get(job_name, [])
 
-    async def recover_job_id_by_name_async(self, job_name):
-        return self._recovered_job_ids_by_name.get(job_name)
+    async def recover_submission_by_name_async(self, job_name):
+        return self._recovered_submissions_by_name.get(
+            job_name, SlurmSubmissionRecovery.unavailable()
+        )
 
     async def get_local_process_identities_by_token_async(self, token):
         return self._local_identities_by_token.get(token, [])
@@ -277,11 +303,17 @@ class _TrackedScheduler:
         return "job-123"
 
     async def submit_prepared_async_nonblocking(
-        self, prepared_submission, exec_fname, results_dir
+        self,
+        prepared_submission,
+        exec_fname,
+        results_dir,
+        on_dispatch_start=None,
     ):
         assert prepared_submission.job_name == (
             "conda-0123456789abcdef0123456789abcdef"
         )
+        if on_dispatch_start is not None:
+            on_dispatch_start()
         self.events.append(f"submit:{exec_fname}:{results_dir}")
         return SlurmJobId("123", prepared_submission.job_name)
 
@@ -303,6 +335,15 @@ def _build_runner(**overrides):
         runner.async_db.activate_evaluation_ownership_async = (
             activate_evaluation_ownership_async
         )
+    if not hasattr(runner.async_db, "mark_evaluation_dispatch_started_async"):
+        async def mark_evaluation_dispatch_started_async(*args, **kwargs):
+            return None
+
+        runner.async_db.mark_evaluation_dispatch_started_async = (
+            mark_evaluation_dispatch_started_async
+        )
+    if not hasattr(runner.async_db, "mark_evaluation_dispatch_started"):
+        runner.async_db.mark_evaluation_dispatch_started = lambda *_args: None
     if not hasattr(runner.async_db, "resolve_evaluation_ownership_async"):
         async def resolve_evaluation_ownership_async(*args, **kwargs):
             return None
@@ -514,7 +555,9 @@ def test_resume_recovers_named_slurm_submission_before_activation(tmp_path):
         }
         scheduler = _FakeScheduler(
             cancelled_job_ids=["123"],
-            recovered_job_ids_by_name={job_name: "123"},
+            recovered_submissions_by_name={
+                job_name: SlurmSubmissionRecovery.active("123")
+            },
         )
         scheduler.job_type = "slurm_conda"
         runner = _build_runner(
@@ -532,7 +575,7 @@ def test_resume_recovers_named_slurm_submission_before_activation(tmp_path):
     asyncio.run(_run())
 
 
-def test_resume_does_not_resolve_unconfirmed_named_slurm_submission(tmp_path):
+def test_resume_does_not_resolve_unavailable_named_slurm_submission(tmp_path):
     async def _run():
         job_name = "conda-0123456789abcdef0123456789abcdef"
         async_db = _FakeAsyncDB(total_programs=0)
@@ -544,7 +587,11 @@ def test_resume_does_not_resolve_unconfirmed_named_slurm_submission(tmp_path):
             "job_name": job_name,
             "results_dir": str(tmp_path / "gen_2" / "results"),
         }
-        scheduler = _FakeScheduler(recovered_job_ids_by_name={job_name: None})
+        scheduler = _FakeScheduler(
+            recovered_submissions_by_name={
+                job_name: SlurmSubmissionRecovery.unavailable()
+            }
+        )
         scheduler.job_type = "slurm_conda"
         runner = _build_runner(
             async_db=async_db,
@@ -553,6 +600,139 @@ def test_resume_does_not_resolve_unconfirmed_named_slurm_submission(tmp_path):
         )
 
         with pytest.raises(JobStatusUnavailableError):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert async_db.evaluation_ownership[2]["phase"] == "submitting"
+
+    asyncio.run(_run())
+
+
+def test_resume_resolves_terminal_named_slurm_submission(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+            "dispatch_state": 2,
+            "updated_at": time.time(),
+        }
+        scheduler = _FakeScheduler(
+            recovered_submissions_by_name={
+                job_name: SlurmSubmissionRecovery.terminal("123")
+            }
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [2]
+        assert scheduler.cancelled_job_ids == []
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_resume_resolves_pre_dispatch_slurm_ownership(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+            "dispatch_state": 0,
+            "updated_at": time.time(),
+        }
+        scheduler = _FakeScheduler()
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [2]
+        assert scheduler.cancelled_job_ids == []
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_resume_retains_dispatched_slurm_ownership_when_name_is_absent(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+            "dispatch_state": 2,
+            "updated_at": time.time(),
+        }
+        scheduler = _FakeScheduler(
+            recovered_submissions_by_name={
+                job_name: SlurmSubmissionRecovery.confirmed_absent()
+            }
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(JobStatusUnavailableError, match="may still settle"):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert async_db.evaluation_ownership[2]["phase"] == "submitting"
+
+    asyncio.run(_run())
+
+
+def test_resume_retains_legacy_dispatch_when_name_is_absent(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+            "updated_at": time.time() - 120,
+        }
+        scheduler = _FakeScheduler(
+            recovered_submissions_by_name={
+                job_name: SlurmSubmissionRecovery.confirmed_absent()
+            }
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(JobStatusUnavailableError, match="may still settle"):
             await runner._reconcile_resume_evaluation_ownership()
 
         assert async_db.evaluation_ownership[2]["phase"] == "submitting"
@@ -572,7 +752,11 @@ def test_resume_rejects_slurm_name_for_different_scheduler_type(tmp_path):
             "job_name": job_name,
             "results_dir": str(tmp_path / "gen_2" / "results"),
         }
-        scheduler = _FakeScheduler(recovered_job_ids_by_name={job_name: "123"})
+        scheduler = _FakeScheduler(
+            recovered_submissions_by_name={
+                job_name: SlurmSubmissionRecovery.active("123")
+            }
+        )
         scheduler.job_type = "slurm_conda"
         runner = _build_runner(
             async_db=async_db,
@@ -3080,6 +3264,10 @@ def test_submit_evaluation_job_persists_ownership_before_external_submit():
                     job_name,
                 )
 
+            def mark_evaluation_dispatch_started(self, generation):
+                events.append("ownership.dispatch")
+                super().mark_evaluation_dispatch_started(generation)
+
         scheduler = _TrackedScheduler(events)
         scheduler.job_type = "slurm_conda"
         runner = _build_runner(
@@ -3101,6 +3289,7 @@ def test_submit_evaluation_job_persists_ownership_before_external_submit():
             "eval.acquire",
             "submission.prepare",
             "ownership.begin:conda-0123456789abcdef0123456789abcdef",
+            "ownership.dispatch",
             "submit:program.py:results",
             "ownership.activate",
         ]
@@ -3109,6 +3298,91 @@ def test_submit_evaluation_job_persists_ownership_before_external_submit():
         assert ownership["job_name"] == (
             "conda-0123456789abcdef0123456789abcdef"
         )
+
+    asyncio.run(_run())
+
+
+def test_dispatch_stays_prepared_until_scheduler_worker_starts():
+    async def _run():
+        worker_entered = asyncio.Event()
+        allow_dispatch = asyncio.Event()
+        async_db = _FakeAsyncDB(total_programs=0)
+
+        class _DelayedScheduler(_FakeScheduler):
+            async def submit_prepared_async_nonblocking(
+                self,
+                prepared_submission,
+                exec_fname,
+                results_dir,
+                on_dispatch_start=None,
+            ):
+                worker_entered.set()
+                await allow_dispatch.wait()
+                assert async_db.evaluation_ownership[4]["dispatch_state"] == 0
+                assert on_dispatch_start is not None
+                on_dispatch_start()
+                return SlurmJobId("123", prepared_submission.job_name)
+
+        scheduler = _DelayedScheduler()
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(async_db=async_db, scheduler=scheduler)
+        submission = asyncio.create_task(
+            runner._submit_evaluation_job_with_ownership(
+                generation=4,
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+        )
+
+        await worker_entered.wait()
+        assert async_db.evaluation_ownership[4]["dispatch_state"] == 0
+        allow_dispatch.set()
+        await submission
+
+        assert async_db.evaluation_ownership[4]["dispatch_state"] == 2
+        assert async_db.evaluation_ownership[4]["phase"] == "active"
+
+    asyncio.run(_run())
+
+
+def test_post_dispatch_submission_error_retains_durable_ownership():
+    async def _run():
+        async_db = _FakeAsyncDB(total_programs=0)
+
+        class _RejectedScheduler(_FakeScheduler):
+            async def submit_prepared_async_nonblocking(
+                self,
+                prepared_submission,
+                exec_fname,
+                results_dir,
+                on_dispatch_start=None,
+            ):
+                assert on_dispatch_start is not None
+                on_dispatch_start()
+                raise AmbiguousSlurmSubmissionError(prepared_submission.job_name)
+
+        scheduler = _RejectedScheduler()
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(async_db=async_db, scheduler=scheduler)
+
+        with pytest.raises(AmbiguousSlurmSubmissionError):
+            await runner._submit_evaluation_job_with_ownership(
+                generation=4,
+                exec_fname="program.py",
+                results_dir="results",
+                sampling_worker_id=None,
+            )
+
+        ownership = async_db.evaluation_ownership[4]
+        assert ownership["phase"] == "submitting"
+        assert ownership["dispatch_state"] == 2
+        [(cancel_target, evaluation_worker_id)] = (
+            runner._unconfirmed_job_cancellations.values()
+        )
+        assert isinstance(cancel_target, SlurmJobName)
+        assert cancel_target.value == ownership["job_name"]
+        assert evaluation_worker_id == 0
 
     asyncio.run(_run())
 

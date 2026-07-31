@@ -42,6 +42,19 @@ class _FakeCompleted:
         self.stdout = stdout
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        slurm.SlurmSubmissionRecoveryState.CONFIRMED_ABSENT,
+        slurm.SlurmSubmissionRecoveryState.UNAVAILABLE,
+        slurm.SlurmSubmissionRecoveryState.AMBIGUOUS,
+    ],
+)
+def test_non_allocation_recovery_states_reject_job_ids(state):
+    with pytest.raises(ValueError, match="does not match its state"):
+        slurm.SlurmSubmissionRecovery(state, "junk")
+
+
 def test_local_process_identity_does_not_signal_token_mismatch():
     env = os.environ.copy()
     env["SHINKA_LOCAL_JOB_TOKEN"] = "actual-token"
@@ -257,7 +270,7 @@ def test_timed_out_submission_recovers_fast_completed_job_from_sacct(monkeypatch
         if cmd[0] == "squeue":
             return _FakeCompleted("")
         if cmd[0] == "sacct":
-            return _FakeCompleted(f"123|{job_name}|{user_id}\n")
+            return _FakeCompleted(f"123|{job_name}|{user_id}|COMPLETED\n")
         raise AssertionError(cmd)
 
     monkeypatch.setattr(slurm.subprocess, "run", fake_run)
@@ -289,24 +302,41 @@ def test_timed_out_submission_recovers_fast_completed_job_from_sacct(monkeypatch
             "--allocations",
             "--noheader",
             "--parsable2",
-            "--format=JobIDRaw,JobName%128,UID",
+            "--format=JobIDRaw,JobName%128,UID,State%64",
         ],
     ]
 
 
 @pytest.mark.parametrize(
-    "accounting_output",
+    ("accounting_output", "expected_state"),
     [
-        "123|different-name|1000\n",
-        "123|conda-0123456789abcdef0123456789abcdef|1000\n"
-        "456|conda-0123456789abcdef0123456789abcdef|1000\n",
-        "--user=other|conda-0123456789abcdef0123456789abcdef|1000\n",
-        "123|conda-0123456789abcdef0123456789abcdef|2000\n",
+        (
+            "123|different-name|1000|COMPLETED\n",
+            slurm.SlurmSubmissionRecoveryState.UNAVAILABLE,
+        ),
+        (
+            "123|conda-0123456789abcdef0123456789abcdef|1000|COMPLETED\n"
+            "456|conda-0123456789abcdef0123456789abcdef|1000|COMPLETED\n",
+            slurm.SlurmSubmissionRecoveryState.AMBIGUOUS,
+        ),
+        (
+            "--user=other|conda-0123456789abcdef0123456789abcdef|1000|RUNNING\n",
+            slurm.SlurmSubmissionRecoveryState.UNAVAILABLE,
+        ),
+        (
+            "123|conda-0123456789abcdef0123456789abcdef|2000|RUNNING\n",
+            slurm.SlurmSubmissionRecoveryState.UNAVAILABLE,
+        ),
+        (
+            "123|conda-0123456789abcdef0123456789abcdef|1000|FUTURE_STATE\n",
+            slurm.SlurmSubmissionRecoveryState.UNAVAILABLE,
+        ),
     ],
 )
 def test_timed_out_submission_rejects_ambiguous_accounting_rows(
     monkeypatch,
     accounting_output,
+    expected_state,
 ):
     monkeypatch.setattr(
         slurm.subprocess,
@@ -315,11 +345,11 @@ def test_timed_out_submission_rejects_ambiguous_accounting_rows(
     )
     monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
 
-    recovered = slurm._recover_submission_from_sacct(
+    recovery = slurm._recover_submission_from_sacct(
         "conda-0123456789abcdef0123456789abcdef"
     )
 
-    assert recovered is None
+    assert recovery.state == expected_state
 
 
 def test_sbatch_timeout_returns_completed_accounting_job(monkeypatch):
@@ -327,18 +357,137 @@ def test_sbatch_timeout_returns_completed_accounting_job(monkeypatch):
     user_id = "1000"
 
     def fake_run(cmd, **kwargs):
-        if cmd[0] == "sbatch":
+        if "sbatch" in cmd:
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
         if cmd[0] == "squeue":
             return _FakeCompleted("")
         if cmd[0] == "sacct":
-            return _FakeCompleted(f"321|{job_name}|{user_id}\n")
+            return _FakeCompleted(f"321|{job_name}|{user_id}|COMPLETED\n")
         raise AssertionError(cmd)
 
     monkeypatch.setattr(slurm.subprocess, "run", fake_run)
     monkeypatch.setattr(slurm, "_get_current_user_id", lambda: user_id)
 
     assert slurm._submit_sbatch("job.sbatch", job_name) == "321"
+
+
+def test_sbatch_marks_dispatch_immediately_before_parent_bound_launch(monkeypatch):
+    events = []
+
+    def fake_run(cmd, **_kwargs):
+        events.append(("run", cmd))
+        return _FakeCompleted("Submitted batch job 123\n")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+
+    job_id = slurm._submit_sbatch(
+        "job.sbatch",
+        "conda-0123456789abcdef0123456789abcdef",
+        on_dispatch_start=lambda: events.append(("dispatch", None)),
+    )
+
+    assert job_id == "123"
+    assert [event for event, _ in events] == ["dispatch", "run"]
+    assert events[1][1][1] == str(slurm.PARENT_DEATH_EXEC_PATH)
+
+
+def test_sbatch_nonzero_exit_remains_ambiguous_after_dispatch(monkeypatch):
+    original_error = subprocess.CalledProcessError(1, ["sbatch"])
+
+    def fail_submission(_cmd, **_kwargs):
+        raise original_error
+
+    def remain_ambiguous(job_name):
+        raise slurm.AmbiguousSlurmSubmissionError(job_name)
+
+    monkeypatch.setattr(slurm.subprocess, "run", fail_submission)
+    monkeypatch.setattr(slurm, "_reconcile_ambiguous_submission", remain_ambiguous)
+
+    with pytest.raises(slurm.AmbiguousSlurmSubmissionError) as exc_info:
+        slurm._submit_sbatch(
+            "job.sbatch",
+            "conda-0123456789abcdef0123456789abcdef",
+        )
+
+    assert exc_info.value.__cause__ is original_error
+
+
+@pytest.mark.parametrize(
+    "submission_error",
+    [
+        subprocess.TimeoutExpired(["sbatch"], 30),
+        subprocess.CalledProcessError(1, ["sbatch"]),
+    ],
+)
+def test_sbatch_reconciliation_error_remains_ambiguous(
+    monkeypatch,
+    submission_error,
+):
+    def fail_submission(_cmd, **_kwargs):
+        raise submission_error
+
+    def fail_reconciliation(_job_name):
+        raise PermissionError("scheduler unavailable")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fail_submission)
+    monkeypatch.setattr(
+        slurm, "_reconcile_ambiguous_submission", fail_reconciliation
+    )
+
+    with pytest.raises(slurm.AmbiguousSlurmSubmissionError) as exc_info:
+        slurm._submit_sbatch(
+            "job.sbatch",
+            "conda-0123456789abcdef0123456789abcdef",
+        )
+
+    assert isinstance(exc_info.value.cancel_target, SlurmJobName)
+
+
+def test_parent_death_exec_prevents_late_submission_side_effect(tmp_path):
+    child_pid_file = tmp_path / "submitter.pid"
+    late_side_effect = tmp_path / "late-submit"
+    child_code = (
+        "from pathlib import Path; import os, time; "
+        f"Path({str(child_pid_file)!r}).write_text(str(os.getpid())); "
+        "time.sleep(0.5); "
+        f"Path({str(late_side_effect)!r}).write_text('submitted')"
+    )
+    parent_code = (
+        "import os, subprocess, sys; "
+        "subprocess.run(["
+        "sys.executable, "
+        f"{str(slurm.PARENT_DEATH_EXEC_PATH)!r}, "
+        "str(os.getpid()), sys.executable, '-c', "
+        f"{child_code!r}"
+        "])"
+    )
+    parent = subprocess.Popen([sys.executable, "-c", parent_code])
+    child_pid = None
+    try:
+        deadline = time.time() + 5
+        while not child_pid_file.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        child_pid = int(child_pid_file.read_text())
+
+        os.kill(parent.pid, signal.SIGKILL)
+        parent.wait(timeout=5)
+        time.sleep(0.75)
+
+        assert not late_side_effect.exists()
+        try:
+            child = local.psutil.Process(child_pid)
+        except local.psutil.NoSuchProcess:
+            child = None
+        assert child is None or child.status() == local.psutil.STATUS_ZOMBIE
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=5)
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_timed_out_submission_waits_for_delayed_accounting(monkeypatch):
@@ -352,7 +501,7 @@ def test_timed_out_submission_waits_for_delayed_accounting(monkeypatch):
         accounting_polls += 1
         if accounting_polls < 5:
             return _FakeCompleted("")
-        return _FakeCompleted(f"456|{job_name}|1000\n")
+        return _FakeCompleted(f"456|{job_name}|1000|COMPLETED\n")
 
     monkeypatch.setattr(slurm.subprocess, "run", fake_run)
     monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
@@ -360,6 +509,81 @@ def test_timed_out_submission_waits_for_delayed_accounting(monkeypatch):
 
     assert slurm._recover_timed_out_submission(job_name) == "456"
     assert accounting_polls == 5
+
+
+def test_submission_recovery_confirms_absence_after_successful_empty_checks(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        slurm.subprocess, "run", lambda _cmd, **_kwargs: _FakeCompleted("")
+    )
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+
+    recovery = slurm.recover_submission_by_name(
+        "conda-0123456789abcdef0123456789abcdef"
+    )
+
+    assert (
+        recovery.state
+        == slurm.SlurmSubmissionRecoveryState.CONFIRMED_ABSENT
+    )
+    assert recovery.job_id is None
+
+
+def test_submission_recovery_reports_unavailable_after_query_failures(monkeypatch):
+    def fail_query(cmd, **_kwargs):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(slurm.subprocess, "run", fail_query)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+
+    recovery = slurm.recover_submission_by_name(
+        "conda-0123456789abcdef0123456789abcdef"
+    )
+
+    assert recovery.state == slurm.SlurmSubmissionRecoveryState.UNAVAILABLE
+    assert recovery.job_id is None
+
+
+def test_submission_recovery_uses_live_queue_allocation_without_accounting(
+    monkeypatch,
+):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "squeue":
+            return _FakeCompleted("123|1000\n")
+        pytest.fail("an active queue allocation is authoritative")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+
+    recovery = slurm.recover_submission_by_name(job_name)
+
+    assert recovery == slurm.SlurmSubmissionRecovery.active("123")
+
+
+def test_submission_recovery_requires_an_entire_clean_absence_window(monkeypatch):
+    calls = 0
+
+    def fake_run(cmd, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise subprocess.CalledProcessError(1, cmd)
+        return _FakeCompleted("")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+
+    recovery = slurm.recover_submission_by_name(
+        "conda-0123456789abcdef0123456789abcdef"
+    )
+
+    assert recovery.state == slurm.SlurmSubmissionRecoveryState.UNAVAILABLE
 
 
 def test_timed_out_submission_does_not_collapse_multiple_queue_ids(monkeypatch):

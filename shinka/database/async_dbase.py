@@ -17,6 +17,10 @@ from .dbase import Program, ProgramDatabase
 
 logger = logging.getLogger(__name__)
 
+EVALUATION_DISPATCH_PREPARED = 0
+EVALUATION_DISPATCH_LEGACY_UNKNOWN = 1
+EVALUATION_DISPATCH_PARENT_BOUND = 2
+
 
 class EvaluationOwnershipConflictError(RuntimeError):
     """Raised when another runner already owns a generation."""
@@ -1021,14 +1025,15 @@ class AsyncProgramDatabase:
                     """
                     INSERT INTO evaluation_ownership (
                         generation, phase, job_type, job_id, job_name,
-                        results_dir, updated_at
-                    ) VALUES (?, 'submitting', ?, NULL, ?, ?, ?)
+                        results_dir, dispatch_state, updated_at
+                    ) VALUES (?, 'submitting', ?, NULL, ?, ?, 0, ?)
                     ON CONFLICT(generation) DO UPDATE SET
                         phase = 'submitting',
                         job_type = excluded.job_type,
                         job_id = NULL,
                         job_name = excluded.job_name,
                         results_dir = excluded.results_dir,
+                        dispatch_state = 0,
                         updated_at = excluded.updated_at
                     WHERE evaluation_ownership.phase = 'resolved'
                     """,
@@ -1041,6 +1046,38 @@ class AsyncProgramDatabase:
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self.executor, begin_thread_safe)
+
+    def mark_evaluation_dispatch_started(self, generation: int) -> None:
+        """Durably record dispatch from the worker immediately before launch."""
+        db_path = self._require_db_path()
+        with sqlite3.connect(
+            db_path,
+            check_same_thread=False,
+            timeout=60.0,
+        ) as conn:
+            conn.execute("PRAGMA busy_timeout = 60000;")
+            cursor = conn.execute(
+                """
+                UPDATE evaluation_ownership
+                SET dispatch_state = 2, updated_at = ?
+                WHERE generation = ? AND phase = 'submitting'
+                      AND dispatch_state = 0
+                """,
+                (time.time(), generation),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"Generation {generation} has no prepared evaluation ownership"
+                )
+
+    async def mark_evaluation_dispatch_started_async(self, generation: int) -> None:
+        """Asynchronously mark dispatch for maintenance and tests."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self.executor,
+            self.mark_evaluation_dispatch_started,
+            generation,
+        )
 
     async def activate_evaluation_ownership_async(
         self,
@@ -1063,6 +1100,7 @@ class AsyncProgramDatabase:
                     UPDATE evaluation_ownership
                     SET phase = 'active', job_id = ?, job_name = ?, updated_at = ?
                     WHERE generation = ? AND phase = 'submitting'
+                          AND dispatch_state = 2
                     """,
                     (job_id, job_name, time.time(), generation),
                 )
@@ -1112,7 +1150,8 @@ class AsyncProgramDatabase:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     """
-                    SELECT generation, phase, job_type, job_id, job_name, results_dir
+                    SELECT generation, phase, job_type, job_id, job_name,
+                           results_dir, dispatch_state, updated_at
                     FROM evaluation_ownership
                     WHERE phase != 'resolved'
                     ORDER BY generation

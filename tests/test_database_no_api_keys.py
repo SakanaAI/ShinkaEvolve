@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import threading
 import time
@@ -104,6 +105,50 @@ def test_async_evaluation_ownership_persists_prepared_name(tmp_path):
             assert ownership[0]["job_name"] == (
                 "conda-0123456789abcdef0123456789abcdef"
             )
+            assert ownership[0]["dispatch_state"] == 0
+        finally:
+            await async_db.close_async()
+            sync_db.close()
+
+    asyncio.run(_run())
+
+
+def test_existing_evaluation_ownership_migrates_as_dispatched(tmp_path):
+    db_path = tmp_path / "legacy-ownership.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE evaluation_ownership (
+                generation INTEGER PRIMARY KEY,
+                phase TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                job_id TEXT,
+                job_name TEXT,
+                results_dir TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                CHECK (phase IN ('submitting', 'active', 'resolved'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO evaluation_ownership (
+                generation, phase, job_type, job_name, results_dir, updated_at
+            ) VALUES (4, 'submitting', 'slurm_conda', ?, 'results', 1.0)
+            """,
+            ("conda-0123456789abcdef0123456789abcdef",),
+        )
+
+    sync_db = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(db_path), num_islands=1),
+        embedding_model="",
+    )
+    async_db = AsyncProgramDatabase(sync_db=sync_db)
+
+    async def _run():
+        try:
+            ownership = await async_db.get_active_evaluation_ownership_async()
+            assert ownership[0]["dispatch_state"] == 1
         finally:
             await async_db.close_async()
             sync_db.close()
@@ -307,13 +352,17 @@ def test_async_db_tracks_evaluation_ownership(monkeypatch):
                     job_type="slurm_conda",
                     results_dir="/results/gen_3/results",
                 )
+                await async_db.mark_evaluation_dispatch_started_async(generation=3)
                 await async_db.activate_evaluation_ownership_async(
                     generation=3,
                     job_id="job-123",
                     job_name="conda-0123456789abcdef0123456789abcdef",
                 )
 
-                assert await async_db.get_active_evaluation_ownership_async() == [
+                ownership = await async_db.get_active_evaluation_ownership_async()
+                assert isinstance(ownership[0]["updated_at"], float)
+                ownership[0].pop("updated_at")
+                assert ownership == [
                     {
                         "generation": 3,
                         "phase": "active",
@@ -321,6 +370,7 @@ def test_async_db_tracks_evaluation_ownership(monkeypatch):
                         "job_id": "job-123",
                         "job_name": "conda-0123456789abcdef0123456789abcdef",
                         "results_dir": "/results/gen_3/results",
+                        "dispatch_state": 2,
                     }
                 ]
 

@@ -4,7 +4,7 @@ import asyncio
 import shlex
 import sys
 from dataclasses import dataclass, asdict, field
-from typing import Optional, Dict, Any, Tuple, Union, List
+from typing import Callable, Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from .local import monitor as monitor_local
 from .local import (
@@ -17,6 +17,9 @@ from .local import (
 )
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
+    AmbiguousSlurmSubmissionError,
+    SlurmSubmissionRecovery,
+    SlurmSubmissionRecoveryState,
     _get_current_user_id,
     SlurmJobName,
     create_slurm_job_name,
@@ -324,11 +327,14 @@ class JobScheduler:
         prepared_submission: PreparedSubmission,
         exec_fname_t: str,
         results_dir_t: str,
+        on_dispatch_start: Optional[Callable[[], None]] = None,
     ) -> Union[str, ProcessWithLogging]:
         """Launch a job using its already-persisted scheduler identity."""
         cmd = self._build_command(exec_fname_t, results_dir_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
+            if on_dispatch_start is not None:
+                on_dispatch_start()
             return submit_local_with_token(
                 results_dir_t,
                 cmd,
@@ -352,6 +358,7 @@ class JobScheduler:
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
                 job_name=prepared_submission.job_name,
+                on_dispatch_start=on_dispatch_start,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -369,6 +376,7 @@ class JobScheduler:
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
                 job_name=prepared_submission.job_name,
+                on_dispatch_start=on_dispatch_start,
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 
@@ -471,6 +479,7 @@ class JobScheduler:
         prepared_submission: PreparedSubmission,
         exec_fname_t: str,
         results_dir_t: str,
+        on_dispatch_start: Optional[Callable[[], None]] = None,
     ) -> Union[str, ProcessWithLogging]:
         """Submit an already-persisted external identity off the event loop."""
         loop = asyncio.get_running_loop()
@@ -480,6 +489,7 @@ class JobScheduler:
             prepared_submission,
             exec_fname_t,
             results_dir_t,
+            on_dispatch_start,
         )
 
     async def check_job_status_async(self, job) -> Optional[bool]:
@@ -616,16 +626,25 @@ class JobScheduler:
             job_name,
         )
 
-    async def recover_job_id_by_name_async(self, job_name: str) -> Optional[str]:
-        """Recover one preallocated Slurm submission after an interrupted launch."""
+    async def recover_submission_by_name_async(
+        self, job_name: str
+    ) -> SlurmSubmissionRecovery:
+        """Classify one preallocated submission after an interrupted launch."""
         if self.job_type not in ["slurm_docker", "slurm_conda"]:
-            return None
+            return SlurmSubmissionRecovery.unavailable()
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self.cancellation_executor,
             recover_submission_by_name,
             job_name,
         )
+
+    async def recover_job_id_by_name_async(self, job_name: str) -> Optional[str]:
+        """Compatibility adapter for callers that only consume allocation IDs."""
+        recovery = await self.recover_submission_by_name_async(job_name)
+        if recovery.state == SlurmSubmissionRecoveryState.AMBIGUOUS:
+            raise AmbiguousSlurmSubmissionError(job_name)
+        return recovery.job_id
 
     async def get_local_process_identities_by_token_async(
         self,

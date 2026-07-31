@@ -18,6 +18,12 @@ from shinka.launch.slurm import (
 )
 
 
+def _sbatch_script_path(command: list[str]) -> Path | None:
+    if len(command) >= 2 and command[-2] == "sbatch":
+        return Path(command[-1])
+    return None
+
+
 def test_slurm_env_config_rejects_conda_and_activate_script() -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         SlurmEnvJobConfig(conda_env="shinka", activate_script=".venv/bin/activate")
@@ -35,8 +41,8 @@ def test_submit_conda_sources_activate_script(
     captured: dict[str, object] = {}
 
     def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        assert cmd[0] == "sbatch"
-        script_path = Path(cmd[1])
+        script_path = _sbatch_script_path(cmd)
+        assert script_path is not None
         captured["script"] = script_path.read_text(encoding="utf-8")
         captured["job_name"] = next(
             line.split("=", 1)[1]
@@ -83,7 +89,9 @@ def test_submit_conda_reuses_preallocated_job_name(
     job_name = "conda-0123456789abcdef0123456789abcdef"
 
     def fake_run(cmd: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
-        script = Path(cmd[1]).read_text(encoding="utf-8")
+        script_path = _sbatch_script_path(cmd)
+        assert script_path is not None
+        script = script_path.read_text(encoding="utf-8")
         assert f"#SBATCH --job-name={job_name}" in script
         return subprocess.CompletedProcess(
             cmd,
@@ -117,8 +125,9 @@ def test_submit_conda_recovers_job_id_after_sbatch_timeout(
 
     def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         nonlocal submitted_job_name
-        if cmd[0] == "sbatch":
-            script = Path(cmd[1]).read_text(encoding="utf-8")
+        script_path = _sbatch_script_path(cmd)
+        if script_path is not None:
+            script = script_path.read_text(encoding="utf-8")
             job_name_line = next(
                 line for line in script.splitlines() if line.startswith("#SBATCH --job-name")
             )
@@ -165,8 +174,9 @@ def test_submit_conda_reconciles_invalid_sbatch_stdout(
 
     def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         nonlocal submitted_job_name
-        if cmd[0] == "sbatch":
-            script = Path(cmd[1]).read_text(encoding="utf-8")
+        script_path = _sbatch_script_path(cmd)
+        if script_path is not None:
+            script = script_path.read_text(encoding="utf-8")
             job_name_line = next(
                 line for line in script.splitlines() if line.startswith("#SBATCH --job-name")
             )
@@ -210,8 +220,9 @@ def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(
 
     def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         nonlocal cancelled_by_name, submitted_job_name
-        if cmd[0] == "sbatch":
-            script = Path(cmd[1]).read_text(encoding="utf-8")
+        script_path = _sbatch_script_path(cmd)
+        if script_path is not None:
+            script = script_path.read_text(encoding="utf-8")
             job_name_line = next(
                 line
                 for line in script.splitlines()

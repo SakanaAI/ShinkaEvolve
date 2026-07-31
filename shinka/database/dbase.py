@@ -511,11 +511,25 @@ class ProgramDatabase:
                 job_id TEXT,
                 job_name TEXT,
                 results_dir TEXT NOT NULL,
+                dispatch_state INTEGER NOT NULL DEFAULT 1,
                 updated_at REAL NOT NULL,
                 CHECK (phase IN ('submitting', 'active', 'resolved'))
             )
             """
         )
+        ownership_columns = {
+            row[1]
+            for row in self.cursor.execute(
+                "PRAGMA table_info(evaluation_ownership)"
+            ).fetchall()
+        }
+        if "dispatch_state" not in ownership_columns:
+            self.cursor.execute(
+                """
+                ALTER TABLE evaluation_ownership
+                ADD COLUMN dispatch_state INTEGER NOT NULL DEFAULT 1
+                """
+            )
         self.cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS attempt_log (
