@@ -20,7 +20,12 @@ import math
 import psutil
 import threading
 import tempfile
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - results roots are unsupported on Windows
+    fcntl = None
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
 from dataclasses import dataclass, field
@@ -120,6 +125,7 @@ POSIX_ACL_OTHER = 0x20
 POSIX_ACL_WRITE = 0x02
 POSIX_ACL_UNDEFINED_ID = 0xFFFFFFFF
 POSIX_ACL_XATTRS = ("system.posix_acl_access", "system.posix_acl_default")
+RESULTS_ROOT_LOCK_FILENAME = ".shinka-run.lock"
 
 
 def _monotonic_time() -> float:
@@ -319,6 +325,94 @@ def _prepare_results_root(results_root: Path, create: bool) -> bool:
     return _prepare_posix_results_root(results_root, create)
 
 
+class ResultsRootInUseError(RuntimeError):
+    """Raised when another runner owns the configured results directory."""
+
+
+@dataclass
+class ResultsRootLease:
+    path: Path
+    _fd: Optional[int]
+
+    def close(self) -> None:
+        if self._fd is None:
+            return
+        fd = self._fd
+        self._fd = None
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def __enter__(self) -> "ResultsRootLease":
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except OSError:
+            pass
+
+
+def _acquire_results_root_lease(results_root: Path) -> ResultsRootLease:
+    """Exclusively lock one trusted results root for a runner lifetime."""
+    if fcntl is None:
+        raise RuntimeError("Secure results-root locking is unsupported")
+    if not _prepare_results_root(results_root, create=False):
+        raise FileNotFoundError(results_root)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise RuntimeError("Secure results-root locking is unsupported")
+    root_fd = os.open(
+        os.path.abspath(results_root),
+        os.O_RDONLY | directory_flag | no_follow,
+    )
+    lock_fd: Optional[int] = None
+    lock_path = results_root / RESULTS_ROOT_LOCK_FILENAME
+    try:
+        _validate_results_root_stat(os.fstat(root_fd), root_fd)
+        lock_fd = os.open(
+            RESULTS_ROOT_LOCK_FILENAME,
+            os.O_RDWR
+            | os.O_CREAT
+            | no_follow
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=root_fd,
+        )
+        lock_stat = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_uid != os.geteuid()
+            or lock_stat.st_mode & 0o077
+            or lock_stat.st_nlink != 1
+        ):
+            raise PermissionError("Results-directory runner lock is untrusted")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+            raise ResultsRootInUseError(
+                f"Another runner is using results directory: {results_root}"
+            ) from error
+        os.ftruncate(lock_fd, 0)
+        os.write(lock_fd, f"pid={os.getpid()}\n".encode())
+        os.fsync(lock_fd)
+        lease = ResultsRootLease(lock_path, lock_fd)
+        lock_fd = None
+        return lease
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(root_fd)
+
+
 @dataclass(frozen=True)
 class InstalledSignalHandler:
     previous_process_handler: Any
@@ -514,9 +608,24 @@ def _validate_evo_config_model_env_access(evo_config: EvolutionConfig) -> None:
     )
 
 
+def _rollback_runner_initialization_on_error(initializer):
+    """Release run-owned resources when a constructor raises."""
+
+    @wraps(initializer)
+    def guarded_initialization(runner, *args, **kwargs):
+        try:
+            return initializer(runner, *args, **kwargs)
+        except BaseException:
+            runner._rollback_failed_initialization()
+            raise
+
+    return guarded_initialization
+
+
 class ShinkaEvolveRunner:
     """Fully async evolution runner with concurrent proposal generation."""
 
+    @_rollback_runner_initialization_on_error
     def __init__(
         self,
         evo_config: EvolutionConfig,
@@ -549,21 +658,31 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
+        self._results_root_lease: Optional[ResultsRootLease] = None
+        self._run_log_handler: Optional[logging.FileHandler] = None
+        self._run_started = False
         if evo_config.results_dir is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             results_dir = Path(f"results_{timestamp}")
         else:
             results_dir = Path(evo_config.results_dir)
         existing_results_root = _prepare_results_root(results_dir, create=False)
-
-        pricing_snapshot = (
-            load_run_pricing_snapshot(results_dir)
-            if evo_config.results_dir is not None and existing_results_root
-            else None
-        )
-        pricing_snapshot = pricing_snapshot or refresh_model_catalog()
-        _validate_evo_config_model_env_access(evo_config)
-        _prepare_results_root(results_dir, create=True)
+        if existing_results_root:
+            self._results_root_lease = _acquire_results_root_lease(results_dir)
+        try:
+            pricing_snapshot = (
+                load_run_pricing_snapshot(results_dir)
+                if evo_config.results_dir is not None and existing_results_root
+                else None
+            )
+            pricing_snapshot = pricing_snapshot or refresh_model_catalog()
+            _validate_evo_config_model_env_access(evo_config)
+            _prepare_results_root(results_dir, create=True)
+            if self._results_root_lease is None:
+                self._results_root_lease = _acquire_results_root_lease(results_dir)
+        except BaseException:
+            self._release_results_root_lease()
+            raise
 
         self.verbose = verbose
         self.results_dir = results_dir
@@ -581,6 +700,11 @@ class ShinkaEvolveRunner:
             # Configure logging with console output
             from rich.logging import RichHandler
 
+            self._run_log_handler = logging.FileHandler(
+                log_filename,
+                mode="a",
+                encoding="utf-8",
+            )
             logging.basicConfig(
                 level=logging.DEBUG if debug else logging.INFO,
                 format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -589,9 +713,7 @@ class ShinkaEvolveRunner:
                     RichHandler(
                         show_time=False, show_level=False, show_path=False
                     ),  # Console output (clean)
-                    logging.FileHandler(
-                        log_filename, mode="a", encoding="utf-8"
-                    ),  # File output (detailed)
+                    self._run_log_handler,
                 ],
                 force=True,  # Override any existing logging config
             )
@@ -896,6 +1018,45 @@ class ShinkaEvolveRunner:
         # Meta task logging state (to reduce verbosity)
         self._last_meta_log_state: dict | None = None
         self._last_meta_log_info_time: float | None = None
+
+    def _release_results_root_lease(self) -> None:
+        lease = getattr(self, "_results_root_lease", None)
+        if lease is None:
+            return
+        self._results_root_lease = None
+        lease.close()
+
+    def _close_run_log_handler(self) -> None:
+        handler = getattr(self, "_run_log_handler", None)
+        if handler is None:
+            return
+        self._run_log_handler = None
+        logging.getLogger().removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    def _rollback_failed_initialization(self) -> None:
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is not None:
+            try:
+                scheduler.shutdown()
+            except Exception:
+                pass
+        try:
+            self._close_run_log_handler()
+        finally:
+            self._release_results_root_lease()
+
+    def __del__(self) -> None:
+        try:
+            try:
+                self._close_run_log_handler()
+            finally:
+                self._release_results_root_lease()
+        except (OSError, ValueError):
+            pass
 
     def _save_bandit_state(self) -> None:
         """Save the LLM selection bandit state to disk."""
@@ -1607,6 +1768,21 @@ class ShinkaEvolveRunner:
                         )
 
     async def run_async(self):
+        """Run while exclusively owning the configured results directory."""
+        if self._results_root_lease is None:
+            raise RuntimeError("Runner already completed or failed")
+        if self._run_started:
+            raise RuntimeError("Runner already started")
+        self._run_started = True
+        try:
+            await self._run_async_main()
+        finally:
+            try:
+                self._close_run_log_handler()
+            finally:
+                self._release_results_root_lease()
+
+    async def _run_async_main(self):
         """Main async evolution loop."""
         self._run_task = asyncio.current_task()
         activate_model_catalog(self.pricing_snapshot)

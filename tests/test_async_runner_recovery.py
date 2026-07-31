@@ -320,6 +320,11 @@ class _TrackedScheduler:
 
 def _build_runner(**overrides):
     runner = object.__new__(ShinkaEvolveRunner)
+    runner._results_root_lease = overrides.get(
+        "_results_root_lease", SimpleNamespace(close=lambda: None)
+    )
+    runner._run_log_handler = overrides.get("_run_log_handler")
+    runner._run_started = overrides.get("_run_started", False)
     runner.async_db = overrides.get("async_db", _FakeAsyncDB(0))
     if not hasattr(runner.async_db, "begin_evaluation_ownership_async"):
         async def begin_evaluation_ownership_async(*args, **kwargs):

@@ -431,6 +431,10 @@ def test_run_async_surfaces_ambiguous_background_submission_after_cleanup(
         runner._cancel_completed_job_batches = AsyncMock()
         runner._cancel_background_side_effect_worker = AsyncMock()
         runner._cleanup_async = AsyncMock()
+        lease_closes = []
+        runner._results_root_lease = SimpleNamespace(
+            close=lambda: lease_closes.append(True)
+        )
 
         async def monitor():
             await asyncio.Event().wait()
@@ -451,6 +455,114 @@ def test_run_async_surfaces_ambiguous_background_submission_after_cleanup(
 
         assert exc_info.value is error
         runner._cleanup_async.assert_awaited_once()
+        assert lease_closes == [True]
+        assert runner._results_root_lease is None
+
+    asyncio.run(_run())
+
+
+def test_run_async_holds_results_lease_through_final_summary(tmp_path, monkeypatch):
+    async def _run():
+        results_root = tmp_path / "results"
+        results_root.mkdir(mode=0o700)
+        lease = async_runner_module._acquire_results_root_lease(results_root)
+        finalization_complete = asyncio.Event()
+        finalization_complete.set()
+        runner = _build_runner(
+            finalization_complete=finalization_complete,
+            should_stop=asyncio.Event(),
+            slot_available=asyncio.Event(),
+            results_dir=str(results_root),
+            prompt_db=None,
+        )
+        runner._results_root_lease = lease
+        runner.pricing_snapshot = None
+        runner.embedding_client = None
+        runner.meta_summarizer = None
+        runner._setup_async = AsyncMock()
+        runner._verify_database_ready = AsyncMock()
+        runner._wait_for_completed_job_batches = AsyncMock()
+        runner._has_background_side_effect_work = lambda: False
+        runner._shutdown_background_side_effect_worker = AsyncMock()
+        runner._cancel_completed_job_batches = AsyncMock()
+        runner._cancel_background_side_effect_worker = AsyncMock()
+        runner._cleanup_async = AsyncMock()
+        runner._save_bandit_state = lambda: None
+
+        async def idle_task():
+            await asyncio.Event().wait()
+
+        async def assert_lease_held():
+            assert runner._results_root_lease is lease
+            with pytest.raises(async_runner_module.ResultsRootInUseError):
+                async_runner_module._acquire_results_root_lease(results_root)
+
+        runner._job_monitor_task = idle_task
+        runner._proposal_coordinator_task = idle_task
+        runner._print_final_summary = assert_lease_held
+        monkeypatch.setattr(
+            async_runner_module,
+            "activate_model_catalog",
+            lambda _snapshot: None,
+        )
+
+        await runner.run_async()
+
+        assert runner._results_root_lease is None
+        with async_runner_module._acquire_results_root_lease(results_root):
+            pass
+        with pytest.raises(RuntimeError, match="already completed"):
+            await runner.run_async()
+
+    asyncio.run(_run())
+
+
+def test_run_async_rejects_concurrent_call_before_first_await_completes():
+    async def _run():
+        runner = _build_runner()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        main_calls = 0
+
+        async def controlled_main():
+            nonlocal main_calls
+            main_calls += 1
+            if main_calls == 1:
+                first_started.set()
+                await release_first.wait()
+
+        runner._run_async_main = controlled_main
+        first_run = asyncio.create_task(runner.run_async())
+        await first_started.wait()
+        try:
+            with pytest.raises(RuntimeError, match="already started"):
+                await runner.run_async()
+        finally:
+            release_first.set()
+            await first_run
+
+        assert main_calls == 1
+
+    asyncio.run(_run())
+
+
+def test_run_async_releases_lease_when_log_handler_close_fails(tmp_path):
+    async def _run():
+        results_root = tmp_path / "results"
+        results_root.mkdir(mode=0o700)
+        runner = _build_runner()
+        runner._results_root_lease = (
+            async_runner_module._acquire_results_root_lease(results_root)
+        )
+        runner._run_async_main = AsyncMock()
+        runner._run_log_handler = SimpleNamespace(
+            close=lambda: (_ for _ in ()).throw(OSError("close failed"))
+        )
+
+        await runner.run_async()
+
+        with async_runner_module._acquire_results_root_lease(results_root):
+            pass
 
     asyncio.run(_run())
 

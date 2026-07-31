@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
+import logging
 import os
 import struct
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -151,6 +154,141 @@ def test_runner_rejects_untrusted_results_root_before_catalog_io(
 
     assert catalog_io_started is False
     assert list(results_root.iterdir()) == []
+
+
+def test_runner_rejects_concurrent_results_root_before_catalog_io(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "results"
+    results_root.mkdir(mode=0o700)
+    catalog_io_started = False
+    lease = async_runner._acquire_results_root_lease(results_root)
+
+    def reject_catalog_io(*_args, **_kwargs):
+        nonlocal catalog_io_started
+        catalog_io_started = True
+        raise AssertionError("catalog I/O must follow runner lease acquisition")
+
+    monkeypatch.setattr(async_runner, "load_run_pricing_snapshot", reject_catalog_io)
+    try:
+        with pytest.raises(async_runner.ResultsRootInUseError):
+            ShinkaEvolveRunner(
+                evo_config=EvolutionConfig(
+                    llm_models=["gpt-5-mini"],
+                    llm_dynamic_selection=None,
+                    meta_rec_interval=None,
+                    embedding_model=None,
+                    num_generations=1,
+                    results_dir=str(results_root),
+                ),
+                job_config=LocalJobConfig(),
+                db_config=DatabaseConfig(),
+                verbose=False,
+            )
+    finally:
+        lease.close()
+
+    assert catalog_io_started is False
+
+
+def test_results_root_lease_releases_without_unlinking_lock_file(tmp_path: Path):
+    results_root = tmp_path / "results"
+    results_root.mkdir(mode=0o700)
+    lease = async_runner._acquire_results_root_lease(results_root)
+
+    with pytest.raises(async_runner.ResultsRootInUseError):
+        async_runner._acquire_results_root_lease(results_root)
+
+    lease.close()
+    with async_runner._acquire_results_root_lease(results_root):
+        pass
+
+    assert (results_root / async_runner.RESULTS_ROOT_LOCK_FILENAME).is_file()
+
+
+def test_late_runner_initialization_failure_releases_lease_and_log_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "results"
+    monkeypatch.setattr(
+        async_runner,
+        "_validate_evo_config_model_env_access",
+        lambda _config: None,
+    )
+    monkeypatch.setattr(
+        async_runner, "AsyncLLMClient", lambda **_kwargs: SimpleNamespace()
+    )
+    scheduler_shutdowns = []
+    monkeypatch.setattr(
+        async_runner,
+        "JobScheduler",
+        lambda **_kwargs: SimpleNamespace(
+            shutdown=lambda: scheduler_shutdowns.append(True)
+        ),
+    )
+    monkeypatch.setattr(
+        async_runner, "PromptSampler", lambda **_kwargs: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        async_runner, "MetaSummarizer", lambda **_kwargs: SimpleNamespace()
+    )
+
+    class CyclicMetaSummarizer:
+        def __init__(self, _summarizer, _llm, cost_accountant):
+            self.cost_accountant = cost_accountant
+
+    monkeypatch.setattr(async_runner, "AsyncMetaSummarizer", CyclicMetaSummarizer)
+    monkeypatch.setattr(
+        async_runner,
+        "get_language_extension",
+        lambda _language: (_ for _ in ()).throw(ValueError("late init failure")),
+    )
+    caught_error = None
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        with pytest.raises(ValueError, match="late init failure") as caught:
+            ShinkaEvolveRunner(
+                evo_config=EvolutionConfig(
+                    llm_models=["gpt-5-mini"],
+                    llm_dynamic_selection=None,
+                    meta_rec_interval=1,
+                    meta_llm_models=["gpt-5-mini"],
+                    embedding_model=None,
+                    num_generations=1,
+                    results_dir=str(results_root),
+                ),
+                job_config=LocalJobConfig(),
+                db_config=DatabaseConfig(),
+                verbose=True,
+            )
+        caught_error = caught.value
+
+        with async_runner._acquire_results_root_lease(results_root):
+            pass
+        log_path = (results_root / "evolution_run.log").resolve()
+        assert all(
+            Path(handler.baseFilename).resolve() != log_path
+            for handler in logging.getLogger().handlers
+            if isinstance(handler, logging.FileHandler)
+        )
+        assert scheduler_shutdowns == [True]
+    finally:
+        if caught_error is not None:
+            caught_error.__traceback__ = None
+        if gc_was_enabled:
+            gc.enable()
+        gc.collect()
+        for handler in list(logging.getLogger().handlers):
+            if (
+                isinstance(handler, logging.FileHandler)
+                and Path(handler.baseFilename).resolve()
+                == (results_root / "evolution_run.log").resolve()
+            ):
+                logging.getLogger().removeHandler(handler)
+                handler.close()
 
 
 def test_runner_rejects_named_untrusted_acl_writer_before_catalog_io(
