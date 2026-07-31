@@ -759,7 +759,7 @@ def test_cancelled_ownership_write_resolves_without_submitting():
 
         class _BlockingOwnershipDB(_FakeAsyncDB):
             async def begin_evaluation_ownership_async(
-                self, generation, job_type, results_dir
+                self, generation, job_type, results_dir, job_name=None
             ):
                 ownership_started.set()
                 await allow_ownership.wait()
@@ -767,6 +767,7 @@ def test_cancelled_ownership_write_resolves_without_submitting():
                     generation,
                     job_type,
                     results_dir,
+                    job_name,
                 )
 
         async_db = _BlockingOwnershipDB(total_programs=0)

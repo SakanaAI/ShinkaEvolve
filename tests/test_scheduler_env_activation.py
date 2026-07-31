@@ -76,6 +76,39 @@ def test_submit_conda_sources_activate_script(
     assert captured["timeout"] == SLURM_COMMAND_TIMEOUT_SECONDS
 
 
+def test_submit_conda_reuses_preallocated_job_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+
+    def fake_run(cmd: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        script = Path(cmd[1]).read_text(encoding="utf-8")
+        assert f"#SBATCH --job-name={job_name}" in script
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="Submitted batch job 123\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+
+    job_id = submit_conda(
+        log_dir=str(tmp_path / "logs"),
+        cmd=["python", "evaluate.py"],
+        time="00:10:00",
+        partition="gpu",
+        cpus=1,
+        gpus=0,
+        mem="8G",
+        activate_script=".venv/bin/activate",
+        job_name=job_name,
+    )
+
+    assert job_id.job_name == job_name
+
+
 def test_submit_conda_recovers_job_id_after_sbatch_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

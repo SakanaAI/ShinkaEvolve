@@ -52,6 +52,7 @@ SLURM_ALLOCATION_ID_PATTERN = re.compile(r"[0-9]+")
 SLURM_JOB_ID_PATTERN = re.compile(
     r"[0-9]+(?:_[0-9]+|\+[0-9]+)?(?:\.(?:batch|extern|[0-9]+))?"
 )
+SLURM_JOB_NAME_PATTERN = re.compile(r"(?:conda|docker)-[0-9a-f]{32}")
 
 
 class JobStatusUnavailableError(RuntimeError):
@@ -99,6 +100,23 @@ def is_valid_slurm_job_id(job_id: str) -> bool:
 
 def _is_valid_slurm_allocation_id(job_id: str) -> bool:
     return SLURM_ALLOCATION_ID_PATTERN.fullmatch(job_id) is not None
+
+
+def create_slurm_job_name(job_kind: str) -> str:
+    """Create a scheduler identity that can be persisted before submission."""
+    if job_kind not in {"conda", "docker"}:
+        raise ValueError(f"Unsupported Slurm job kind: {job_kind}")
+    return f"{job_kind}-{uuid.uuid4().hex}"
+
+
+def _resolve_slurm_job_name(job_kind: str, job_name: Optional[str]) -> str:
+    resolved_name = job_name or create_slurm_job_name(job_kind)
+    if (
+        SLURM_JOB_NAME_PATTERN.fullmatch(resolved_name) is None
+        or not resolved_name.startswith(f"{job_kind}-")
+    ):
+        raise ValueError(f"Invalid {job_kind} Slurm job name")
+    return resolved_name
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -373,6 +391,13 @@ def _recover_timed_out_submission(job_name: str) -> Optional[str]:
     return None
 
 
+def recover_submission_by_name(job_name: str) -> Optional[str]:
+    """Recover a uniquely named submission with bounded queue/accounting checks."""
+    if SLURM_JOB_NAME_PATTERN.fullmatch(job_name) is None:
+        raise ValueError("Invalid Slurm job name")
+    return _recover_timed_out_submission(job_name)
+
+
 def _cancel_ambiguous_submission(job_name: str) -> bool:
     """Cancel any accepted job by its unique submission name."""
     try:
@@ -441,6 +466,7 @@ def submit_docker(
     verbose: bool = False,
     eval_env: Optional[Dict[str, str]] = None,
     local: bool = False,
+    job_name: Optional[str] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -459,7 +485,7 @@ def submit_docker(
             eval_env=eval_env,
             **sbatch_kwargs,
         )
-    job_name = f"docker-{uuid.uuid4().hex}"
+    job_name = _resolve_slurm_job_name("docker", job_name)
     log_dir = os.path.abspath(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
@@ -538,6 +564,7 @@ def submit_conda(
     verbose: bool = False,
     eval_env: Optional[Dict[str, str]] = None,
     local: bool = False,
+    job_name: Optional[str] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -556,7 +583,7 @@ def submit_conda(
             eval_env=eval_env,
             **sbatch_kwargs,
         )
-    job_name = f"conda-{uuid.uuid4().hex}"
+    job_name = _resolve_slurm_job_name("conda", job_name)
     log_dir = os.path.abspath(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 

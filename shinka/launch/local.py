@@ -26,6 +26,54 @@ def _process_group_exists(pid: int) -> bool:
         return True
 
 
+def create_local_process_token() -> str:
+    """Create the durable token persisted before a local job launch."""
+    return uuid.uuid4().hex
+
+
+def find_local_process_identities(
+    token: str,
+) -> list["LocalProcessIdentity"]:
+    """Find live process groups carrying one preallocated local-job token."""
+    if LOCAL_PROCESS_TOKEN_PATTERN.fullmatch(token) is None:
+        raise ValueError("Invalid local process token")
+    if not hasattr(os, "getpgid"):
+        raise RuntimeError("Local process recovery requires process groups")
+
+    process_group_ids = set()
+    current_user_id = os.geteuid()
+    same_user_inspection_blocked = False
+    for process in psutil.process_iter(["pid"]):
+        try:
+            if process.uids().effective != current_user_id:
+                continue
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+        except (psutil.AccessDenied, PermissionError, OSError) as error:
+            raise RuntimeError(
+                "Could not inspect process owners during local recovery"
+            ) from error
+
+        try:
+            if process.environ().get(LOCAL_PROCESS_TOKEN_ENV) != token:
+                continue
+            process_group_ids.add(os.getpgid(process.pid))
+        except (psutil.NoSuchProcess, psutil.ZombieProcess, ProcessLookupError):
+            continue
+        except (psutil.AccessDenied, PermissionError, OSError):
+            same_user_inspection_blocked = True
+
+    if same_user_inspection_blocked:
+        raise RuntimeError(
+            "Could not inspect same-user processes during local recovery"
+        )
+
+    return [
+        LocalProcessIdentity(pid=process_group_id, token=token)
+        for process_group_id in sorted(process_group_ids)
+    ]
+
+
 @dataclass(frozen=True)
 class LocalProcessIdentity:
     """Durable identity for one local evaluation process group."""
@@ -249,6 +297,23 @@ def submit(
     verbose: bool = False,
     env_overrides: Optional[Dict[str, str]] = None,
 ):
+    """Submit a local command with a newly allocated durable token."""
+    return submit_with_token(
+        log_dir,
+        cmd,
+        create_local_process_token(),
+        verbose=verbose,
+        env_overrides=env_overrides,
+    )
+
+
+def submit_with_token(
+    log_dir: str,
+    cmd: list[str],
+    local_job_token: str,
+    verbose: bool = False,
+    env_overrides: Optional[Dict[str, str]] = None,
+):
     """
     Submits a command for local execution with real-time logging.
 
@@ -272,7 +337,8 @@ def submit(
     env["PYTHONIOENCODING"] = "utf-8"  # Ensure proper encoding
     if env_overrides:
         env.update(env_overrides)
-    local_job_token = uuid.uuid4().hex
+    if LOCAL_PROCESS_TOKEN_PATTERN.fullmatch(local_job_token) is None:
+        raise ValueError("Invalid local process token")
     env[LOCAL_PROCESS_TOKEN_ENV] = local_job_token
 
     stdout_file = None

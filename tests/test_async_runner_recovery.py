@@ -25,7 +25,7 @@ from shinka.database import Program
 from shinka.database.async_dbase import EvaluationOwnershipConflictError
 from shinka.llm import AsyncLLMClient
 from shinka.launch import LocalProcessIdentity, ProcessWithLogging
-from shinka.launch.slurm import SlurmJobName
+from shinka.launch.slurm import JobStatusUnavailableError, SlurmJobId, SlurmJobName
 from shinka.database.prompt_dbase import (
     SystemPromptConfig,
     SystemPromptDatabase,
@@ -50,7 +50,7 @@ class _FakeAsyncDB:
         self.closed = True
 
     async def begin_evaluation_ownership_async(
-        self, generation, job_type, results_dir
+        self, generation, job_type, results_dir, job_name=None
     ):
         existing = self.evaluation_ownership.get(generation)
         if existing is not None and existing["phase"] != "resolved":
@@ -63,7 +63,7 @@ class _FakeAsyncDB:
             "phase": "submitting",
             "job_type": job_type,
             "job_id": None,
-            "job_name": None,
+            "job_name": job_name,
             "results_dir": results_dir,
         }
 
@@ -140,6 +140,9 @@ class _FakeScheduler:
         cancelled_job_ids=None,
         terminal_job_ids=None,
         job_ids_by_name=None,
+        local_identities_by_token=None,
+        recovered_job_ids_by_name=None,
+        prepared_job_name=None,
     ):
         self.cancelled_job_ids = []
         self._cancelled_job_ids = {
@@ -151,7 +154,20 @@ class _FakeScheduler:
             for job_id in (terminal_job_ids or [])
         }
         self._job_ids_by_name = dict(job_ids_by_name or {})
+        self._local_identities_by_token = dict(local_identities_by_token or {})
+        self._recovered_job_ids_by_name = dict(recovered_job_ids_by_name or {})
+        self.prepared_job_name = prepared_job_name
         self.shutdown_called = False
+
+    def prepare_submission(self):
+        job_name = self.prepared_job_name
+        if job_name is None and getattr(self, "job_type", None) == "slurm_conda":
+            job_name = "conda-" + "a" * 32
+        elif job_name is None and getattr(self, "job_type", None) == "slurm_docker":
+            job_name = "docker-" + "a" * 32
+        elif job_name is None:
+            job_name = "a" * 32
+        return SimpleNamespace(job_name=job_name)
 
     async def cancel_job_async(self, job_id):
         if self.shutdown_called:
@@ -163,12 +179,26 @@ class _FakeScheduler:
     async def submit_async_nonblocking(self, exec_fname, results_dir):
         return f"job-for-{exec_fname}"
 
+    async def submit_prepared_async_nonblocking(
+        self, prepared_submission, exec_fname, results_dir
+    ):
+        job_id = await self.submit_async_nonblocking(exec_fname, results_dir)
+        if isinstance(job_id, str):
+            return SlurmJobId(job_id, prepared_submission.job_name)
+        return job_id
+
     async def is_job_terminal_async(self, job_id):
         job_key = job_id.value if isinstance(job_id, SlurmJobName) else job_id
         return job_key in self._terminal_job_ids
 
     async def get_job_ids_by_name_async(self, job_name):
         return self._job_ids_by_name.get(job_name, [])
+
+    async def recover_job_id_by_name_async(self, job_name):
+        return self._recovered_job_ids_by_name.get(job_name)
+
+    async def get_local_process_identities_by_token_async(self, token):
+        return self._local_identities_by_token.get(token, [])
 
     def shutdown(self):
         self.shutdown_called = True
@@ -238,9 +268,22 @@ class _TrackedScheduler:
     def __init__(self, events):
         self.events = events
 
+    def prepare_submission(self):
+        self.events.append("submission.prepare")
+        return SimpleNamespace(job_name="conda-0123456789abcdef0123456789abcdef")
+
     async def submit_async_nonblocking(self, exec_fname, results_dir):
         self.events.append(f"submit:{exec_fname}:{results_dir}")
         return "job-123"
+
+    async def submit_prepared_async_nonblocking(
+        self, prepared_submission, exec_fname, results_dir
+    ):
+        assert prepared_submission.job_name == (
+            "conda-0123456789abcdef0123456789abcdef"
+        )
+        self.events.append(f"submit:{exec_fname}:{results_dir}")
+        return SlurmJobId("123", prepared_submission.job_name)
 
 
 def _build_runner(**overrides):
@@ -455,6 +498,163 @@ def test_restore_resume_progress_refuses_ambiguous_submission(tmp_path):
 
         assert interrupted_dir.exists()
         assert runner._resume_generation_queue == []
+
+    asyncio.run(_run())
+
+
+def test_resume_recovers_named_slurm_submission_before_activation(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(
+            cancelled_job_ids=["123"],
+            recovered_job_ids_by_name={job_name: "123"},
+        )
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [2]
+        assert scheduler.cancelled_job_ids == ["123"]
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_resume_does_not_resolve_unconfirmed_named_slurm_submission(tmp_path):
+    async def _run():
+        job_name = "conda-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(recovered_job_ids_by_name={job_name: None})
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(JobStatusUnavailableError):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert async_db.evaluation_ownership[2]["phase"] == "submitting"
+
+    asyncio.run(_run())
+
+
+def test_resume_rejects_slurm_name_for_different_scheduler_type(tmp_path):
+    async def _run():
+        job_name = "docker-0123456789abcdef0123456789abcdef"
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "slurm_conda",
+            "job_id": None,
+            "job_name": job_name,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(recovered_job_ids_by_name={job_name: "123"})
+        scheduler.job_type = "slurm_conda"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        with pytest.raises(RuntimeError, match="ownership is ambiguous"):
+            await runner._reconcile_resume_evaluation_ownership()
+
+        assert scheduler.cancelled_job_ids == []
+
+    asyncio.run(_run())
+
+
+def test_resume_recovers_tokenized_local_submission_before_activation(tmp_path):
+    async def _run():
+        token = "a" * 32
+        identity = LocalProcessIdentity(pid=4321, token=token)
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "local",
+            "job_id": None,
+            "job_name": token,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(
+            cancelled_job_ids=[identity],
+            local_identities_by_token={token: [identity]},
+        )
+        scheduler.job_type = "local"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [2]
+        assert scheduler.cancelled_job_ids == [identity]
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
+
+    asyncio.run(_run())
+
+
+def test_resume_cancels_every_process_group_with_local_submission_token(tmp_path):
+    async def _run():
+        token = "a" * 32
+        identities = [
+            LocalProcessIdentity(pid=4321, token=token),
+            LocalProcessIdentity(pid=5432, token=token),
+        ]
+        async_db = _FakeAsyncDB(total_programs=0)
+        async_db.evaluation_ownership[2] = {
+            "generation": 2,
+            "phase": "submitting",
+            "job_type": "local",
+            "job_id": None,
+            "job_name": token,
+            "results_dir": str(tmp_path / "gen_2" / "results"),
+        }
+        scheduler = _FakeScheduler(
+            cancelled_job_ids=identities,
+            local_identities_by_token={token: identities},
+        )
+        scheduler.job_type = "local"
+        runner = _build_runner(
+            async_db=async_db,
+            scheduler=scheduler,
+            results_dir=str(tmp_path),
+        )
+
+        reconciled = await runner._reconcile_resume_evaluation_ownership()
+
+        assert reconciled == [2]
+        assert scheduler.cancelled_job_ids == identities
+        assert async_db.evaluation_ownership[2]["phase"] == "resolved"
 
     asyncio.run(_run())
 
@@ -2589,11 +2789,14 @@ def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
         )
 
         assert result is not None
-        assert result.job_id == "job-123"
+        assert result.job_id == "123"
         assert result.sampling_worker_id == 3
         assert result.evaluation_worker_id == 0
         assert result.running_eval_jobs_at_submit == 1
-        assert events == [f"submit:{exec_path}:{results_dir}"]
+        assert events == [
+            "submission.prepare",
+            f"submit:{exec_path}:{results_dir}",
+        ]
 
     asyncio.run(_run())
 
@@ -2859,13 +3062,14 @@ def test_submit_evaluation_job_persists_ownership_before_external_submit():
 
         class _OwnershipDB(_FakeAsyncDB):
             async def begin_evaluation_ownership_async(
-                self, generation, job_type, results_dir
+                self, generation, job_type, results_dir, job_name=None
             ):
-                events.append("ownership.begin")
+                events.append(f"ownership.begin:{job_name}")
                 await super().begin_evaluation_ownership_async(
                     generation,
                     job_type,
                     results_dir,
+                    job_name,
                 )
 
             async def activate_evaluation_ownership_async(
@@ -2897,10 +3101,16 @@ def test_submit_evaluation_job_persists_ownership_before_external_submit():
         assert events == [
             "sampling.release:7",
             "eval.acquire",
-            "ownership.begin",
+            "submission.prepare",
+            "ownership.begin:conda-0123456789abcdef0123456789abcdef",
             "submit:program.py:results",
             "ownership.activate",
         ]
+
+        ownership = runner.async_db.evaluation_ownership[4]
+        assert ownership["job_name"] == (
+            "conda-0123456789abcdef0123456789abcdef"
+        )
 
     asyncio.run(_run())
 
@@ -2913,6 +3123,9 @@ def test_submit_evaluation_job_persists_local_process_identity():
 
         class _LocalScheduler(_FakeScheduler):
             job_type = "local"
+
+            def prepare_submission(self):
+                return SimpleNamespace(job_name=identity.token)
 
             async def submit_async_nonblocking(self, exec_fname, results_dir):
                 return process

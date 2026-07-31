@@ -1005,6 +1005,7 @@ class AsyncProgramDatabase:
         generation: int,
         job_type: str,
         results_dir: str,
+        job_name: Optional[str] = None,
     ) -> None:
         """Persist submission intent before starting an external job."""
         db_path = self._require_db_path()
@@ -1021,17 +1022,17 @@ class AsyncProgramDatabase:
                     INSERT INTO evaluation_ownership (
                         generation, phase, job_type, job_id, job_name,
                         results_dir, updated_at
-                    ) VALUES (?, 'submitting', ?, NULL, NULL, ?, ?)
+                    ) VALUES (?, 'submitting', ?, NULL, ?, ?, ?)
                     ON CONFLICT(generation) DO UPDATE SET
                         phase = 'submitting',
                         job_type = excluded.job_type,
                         job_id = NULL,
-                        job_name = NULL,
+                        job_name = excluded.job_name,
                         results_dir = excluded.results_dir,
                         updated_at = excluded.updated_at
                     WHERE evaluation_ownership.phase = 'resolved'
                     """,
-                    (generation, job_type, results_dir, time.time()),
+                    (generation, job_type, job_name, results_dir, time.time()),
                 )
                 if cursor.rowcount != 1:
                     raise EvaluationOwnershipConflictError(

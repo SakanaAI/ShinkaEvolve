@@ -21,7 +21,13 @@ from types import SimpleNamespace
 import pytest
 
 from shinka.launch import local, slurm
-from shinka.launch.local import LocalProcessIdentity, ProcessWithLogging, submit
+from shinka.launch.local import (
+    LocalProcessIdentity,
+    ProcessWithLogging,
+    find_local_process_identities,
+    submit,
+    submit_with_token,
+)
 from shinka.launch.slurm import SlurmJobName
 from shinka.launch.scheduler import (
     JobScheduler,
@@ -81,6 +87,61 @@ def test_local_process_identity_reauthenticates_each_group_snapshot(monkeypatch)
     assert identity.kill() is False
     assert owned_process.kill_calls == 1
     assert replacement_process.kill_calls == 0
+
+
+def test_preallocated_local_token_recovers_live_process(tmp_path, monkeypatch):
+    token = "a" * 32
+    process = submit_with_token(
+        str(tmp_path),
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        token,
+    )
+
+    try:
+        with monkeypatch.context() as recovery_context:
+            recovery_context.setattr(
+                local.psutil,
+                "process_iter",
+                lambda _attrs: [local.psutil.Process(process.pid)],
+            )
+            recovered = find_local_process_identities(token)
+
+            assert recovered == [process.identity]
+    finally:
+        process.kill()
+        process.cleanup_logging()
+
+
+def test_local_token_discovery_ignores_foreign_uid(monkeypatch):
+    class _ForeignProcess:
+        pid = 4321
+
+        def uids(self):
+            return SimpleNamespace(effective=os.geteuid() + 1)
+
+        def environ(self):
+            return {local.LOCAL_PROCESS_TOKEN_ENV: "a" * 32}
+
+    monkeypatch.setattr(local.psutil, "process_iter", lambda _attrs: [_ForeignProcess()])
+    monkeypatch.setattr(local.os, "getpgid", lambda _pid: 4321)
+
+    assert find_local_process_identities("a" * 32) == []
+
+
+def test_local_token_discovery_reports_blocked_same_uid(monkeypatch):
+    class _BlockedProcess:
+        pid = 4321
+
+        def uids(self):
+            return SimpleNamespace(effective=os.geteuid())
+
+        def environ(self):
+            raise local.psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(local.psutil, "process_iter", lambda _attrs: [_BlockedProcess()])
+
+    with pytest.raises(RuntimeError, match="inspect same-user processes"):
+        find_local_process_identities("a" * 32)
 
 
 def test_local_job_pending_gpu_reports_running(monkeypatch):

@@ -6,15 +6,24 @@ import sys
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
-from .local import submit as submit_local, monitor as monitor_local
-from .local import LocalProcessIdentity, ProcessWithLogging
+from .local import monitor as monitor_local
+from .local import (
+    LocalProcessIdentity,
+    ProcessWithLogging,
+    create_local_process_token,
+    find_local_process_identities,
+    submit as submit_local,
+    submit_with_token as submit_local_with_token,
+)
 from .slurm import (
     SLURM_COMMAND_TIMEOUT_SECONDS,
     SlurmJobName,
+    create_slurm_job_name,
     get_job_ids_by_name,
     is_valid_slurm_job_id,
     get_job_status,
     get_job_status_by_name,
+    recover_submission_by_name,
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
     monitor as monitor_slurm,
@@ -22,6 +31,13 @@ from .slurm import (
 from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedSubmission:
+    """External scheduler identity allocated before launch."""
+
+    job_name: str
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -292,16 +308,30 @@ class JobScheduler:
 
         return results, rtime
 
-    def submit_async(
-        self, exec_fname_t: str, results_dir_t: str
+    def prepare_submission(self) -> PreparedSubmission:
+        """Allocate the identity persisted before external submission."""
+        if self.job_type == "local":
+            return PreparedSubmission(create_local_process_token())
+        if self.job_type == "slurm_docker":
+            return PreparedSubmission(create_slurm_job_name("docker"))
+        if self.job_type == "slurm_conda":
+            return PreparedSubmission(create_slurm_job_name("conda"))
+        raise ValueError(f"Unknown job type: {self.job_type}")
+
+    def submit_prepared(
+        self,
+        prepared_submission: PreparedSubmission,
+        exec_fname_t: str,
+        results_dir_t: str,
     ) -> Union[str, ProcessWithLogging]:
-        """Submit a job asynchronously and return the job ID or process."""
+        """Launch a job using its already-persisted scheduler identity."""
         cmd = self._build_command(exec_fname_t, results_dir_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
-            return submit_local(
+            return submit_local_with_token(
                 results_dir_t,
                 cmd,
+                prepared_submission.job_name,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
             )
@@ -320,6 +350,7 @@ class JobScheduler:
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
+                job_name=prepared_submission.job_name,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -336,8 +367,19 @@ class JobScheduler:
                 self.config.modules,
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
+                job_name=prepared_submission.job_name,
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
+
+    def submit_async(
+        self, exec_fname_t: str, results_dir_t: str
+    ) -> Union[str, ProcessWithLogging]:
+        """Prepare and submit a job synchronously."""
+        return self.submit_prepared(
+            self.prepare_submission(),
+            exec_fname_t,
+            results_dir_t,
+        )
 
     def check_job_status(self, job) -> Optional[bool]:
         """Return True if running, False if done, or None if unknown."""
@@ -421,6 +463,22 @@ class JobScheduler:
 
         return await loop.run_in_executor(
             self.executor, self.submit_async, exec_fname_t, results_dir_t
+        )
+
+    async def submit_prepared_async_nonblocking(
+        self,
+        prepared_submission: PreparedSubmission,
+        exec_fname_t: str,
+        results_dir_t: str,
+    ) -> Union[str, ProcessWithLogging]:
+        """Submit an already-persisted external identity off the event loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            self.submit_prepared,
+            prepared_submission,
+            exec_fname_t,
+            results_dir_t,
         )
 
     async def check_job_status_async(self, job) -> Optional[bool]:
@@ -549,6 +607,35 @@ class JobScheduler:
             get_job_ids_by_name,
             job_name,
         )
+
+    async def recover_job_id_by_name_async(self, job_name: str) -> Optional[str]:
+        """Recover one preallocated Slurm submission after an interrupted launch."""
+        if self.job_type not in ["slurm_docker", "slurm_conda"]:
+            return None
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self.cancellation_executor,
+            recover_submission_by_name,
+            job_name,
+        )
+
+    async def get_local_process_identities_by_token_async(
+        self,
+        token: str,
+    ) -> Optional[List[LocalProcessIdentity]]:
+        """Find local process groups for a persisted pre-launch token."""
+        if self.job_type != "local":
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self.cancellation_executor,
+                find_local_process_identities,
+                token,
+            )
+        except (RuntimeError, ValueError) as error:
+            logger.error("Could not recover local submission: %s", error)
+            return None
 
     def shutdown(self):
         """Shutdown the thread pool executor."""

@@ -83,6 +83,34 @@ def test_async_program_count_propagates_database_errors(monkeypatch, tmp_path):
     asyncio.run(_run())
 
 
+def test_async_evaluation_ownership_persists_prepared_name(tmp_path):
+    sync_db = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "ownership.db"), num_islands=1),
+        embedding_model="",
+    )
+    async_db = AsyncProgramDatabase(sync_db=sync_db)
+
+    async def _run():
+        try:
+            await async_db.begin_evaluation_ownership_async(
+                generation=4,
+                job_type="slurm_conda",
+                results_dir="results",
+                job_name="conda-0123456789abcdef0123456789abcdef",
+            )
+
+            ownership = await async_db.get_active_evaluation_ownership_async()
+
+            assert ownership[0]["job_name"] == (
+                "conda-0123456789abcdef0123456789abcdef"
+            )
+        finally:
+            await async_db.close_async()
+            sync_db.close()
+
+    asyncio.run(_run())
+
+
 def test_async_db_add_forwards_verbose_flag(monkeypatch):
     """Async add should forward verbose to the underlying writer database."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

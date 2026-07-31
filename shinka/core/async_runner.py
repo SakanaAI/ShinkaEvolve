@@ -101,6 +101,7 @@ API_COST_CHECKPOINT_ATTEMPTS = 3
 JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS = MAX_UNKNOWN_STATUS_POLLS * 10.0
 SLURM_JOB_ID_PATTERN = re.compile(r"[0-9]+")
 SLURM_JOB_NAME_PATTERN = re.compile(r"(?:conda|docker)-[0-9a-f]{32}")
+LOCAL_JOB_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
 def _monotonic_time() -> float:
@@ -5634,8 +5635,6 @@ class ShinkaEvolveRunner:
             return generation
 
         job_type = ownership["job_type"]
-        job_id = ownership["job_id"]
-        job_name = ownership["job_name"]
         expected_results_dir = Path(self.results_dir) / (
             f"{FOLDER_PREFIX}_{generation}/results"
         )
@@ -5647,42 +5646,132 @@ class ShinkaEvolveRunner:
             raise RuntimeError(
                 f"Evaluation ownership scheduler mismatch for generation {generation}"
             )
-        if job_type == "local" and ownership["phase"] == "active":
+        if job_type == "local":
+            return await self._reconcile_local_evaluation_ownership(
+                ownership,
+                generation,
+            )
+        if job_type.startswith("slurm_"):
+            return await self._reconcile_slurm_evaluation_ownership(
+                ownership,
+                generation,
+            )
+        raise RuntimeError(
+            f"Evaluation ownership is ambiguous for generation {generation}; "
+            "refusing to replay"
+        )
+
+    async def _reconcile_local_evaluation_ownership(
+        self,
+        ownership: Dict[str, Any],
+        generation: int,
+    ) -> int:
+        phase = ownership["phase"]
+        job_id = ownership["job_id"]
+        job_name = ownership["job_name"]
+        if phase == "active":
             try:
                 cancel_target = LocalProcessIdentity.from_storage(job_id, job_name)
             except ValueError:
-                pass
+                cancel_targets = None
             else:
-                failed_cancellations = await self._cancel_job_ids([cancel_target])
-                if failed_cancellations:
-                    raise UnconfirmedJobCancellationError(failed_cancellations)
-                await self._resolve_evaluation_ownership(generation)
-                return generation
+                cancel_targets = [cancel_target]
+        elif (
+            phase == "submitting"
+            and isinstance(job_name, str)
+            and LOCAL_JOB_TOKEN_PATTERN.fullmatch(job_name)
+        ):
+            cancel_targets = (
+                await self.scheduler.get_local_process_identities_by_token_async(
+                    job_name
+                )
+            )
+            if cancel_targets is None:
+                raise JobStatusUnavailableError(
+                    f"Could not recover local identity for generation {generation}"
+                )
+        else:
+            cancel_targets = None
+
+        if cancel_targets is None:
+            raise RuntimeError(
+                f"Evaluation ownership is ambiguous for generation {generation}; "
+                "refusing to replay"
+            )
+
+        failed_cancellations = await self._cancel_job_ids(cancel_targets)
+        if failed_cancellations:
+            raise UnconfirmedJobCancellationError(failed_cancellations)
+        await self._resolve_evaluation_ownership(generation)
+        return generation
+
+    async def _reconcile_slurm_evaluation_ownership(
+        self,
+        ownership: Dict[str, Any],
+        generation: int,
+    ) -> int:
+        phase = ownership["phase"]
+        job_id = ownership["job_id"]
+        job_name = ownership["job_name"]
+        job_type = ownership["job_type"]
+        expected_name_prefix = {
+            "slurm_conda": "conda-",
+            "slurm_docker": "docker-",
+        }.get(job_type)
         if (
-            ownership["phase"] != "active"
-            or not isinstance(job_id, str)
-            or not SLURM_JOB_ID_PATTERN.fullmatch(job_id)
+            phase not in {"submitting", "active"}
             or not isinstance(job_name, str)
             or not SLURM_JOB_NAME_PATTERN.fullmatch(job_name)
-            or not job_type.startswith("slurm_")
+            or expected_name_prefix is None
+            or not job_name.startswith(expected_name_prefix)
+            or (
+                phase == "active"
+                and (
+                    not isinstance(job_id, str)
+                    or not SLURM_JOB_ID_PATTERN.fullmatch(job_id)
+                )
+            )
         ):
             raise RuntimeError(
                 f"Evaluation ownership is ambiguous for generation {generation}; "
                 "refusing to replay"
             )
 
-        active_job_ids = await self.scheduler.get_job_ids_by_name_async(job_name)
-        if active_job_ids is None:
-            raise JobStatusUnavailableError(
-                f"Could not verify Slurm identity for generation {generation}"
+        if phase == "submitting":
+            recovered_job_id = await self.scheduler.recover_job_id_by_name_async(
+                job_name
             )
-        if active_job_ids:
-            if active_job_ids != [job_id]:
+            if recovered_job_id is None:
+                raise JobStatusUnavailableError(
+                    f"Could not verify Slurm identity for generation {generation}"
+                )
+            if not SLURM_JOB_ID_PATTERN.fullmatch(recovered_job_id):
                 raise RuntimeError(
                     f"Evaluation ownership identity mismatch for generation "
                     f"{generation}"
                 )
-            cancel_target = SlurmJobName(job_name)
+            active_job_ids = [recovered_job_id]
+        else:
+            active_job_ids = await self.scheduler.get_job_ids_by_name_async(job_name)
+        if active_job_ids is None:
+            raise JobStatusUnavailableError(
+                f"Could not verify Slurm identity for generation {generation}"
+            )
+        if len(active_job_ids) > 1:
+            raise RuntimeError(
+                f"Evaluation ownership identity mismatch for generation {generation}"
+            )
+        if active_job_ids:
+            if phase == "active" and active_job_ids != [job_id]:
+                raise RuntimeError(
+                    f"Evaluation ownership identity mismatch for generation "
+                    f"{generation}"
+                )
+            cancel_target: Union[str, SlurmJobName]
+            if phase == "submitting":
+                cancel_target = active_job_ids[0]
+            else:
+                cancel_target = SlurmJobName(job_name)
             failed_cancellations = await self._cancel_job_ids([cancel_target])
             if failed_cancellations:
                 raise UnconfirmedJobCancellationError(failed_cancellations)
@@ -5881,12 +5970,15 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        prepared_submission = None
         if generation is not None:
+            prepared_submission = self.scheduler.prepare_submission()
             ownership_task = asyncio.create_task(
                 self.async_db.begin_evaluation_ownership_async(
                     generation=generation,
                     job_type=str(getattr(self.scheduler, "job_type", "unknown")),
                     results_dir=results_dir,
+                    job_name=prepared_submission.job_name,
                 )
             )
             try:
@@ -5904,9 +5996,18 @@ class ShinkaEvolveRunner:
                 await self.evaluation_slot_pool.release(evaluation_worker_id)
                 raise
 
-        submission_task = asyncio.create_task(
-            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
-        )
+        if prepared_submission is None:
+            submission = self.scheduler.submit_async_nonblocking(
+                exec_fname,
+                results_dir,
+            )
+        else:
+            submission = self.scheduler.submit_prepared_async_nonblocking(
+                prepared_submission,
+                exec_fname,
+                results_dir,
+            )
+        submission_task = asyncio.create_task(submission)
         self._pending_evaluation_submissions[submission_task] = (
             PendingEvaluationSubmission(
                 evaluation_worker_id=evaluation_worker_id,
@@ -5945,6 +6046,8 @@ class ShinkaEvolveRunner:
                 else:
                     durable_job_id = job_id if isinstance(job_id, str) else None
                     durable_job_name = getattr(job_id, "job_name", None)
+                if durable_job_name != prepared_submission.job_name:
+                    raise RuntimeError("Submitted job identity changed during launch")
                 await self.async_db.activate_evaluation_ownership_async(
                     generation=generation,
                     job_id=durable_job_id,
