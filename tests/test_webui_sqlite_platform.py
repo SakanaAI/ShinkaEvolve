@@ -281,6 +281,34 @@ def test_database_main_snapshot_replaces_checkpointed_version(tmp_path, monkeypa
     ].version == handler._database_cache_key(database_stat)
 
 
+@requires_descriptor_traversal
+def test_database_snapshot_rejects_oversized_source_before_copy(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "programs.sqlite"
+    _create_stats_database(database_path)
+    handler = _handler(tmp_path)
+    copied = False
+
+    def record_copy(*args, **kwargs):
+        nonlocal copied
+        copied = True
+
+    monkeypatch.setattr(handler, "_database_main_cache_max_bytes", 1)
+    monkeypatch.setattr(handler, "_copy_database_descriptor", record_copy)
+
+    with (
+        pytest.raises(sqlite3.OperationalError, match="snapshot limit"),
+        handler._connect_database_within_root(
+            database_path,
+            timeout=5.0,
+        ),
+    ):
+        pass
+
+    assert not copied
+
+
 @pytest.mark.parametrize(
     ("path", "expected_target"),
     [

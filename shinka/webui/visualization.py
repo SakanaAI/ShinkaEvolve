@@ -74,8 +74,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     _database_main_cache: Dict[Tuple[int, int], _DatabaseMainSnapshot] = {}
     _database_main_cache_build_locks: Dict[Tuple[int, int], threading.Lock] = {}
     _database_main_cache_limit = 2
-    # Soft target: retain one oversized active DB to avoid recopying it every poll.
-    _database_main_cache_target_bytes = 2 * 1024**3
+    _database_main_cache_max_bytes = 2 * 1024**3
 
     def __init__(
         self,
@@ -906,6 +905,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         database_descriptor: int,
         database_stat: os.stat_result,
     ) -> _DatabaseMainSnapshot:
+        if database_stat.st_size > self._database_main_cache_max_bytes:
+            raise sqlite3.OperationalError(
+                "database exceeds the 2 GiB WebUI snapshot limit"
+            )
         source_key = (database_stat.st_dev, database_stat.st_ino)
         cache_key = self._database_cache_key(database_stat)
         with self._database_main_cache_lock:
@@ -997,7 +1000,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         )
         while cls._database_main_cache and (
             len(cls._database_main_cache) >= cls._database_main_cache_limit
-            or cached_bytes + incoming_size > cls._database_main_cache_target_bytes
+            or cached_bytes + incoming_size > cls._database_main_cache_max_bytes
         ):
             oldest_key = next(iter(cls._database_main_cache))
             evicted = cls._database_main_cache.pop(oldest_key)
