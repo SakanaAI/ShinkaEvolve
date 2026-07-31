@@ -36,6 +36,17 @@ def test_viz_tree_defines_one_shared_escape_helper():
     assert html.count("function escapeHtml(text)") == 1
 
 
+def test_viz_tree_pins_patched_dompurify_with_verified_integrity():
+    html = VIZ_TREE_HTML.read_text(encoding="utf-8")
+
+    assert "dompurify@3.4.12/dist/purify.min.js" in html
+    assert (
+        'integrity="sha384-'
+        "piCcpDdJ7qVeK4Tv8Z6Hpcr3ZBIgP16TxQTPVfsLFdZ5uDgwc3Y8Ho7oUnqf12qu"
+        '"'
+    ) in html
+
+
 def test_program_summary_fields_escape_html_before_formatting():
     if not shutil.which("node"):
         pytest.skip("Node.js is required to execute the browser formatter")
