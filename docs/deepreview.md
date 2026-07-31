@@ -17,7 +17,7 @@ The codebase is capable and feature-rich, with genuinely good foundations in pla
 
 | Area | Headline | Worst severity |
 |---|---|---|
-| **Security** | Visualization server binds `0.0.0.0`, no auth, CORS `*`, path traversal → unauthenticated arbitrary-file read on the LAN; stored XSS from LLM content rendered as raw HTML | High |
+| **Security** | Visualization server binds `0.0.0.0`, has no auth, allows CORS `*`, and accepts paths outside its search root; stored XSS from LLM content rendered as raw HTML | High |
 | **Correctness** | `apply_diff` corrupts programs silently (substring match; dropped deletion hunks) and accepts them as valid evolutions; multiple `correct=True, score=0.0` corruption paths | Critical |
 | **Concurrency** | Job-monitor race drops running jobs + leaks eval slots → potential deadlock; Ctrl-C orphans subprocesses/Slurm jobs; timeout kills only the direct child | High |
 | **Performance** | Two missing indexes on the hottest columns; per-request full-DB re-serialization in the web UI; O(N²) novelty scan; per-call DB reconstruction in the async loop | High |
@@ -39,11 +39,11 @@ The security posture is **good on fundamentals but weak at the web-UI boundary a
 
 ### High severity
 
-**S1 — Visualization server: binds all interfaces, no auth, CORS `*`, + path traversal → unauthenticated arbitrary SQLite/file read.** `shinka/webui/visualization.py`.
+**S1 — Visualization server: binds all interfaces, no auth, CORS `*`, + path traversal → unauthenticated access outside the configured search root.** `shinka/webui/visualization.py`.
 - The server listens on every interface and does not authenticate requests.
 - JSON responses allow requests from arbitrary origins.
 - User-supplied database paths are joined to the configured search root without canonicalization or containment checks.
-- Combined impact: an untrusted network client or browser origin may reach data outside the intended search root. Exploit construction is omitted pending remediation.
+- Combined impact: an untrusted network client or browser origin may read compatible Shinka databases and expected metadata files outside the intended search root. The reviewed handlers do not provide a generic arbitrary-file or arbitrary-SQLite dump primitive. Exploit construction is omitted pending remediation.
 - **Fix:** default-bind `127.0.0.1`, make external exposure an explicit `--host` opt-in paired with an auth token; drop the CORS wildcard; add one shared path guard that rejects absolute/`..`, canonicalizes via `os.path.realpath`, and enforces `os.path.commonpath([resolved, realpath(search_root)]) == realpath(search_root)`; validate `processed_count` as `int` before interpolation.
 
 **S2 — Stored XSS: LLM-generated content rendered as raw HTML.** `shinka/webui/viz_tree.html`. The page loads `marked` (unpinned, line 2077) and renders attacker-influenced DB fields **without any sanitizer** (DOMPurify count = 0):
@@ -53,8 +53,8 @@ The security posture is **good on fundamentals but weak at the web-UI boundary a
 - Combined with S1, injected script can access data available to the visualization session. Payload details are omitted pending remediation.
 - **Fix:** route every `marked.parse` output through `DOMPurify.sanitize`; HTML-escape all interpolated untrusted fields; consolidate to one quote-escaping `escapeHtml`; build `on*` handlers via `addEventListener`, not string interpolation; pin `marked`.
 
-**S3 — (By-design, under-mitigated) Evolved code executes with no sandbox in `local` mode, inheriting the full environment including all API keys.** `wrap_eval.py:load_program` (29–37) `importlib` + `exec_module` on the LLM-written file; `local.py` starts the eval with `env = os.environ.copy()` (98) passed as `env=env` (112). The evolved program therefore inherits **every** provider secret in the environment. A prompt-injected or adversarial model can emit code that exfiltrates all keys or reads the filesystem, with no isolation in `local` mode (only the optional Slurm/Docker paths isolate, and even those inherit secrets via `eval_env`). This is intentional, but the trust boundary is undocumented and the env is un-scoped.
-- **Fix:** document the trust boundary prominently; allow-list only the vars the eval needs (strip provider secrets from the eval subprocess env); recommend Docker mode with minimal mounts for untrusted models.
+**S3 — (By-design, under-mitigated) Evolved code executes with no sandbox in `local` mode, inheriting the full environment including all API keys.** `wrap_eval.py:load_program` (29–37) `importlib` + `exec_module` on the LLM-written file; `local.py` starts the eval with `env = os.environ.copy()` (98) passed as `env=env` (112). The evolved program therefore inherits **every** provider secret in the local process environment. Docker jobs receive only explicitly forwarded evaluation variables—verbosity and numeric-thread limits by default—so host provider credentials are not inherited unless supplied through user-controlled Docker options. Slurm-Conda jobs may inherit the submission environment depending on Slurm configuration. This execution model is intentional, but the trust boundary is undocumented and local/Slurm environment inheritance is under-scoped.
+- **Fix:** document the trust boundary prominently; allow-list only the variables local evaluation needs; prevent Slurm submission-environment export where supported; recommend Docker mode with explicit environment variables and minimal mounts for untrusted models.
 
 ### Medium severity
 - **S4 — Shell command construction via unescaped f-strings** in `slurm.py` (`_render_env_exports` :20, `_render_env_docker_flags` :27, `submit_local_docker`/`submit_local_conda` `bash -lc` strings at 440–449/482–493, `.format()` sbatch scripts at 240–274/329–354). Operator-config-controlled today (not a remote vector), but any `eval_env` value derived from untrusted data would inject shell. **Fix:** `shlex.quote` all interpolated values; prefer argv lists / Docker `--env-file`.
