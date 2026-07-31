@@ -7,7 +7,6 @@ import pytest
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.webui.visualization import DatabaseRequestHandler
 
-
 requires_descriptor_traversal = pytest.mark.skipif(
     not DatabaseRequestHandler._supports_descriptor_traversal(),
     reason="database race hardening requires descriptor traversal",

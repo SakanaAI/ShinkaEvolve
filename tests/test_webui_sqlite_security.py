@@ -12,7 +12,6 @@ from shinka.webui.visualization import (
     PathValidationError,
 )
 
-
 requires_descriptor_traversal = pytest.mark.skipif(
     not DatabaseRequestHandler._supports_descriptor_traversal(),
     reason="database race hardening requires descriptor traversal",
@@ -171,9 +170,8 @@ def test_stable_database_connection_is_read_only(tmp_path):
     with _handler(tmp_path)._connect_database_within_root(
         database_path,
         timeout=5.0,
-    ) as connection:
-        with pytest.raises(sqlite3.OperationalError, match="readonly"):
-            connection.execute("INSERT INTO programs DEFAULT VALUES")
+    ) as connection, pytest.raises(sqlite3.OperationalError, match="readonly"):
+        connection.execute("INSERT INTO programs DEFAULT VALUES")
 
     assert database_path.read_bytes() == contents_before
     assert database_path.stat().st_mtime_ns == mtime_before
@@ -312,12 +310,14 @@ def test_database_snapshot_reports_active_rollback_journal_as_busy(
 
         monkeypatch.setattr(os, "link", reject_hardlink)
 
-        with pytest.raises(sqlite3.OperationalError, match="busy"):
-            with _handler(tmp_path)._connect_database_within_root(
+        with (
+            pytest.raises(sqlite3.OperationalError, match="busy"),
+            _handler(tmp_path)._connect_database_within_root(
                 database_path,
                 timeout=0.1,
-            ):
-                pass
+            ),
+        ):
+            pass
     finally:
         writer.rollback()
         writer.close()
@@ -380,7 +380,7 @@ def test_database_snapshot_closes_connection_when_initial_read_fails(
 
         def execute(self, statement):
             if statement == "BEGIN":
-                return None
+                return
             raise sqlite3.DatabaseError("initial read failed")
 
         def close(self):
@@ -395,12 +395,14 @@ def test_database_snapshot_closes_connection_when_initial_read_fails(
 
     monkeypatch.setattr(sqlite3, "connect", fail_staged_connect)
 
-    with pytest.raises(sqlite3.DatabaseError, match="initial read failed"):
-        with _handler(tmp_path)._connect_database_within_root(
+    with (
+        pytest.raises(sqlite3.DatabaseError, match="initial read failed"),
+        _handler(tmp_path)._connect_database_within_root(
             database_path,
             timeout=5.0,
-        ):
-            pass
+        ),
+    ):
+        pass
 
     assert staged_connection is not None
     assert staged_connection.closed
@@ -484,11 +486,13 @@ def test_database_view_rejects_main_and_sidecar_pairing_swap(tmp_path, monkeypat
 
     monkeypatch.setattr(handler, "_stage_cached_database_main", stage_then_swap)
     try:
-        with pytest.raises((PathValidationError, sqlite3.OperationalError)):
-            with handler._connect_database_within_root(
+        with (
+            pytest.raises((PathValidationError, sqlite3.OperationalError)),
+            handler._connect_database_within_root(
                 database_path,
                 timeout=5.0,
-            ):
-                pass
+            ),
+        ):
+            pass
     finally:
         replacement_writer.close()
