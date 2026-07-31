@@ -311,6 +311,43 @@ def test_database_snapshot_rejects_oversized_source_before_copy(
 
 
 @requires_descriptor_traversal
+def test_database_snapshot_rejects_oversized_wal_before_copy(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "programs.sqlite"
+    _create_stats_database(database_path)
+    wal_path = tmp_path / "programs.sqlite-wal"
+    wal_path.write_bytes(b"xx")
+    handler = _handler(tmp_path)
+    copy_database_descriptor = handler._copy_database_descriptor
+    wal_copied = False
+
+    def record_wal_copy(*args, **kwargs):
+        nonlocal wal_copied
+        if args[2].endswith("-wal"):
+            wal_copied = True
+        return copy_database_descriptor(*args, **kwargs)
+
+    monkeypatch.setattr(
+        handler,
+        "_database_main_cache_max_bytes",
+        database_path.stat().st_size + 1,
+    )
+    monkeypatch.setattr(handler, "_copy_database_descriptor", record_wal_copy)
+
+    with (
+        pytest.raises(sqlite3.OperationalError, match="WAL exceed"),
+        handler._connect_database_within_root(
+            database_path,
+            timeout=5.0,
+        ),
+    ):
+        pass
+
+    assert not wal_copied
+
+
+@requires_descriptor_traversal
 def test_database_snapshot_retries_staging_parent_after_enospc(
     tmp_path, monkeypatch
 ):

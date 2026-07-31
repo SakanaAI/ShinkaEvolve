@@ -736,6 +736,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         source_name: str,
         destination_descriptor: int,
         destination_name: str,
+        *,
+        max_bytes: int,
     ) -> Optional[os.stat_result]:
         try:
             source_descriptor = os.open(
@@ -756,6 +758,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             if not stat.S_ISREG(source_stat.st_mode):
                 raise PathValidationError(
                     f"Database sidecar is not a file: {source_name!r}"
+                )
+            if source_stat.st_size > max_bytes:
+                raise sqlite3.OperationalError(
+                    "database and WAL exceed the 2 GiB WebUI snapshot limit"
                 )
             self._copy_database_descriptor(
                 source_descriptor,
@@ -1212,6 +1218,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         parent_descriptor: int,
         source_name: str,
         destination_descriptor: int,
+        max_wal_bytes: int,
     ) -> Dict[str, Optional[os.stat_result]]:
         self._stage_cached_database_main(
             cached_main_path,
@@ -1227,6 +1234,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     sidecar_name,
                     destination_descriptor,
                     "database.sqlite" + suffix,
+                    max_bytes=max_wal_bytes,
                 )
             else:
                 sidecar_stat = self._stat_optional_database_sidecar(
@@ -1353,6 +1361,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                             parent_descriptor=parent_descriptor,
                             source_name=source_name,
                             destination_descriptor=staging_descriptor,
+                            max_wal_bytes=(
+                                self._database_main_cache_max_bytes
+                                - attempt_database_stat.st_size
+                            ),
                         )
                         self._verify_database_view(
                             database_descriptor=database_descriptor,
