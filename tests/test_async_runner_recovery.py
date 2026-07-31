@@ -848,7 +848,7 @@ def test_restore_resume_progress_refuses_symlinked_results_root(tmp_path):
     asyncio.run(_run())
 
 
-def test_restore_resume_progress_refuses_writable_results_root(tmp_path):
+def test_restore_resume_progress_refuses_world_writable_results_root(tmp_path):
     class _ResumeDB:
         async def get_total_program_count_async(self):
             return 4
@@ -871,13 +871,77 @@ def test_restore_resume_progress_refuses_writable_results_root(tmp_path):
         )
 
         try:
-            with pytest.raises(PermissionError, match="group/world writable"):
+            with pytest.raises(PermissionError, match="world writable"):
                 await runner._restore_resume_progress()
         finally:
             results_root.chmod(0o700)
 
         assert interrupted_dir.exists()
         assert runner._resume_generation_queue == []
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_allows_owned_group_writable_results_root(tmp_path):
+    class _ResumeDB:
+        async def get_persisted_generation_ids_async(self):
+            return [0, 1, 3, 4]
+
+    async def _run():
+        results_root = tmp_path / "results"
+        results_root.mkdir(mode=0o700)
+        interrupted_dir = results_root / "gen_2"
+        interrupted_dir.mkdir()
+        (interrupted_dir / "partial.txt").write_text("preserve me")
+        results_root.chmod(0o775)
+        runner = _build_runner(
+            async_db=_ResumeDB(),
+            evo_config=SimpleNamespace(num_generations=5),
+            results_dir=str(results_root),
+        )
+
+        await runner._restore_resume_progress()
+
+        archived = list(
+            (results_root / ".interrupted_generations").glob("gen_2-*")
+        )
+        assert len(archived) == 1
+        assert (archived[0] / "partial.txt").read_text() == "preserve me"
+        archive_mode = (
+            results_root / ".interrupted_generations"
+        ).stat().st_mode & 0o777
+        assert archive_mode == 0o700
+
+    asyncio.run(_run())
+
+
+def test_restore_resume_progress_refuses_untrusted_group_writable_root(
+    tmp_path,
+    monkeypatch,
+):
+    class _ResumeDB:
+        async def get_persisted_generation_ids_async(self):
+            return [0]
+
+    async def _run():
+        results_root = tmp_path / "results"
+        results_root.mkdir(mode=0o700)
+        interrupted_dir = results_root / "gen_1"
+        interrupted_dir.mkdir()
+        results_root.chmod(0o775)
+        runner = _build_runner(
+            async_db=_ResumeDB(),
+            evo_config=SimpleNamespace(num_generations=2),
+            results_dir=str(results_root),
+        )
+        monkeypatch.setattr("shinka.core.async_runner.os.getegid", lambda: -1)
+        monkeypatch.setattr("shinka.core.async_runner.os.getgroups", lambda: [])
+
+        with pytest.raises(PermissionError, match="untrusted group"):
+            await runner._restore_resume_progress()
+
+        assert interrupted_dir.exists()
+        assert not (results_root / ".interrupted_generations").exists()
 
     asyncio.run(_run())
 

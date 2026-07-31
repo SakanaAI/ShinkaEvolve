@@ -5717,10 +5717,20 @@ class ShinkaEvolveRunner:
                 root_stat = os.fstat(root_fd)
                 if hasattr(os, "geteuid") and root_stat.st_uid != os.geteuid():
                     raise PermissionError("Results directory is owned by another user")
-                if root_stat.st_mode & 0o022:
-                    raise PermissionError(
-                        "Results directory is group/world writable"
-                    )
+                if root_stat.st_mode & 0o002:
+                    raise PermissionError("Results directory is world writable")
+                if root_stat.st_mode & 0o020:
+                    if not hasattr(os, "getegid") or not hasattr(os, "getgroups"):
+                        raise PermissionError(
+                            "Cannot verify group-writable results directory"
+                        )
+                    trusted_groups = {os.getegid(), *os.getgroups()}
+                    if root_stat.st_gid not in trusted_groups:
+                        raise PermissionError(
+                            "Results directory is writable by an untrusted group"
+                        )
+                    # Group collaborators are inside the trust boundary. The
+                    # archive itself remains owner-only and is accessed by fd.
 
                 for generation in generations:
                     source_name = f"{FOLDER_PREFIX}_{generation}"
