@@ -71,6 +71,42 @@ def test_ipv6_host_header_is_accepted_with_or_without_port(host_header):
     assert handler._host_allowed()
 
 
+def test_handler_factory_configures_database_snapshot_limit(tmp_path, monkeypatch):
+    captured = {}
+    factory = create_handler_factory(
+        os.fspath(tmp_path),
+        max_database_snapshot_bytes=1234,
+    )
+
+    def capture_init(self, *args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(DatabaseRequestHandler, "__init__", capture_init)
+
+    factory()
+
+    assert captured["max_database_snapshot_bytes"] == 1234
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, float("inf")])
+def test_handler_factory_rejects_invalid_database_snapshot_limit(tmp_path, limit):
+    with pytest.raises(ValueError, match="snapshot size"):
+        create_handler_factory(
+            os.fspath(tmp_path),
+            max_database_snapshot_bytes=limit,
+        )
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, float("inf")])
+def test_start_server_rejects_invalid_database_snapshot_limit(tmp_path, limit):
+    with pytest.raises(ValueError, match="snapshot size"):
+        visualization.start_server(
+            0,
+            os.fspath(tmp_path),
+            max_database_snapshot_bytes=limit,
+        )
+
+
 @pytest.mark.parametrize(
     ("bound_host", "expected"),
     [
@@ -175,4 +211,44 @@ def test_main_propagates_server_startup_failure(tmp_path, monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("bind failed")),
     )
     with pytest.raises(OSError, match="bind failed"):
+        visualization.main()
+
+
+def test_main_configures_database_snapshot_limit(tmp_path, monkeypatch):
+    captured = {}
+
+    def capture_start_server(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "shinka_visualize",
+            os.fspath(tmp_path),
+            "--max-database-snapshot-gib",
+            "4.5",
+        ],
+    )
+    monkeypatch.setattr(visualization, "start_server", capture_start_server)
+
+    visualization.main()
+
+    assert captured["max_database_snapshot_bytes"] == int(4.5 * 1024**3)
+
+
+@pytest.mark.parametrize("limit", ["0", "1e-300", "1e300", "nan", "inf"])
+def test_main_rejects_unrepresentable_database_snapshot_limit(
+    tmp_path, monkeypatch, limit
+):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "shinka_visualize",
+            os.fspath(tmp_path),
+            "--max-database-snapshot-gib",
+            limit,
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="2"):
         visualization.main()

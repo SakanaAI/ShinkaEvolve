@@ -38,12 +38,23 @@ from shinka.database import SystemPromptConfig, SystemPromptDatabase
 WEASYPRINT_AVAILABLE = False
 
 DEFAULT_PORT = 8000
+DEFAULT_MAX_DATABASE_SNAPSHOT_BYTES = 2 * 1024**3
 CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[
     Tuple[str, str],
     Tuple[Tuple[int, int, int, int, int], float, Any],
 ] = {}
 db_cache_lock = threading.Lock()
+
+
+def _validate_snapshot_size_bytes(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 < value <= sys.maxsize
+    ):
+        raise ValueError("snapshot size must be a positive, representable integer")
+    return value
 
 
 class PathValidationError(ValueError):
@@ -74,7 +85,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     _database_main_cache: Dict[Tuple[int, int], _DatabaseMainSnapshot] = {}
     _database_main_cache_build_locks: Dict[Tuple[int, int], threading.Lock] = {}
     _database_main_cache_limit = 2
-    _database_main_cache_max_bytes = 2 * 1024**3
+    _database_main_cache_max_bytes = DEFAULT_MAX_DATABASE_SNAPSHOT_BYTES
 
     def __init__(
         self,
@@ -83,6 +94,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         canonical_search_root=None,
         search_root_descriptor=None,
         allowed_hosts=...,
+        max_database_snapshot_bytes=DEFAULT_MAX_DATABASE_SNAPSHOT_BYTES,
         **kwargs,
     ):
         self.search_root = search_root or os.getcwd()
@@ -90,6 +102,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.search_root
         )
         self._search_root_descriptor = search_root_descriptor
+        self._database_main_cache_max_bytes = _validate_snapshot_size_bytes(
+            max_database_snapshot_bytes
+        )
         # Attributes must be set before super().__init__, which handles the
         # request immediately. `...` means "keep the class default allowlist".
         if allowed_hosts is not ...:
@@ -769,7 +784,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 )
             if source_stat.st_size > max_bytes:
                 raise sqlite3.OperationalError(
-                    "database and WAL exceed the 2 GiB WebUI snapshot limit"
+                    "database and WAL exceed the configured WebUI snapshot limit "
+                    f"({self._database_main_cache_max_bytes} bytes)"
                 )
             self._copy_database_descriptor(
                 source_descriptor,
@@ -927,7 +943,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     ) -> _DatabaseMainSnapshot:
         if database_stat.st_size > self._database_main_cache_max_bytes:
             raise sqlite3.OperationalError(
-                "database exceeds the 2 GiB WebUI snapshot limit"
+                "database exceeds the configured WebUI snapshot limit "
+                f"({self._database_main_cache_max_bytes} bytes)"
             )
         source_key = (database_stat.st_dev, database_stat.st_ino)
         cache_key = self._database_cache_key(database_stat)
@@ -1040,22 +1057,21 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             getattr(errno, "EDQUOT", -1),
         }
 
-    @classmethod
     def _evict_database_main_cache_entries(
-        cls,
+        self,
         *,
         incoming_size: int,
         discarded: list[_DatabaseMainSnapshot],
     ) -> None:
         cached_bytes = sum(
-            entry.version[0] for entry in cls._database_main_cache.values()
+            entry.version[0] for entry in self._database_main_cache.values()
         )
-        while cls._database_main_cache and (
-            len(cls._database_main_cache) >= cls._database_main_cache_limit
-            or cached_bytes + incoming_size > cls._database_main_cache_max_bytes
+        while self._database_main_cache and (
+            len(self._database_main_cache) >= self._database_main_cache_limit
+            or cached_bytes + incoming_size > self._database_main_cache_max_bytes
         ):
-            oldest_key = next(iter(cls._database_main_cache))
-            evicted = cls._database_main_cache.pop(oldest_key)
+            oldest_key = next(iter(self._database_main_cache))
+            evicted = self._database_main_cache.pop(oldest_key)
             evicted.evicted = True
             cached_bytes -= evicted.version[0]
             discarded.append(evicted)
@@ -2916,9 +2932,16 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-def create_handler_factory(search_root, allowed_hosts=...):
+def create_handler_factory(
+    search_root,
+    allowed_hosts=...,
+    max_database_snapshot_bytes=DEFAULT_MAX_DATABASE_SNAPSHOT_BYTES,
+):
     """Create a handler factory that passes the search root to handler."""
 
+    max_database_snapshot_bytes = _validate_snapshot_size_bytes(
+        max_database_snapshot_bytes
+    )
     canonical_search_root = os.path.realpath(search_root)
     search_root_descriptor = None
     if DatabaseRequestHandler._supports_descriptor_traversal():
@@ -2933,6 +2956,7 @@ def create_handler_factory(search_root, allowed_hosts=...):
             canonical_search_root=canonical_search_root,
             search_root_descriptor=search_root_descriptor,
             allowed_hosts=allowed_hosts,
+            max_database_snapshot_bytes=max_database_snapshot_bytes,
             **kwargs,
         )
 
@@ -3076,12 +3100,28 @@ def _browser_url(
     return f"http://{browser_host}:{port}{path}"
 
 
+def _snapshot_size_bytes_from_gib(value: str) -> int:
+    try:
+        size_gib = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("snapshot size must be a number") from exc
+    if not 0 < size_gib <= sys.maxsize / 1024**3:
+        raise argparse.ArgumentTypeError(
+            "snapshot size must be positive and representable"
+        )
+    try:
+        return _validate_snapshot_size_bytes(int(size_gib * 1024**3))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def start_server(
     port: int,
     search_root: str,
     db_path: Optional[str] = None,
     host: str = "127.0.0.1",
     on_ready: Optional[Callable[[socketserver.TCPServer], None]] = None,
+    max_database_snapshot_bytes: int = DEFAULT_MAX_DATABASE_SNAPSHOT_BYTES,
 ):
     """Start the HTTP server.
 
@@ -3089,6 +3129,10 @@ def start_server(
     the local network. Pass an explicit ``host`` (e.g. "0.0.0.0") to expose it,
     which also relaxes the DNS-rebinding Host-header check.
     """
+    max_database_snapshot_bytes = _validate_snapshot_size_bytes(
+        max_database_snapshot_bytes
+    )
+
     # Change to the webui directory inside the shinka package to serve static files
     webui_dir = os.path.dirname(__file__)
     webui_dir = os.path.abspath(webui_dir)
@@ -3107,7 +3151,9 @@ def start_server(
         bound_host = _bound_host_from_server_address(httpd.server_address)
         allowed_hosts = _allowed_hosts_for_bind(host, bound_host)
         httpd.RequestHandlerClass = create_handler_factory(
-            search_root, allowed_hosts=allowed_hosts
+            search_root,
+            allowed_hosts=allowed_hosts,
+            max_database_snapshot_bytes=max_database_snapshot_bytes,
         )
         bound_port = int(httpd.server_address[1])
         display_url = _browser_url(bound_host, bound_port)
@@ -3179,6 +3225,16 @@ def main():
             "expose on the network — this serves the database with no auth."
         ),
     )
+    parser.add_argument(
+        "--max-database-snapshot-gib",
+        dest="max_database_snapshot_bytes",
+        type=_snapshot_size_bytes_from_gib,
+        default=DEFAULT_MAX_DATABASE_SNAPSHOT_BYTES,
+        help=(
+            "Maximum combined database and WAL snapshot size in GiB "
+            "(default: 2)."
+        ),
+    )
     args = parser.parse_args()
 
     # Resolve the root directory to an absolute path
@@ -3213,6 +3269,7 @@ def main():
             args.db,
             args.host,
             on_ready=announce_ready,
+            max_database_snapshot_bytes=args.max_database_snapshot_bytes,
         )
     except KeyboardInterrupt:
         print("\n[*] Shutting down.")

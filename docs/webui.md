@@ -73,6 +73,7 @@ shinka_visualize --db results_20241201_120000/evolution_db.sqlite --open
 | `--host` | `127.0.0.1` | Address to bind; non-loopback addresses expose the unauthenticated server |
 | `--db` | Auto-detect | Path to specific SQLite database file |
 | `--open` | `False` | Auto-open browser |
+| `--max-database-snapshot-gib` | `2` | Maximum combined database and WAL snapshot size; raise for larger trusted runs |
 
 ---
 
