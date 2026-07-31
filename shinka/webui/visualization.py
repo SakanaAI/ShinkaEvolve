@@ -10,7 +10,6 @@ import argparse
 import base64
 import http.server
 import json
-import markdown
 import os
 import re
 import socketserver
@@ -23,10 +22,17 @@ import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from shinka.database import DatabaseConfig, ProgramDatabase
-from shinka.database import SystemPromptConfig, SystemPromptDatabase
+import markdown
+
+from shinka.database import (
+    DatabaseConfig,
+    ProgramDatabase,
+    SystemPromptConfig,
+    SystemPromptDatabase,
+)
+from shinka.webui.pdf_security import escape_pdf_text, sanitize_pdf_html
 
 DEFAULT_PORT = 8000
 CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
@@ -1344,6 +1350,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 # Manually convert remaining single line breaks to <br>
                 html_content = html_content.replace("\n", "<br>\n")
 
+            html_content = sanitize_pdf_html(html_content)
+
             # Add boxes around program summaries after markdown conversion
             print(
                 f"[SERVER] HTML content before boxing (first 500 chars): "
@@ -1357,13 +1365,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             # Get the logo as base64
             logo_data_uri = self._get_logo_base64()
+            safe_generation = escape_pdf_text(str(generation))
 
             # Create a well-formatted HTML document
             html_full = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Meta Generation {generation}</title>
+    <title>Meta Generation {safe_generation}</title>
     <style>
         @media print {{
             @page {{ margin: 2cm; size: A4; }}
@@ -1484,7 +1493,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     <div class="header-container">
         {f'<img src="{logo_data_uri}" alt="Shinka Logo" class="header-logo">' if logo_data_uri else ""}
         <h1 class="header-title">ShinkaEvolve Meta-Scratchpad: \
-{generation}</h1>
+{safe_generation}</h1>
     </div>
     {html_content}
 </body>
@@ -1503,11 +1512,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 ) as pdf_file:
                     pdf_file_path = pdf_file.name
 
-                # Try wkhtmltopdf directly. Disable JavaScript and local-file /
-                # external access: the HTML is built from LLM-generated meta
-                # content, so a payload like <img src="file:///etc/passwd"> or a
-                # remote fetch could otherwise exfiltrate local files / SSRF via
-                # wkhtmltopdf's WebKit engine.
+                # The allowlisted HTML has no resource-bearing tags or attributes.
+                # These switches add defense in depth for local files, scripts,
+                # and external link annotations.
                 result = subprocess.run(
                     [
                         "wkhtmltopdf",
