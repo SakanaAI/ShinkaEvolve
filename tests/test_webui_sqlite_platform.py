@@ -388,6 +388,63 @@ def test_database_snapshot_retries_staging_parent_after_enospc(
     assert not list(first_staging_parent.iterdir())
 
 
+@requires_descriptor_traversal
+def test_database_snapshot_retries_wal_staging_after_enospc(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "programs.sqlite"
+    first_staging_parent = tmp_path / "first-staging"
+    second_staging_parent = tmp_path / "second-staging"
+    first_staging_parent.mkdir()
+    second_staging_parent.mkdir()
+    writer = sqlite3.connect(database_path)
+    writer.execute("PRAGMA journal_mode = WAL")
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("CREATE TABLE programs (id INTEGER)")
+    writer.execute("INSERT INTO programs VALUES (1)")
+    writer.commit()
+    handler = _handler(tmp_path)
+    copy_sidecar = handler._copy_optional_database_sidecar
+    wal_copy_attempts = 0
+
+    def fail_first_wal_copy(*args, **kwargs):
+        nonlocal wal_copy_attempts
+        wal_copy_attempts += 1
+        if wal_copy_attempts == 1:
+            raise OSError(errno.ENOSPC, "staging filesystem full")
+        return copy_sidecar(*args, **kwargs)
+
+    monkeypatch.setattr(
+        handler,
+        "_database_staging_parents",
+        lambda path: [
+            os.fspath(first_staging_parent),
+            os.fspath(second_staging_parent),
+        ],
+    )
+    monkeypatch.setattr(
+        handler,
+        "_copy_optional_database_sidecar",
+        fail_first_wal_copy,
+    )
+    try:
+        with handler._connect_database_within_root(
+            database_path,
+            timeout=5.0,
+        ) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM programs").fetchone()[0] == 1
+    finally:
+        writer.close()
+
+    assert wal_copy_attempts == 2
+    assert not [
+        path
+        for path in first_staging_parent.iterdir()
+        if path.name.startswith("shinka-webui-db-")
+    ]
+    handler.clear_database_snapshot_cache()
+
+
 @pytest.mark.parametrize(
     ("path", "expected_target"),
     [

@@ -712,10 +712,17 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         )
         try:
             offset = 0
-            while True:
-                chunk = os.pread(source_descriptor, 1024 * 1024, offset)
+            remaining = expected_stat.st_size
+            while remaining:
+                chunk = os.pread(
+                    source_descriptor,
+                    min(1024 * 1024, remaining),
+                    offset,
+                )
                 if not chunk:
-                    break
+                    raise DatabaseViewRaceError(
+                        "Database changed while snapshotting"
+                    )
                 view = memoryview(chunk)
                 while view:
                     written = os.write(destination, view)
@@ -723,6 +730,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                         raise OSError("Unable to write database snapshot")
                     view = view[written:]
                 offset += len(chunk)
+                remaining -= len(chunk)
         finally:
             os.close(destination)
 
@@ -834,10 +842,16 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         return header == b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7"
 
     @contextlib.contextmanager
-    def _database_staging_directory(self, resolved_database_path: str):
+    def _database_staging_directory(
+        self,
+        resolved_database_path: str,
+        excluded_parents: set[str],
+    ):
         for staging_parent in self._database_staging_parents(
             resolved_database_path,
         ):
+            if staging_parent in excluded_parents:
+                continue
             try:
                 temp_directory = tempfile.TemporaryDirectory(
                     prefix="shinka-webui-db-",
@@ -851,7 +865,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     temp_directory.name,
                     self._directory_open_flags(),
                 )
-                yield directory_descriptor, temp_directory.name
+                yield directory_descriptor, temp_directory.name, staging_parent
                 return
             finally:
                 if directory_descriptor is not None:
@@ -975,13 +989,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         database_descriptor: int,
         database_stat: os.stat_result,
     ) -> Tuple[tempfile.TemporaryDirectory, str]:
-        retry_errors = {
-            errno.EACCES,
-            errno.EPERM,
-            errno.ENOSPC,
-            errno.EROFS,
-            getattr(errno, "EDQUOT", -1),
-        }
         last_error = None
         for staging_parent in staging_parents:
             temp_directory = None
@@ -1010,7 +1017,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 succeeded = True
                 return temp_directory, cached_path
             except OSError as exc:
-                if exc.errno not in retry_errors:
+                if not self._is_retryable_staging_error(exc):
                     raise
                 last_error = exc
             finally:
@@ -1022,6 +1029,16 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         raise sqlite3.OperationalError(
             "no secure staging directory has enough space for the database snapshot"
         ) from last_error
+
+    @staticmethod
+    def _is_retryable_staging_error(exc: OSError) -> bool:
+        return exc.errno in {
+            errno.EACCES,
+            errno.EPERM,
+            errno.ENOSPC,
+            errno.EROFS,
+            getattr(errno, "EDQUOT", -1),
+        }
 
     @classmethod
     def _evict_database_main_cache_entries(
@@ -1335,8 +1352,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             source_name = os.path.basename(resolved_path)
             race_attempts = 0
+            excluded_staging_parents: set[str] = set()
             while race_attempts < 3:
                 attempt_database_stat = os.fstat(database_descriptor)
+                active_staging_parent = None
+                connection_yielded = False
                 try:
                     cached_main = self._cached_database_main(
                         resolved_path,
@@ -1353,8 +1373,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 "database snapshot is busy"
                             )
                         snapshot_stack.callback(cached_main.lock.release)
-                        staging_descriptor, staging_path = snapshot_stack.enter_context(
-                            self._database_staging_directory(resolved_path)
+                        (
+                            staging_descriptor,
+                            staging_path,
+                            active_staging_parent,
+                        ) = snapshot_stack.enter_context(
+                            self._database_staging_directory(
+                                resolved_path,
+                                excluded_staging_parents,
+                            )
                         )
                         sidecars = self._stage_database_view(
                             cached_main_path=cached_main.path,
@@ -1409,10 +1436,20 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                             connection.close()
                             raise
                         try:
+                            connection_yielded = True
                             yield connection
                         finally:
                             connection.close()
                         return
+                except OSError as exc:
+                    if (
+                        connection_yielded
+                        or active_staging_parent is None
+                        or not self._is_retryable_staging_error(exc)
+                    ):
+                        raise
+                    excluded_staging_parents.add(active_staging_parent)
+                    continue
                 except DatabaseViewRaceError:
                     race_attempts += 1
                     if race_attempts == 3:
