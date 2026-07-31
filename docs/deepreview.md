@@ -8,7 +8,7 @@
 > ShinkaEvolve is a research framework for LLM-driven evolutionary program search. It queries LLM APIs, writes generated programs to disk, **executes them locally or via Slurm**, stores results in SQLite, and serves a web UI for visualization. This execution-of-generated-code model is intentional and shapes the security analysis below.
 
 !!! warning "Security disclosure status"
-    This historical review covers security defects that were present in the reviewed revision. Detailed exploitation steps are intentionally omitted while the corresponding hardening is not on `main`. Until those mitigations land, keep the Web UI bound to trusted interfaces and treat generated-code evaluation as privileged execution.
+    This historical review covers security defects that were present in the reviewed revision. Detailed exploitation steps are intentionally omitted while the corresponding hardening is not on `main`. Until those mitigations land, do not expose the Web UI beyond trusted networks; restrict access with a host firewall or container/network isolation, and treat generated-code evaluation as privileged execution.
 
 ---
 
