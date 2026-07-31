@@ -75,6 +75,74 @@ def test_resolve_rejects_sibling_prefix_dir(tmp_path):
         handler._resolve_within_root("../served_bak/leak.db")
 
 
+def test_read_failure_json_rejects_path_outside_search_root(tmp_path):
+    outside_payload = tmp_path / "outside.json"
+    outside_payload.write_text('{"failure_reason":"secret"}', encoding="utf-8")
+    search_root = tmp_path / "served"
+    search_root.mkdir()
+    handler = _handler(search_root)
+
+    with pytest.raises(PathValidationError):
+        handler._read_failure_json(str(outside_payload))
+
+
+def test_failed_node_code_path_rejects_path_outside_search_root(tmp_path):
+    outside_code = tmp_path / "secret.py"
+    outside_code.write_text("secret = True\n", encoding="utf-8")
+    search_root = tmp_path / "served"
+    search_root.mkdir()
+    handler = _handler(search_root)
+
+    with pytest.raises(PathValidationError):
+        handler._resolve_failed_node_code_path(
+            {"failure_json_path": "failure.json"},
+            {"artifacts": {"generated_code_path": str(outside_code)}},
+        )
+
+
+def test_failed_node_code_path_rejects_symlinked_preferred_file(tmp_path):
+    outside_code = tmp_path / "secret.py"
+    outside_code.write_text("secret = True\n", encoding="utf-8")
+    failure_dir = tmp_path / "served" / "results" / "gen_1"
+    failure_dir.mkdir(parents=True)
+    (failure_dir / "main.py").symlink_to(outside_code)
+    handler = _handler(tmp_path / "served")
+
+    with pytest.raises(PathValidationError):
+        handler._resolve_failed_node_code_path(
+            {"failure_json_path": "results/gen_1/failure.json"},
+            {"language": "python"},
+        )
+
+
+def test_failed_node_code_path_rejects_symlinked_generic_fallback(tmp_path):
+    outside_code = tmp_path / "secret.rs"
+    outside_code.write_text("const SECRET: bool = true;\n", encoding="utf-8")
+    failure_dir = tmp_path / "served" / "results" / "gen_1"
+    failure_dir.mkdir(parents=True)
+    (failure_dir / "main.rs").symlink_to(outside_code)
+    handler = _handler(tmp_path / "served")
+
+    with pytest.raises(PathValidationError):
+        handler._resolve_failed_node_code_path(
+            {"failure_json_path": "results/gen_1/failure.json"},
+            {"language": "rust"},
+        )
+
+
+def test_failed_node_details_propagates_path_validation_error(tmp_path):
+    (tmp_path / "programs.sqlite").write_text("", encoding="utf-8")
+    handler = _handler(tmp_path)
+
+    def reject_failed_node(*args, **kwargs):
+        raise PathValidationError("outside search root")
+
+    handler._load_failed_proposal_nodes = reject_failed_node
+
+    with pytest.raises(PathValidationError):
+        handler.handle_get_program_details("programs.sqlite", "failed:proposal:1")
+
+
 class _Server:
     """Direct ThreadingTCPServer for the handler (no start_server chdir)."""
 

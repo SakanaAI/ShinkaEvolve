@@ -82,10 +82,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if not failure_json_path:
             return None
         try:
-            failure_path = Path(self.search_root) / failure_json_path
+            failure_path = Path(self._resolve_within_root(failure_json_path))
             if not failure_path.exists():
                 return None
             return json.loads(failure_path.read_text(encoding="utf-8"))
+        except PathValidationError:
+            raise
         except Exception:
             return None
 
@@ -125,7 +127,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         failure_json_path = details.get("failure_json_path")
         if failure_json_path:
-            failure_path = Path(self.search_root) / failure_json_path
+            failure_path = Path(self._resolve_within_root(failure_json_path))
             candidates = sorted(failure_path.parent.glob("main.*"))
             if candidates:
                 return self._language_from_suffix(candidates[0].suffix)
@@ -141,15 +143,15 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "generated_code_path"
         )
         if generated_code_path:
-            code_path = Path(self.search_root) / generated_code_path
-            if code_path.exists():
+            code_path = self._existing_path_within_root(generated_code_path)
+            if code_path is not None:
                 return code_path
 
         failure_json_path = details.get("failure_json_path")
         if not failure_json_path:
             return None
 
-        failure_path = Path(self.search_root) / failure_json_path
+        failure_path = Path(self._resolve_within_root(failure_json_path))
         language = self._resolve_failed_node_language(details, failure_payload)
         preferred_suffix = {
             "python": ".py",
@@ -163,11 +165,21 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         }.get(language)
         if preferred_suffix:
             preferred_path = failure_path.parent / f"main{preferred_suffix}"
-            if preferred_path.exists():
-                return preferred_path
+            resolved_path = self._existing_path_within_root(preferred_path)
+            if resolved_path is not None:
+                return resolved_path
 
-        candidates = sorted(failure_path.parent.glob("main.*"))
-        return candidates[0] if candidates else None
+        for candidate in sorted(failure_path.parent.glob("main.*")):
+            resolved_path = self._existing_path_within_root(candidate)
+            if resolved_path is not None:
+                return resolved_path
+        return None
+
+    def _existing_path_within_root(
+        self, path: os.PathLike[str] | str
+    ) -> Optional[Path]:
+        resolved_path = Path(self._resolve_within_root(os.fspath(path)))
+        return resolved_path if resolved_path.exists() else None
 
     def _build_failed_node_dict(
         self,
@@ -587,6 +599,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error(500, f"Database error: {str(e)}")
                     return
 
+            except PathValidationError:
+                raise
             except Exception as e:
                 # Catch any other unexpected errors
                 print(f"[SERVER] An unexpected error occurred: {e}")
@@ -659,6 +673,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error(500, f"Database error: {str(e)}")
                     return
 
+            except PathValidationError:
+                raise
             except Exception as e:
                 print(f"[SERVER] Error fetching program summaries: {e}")
                 self.send_error(500, f"Error: {str(e)}")
@@ -737,6 +753,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error(500, f"Database error: {str(e)}")
                     return
 
+            except PathValidationError:
+                raise
             except Exception as e:
                 print(f"[SERVER] Error fetching program count: {e}")
                 self.send_error(500, f"Error: {str(e)}")
@@ -772,6 +790,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     return
                 self.send_json_response(failed_nodes[0])
                 return
+            except PathValidationError:
+                raise
             except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
                 self.send_error(500, f"Database error: {str(e)}")
                 return
