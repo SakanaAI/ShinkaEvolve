@@ -25,6 +25,7 @@ def _handler(root):
     # Build a handler without running the socket-bound __init__.
     handler = object.__new__(DatabaseRequestHandler)
     handler.search_root = str(root)
+    handler._canonical_search_root = os.path.realpath(root)
     return handler
 
 
@@ -74,6 +75,17 @@ def test_resolve_rejects_sibling_prefix_dir(tmp_path):
     handler = _handler(served)
     with pytest.raises(PathValidationError):
         handler._resolve_within_root("../served_bak/leak.db")
+
+
+def test_failed_node_language_defaults_when_artifact_directory_is_missing(tmp_path):
+    handler = _handler(tmp_path)
+
+    language = handler._resolve_failed_node_language(
+        {"failure_json_path": "missing/gen/failure.json"},
+        None,
+    )
+
+    assert language == "python"
 
 
 def test_read_failure_json_rejects_path_outside_search_root(tmp_path):

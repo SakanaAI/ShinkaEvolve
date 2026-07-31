@@ -8,6 +8,7 @@ It serves a web interface for exploring evolution databases and meta files.
 
 import argparse
 import base64
+import errno
 import http.server
 import json
 import markdown
@@ -15,6 +16,7 @@ import os
 import re
 import socketserver
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,6 +24,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+import weakref
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
@@ -41,8 +44,20 @@ class PathValidationError(ValueError):
 
 
 class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args, search_root=None, allowed_hosts=..., **kwargs):
+    def __init__(
+        self,
+        *args,
+        search_root=None,
+        canonical_search_root=None,
+        search_root_descriptor=None,
+        allowed_hosts=...,
+        **kwargs,
+    ):
         self.search_root = search_root or os.getcwd()
+        self._canonical_search_root = canonical_search_root or os.path.realpath(
+            self.search_root
+        )
+        self._search_root_descriptor = search_root_descriptor
         # Attributes must be set before super().__init__, which handles the
         # request immediately. `...` means "keep the class default allowlist".
         if allowed_hosts is not ...:
@@ -85,7 +100,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             failure_path = Path(self._resolve_within_root(failure_json_path))
             if not failure_path.exists():
                 return None
-            return json.loads(failure_path.read_text(encoding="utf-8"))
+            return json.loads(self._read_text_within_root(failure_path))
         except PathValidationError:
             raise
         except Exception:
@@ -128,9 +143,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         failure_json_path = details.get("failure_json_path")
         if failure_json_path:
             failure_path = Path(self._resolve_within_root(failure_json_path))
-            candidates = sorted(failure_path.parent.glob("main.*"))
+            candidates = self._main_candidate_names(failure_path.parent)
             if candidates:
-                return self._language_from_suffix(candidates[0].suffix)
+                return self._language_from_suffix(Path(candidates[0]).suffix)
 
         return "python"
 
@@ -169,7 +184,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             if resolved_path is not None:
                 return resolved_path
 
-        for candidate in sorted(failure_path.parent.glob("main.*")):
+        for candidate_name in self._main_candidate_names(failure_path.parent):
+            candidate = failure_path.parent / candidate_name
             resolved_path = self._existing_path_within_root(candidate)
             if resolved_path is not None:
                 return resolved_path
@@ -180,6 +196,13 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     ) -> Optional[Path]:
         resolved_path = Path(self._resolve_within_root(os.fspath(path)))
         return resolved_path if resolved_path.exists() else None
+
+    def _main_candidate_names(self, directory: Path) -> list[str]:
+        try:
+            names = self._list_directory_within_root(directory)
+        except FileNotFoundError:
+            return []
+        return sorted(name for name in names if name.startswith("main."))
 
     def _build_failed_node_dict(
         self,
@@ -215,7 +238,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             code_path = self._resolve_failed_node_code_path(details, failure_payload)
             if code_path is not None:
                 try:
-                    code = code_path.read_text(encoding="utf-8")
+                    code = self._read_text_within_root(code_path)
+                except PathValidationError:
+                    raise
                 except Exception:
                     code = None
 
@@ -410,53 +435,37 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Get the task name from the search root directory name
         task_name = os.path.basename(self.search_root)
 
-        if os.path.exists(self.search_root):
-            print(f"[SERVER] Scanning for .db files in: {self.search_root}")
-            for root, _, files in os.walk(self.search_root):
-                for f in files:
-                    # Only list program databases, not prompt databases
-                    if f.lower() in ("prompts.db", "prompts.sqlite"):
-                        continue
-                    if f.lower().endswith((".db", ".sqlite")):
-                        full_path = os.path.join(root, f)
-                        client_path = os.path.relpath(full_path, self.search_root)
+        print(f"[SERVER] Scanning for .db files in: {self.search_root}")
+        for client_path in self._walk_files_within_root():
+            filename = os.path.basename(client_path)
+            if filename.lower() in ("prompts.db", "prompts.sqlite"):
+                continue
+            if not filename.lower().endswith((".db", ".sqlite")):
+                continue
 
-                        # Parse path components
-                        path_parts = client_path.split(os.sep)
+            path_parts = client_path.split(os.sep)
+            display_name = (
+                "/".join(path_parts[:-1])
+                if len(path_parts) >= 2
+                else client_path
+            )
+            task = path_parts[0] if len(path_parts) >= 2 else task_name
 
-                        # Extract result name (full path to db directory)
-                        # e.g., results_coral/aes_block_encrypt/triton
-                        display_name = (
-                            "/".join(path_parts[:-1])
-                            if len(path_parts) >= 2
-                            else client_path
-                        )
-
-                        # Extract task name (first path component only)
-                        # e.g., results_coral
-                        if len(path_parts) >= 2:
-                            task = path_parts[0]
-                        else:
-                            task = task_name
-
-                        # Extract date for sorting
-                        sort_key = "0"  # Default for paths without a date
-                        match = date_pattern.search(client_path)
-                        if match:
-                            sort_key = match.group(1)
-
-                        db_info = {
-                            "path": client_path,
-                            "name": display_name,
-                            "task": task,
-                            "sort_key": sort_key,
-                            "actual_path": client_path,
-                        }
-                        db_files.append(db_info)
-                        print(
-                            f"[SERVER] Found DB: {client_path} "
-                            f"(task: '{task}', result: '{display_name}')"
-                        )
+            match = date_pattern.search(client_path)
+            sort_key = match.group(1) if match else "0"
+            db_files.append(
+                {
+                    "path": client_path,
+                    "name": display_name,
+                    "task": task,
+                    "sort_key": sort_key,
+                    "actual_path": client_path,
+                }
+            )
+            print(
+                f"[SERVER] Found DB: {client_path} "
+                f"(task: '{task}', result: '{display_name}')"
+            )
 
         if not db_files:
             print("[SERVER] No database files found in search directory.")
@@ -484,7 +493,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         resolved (realpath) before checking so an in-root symlink pointing
         outside cannot be used to escape.
         """
-        root = os.path.realpath(self.search_root)
+        root = self._canonical_root()
         candidate = os.path.realpath(os.path.join(root, relative_path))
         try:
             contained = os.path.commonpath([root, candidate]) == root
@@ -494,6 +503,205 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if not contained:
             raise PathValidationError(f"Path escapes search root: {relative_path!r}")
         return candidate
+
+    @staticmethod
+    def _supports_descriptor_traversal() -> bool:
+        return (
+            os.open in os.supports_dir_fd
+            and os.listdir in os.supports_fd
+            and os.stat in os.supports_dir_fd
+            and hasattr(os, "O_DIRECTORY")
+            and hasattr(os, "O_NOFOLLOW")
+        )
+
+    def _open_descriptor_within_root(
+        self, path: os.PathLike[str] | str, flags: int
+    ) -> int:
+        resolved_path = self._resolve_within_root(os.fspath(path))
+        if not self._supports_descriptor_traversal():
+            return os.open(resolved_path, flags)
+
+        root = self._canonical_root()
+        relative_path = os.path.relpath(resolved_path, root)
+        relative_parts = Path(relative_path).parts
+        if os.path.isabs(relative_path) or any(
+            part in (os.curdir, os.pardir) for part in relative_parts
+        ):
+            raise PathValidationError(f"Path escapes search root: {path!r}")
+        descriptor = self._duplicate_search_root_descriptor(root)
+        directory_flags = self._directory_open_flags()
+        try:
+            for part in relative_parts[:-1]:
+                next_descriptor = os.open(
+                    part,
+                    directory_flags,
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+
+            if not relative_parts:
+                return os.dup(descriptor)
+            return os.open(
+                relative_parts[-1],
+                flags | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=descriptor,
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise PathValidationError(f"Path changed during access: {path!r}") from exc
+            raise
+        finally:
+            os.close(descriptor)
+
+    def _duplicate_search_root_descriptor(self, root: str) -> int:
+        pinned_descriptor = getattr(self, "_search_root_descriptor", None)
+        if pinned_descriptor is not None:
+            return os.dup(pinned_descriptor)
+        return self._open_search_root_descriptor(root)
+
+    def _canonical_root(self) -> str:
+        root = getattr(self, "_canonical_search_root", None)
+        if root is None:
+            root = os.path.realpath(self.search_root)
+            self._canonical_search_root = root
+        return root
+
+    @staticmethod
+    def _directory_open_flags() -> int:
+        return (
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        )
+
+    @classmethod
+    def _open_search_root_descriptor(cls, search_root: os.PathLike[str] | str) -> int:
+        if not cls._supports_descriptor_traversal():
+            raise PathValidationError(
+                "Race-safe path access is unavailable on this platform"
+            )
+
+        descriptor = os.open(os.path.sep, cls._directory_open_flags())
+        try:
+            for part in Path(os.path.realpath(search_root)).parts[1:]:
+                next_descriptor = os.open(
+                    part,
+                    cls._directory_open_flags(),
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    def _read_text_within_root(
+        self, path: os.PathLike[str] | str, encoding: str = "utf-8"
+    ) -> str:
+        descriptor = self._open_descriptor_within_root(path, os.O_RDONLY)
+        with os.fdopen(descriptor, "r", encoding=encoding) as file:
+            return file.read()
+
+    def _read_bytes_within_root(self, path: os.PathLike[str] | str) -> bytes:
+        descriptor = self._open_descriptor_within_root(path, os.O_RDONLY)
+        with os.fdopen(descriptor, "rb") as file:
+            return file.read()
+
+    def _list_directory_within_root(
+        self, path: os.PathLike[str] | str
+    ) -> list[str]:
+        if not self._supports_descriptor_traversal():
+            return os.listdir(self._resolve_within_root(os.fspath(path)))
+        descriptor = self._open_descriptor_within_root(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            return os.listdir(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _walk_files_within_root(self) -> list[str]:
+        if not self._supports_descriptor_traversal():
+            return [
+                os.path.relpath(os.path.join(root, filename), self.search_root)
+                for root, _, files in os.walk(self.search_root)
+                for filename in files
+            ]
+
+        descriptor = self._duplicate_search_root_descriptor(self._canonical_root())
+        try:
+            return self._walk_regular_files(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _walk_regular_files(self, descriptor: int, prefix: str = "") -> list[str]:
+        paths = []
+        for name in os.listdir(descriptor):
+            try:
+                entry = os.stat(
+                    name,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                if self._is_skippable_walk_error(exc):
+                    continue
+                raise
+
+            relative_path = os.path.join(prefix, name) if prefix else name
+            if stat.S_ISREG(entry.st_mode):
+                paths.append(relative_path)
+                continue
+            if stat.S_ISLNK(entry.st_mode):
+                try:
+                    file_descriptor = self._open_descriptor_within_root(
+                        relative_path, os.O_RDONLY
+                    )
+                except PathValidationError:
+                    continue
+                except OSError as exc:
+                    if self._is_skippable_walk_error(exc):
+                        continue
+                    raise
+                try:
+                    if stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+                        paths.append(relative_path)
+                finally:
+                    os.close(file_descriptor)
+                continue
+            if not stat.S_ISDIR(entry.st_mode):
+                continue
+
+            try:
+                child_descriptor = os.open(
+                    name,
+                    self._directory_open_flags(),
+                    dir_fd=descriptor,
+                )
+            except OSError as exc:
+                if self._is_skippable_walk_error(exc):
+                    continue
+                raise
+            try:
+                try:
+                    paths.extend(
+                        self._walk_regular_files(child_descriptor, relative_path)
+                    )
+                except OSError as exc:
+                    if not self._is_skippable_walk_error(exc):
+                        raise
+            finally:
+                os.close(child_descriptor)
+        return paths
+
+    @staticmethod
+    def _is_skippable_walk_error(exc: OSError) -> bool:
+        return exc.errno in {
+            errno.ENOENT,
+            errno.EACCES,
+            errno.EPERM,
+            errno.ELOOP,
+            errno.ENOTDIR,
+            getattr(errno, "ESTALE", -1),
+        }
 
     def _get_actual_db_path(self, db_path: str) -> str:
         """Validate db_path stays within search_root; return its absolute path.
@@ -882,7 +1090,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         meta_files = []
         try:
             # Look for meta files named by processed-count suffix
-            for file in os.listdir(meta_dir):
+            for file in self._list_directory_within_root(meta_dir):
                 if file.startswith("meta_") and file.endswith(".txt"):
                     # Extract processed count from meta_<count>.txt
                     count_str = file[5:-4]  # Remove 'meta_' and '.txt'
@@ -907,6 +1115,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             print(f"[SERVER] Found {len(meta_files)} meta files")
             self.send_json_response(meta_files)
 
+        except PathValidationError:
+            raise
         except Exception as e:
             print(f"[SERVER] Error listing meta files: {e}")
             self.send_error(500, f"Error listing meta files: {str(e)}")
@@ -942,8 +1152,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         try:
-            with open(meta_file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = self._read_text_within_root(meta_file_path)
 
             response_data = {
                 "processed_count": int(processed_count),
@@ -959,6 +1168,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             self.send_json_response(response_data)
 
+        except PathValidationError:
+            raise
         except Exception as e:
             print(f"[SERVER] Error reading meta file: {e}")
             self.send_error(500, f"Error reading meta file: {str(e)}")
@@ -994,8 +1205,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         try:
-            with open(meta_file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = self._read_text_within_root(meta_file_path)
 
             pdf_filename = f"meta_{processed_count}.pdf"
 
@@ -1020,6 +1230,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(pdf_bytes)
             print(f"[SERVER] Successfully served PDF: {pdf_filename}")
 
+        except PathValidationError:
+            raise
         except Exception as e:
             print(f"[SERVER] Error converting meta file to PDF: {e}")
             self.send_error(500, f"Error converting to PDF: {str(e)}")
@@ -1046,7 +1258,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         plot_files = []
         if os.path.exists(plots_dir):
-            for filename in os.listdir(plots_dir):
+            for filename in self._list_directory_within_root(plots_dir):
                 filepath = os.path.join(plots_dir, filename)
                 if os.path.isfile(filepath):
                     ext = os.path.splitext(filename)[1].lower()
@@ -1105,8 +1317,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         try:
-            with open(abs_path, "rb") as f:
-                file_data = f.read()
+            file_data = self._read_bytes_within_root(abs_path)
 
             self.send_response(200)
             self.send_header("Content-Type", content_type)
@@ -1116,6 +1327,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(file_data)
             print(f"[SERVER] Successfully served plot: {rel_path}")
 
+        except PathValidationError:
+            raise
         except Exception as e:
             print(f"[SERVER] Error serving plot file: {e}")
             self.send_error(500, f"Error serving file: {str(e)}")
@@ -1812,14 +2025,25 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 def create_handler_factory(search_root, allowed_hosts=...):
     """Create a handler factory that passes the search root to handler."""
 
+    canonical_search_root = os.path.realpath(search_root)
+    search_root_descriptor = None
+    if DatabaseRequestHandler._supports_descriptor_traversal():
+        search_root_descriptor = DatabaseRequestHandler._open_search_root_descriptor(
+            canonical_search_root
+        )
+
     def handler_factory(*args, **kwargs):
         return DatabaseRequestHandler(
             *args,
             search_root=search_root,
+            canonical_search_root=canonical_search_root,
+            search_root_descriptor=search_root_descriptor,
             allowed_hosts=allowed_hosts,
             **kwargs,
         )
 
+    if search_root_descriptor is not None:
+        weakref.finalize(handler_factory, os.close, search_root_descriptor)
     return handler_factory
 
 
@@ -1864,6 +2088,11 @@ def start_server(
             msg += (
                 "\n[!] Bound to a non-loopback address: the evolution database "
                 "is reachable from the network with no authentication."
+            )
+        if not DatabaseRequestHandler._supports_descriptor_traversal():
+            msg += (
+                "\n[!] This platform lacks descriptor-relative file access; "
+                "search-root race hardening is unavailable."
             )
         print(msg)
         httpd.serve_forever()
