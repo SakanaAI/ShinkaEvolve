@@ -33,7 +33,7 @@ The security posture is **good on fundamentals but weak at the web-UI boundary a
 
 ### What's already solid (verified)
 - **SQL is consistently parameterized** across `dbase.py`, `async_dbase.py`, `prompt_dbase.py`, `visualization.py` — no string-built queries with user data. The only f-string interpolations into SQL are integer `LIMIT`/`OFFSET` values (`islands.py:905`, `island_sampler.py:51/78`, `inspirations.py:178/189`) — not injectable.
-- Config loading uses `yaml.safe_load`; no secrets logged or persisted to the DB / W&B (config dataclasses hold no secrets).
+- Config loading uses `yaml.safe_load`; standard provider credentials are read from environment variables rather than persisted to the database. W&B logging serializes the evolution, database, and job configurations—including arbitrary `wandb_config` values—without key-based redaction, so credentials and other sensitive values must not be placed in those configuration fields.
 - `.env` is gitignored and absent from git history; `release_check.py` guards the PyPI artifact.
 - CI avoids `pull_request_target`; PRs run without secrets; integration secrets are gated to `main`/dispatch.
 
