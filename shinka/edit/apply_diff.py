@@ -147,6 +147,28 @@ def _iter_aligned_positions(needle: str, haystack: str):
         search_from = pos + 1
 
 
+def _reindent_lines(lines: list[str], indent_str: str) -> list[str]:
+    """Rebase lines onto ``indent_str`` while preserving relative whitespace."""
+    base_line = next((line for line in lines if line.strip()), "")
+    base_indent_len = len(base_line) - len(base_line.lstrip())
+    base_indent = base_line[:base_indent_len]
+    rebased_lines = []
+
+    for line in lines:
+        if not line.strip():
+            rebased_lines.append("")
+            continue
+        line_indent_len = len(line) - len(line.lstrip())
+        line_indent = line[:line_indent_len]
+        if line_indent.startswith(base_indent):
+            relative_indent = line_indent[len(base_indent) :]
+        else:
+            relative_indent = " " * max(0, line_indent_len - base_indent_len)
+        rebased_lines.append(indent_str + relative_indent + line.strip())
+
+    return rebased_lines
+
+
 def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int]:
     """
     Try to find search_text in original_text, and if not found, try to find
@@ -156,55 +178,46 @@ def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int
     offsets allowed) so that a SEARCH block cannot silently rewrite a
     mid-line substring of an unrelated line.
     """
-    # Handle empty search text
+    return next(_iter_indented_matches(search_text, original_text), ("", -1))
+
+
+def _iter_indented_matches(search_text: str, original_text: str):
+    """Yield every logical line-aligned match across base indentations."""
     if not search_text.strip():
-        return "", -1
+        return
+
+    search_lines = search_text.splitlines()
+
+    seen_spans: set[tuple[int, int]] = set()
+
+    def yield_new_matches(candidate: str):
+        for position in _iter_aligned_positions(candidate, original_text):
+            line_start = original_text.rfind("\n", 0, position) + 1
+            logical_span = (line_start, position + len(candidate))
+            if logical_span not in seen_spans:
+                seen_spans.add(logical_span)
+                yield candidate, position
 
     # First try exact match (line-aligned, so indentation-only offsets match
     # but mid-token substrings do not).
-    for pos in _iter_aligned_positions(search_text, original_text):
-        return search_text, pos
+    yield from yield_new_matches(search_text)
 
-    # If not found, try to find the first line with different indentation
-    search_lines = search_text.splitlines()
-    if not search_lines:
-        return "", -1
+    # Then collect equivalent blocks at every base indentation.
+    first_search_line = next(line.strip() for line in search_lines if line.strip())
 
-    first_search_line = search_lines[0].strip()
-    if not first_search_line:
-        return "", -1
-
-    # Look for the first line in the original text
     original_lines = original_text.splitlines()
-    for i, line in enumerate(original_lines):
+    tried_candidates = {search_text}
+    for line in original_lines:
         if line.strip() == first_search_line:
-            # Found a potential match, get its indentation
             line_indent = len(line) - len(line.lstrip())
             indent_str = line[:line_indent]
-
-            # Apply this indentation to all lines in search_text
-            indented_search_lines = []
-            for j, search_line in enumerate(search_lines):
-                if j == 0:
-                    # First line: use the found indentation
-                    indented_search_lines.append(indent_str + search_line.strip())
-                else:
-                    # Other lines: preserve relative indentation
-                    search_line_indent = len(search_line) - len(search_line.lstrip())
-                    if search_line.strip():  # Non-empty line
-                        indented_search_lines.append(
-                            indent_str + " " * search_line_indent + search_line.strip()
-                        )
-                    else:  # Empty line
-                        indented_search_lines.append("")
-
-            indented_search = "\n".join(indented_search_lines)
-
-            # Check if this indented version exists in original (line-aligned).
-            for indented_pos in _iter_aligned_positions(indented_search, original_text):
-                return indented_search, indented_pos
-
-    return "", -1
+            indented_search = "\n".join(
+                _reindent_lines(search_lines, indent_str)
+            )
+            if indented_search in tried_candidates:
+                continue
+            tried_candidates.add(indented_search)
+            yield from yield_new_matches(indented_search)
 
 
 def _apply_indentation_to_replace(replace_text: str, indent_str: str) -> str:
@@ -212,18 +225,7 @@ def _apply_indentation_to_replace(replace_text: str, indent_str: str) -> str:
     if not replace_text.strip():
         return replace_text
 
-    replace_lines = replace_text.splitlines()
-    indented_replace_lines = []
-
-    for line in replace_lines:
-        if line.strip():  # Non-empty line
-            # Preserve any existing relative indentation
-            line_indent = len(line) - len(line.lstrip())
-            indented_replace_lines.append(indent_str + " " * line_indent + line.strip())
-        else:  # Empty line
-            indented_replace_lines.append("")
-
-    return "\n".join(indented_replace_lines)
+    return "\n".join(_reindent_lines(replace_text.splitlines(), indent_str))
 
 
 def _clean_evolve_markers(text: str) -> str:
@@ -717,25 +719,26 @@ def apply_search_replace(
 
         # ── replacements ────────────────────────────────────────────────────
         # Try to find the search text, with indentation correction if needed
-        matched_search, pos = _find_indented_match(search, new_text)
+        matches = list(_iter_indented_matches(search, new_text))
 
-        if pos == -1:
+        if not matches:
             if strict:
                 msg = _create_search_not_found_error(search, new_text, mutable)
                 raise PatchError(msg)
             continue
 
-        # Collect every line-aligned occurrence of the matched text so we can
+        # Collect every indentation-equivalent occurrence so we can
         # (a) target one that lives in an editable region even when an
-        # identical line appears earlier in an immutable region, and
+        # equivalent block appears earlier in an immutable region, and
         # (b) refuse to guess when the target is ambiguous.
-        match_len = len(matched_search)
-        aligned = list(_iter_aligned_positions(matched_search, new_text))
         in_mutable = [
-            p for p in aligned if _inside((p, p + match_len), mutable)
+            (matched_text, position)
+            for matched_text, position in matches
+            if _inside((position, position + len(matched_text)), mutable)
         ]
 
         if not in_mutable:
+            matched_search, pos = matches[0]
             msg = _create_evolve_block_error(matched_search, pos, new_text, mutable)
             raise PatchError(msg)
 
@@ -746,7 +749,8 @@ def apply_search_replace(
                 "regions. Add surrounding context so the target is unique."
             )
 
-        pos = in_mutable[0]
+        matched_search, pos = in_mutable[0]
+        match_len = len(matched_search)
 
         # If we found an indented match, apply same indentation to replace text
         if matched_search != search:
