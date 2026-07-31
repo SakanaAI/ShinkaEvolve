@@ -8,6 +8,7 @@ directory listing.
 import http.client
 import os
 import socketserver
+import sqlite3
 import threading
 import urllib.parse
 
@@ -141,6 +142,62 @@ def test_failed_node_details_propagates_path_validation_error(tmp_path):
 
     with pytest.raises(PathValidationError):
         handler.handle_get_program_details("programs.sqlite", "failed:proposal:1")
+
+
+def test_meta_listing_rejects_directory_symlink_outside_search_root(tmp_path):
+    run_dir = tmp_path / "served" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "programs.sqlite").write_text("", encoding="utf-8")
+    outside_meta = tmp_path / "outside-meta"
+    outside_meta.mkdir()
+    (outside_meta / "meta_1.txt").write_text("secret", encoding="utf-8")
+    (run_dir / "meta").symlink_to(outside_meta)
+    handler = _handler(tmp_path / "served")
+    handler.send_json_response = lambda data: None
+
+    with pytest.raises(PathValidationError):
+        handler.handle_get_meta_files("run/programs.sqlite")
+
+
+def test_system_prompts_rejects_database_symlink_outside_search_root(tmp_path):
+    run_dir = tmp_path / "served" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "programs.sqlite").write_text("", encoding="utf-8")
+    outside_prompts = tmp_path / "outside-prompts.sqlite"
+    outside_prompts.write_text("", encoding="utf-8")
+    (run_dir / "prompts.sqlite").symlink_to(outside_prompts)
+    handler = _handler(tmp_path / "served")
+    handler.send_json_response = lambda data: None
+
+    with pytest.raises(PathValidationError):
+        handler.handle_get_system_prompts("run/programs.sqlite")
+
+
+def test_database_stats_rejects_prompts_symlink_outside_search_root(tmp_path):
+    run_dir = tmp_path / "served" / "run"
+    run_dir.mkdir(parents=True)
+    programs_db = run_dir / "programs.sqlite"
+    with sqlite3.connect(programs_db) as connection:
+        connection.execute(
+            """
+            CREATE TABLE programs (
+                generation INTEGER,
+                correct INTEGER,
+                combined_score REAL,
+                timestamp REAL,
+                metadata TEXT
+            )
+            """
+        )
+    outside_prompts = tmp_path / "outside-prompts.sqlite"
+    with sqlite3.connect(outside_prompts) as connection:
+        connection.execute("CREATE TABLE system_prompts (metadata TEXT)")
+    (run_dir / "prompts.sqlite").symlink_to(outside_prompts)
+    handler = _handler(tmp_path / "served")
+    handler.send_json_response = lambda data: None
+
+    with pytest.raises(PathValidationError):
+        handler.handle_get_database_stats("run/programs.sqlite")
 
 
 class _Server:

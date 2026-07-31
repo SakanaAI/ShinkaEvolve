@@ -868,7 +868,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         db_dir = os.path.dirname(abs_db_path)
 
         # Look in the meta subdirectory
-        meta_dir = os.path.join(db_dir, "meta")
+        meta_dir = self._resolve_within_root(os.path.join(db_dir, "meta"))
 
         if not os.path.exists(meta_dir):
             # Fall back to looking in the db_dir for backward compatibility
@@ -1130,7 +1130,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Construct path to prompts.sqlite (in same directory as programs.sqlite)
         abs_db_path = os.path.join(self.search_root, actual_db_path)
         db_dir = os.path.dirname(abs_db_path)
-        prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
+        prompts_db_path = self._resolve_within_root(
+            os.path.join(db_dir, "prompts.sqlite")
+        )
 
         if not os.path.exists(prompts_db_path):
             print(f"[SERVER] Prompts database not found: {prompts_db_path}")
@@ -1232,6 +1234,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if not os.path.exists(abs_db_path):
             self.send_json_response({"error": "not_found"})
             return
+
+        prompts_db_path = self._resolve_within_root(
+            os.path.join(os.path.dirname(abs_db_path), "prompts.sqlite")
+        )
 
         max_retries = 3
         delay = 0.1
@@ -1342,8 +1348,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 }
 
                 # Check for prompts.db in the same directory
-                db_dir = os.path.dirname(abs_db_path)
-                prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
                 if os.path.exists(prompts_db_path):
                     try:
                         pconn = sqlite3.connect(
