@@ -15,6 +15,7 @@ import json
 import markdown
 import os
 import re
+import socket
 import socketserver
 import sqlite3
 import stat
@@ -27,7 +28,7 @@ import urllib.parse
 import webbrowser
 import weakref
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Callable
 
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
@@ -327,9 +328,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Reject Host headers outside the allowlist (DNS-rebinding defense)."""
         if self.allowed_hosts is None:
             return True  # Explicit external bind: operator opted out of the check.
-        host_header = self.headers.get("Host", "")
-        hostname = host_header.rsplit(":", 1)[0].casefold() if host_header else ""
-        return hostname in self.allowed_hosts
+        hostname = _hostname_from_host_header(self.headers.get("Host", ""))
+        return hostname in self.allowed_hosts if hostname is not None else False
 
     def do_GET(self):
         if not self._host_allowed():
@@ -2072,11 +2072,104 @@ def _allowed_hosts_for_bind(
     return frozenset(allowed_hosts)
 
 
+def _hostname_from_host_header(host_header: str) -> Optional[str]:
+    authority = host_header.strip()
+    if not authority:
+        return None
+
+    if authority.startswith("["):
+        bracket = authority.find("]")
+        if bracket < 0:
+            return None
+        hostname = authority[: bracket + 1]
+        remainder = authority[bracket + 1 :]
+        if remainder and not (
+            remainder.startswith(":") and remainder[1:].isdigit()
+        ):
+            return None
+        return hostname.casefold()
+
+    if authority.count(":") > 1:
+        return None
+    hostname, separator, port = authority.partition(":")
+    if not hostname or (separator and not port.isdigit()):
+        return None
+    return hostname.casefold()
+
+
+class _ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+class _ReusableTCPServer6(_ReusableTCPServer):
+    address_family = socket.AF_INET6
+
+
+def _server_class_for_family(family: int) -> type[socketserver.TCPServer]:
+    return _ReusableTCPServer6 if family == socket.AF_INET6 else _ReusableTCPServer
+
+
+def _bind_server(
+    host: str,
+    port: int,
+    request_handler: Callable[..., DatabaseRequestHandler],
+) -> socketserver.TCPServer:
+    addresses = socket.getaddrinfo(
+        host or None,
+        port,
+        socket.AF_UNSPEC if host else socket.AF_INET,
+        socket.SOCK_STREAM,
+        flags=socket.AI_PASSIVE if not host else 0,
+    )
+    bind_errors = []
+    attempted_addresses = set()
+    for family, _socket_type, _protocol, _canonical_name, address in addresses:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        candidate = (family, address)
+        if candidate in attempted_addresses:
+            continue
+        attempted_addresses.add(candidate)
+        server_class = _server_class_for_family(family)
+        try:
+            return server_class(address, request_handler)
+        except OSError as exc:
+            bind_errors.append(exc)
+
+    if bind_errors:
+        raise bind_errors[-1]
+    raise OSError(f"No usable address found for host {host!r}")
+
+
+def _browser_url(
+    bound_host: str,
+    port: int,
+    db_path: Optional[str] = None,
+) -> str:
+    try:
+        bound_is_wildcard = ipaddress.ip_address(bound_host).is_unspecified
+    except ValueError:
+        bound_is_wildcard = not bound_host
+
+    if bound_is_wildcard:
+        browser_host = "::1" if ":" in bound_host else "127.0.0.1"
+    else:
+        browser_host = bound_host
+    if ":" in browser_host:
+        browser_host = f"[{browser_host.replace('%', '%25')}]"
+
+    path = "/"
+    if db_path:
+        path = "/viz_tree.html?" + urllib.parse.urlencode({"db_path": db_path})
+    return f"http://{browser_host}:{port}{path}"
+
+
 def start_server(
     port: int,
     search_root: str,
     db_path: Optional[str] = None,
     host: str = "127.0.0.1",
+    on_ready: Optional[Callable[[socketserver.TCPServer], None]] = None,
 ):
     """Start the HTTP server.
 
@@ -2097,16 +2190,16 @@ def start_server(
 
     # On a loopback bind, enforce the Host-header allowlist (anti DNS-rebinding).
     # On an explicit external bind the operator has opted in, so disable it.
-    class ReusableTCPServer(socketserver.TCPServer):
-        allow_reuse_address = True
-
-    with ReusableTCPServer((host, port), DatabaseRequestHandler) as httpd:
+    httpd = _bind_server(host, port, DatabaseRequestHandler)
+    with httpd:
         bound_host = str(httpd.server_address[0])
         allowed_hosts = _allowed_hosts_for_bind(host, bound_host)
         httpd.RequestHandlerClass = create_handler_factory(
             search_root, allowed_hosts=allowed_hosts
         )
-        msg = f"\n[*] Serving http://{host}:{port}  (Ctrl+C to stop)"
+        bound_port = int(httpd.server_address[1])
+        display_url = _browser_url(bound_host, bound_port)
+        msg = f"\n[*] Serving {display_url}  (Ctrl+C to stop)"
         if not _is_loopback_host(bound_host):
             msg += (
                 "\n[!] Bound to a non-loopback address: the evolution database "
@@ -2118,6 +2211,14 @@ def start_server(
                 "search-root race hardening is unavailable."
             )
         print(msg)
+        if on_ready is not None:
+            def notify_ready() -> None:
+                try:
+                    on_ready(httpd)
+                except Exception as exc:
+                    print(f"[SERVER] Readiness callback failed: {exc}")
+
+            threading.Thread(target=notify_ready, daemon=True).start()
         httpd.serve_forever()
 
 
@@ -2173,40 +2274,30 @@ def main():
 
     print(f"[INFO] Searching for databases in: {search_root}")
 
-    # Kick off the HTTP server in a daemon thread.
-    server_thread = threading.Thread(
-        target=start_server,
-        args=(args.port, search_root, args.db, args.host),
-        daemon=True,
-    )
-    server_thread.start()
-    time.sleep(0.8)  # tiny delay so the banner prints before we continue
+    def announce_ready(httpd: socketserver.TCPServer) -> None:
+        bound_host = str(httpd.server_address[0])
+        bound_port = int(httpd.server_address[1])
+        viz_url = _browser_url(bound_host, bound_port, args.db)
 
-    # Construct URL, passing db path if provided
-    if args.db:
-        # If a specific DB is provided, go directly to viz_tree.html
-        base_url = f"http://localhost:{args.port}/viz_tree.html"
-        url_params = urllib.parse.urlencode({"db_path": args.db})
-        viz_url = f"{base_url}?{url_params}"
-    else:
-        # Otherwise, open the landing page with all results
-        viz_url = f"http://localhost:{args.port}/"
-
-    # Try to open a browser if requested
-    if args.open_browser:
-        try:
-            webbrowser.open_new_tab(viz_url)
-            print(f"→ Opening {viz_url} in browser")
-        except Exception as e:
-            print(f"→ Could not open browser automatically: {e}")
+        if args.open_browser:
+            try:
+                webbrowser.open_new_tab(viz_url)
+                print(f"→ Opening {viz_url} in browser")
+            except Exception as e:
+                print(f"→ Could not open browser automatically: {e}")
+                print(f"→ Visit {viz_url}")
+        else:
             print(f"→ Visit {viz_url}")
-    else:
-        print(f"→ Visit {viz_url}")
-        print("(remember to forward the port if this is a remote host)")
+            print("(remember to forward the port if this is a remote host)")
 
     try:
-        while True:
-            time.sleep(1)
+        start_server(
+            args.port,
+            search_root,
+            args.db,
+            args.host,
+            on_ready=announce_ready,
+        )
     except KeyboardInterrupt:
         print("\n[*] Shutting down.")
 
