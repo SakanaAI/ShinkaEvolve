@@ -57,6 +57,32 @@ def test_async_db_add_without_openai_key_when_embeddings_disabled(monkeypatch):
     asyncio.run(_run())
 
 
+def test_async_program_count_propagates_database_errors(monkeypatch, tmp_path):
+    sync_db = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "count.db"), num_islands=1),
+        embedding_model="",
+    )
+    async_db = AsyncProgramDatabase(sync_db=sync_db)
+    original_init = ProgramDatabase.__init__
+
+    def fail_read_only_init(self, *args, **kwargs):
+        if kwargs.get("read_only"):
+            raise OSError("database unavailable")
+        return original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(ProgramDatabase, "__init__", fail_read_only_init)
+
+    async def _run():
+        try:
+            with pytest.raises(OSError, match="database unavailable"):
+                await async_db.get_total_program_count_async()
+        finally:
+            await async_db.close_async()
+            sync_db.close()
+
+    asyncio.run(_run())
+
+
 def test_async_db_add_forwards_verbose_flag(monkeypatch):
     """Async add should forward verbose to the underlying writer database."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

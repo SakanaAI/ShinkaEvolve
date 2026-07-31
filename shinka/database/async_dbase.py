@@ -1278,7 +1278,7 @@ class AsyncProgramDatabase:
         except Exception as e:
             self._debug_track_end(op_id, success=False)
             logger.error(f"Error in get_total_program_count_async: {e}")
-            return 0  # Return 0 on error
+            raise
 
     async def get_persisted_generation_ids_async(self) -> List[int]:
         """Return distinct persisted generations from the programs table."""
