@@ -9,6 +9,7 @@ from shinka.webui import visualization
 from shinka.webui.visualization import (
     DatabaseRequestHandler,
     _bind_server,
+    _bound_host_from_server_address,
     _browser_url,
     create_handler_factory,
 )
@@ -90,6 +91,15 @@ def test_browser_url_encodes_database_path():
     assert url == (
         "http://127.0.0.2:8765/viz_tree.html?db_path=run%2Fa+b.sqlite"
     )
+
+
+def test_scoped_ipv6_browser_url_preserves_interface(monkeypatch):
+    monkeypatch.setattr(socket, "if_indextoname", lambda scope_id: "eth0")
+
+    bound_host = _bound_host_from_server_address(("fe80::1", 8765, 0, 3))
+
+    assert bound_host == "fe80::1%eth0"
+    assert _browser_url(bound_host, 8765) == "http://[fe80::1%25eth0]:8765/"
 
 
 def test_bind_server_falls_back_to_next_resolved_address(monkeypatch):

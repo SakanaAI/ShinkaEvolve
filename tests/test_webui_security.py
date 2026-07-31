@@ -112,6 +112,13 @@ def test_resolved_loopback_alias_keeps_host_protection():
     assert {"127.1", "127.0.0.1"} <= allowed_hosts
 
 
+def test_scoped_ipv6_loopback_allows_uri_encoded_host_header():
+    allowed_hosts = _allowed_hosts_for_bind("::1%lo", "::1%lo")
+
+    assert allowed_hosts is not None
+    assert "[::1%25lo]" in allowed_hosts
+
+
 def test_wildcard_bind_disables_local_host_allowlist():
     assert _allowed_hosts_for_bind("", "0.0.0.0") is None
 

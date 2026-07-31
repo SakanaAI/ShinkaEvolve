@@ -2109,9 +2109,13 @@ def _allowed_hosts_for_bind(
     allowed_hosts = set(DatabaseRequestHandler.allowed_hosts)
     for host in (requested_host, bound_host):
         normalized_host = host.casefold()
-        allowed_hosts.add(normalized_host)
-        if ":" in normalized_host:
-            allowed_hosts.add(f"[{normalized_host}]")
+        for allowed_host in {
+            normalized_host,
+            normalized_host.replace("%", "%25"),
+        }:
+            allowed_hosts.add(allowed_host)
+            if ":" in allowed_host:
+                allowed_hosts.add(f"[{allowed_host}]")
     return frozenset(allowed_hosts)
 
 
@@ -2184,6 +2188,21 @@ def _bind_server(
     raise OSError(f"No usable address found for host {host!r}")
 
 
+def _bound_host_from_server_address(server_address: tuple[Any, ...]) -> str:
+    bound_host = str(server_address[0])
+    if "%" in bound_host or len(server_address) < 4:
+        return bound_host
+
+    scope_id = int(server_address[3])
+    if not scope_id:
+        return bound_host
+    try:
+        scope = socket.if_indextoname(scope_id)
+    except (AttributeError, OSError):
+        scope = str(scope_id)
+    return f"{bound_host}%{scope}"
+
+
 def _browser_url(
     bound_host: str,
     port: int,
@@ -2235,7 +2254,7 @@ def start_server(
     # On an explicit external bind the operator has opted in, so disable it.
     httpd = _bind_server(host, port, DatabaseRequestHandler)
     with httpd:
-        bound_host = str(httpd.server_address[0])
+        bound_host = _bound_host_from_server_address(httpd.server_address)
         allowed_hosts = _allowed_hosts_for_bind(host, bound_host)
         httpd.RequestHandlerClass = create_handler_factory(
             search_root, allowed_hosts=allowed_hosts
@@ -2318,7 +2337,7 @@ def main():
     print(f"[INFO] Searching for databases in: {search_root}")
 
     def announce_ready(httpd: socketserver.TCPServer) -> None:
-        bound_host = str(httpd.server_address[0])
+        bound_host = _bound_host_from_server_address(httpd.server_address)
         bound_port = int(httpd.server_address[1])
         viz_url = _browser_url(bound_host, bound_port, args.db)
 
