@@ -10,6 +10,7 @@ Covers:
 """
 
 import asyncio
+import fcntl
 import io
 import os
 import signal
@@ -21,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shinka.launch import _local_supervisor, local, slurm
+from shinka.launch import _local_exec, _local_supervisor, local, slurm
 from shinka.launch.local import (
     LocalProcessIdentity,
     ProcessWithLogging,
@@ -773,6 +774,247 @@ def test_local_post_launch_failure_reaps_process(monkeypatch, tmp_path):
     assert spawned_pid is not None
     with pytest.raises(ProcessLookupError):
         os.kill(spawned_pid, 0)
+
+
+def test_local_submission_hands_results_lease_through_supervisor_exec(
+    monkeypatch,
+    tmp_path,
+):
+    lease_read_fd, lease_write_fd = os.pipe()
+    monkeypatch.setenv("LD_PRELOAD", "/attacker/preload.so")
+
+    def inspect_popen(command, **kwargs):
+        assert command[0].startswith("/proc/self/fd/")
+        bash_fd = int(command[0].rsplit("/", 1)[1])
+        assert command[1:5] == [
+            "--noprofile",
+            "--norc",
+            "-p",
+            "-c",
+        ]
+        assert command[-3:] == [sys.executable, "-c", "pass"]
+        assert f"exec {lease_read_fd}>&-" in command[5]
+        assert lease_read_fd in kwargs["pass_fds"]
+        assert bash_fd in kwargs["pass_fds"]
+        assert str(local.LOCAL_EXEC_PATH) in command
+        assert kwargs["env"] == {
+            local.LOCAL_PROCESS_TOKEN_ENV: "a" * 32,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUNBUFFERED": "1",
+        }
+        assert os.get_inheritable(lease_read_fd) is False
+        raise RuntimeError("stop after exec handoff inspection")
+
+    monkeypatch.setattr(local.subprocess, "Popen", inspect_popen)
+    try:
+        with pytest.raises(RuntimeError, match="handoff inspection"):
+            submit_with_token(
+                str(tmp_path),
+                [sys.executable, "-c", "pass"],
+                "a" * 32,
+                ownership_lease_fd=lease_read_fd,
+            )
+    finally:
+        os.close(lease_read_fd)
+        os.close(lease_write_fd)
+
+
+def test_local_submission_ignores_parent_close_error_after_spawn(
+    monkeypatch,
+    tmp_path,
+):
+    lease_read_fd, lease_write_fd = os.pipe()
+    real_open_trusted_bash = local._open_trusted_bash
+    real_close = local.os.close
+    bash_fds = []
+    close_failures = []
+
+    def tracked_open_trusted_bash():
+        bash_path, bash_fd = real_open_trusted_bash()
+        bash_fds.append(bash_fd)
+        return bash_path, bash_fd
+
+    def fail_once_after_closing_bash(fd):
+        real_close(fd)
+        if fd in bash_fds and not close_failures:
+            close_failures.append(fd)
+            raise OSError("injected parent close failure")
+
+    monkeypatch.setattr(local, "_open_trusted_bash", tracked_open_trusted_bash)
+    monkeypatch.setattr(local.os, "close", fail_once_after_closing_bash)
+    submitted = None
+    try:
+        submitted = submit_with_token(
+            str(tmp_path),
+            [sys.executable, "-c", "pass"],
+            "a" * 32,
+            ownership_lease_fd=lease_read_fd,
+        )
+        assert submitted.wait(timeout=5) == 0
+        assert close_failures == bash_fds
+    finally:
+        if submitted is not None:
+            submitted.cleanup_logging()
+        real_close(lease_read_fd)
+        real_close(lease_write_fd)
+
+
+def test_local_exec_restores_environment_after_lease_handoff(monkeypatch):
+    environment_read_fd, environment_write_fd = os.pipe()
+    os.write(
+        environment_write_fd,
+        b'{"SHINKA_LOCAL_JOB_TOKEN":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        b'"LD_LIBRARY_PATH":"/evaluator/lib"}',
+    )
+    os.close(environment_write_fd)
+    observed = {}
+
+    def inspect_exec(command, argv, environment):
+        observed.update(command=command, argv=argv, environment=environment)
+        raise RuntimeError("stop after environment inspection")
+
+    monkeypatch.setattr(_local_exec.os, "execve", inspect_exec)
+
+    with pytest.raises(RuntimeError, match="environment inspection"):
+        _local_exec.main(environment_read_fd, ["/evaluator", "--flag"])
+
+    assert observed == {
+        "command": "/evaluator",
+        "argv": ["/evaluator", "--flag"],
+        "environment": {
+            "SHINKA_LOCAL_JOB_TOKEN": "a" * 32,
+            "LD_LIBRARY_PATH": "/evaluator/lib",
+        },
+    }
+
+
+def test_local_lease_handoff_fails_clearly_without_bash(monkeypatch, tmp_path):
+    lease_read_fd, lease_write_fd = os.pipe()
+    monkeypatch.setattr(local.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("must not launch without Bash"),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="requires Bash"):
+            submit_with_token(
+                str(tmp_path),
+                [sys.executable, "-c", "pass"],
+                "a" * 32,
+                ownership_lease_fd=lease_read_fd,
+            )
+    finally:
+        os.close(lease_read_fd)
+        os.close(lease_write_fd)
+
+
+def test_local_lease_handoff_rejects_replaceable_bash_path(monkeypatch, tmp_path):
+    replaceable_dir = tmp_path / "replaceable"
+    replaceable_dir.mkdir()
+    replaceable_dir.chmod(0o777)
+    fake_bash = replaceable_dir / "bash"
+    fake_bash.write_bytes(b"not actually bash")
+    fake_bash.chmod(0o755)
+    monkeypatch.setattr(local.shutil, "which", lambda _name: str(fake_bash))
+
+    with pytest.raises(PermissionError, match="replaceable"):
+        local._open_trusted_bash()
+
+
+def test_stalled_supervisor_startup_does_not_retain_parent_lease(
+    monkeypatch,
+    tmp_path,
+):
+    stalled_supervisor = tmp_path / "stalled_supervisor.py"
+    startup_visible = tmp_path / "startup-visible"
+    stalled_supervisor.write_text(
+        "from pathlib import Path; import time; "
+        f"Path({str(startup_visible)!r}).write_text('ready'); time.sleep(60)\n"
+    )
+    exported_function_marker = tmp_path / "exported-function-ran"
+    xtrace_marker = tmp_path / "xtrace-ran"
+    monkeypatch.setenv(
+        "BASH_FUNC_exec%%",
+        f'() {{ touch {exported_function_marker}; builtin exec "$@"; }}',
+    )
+    monkeypatch.setenv("SHELLOPTS", "xtrace")
+    monkeypatch.setenv("PS4", f"$(touch {xtrace_marker})")
+    monkeypatch.setattr(local, "LOCAL_SUPERVISOR_PATH", stalled_supervisor)
+    original_popen = local.subprocess.Popen
+    spawned_pids = []
+
+    def tracking_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        spawned_pids.append(process.pid)
+        return process
+
+    monkeypatch.setattr(local.subprocess, "Popen", tracking_popen)
+    token = "a" * 32
+    lock_path = tmp_path / "runner.lock"
+    lease_fd: int | None = os.open(
+        lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600
+    )
+    fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    unrelated_read_fd, initial_unrelated_write_fd = os.pipe()
+    unrelated_write_fd: int | None = initial_unrelated_write_fd
+    os.set_inheritable(unrelated_write_fd, True)
+    os.set_blocking(unrelated_read_fd, False)
+    launch_errors = []
+
+    def launch():
+        try:
+            submit_with_token(
+                str(tmp_path / "logs"),
+                [sys.executable, "-c", "pass"],
+                token,
+                ownership_lease_fd=lease_fd,
+            )
+        except BaseException as error:
+            launch_errors.append(error)
+
+    launch_thread = threading.Thread(target=launch)
+    launch_thread.start()
+    identities = []
+    replacement_fd = None
+    try:
+        deadline = time.time() + 5
+        while not startup_visible.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        assert startup_visible.exists()
+        assert not exported_function_marker.exists()
+        assert not xtrace_marker.exists()
+        os.close(unrelated_write_fd)
+        unrelated_write_fd = None
+        assert os.read(unrelated_read_fd, 1) == b""
+
+        os.close(lease_fd)
+        lease_fd = None
+        replacement_fd = os.open(lock_path, os.O_RDWR | os.O_CLOEXEC)
+        fcntl.flock(replacement_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        assert len(spawned_pids) == 1
+        supervisor = local.psutil.Process(spawned_pids[0])
+        assert supervisor.environ()[local.LOCAL_PROCESS_TOKEN_ENV] == token
+        identities = [LocalProcessIdentity(spawned_pids[0], token)]
+        os.killpg(identities[0].pid, signal.SIGKILL)
+        launch_thread.join(timeout=5)
+        assert not launch_thread.is_alive()
+        assert launch_errors
+    finally:
+        for identity in identities:
+            try:
+                os.killpg(identity.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if replacement_fd is not None:
+            os.close(replacement_fd)
+        os.close(unrelated_read_fd)
+        if unrelated_write_fd is not None:
+            os.close(unrelated_write_fd)
+        launch_thread.join(timeout=5)
 
 
 @pytest.mark.parametrize(

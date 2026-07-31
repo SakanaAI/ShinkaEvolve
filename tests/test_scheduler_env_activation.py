@@ -355,6 +355,34 @@ def test_job_scheduler_builds_local_numeric_thread_env_overrides() -> None:
     assert env_overrides["NUMEXPR_NUM_THREADS"] == "3"
 
 
+def test_job_scheduler_forwards_results_lease_to_local_supervisor(monkeypatch):
+    captured_lease_fds = []
+
+    def fake_submit(*_args, ownership_lease_fd=None, **_kwargs):
+        captured_lease_fds.append(ownership_lease_fd)
+        return object()
+
+    monkeypatch.setattr(
+        "shinka.launch.scheduler.submit_local_with_token", fake_submit
+    )
+    scheduler = JobScheduler(
+        job_type="local",
+        config=LocalJobConfig(eval_program_path="evaluate.py"),
+        ownership_lease_fd=42,
+    )
+
+    try:
+        scheduler.submit_prepared(
+            scheduler.prepare_submission(),
+            "program.py",
+            "results",
+        )
+    finally:
+        scheduler.shutdown()
+
+    assert captured_lease_fds == [42]
+
+
 def test_slurm_conda_job_config_allows_activate_script_for_back_compat() -> None:
     config = SlurmCondaJobConfig(activate_script=".venv/bin/activate")
 

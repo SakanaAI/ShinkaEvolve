@@ -156,10 +156,12 @@ class JobScheduler:
         ],
         verbose: bool = False,
         max_workers: int = 4,
+        ownership_lease_fd: Optional[int] = None,
     ):
         self.job_type = job_type
         self.config = config
         self.verbose = verbose
+        self.ownership_lease_fd = ownership_lease_fd
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.cancellation_executor = ThreadPoolExecutor(max_workers=max_workers)
         if self.job_type == "slurm_env":
@@ -261,6 +263,7 @@ class JobScheduler:
                 cmd,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
+                ownership_lease_fd=self.ownership_lease_fd,
             )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
@@ -340,6 +343,7 @@ class JobScheduler:
                 prepared_submission.job_name,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
+                ownership_lease_fd=self.ownership_lease_fd,
             )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)

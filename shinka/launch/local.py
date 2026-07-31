@@ -3,10 +3,15 @@ import sys
 import time
 import threading
 import os
+import json
 import re
 import select
 import signal
+import shutil
+import stat
+import tempfile
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
@@ -18,7 +23,38 @@ logger = logging.getLogger(__name__)
 LOCAL_PROCESS_TOKEN_ENV = "SHINKA_LOCAL_JOB_TOKEN"
 LOCAL_PROCESS_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
 LOCAL_SUPERVISOR_PATH = Path(__file__).with_name("_local_supervisor.py")
+LOCAL_EXEC_PATH = Path(__file__).with_name("_local_exec.py")
 LOCAL_SUPERVISOR_START_TIMEOUT_SECONDS = 5.0
+
+
+def _open_trusted_bash() -> tuple[str, int]:
+    candidate = shutil.which("bash")
+    if candidate is None:
+        raise RuntimeError("Secure local submission requires Bash")
+    resolved = Path(candidate).resolve(strict=True)
+    trusted_user_ids = {0, os.geteuid()}
+    for ancestor in resolved.parents:
+        ancestor_stat = ancestor.stat()
+        if ancestor_stat.st_uid not in trusted_user_ids:
+            raise PermissionError("Bash path has an untrusted owner")
+        if ancestor_stat.st_mode & 0o022 and not (
+            ancestor_stat.st_mode & stat.S_ISVTX
+        ):
+            raise PermissionError("Bash path is replaceable by another user")
+    bash_fd = os.open(
+        resolved,
+        os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+    )
+    executable_stat = os.fstat(bash_fd)
+    if (
+        not stat.S_ISREG(executable_stat.st_mode)
+        or executable_stat.st_uid not in trusted_user_ids
+        or executable_stat.st_mode & 0o022
+        or executable_stat.st_mode & 0o111 == 0
+    ):
+        os.close(bash_fd)
+        raise PermissionError("Bash executable for local submission is untrusted")
+    return f"/proc/self/fd/{bash_fd}", bash_fd
 
 
 def _process_group_exists(pid: int) -> bool:
@@ -355,6 +391,7 @@ def submit(
     cmd: list[str],
     verbose: bool = False,
     env_overrides: Optional[Dict[str, str]] = None,
+    ownership_lease_fd: Optional[int] = None,
 ):
     """Submit a local command with a newly allocated durable token."""
     return submit_with_token(
@@ -363,6 +400,7 @@ def submit(
         create_local_process_token(),
         verbose=verbose,
         env_overrides=env_overrides,
+        ownership_lease_fd=ownership_lease_fd,
     )
 
 
@@ -372,6 +410,7 @@ def submit_with_token(
     local_job_token: str,
     verbose: bool = False,
     env_overrides: Optional[Dict[str, str]] = None,
+    ownership_lease_fd: Optional[int] = None,
 ):
     """
     Submits a command for local execution with real-time logging.
@@ -408,6 +447,8 @@ def submit_with_token(
     wrapped_process = None
     status_read_fd = None
     status_write_fd = None
+    bash_fd = None
+    environment_file = None
     try:
         # Open logs before launch so filesystem failures cannot orphan a child.
         stdout_file = open(stdout_path, "w", buffering=1)
@@ -415,12 +456,50 @@ def submit_with_token(
 
         # start_new_session=True puts the child in its own process group.
         status_read_fd, status_write_fd = os.pipe()
-        popen_command = [
+        supervisor_command = [
             sys.executable,
             str(LOCAL_SUPERVISOR_PATH),
             str(status_write_fd),
             *cmd,
         ]
+        inherited_fds = [status_write_fd]
+        if ownership_lease_fd is not None:
+            os.fstat(ownership_lease_fd)
+            os.set_inheritable(ownership_lease_fd, False)
+            environment_file = tempfile.TemporaryFile(mode="w+b")
+            environment_file.write(json.dumps(env).encode("ascii"))
+            environment_file.seek(0)
+            environment_fd = environment_file.fileno()
+            bash_path, bash_fd = _open_trusted_bash()
+            inherited_fds.extend(
+                [ownership_lease_fd, environment_fd, bash_fd]
+            )
+            restorer_command = [
+                sys.executable,
+                str(LOCAL_EXEC_PATH),
+                str(environment_fd),
+                *supervisor_command,
+            ]
+            popen_command = [
+                bash_path,
+                "--noprofile",
+                "--norc",
+                "-p",
+                "-c",
+                f"exec {ownership_lease_fd}>&- || exit 127\n"
+                f"exec {bash_fd}>&- || exit 127\n"
+                'exec "$@"',
+                "shinka-local-exec",
+                *restorer_command,
+            ]
+            handoff_env = {
+                LOCAL_PROCESS_TOKEN_ENV: local_job_token,
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUNBUFFERED": "1",
+            }
+        else:
+            popen_command = supervisor_command
+            handoff_env = env
         process = subprocess.Popen(
             popen_command,
             stdout=subprocess.PIPE,
@@ -428,19 +507,28 @@ def submit_with_token(
             text=True,
             bufsize=1,
             universal_newlines=True,
-            env=env,
+            env=handoff_env,
             start_new_session=True,
-            pass_fds=(status_write_fd,),
+            pass_fds=tuple(inherited_fds),
         )
-        if status_write_fd is not None:
-            os.close(status_write_fd)
-            status_write_fd = None
         wrapped_process = ProcessWithLogging(
             process,
             (stdout_file, stderr_file),
             (),
             identity=LocalProcessIdentity(process.pid, local_job_token),
         )
+        if bash_fd is not None:
+            with suppress(OSError):
+                os.close(bash_fd)
+            bash_fd = None
+        if environment_file is not None:
+            with suppress(OSError):
+                environment_file.close()
+            environment_file = None
+        if status_write_fd is not None:
+            with suppress(OSError):
+                os.close(status_write_fd)
+            status_write_fd = None
         if status_read_fd is not None:
             readable, _, _ = select.select(
                 [status_read_fd],
@@ -478,10 +566,18 @@ def submit_with_token(
         stdout_thread.start()
         stderr_thread.start()
     except Exception:
+        if bash_fd is not None:
+            with suppress(OSError):
+                os.close(bash_fd)
+        if environment_file is not None:
+            with suppress(OSError):
+                environment_file.close()
         if status_read_fd is not None:
-            os.close(status_read_fd)
+            with suppress(OSError):
+                os.close(status_read_fd)
         if status_write_fd is not None:
-            os.close(status_write_fd)
+            with suppress(OSError):
+                os.close(status_write_fd)
         if wrapped_process is not None:
             if not wrapped_process.kill():
                 raise AmbiguousLocalSubmissionError(wrapped_process) from None

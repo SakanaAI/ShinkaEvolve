@@ -221,12 +221,16 @@ def test_late_runner_initialization_failure_releases_lease_and_log_handler(
         async_runner, "AsyncLLMClient", lambda **_kwargs: SimpleNamespace()
     )
     scheduler_shutdowns = []
+    scheduler_options = []
+
+    def fake_scheduler(**kwargs):
+        scheduler_options.append(kwargs)
+        return SimpleNamespace(shutdown=lambda: scheduler_shutdowns.append(True))
+
     monkeypatch.setattr(
         async_runner,
         "JobScheduler",
-        lambda **_kwargs: SimpleNamespace(
-            shutdown=lambda: scheduler_shutdowns.append(True)
-        ),
+        fake_scheduler,
     )
     monkeypatch.setattr(
         async_runner, "PromptSampler", lambda **_kwargs: SimpleNamespace()
@@ -275,6 +279,7 @@ def test_late_runner_initialization_failure_releases_lease_and_log_handler(
             if isinstance(handler, logging.FileHandler)
         )
         assert scheduler_shutdowns == [True]
+        assert isinstance(scheduler_options[0]["ownership_lease_fd"], int)
     finally:
         if caught_error is not None:
             caught_error.__traceback__ = None

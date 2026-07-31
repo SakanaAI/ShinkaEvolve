@@ -334,6 +334,11 @@ class ResultsRootLease:
     path: Path
     _fd: Optional[int]
 
+    def fileno(self) -> int:
+        if self._fd is None:
+            raise ValueError("Results-root lease is closed")
+        return self._fd
+
     def close(self) -> None:
         if self._fd is None:
             return
@@ -840,7 +845,14 @@ class ShinkaEvolveRunner:
 
         # Job scheduler
         self.scheduler = JobScheduler(
-            job_type=evo_config.job_type, config=job_config, verbose=verbose
+            job_type=evo_config.job_type,
+            config=job_config,
+            verbose=verbose,
+            ownership_lease_fd=(
+                self._results_root_lease.fileno()
+                if evo_config.job_type == "local"
+                else None
+            ),
         )
 
         # Prompt sampler
