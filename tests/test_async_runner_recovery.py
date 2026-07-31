@@ -100,6 +100,9 @@ class _RecordingAsyncDB(_FakeAsyncDB):
         self.programs.append((program, kwargs))
         self.total_programs += 1
 
+    async def get_persisted_generation_ids_async(self):
+        return [program.generation for program, _kwargs in self.programs]
+
     async def run_program_maintenance_async(self, program, verbose=False):
         self.maintenance_calls += 1
 
@@ -2702,6 +2705,28 @@ def test_get_missing_persisted_generations_reports_budget_gap():
         missing = await runner._get_missing_persisted_generations()
 
         assert missing == [2]
+
+    asyncio.run(_run())
+
+
+def test_completed_generation_count_uses_distinct_budgeted_generations():
+    class _FakeAsyncDB:
+        async def get_total_program_count_async(self):
+            return 100
+
+        async def get_persisted_generation_ids_async(self):
+            return [-1, 0, 0, 1, 3, 9]
+
+    async def _run():
+        runner = _build_runner(
+            async_db=_FakeAsyncDB(),
+            db_config=SimpleNamespace(num_islands=4),
+            evo_config=SimpleNamespace(num_generations=5),
+        )
+
+        completed = await runner._count_completed_generations_from_db()
+
+        assert completed == 3
 
     asyncio.run(_run())
 

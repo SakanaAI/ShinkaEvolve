@@ -5554,11 +5554,17 @@ class ShinkaEvolveRunner:
             )
 
     async def _count_completed_generations_from_db(self) -> int:
-        """Count persisted completed generations, excluding island copies."""
-        total_programs = await self.async_db.get_total_program_count_async()
-        island_copies = max(0, getattr(self.db_config, "num_islands", 1) - 1)
-        completed_generations = max(0, total_programs - island_copies)
-        return min(completed_generations, self.evo_config.num_generations)
+        """Count distinct persisted generations inside the configured budget."""
+        persisted_generations = (
+            await self.async_db.get_persisted_generation_ids_async()
+        )
+        return len(
+            {
+                generation
+                for generation in persisted_generations
+                if 0 <= generation < self.evo_config.num_generations
+            }
+        )
 
     async def _get_missing_persisted_generations(self) -> List[int]:
         """Return budgeted generations that do not yet have persisted rows."""
