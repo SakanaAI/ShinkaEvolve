@@ -39,7 +39,11 @@ WEASYPRINT_AVAILABLE = False
 
 DEFAULT_PORT = 8000
 CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
-db_cache: Dict[str, Tuple[float, Any]] = {}
+db_cache: Dict[
+    Tuple[str, str],
+    Tuple[Tuple[int, int, int, int, int], float, Any],
+] = {}
+db_cache_lock = threading.Lock()
 
 
 class PathValidationError(ValueError):
@@ -651,6 +655,39 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         descriptor = self._open_descriptor_within_root(path, os.O_RDONLY)
         with os.fdopen(descriptor, "rb") as file:
             return file.read()
+
+    def _database_file_identity_within_root(
+        self,
+        path: os.PathLike[str] | str,
+    ) -> Tuple[int, int, int, int, int]:
+        descriptor = self._open_descriptor_within_root(path, os.O_RDONLY)
+        try:
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise PathValidationError(f"Database is not a file: {path!r}")
+            return (
+                file_stat.st_dev,
+                file_stat.st_ino,
+                file_stat.st_size,
+                file_stat.st_mtime_ns,
+                file_stat.st_ctime_ns,
+            )
+        finally:
+            os.close(descriptor)
+
+    def _program_response_cache_key(self, resolved_path: str) -> Tuple[str, str]:
+        return (
+            os.path.normcase(self._canonical_root()),
+            os.path.normcase(resolved_path),
+        )
+
+    @staticmethod
+    def clear_program_response_cache(search_root: str) -> None:
+        canonical_root = os.path.normcase(os.path.realpath(search_root))
+        with db_cache_lock:
+            stale_keys = [key for key in db_cache if key[0] == canonical_root]
+            for key in stale_keys:
+                db_cache.pop(key, None)
 
     @classmethod
     def _copy_database_descriptor(
@@ -1505,21 +1542,26 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Extract the actual path by removing the task name prefix if present
         actual_db_path = self._get_actual_db_path(db_path)
 
-        # Check cache first
-        if db_path in db_cache:
-            last_fetch_time, cached_data = db_cache[db_path]
-            if time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS:
-                print(f"[SERVER] Serving from cache for DB: {db_path}")
-                self.send_json_response(cached_data)
-                return
-
         # Construct absolute path to the database from search root using actual path
         abs_db_path = os.path.join(self.search_root, actual_db_path)
         print(f"[SERVER] Absolute DB path: {abs_db_path} (from {db_path})")
-
-        if not os.path.exists(abs_db_path):
+        try:
+            database_identity = self._database_file_identity_within_root(abs_db_path)
+        except FileNotFoundError:
             self.send_error(404, f"Database file not found: {actual_db_path}")
             return
+        cache_key = self._program_response_cache_key(actual_db_path)
+
+        # Check cache first
+        with db_cache_lock:
+            cached_entry = db_cache.get(cache_key)
+        if cached_entry is not None:
+            cached_identity, last_fetch_time, cached_data = cached_entry
+            if time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS:
+                if cached_identity == database_identity:
+                    print(f"[SERVER] Serving from cache for DB: {db_path}")
+                    self.send_json_response(cached_data)
+                    return
 
         # Retry logic for the reader with improved WAL mode support
         # More retries with longer delays during active evolution
@@ -1544,7 +1586,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 )
 
                 # Update cache
-                db_cache[db_path] = (time.time(), programs_dict)
+                with db_cache_lock:
+                    db_cache[cache_key] = (
+                        database_identity,
+                        time.time(),
+                        programs_dict,
+                    )
 
                 self.send_json_response(programs_dict)
                 success_msg = (
@@ -2988,6 +3035,7 @@ def start_server(
         try:
             httpd.serve_forever()
         finally:
+            DatabaseRequestHandler.clear_program_response_cache(search_root)
             DatabaseRequestHandler.clear_database_snapshot_cache()
 
 

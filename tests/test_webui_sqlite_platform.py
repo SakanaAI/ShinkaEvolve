@@ -6,6 +6,7 @@ import stat
 import pytest
 
 from shinka.database import DatabaseConfig, ProgramDatabase
+from shinka.webui import visualization
 from shinka.webui.visualization import DatabaseRequestHandler
 
 requires_descriptor_traversal = pytest.mark.skipif(
@@ -121,6 +122,48 @@ def test_fallback_program_count_does_not_change_journal_mode(tmp_path, monkeypat
     assert response is not None
     assert database_path.read_bytes() == contents_before
     assert journal_mode == "delete"
+
+
+@requires_descriptor_traversal
+def test_program_response_cache_does_not_cross_search_roots(tmp_path):
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    database_path = first_root / "programs.sqlite"
+    database = ProgramDatabase(DatabaseConfig(db_path=os.fspath(database_path)))
+    database.close()
+    first_handler = _handler(first_root)
+    first_response = None
+
+    def capture_first_response(data):
+        nonlocal first_response
+        first_response = data
+
+    first_handler.send_json_response = capture_first_response
+    first_handler.send_error = lambda *args: pytest.fail(f"unexpected error: {args}")
+    second_handler = _handler(second_root)
+    second_error = None
+
+    def capture_second_error(*args):
+        nonlocal second_error
+        second_error = args
+
+    second_handler.send_json_response = lambda data: pytest.fail(
+        f"unexpected cached response: {data}"
+    )
+    second_handler.send_error = capture_second_error
+
+    visualization.db_cache.clear()
+    try:
+        first_handler.handle_get_programs("programs.sqlite")
+        second_handler.handle_get_programs("programs.sqlite")
+    finally:
+        visualization.db_cache.clear()
+
+    assert first_response == []
+    assert second_error is not None
+    assert second_error[0] == 404
 
 
 @requires_descriptor_traversal
