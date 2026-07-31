@@ -160,11 +160,15 @@ def _reindent_lines(lines: list[str], indent_str: str) -> list[str]:
             continue
         line_indent_len = len(line) - len(line.lstrip())
         line_indent = line[:line_indent_len]
-        if line_indent.startswith(base_indent):
-            relative_indent = line_indent[len(base_indent) :]
-        else:
-            relative_indent = " " * max(0, line_indent_len - base_indent_len)
-        rebased_lines.append(indent_str + relative_indent + line.strip())
+        common_indent_len = 0
+        for base_char, line_char in zip(base_indent, line_indent):
+            if base_char != line_char:
+                break
+            common_indent_len += 1
+        dedent_size = base_indent_len - common_indent_len
+        rebased_base = indent_str[:-dedent_size] if dedent_size else indent_str
+        relative_indent = line_indent[common_indent_len:]
+        rebased_lines.append(rebased_base + relative_indent + line.strip())
 
     return rebased_lines
 

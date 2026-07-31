@@ -561,6 +561,14 @@ def test_apply_indentation_to_replace_preserves_relative_tabs():
     assert result == "\tif ready:\n\t\tvalue = 2"
 
 
+def test_apply_indentation_to_replace_preserves_relative_dedent():
+    replace_text = "        value = 2\n    return value"
+
+    result = _apply_indentation_to_replace(replace_text, "            ")
+
+    assert result == "            value = 2\n        return value"
+
+
 def test_strip_trailing_whitespace():
     """Test _strip_trailing_whitespace function."""
     # Create text with trailing whitespace programmatically to avoid linting issues
@@ -1213,6 +1221,39 @@ def second():
             "=" * 7,
             "    if ready:",
             "        value = 2",
+            ">" * 7 + " REPLACE",
+        ]
+    )
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert "mbiguous" in error
+    assert updated_content == _strip_trailing_whitespace(original_content)
+
+
+def test_dedented_indentation_equivalent_matches_are_ambiguous():
+    original_content = """# EVOLVE-BLOCK-START
+ value = 1
+return value
+
+   value = 1
+  return value
+# EVOLVE-BLOCK-END"""
+    patch_str = "\n".join(
+        [
+            "<" * 7 + " SEARCH",
+            " value = 1",
+            "return value",
+            "=" * 7,
+            " value = 2",
+            "return value",
             ">" * 7 + " REPLACE",
         ]
     )
