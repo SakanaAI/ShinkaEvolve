@@ -441,8 +441,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             filename = os.path.basename(client_path)
             if filename.lower() in ("prompts.db", "prompts.sqlite"):
                 continue
-            if not filename.lower().endswith((".db", ".sqlite")):
-                continue
 
             path_parts = client_path.split(os.sep)
             display_name = (
@@ -524,18 +522,37 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         root = self._canonical_root()
         relative_path = os.path.relpath(resolved_path, root)
+        root_descriptor = self._duplicate_search_root_descriptor(root)
+        try:
+            return self._open_relative_descriptor(
+                root_descriptor,
+                relative_path,
+                flags,
+                original_path=os.fspath(path),
+            )
+        finally:
+            os.close(root_descriptor)
+
+    def _open_relative_descriptor(
+        self,
+        root_descriptor: int,
+        relative_path: str,
+        flags: int,
+        *,
+        original_path: str,
+    ) -> int:
         relative_parts = Path(relative_path).parts
         if os.path.isabs(relative_path) or any(
             part in (os.curdir, os.pardir) for part in relative_parts
         ):
-            raise PathValidationError(f"Path escapes search root: {path!r}")
-        descriptor = self._duplicate_search_root_descriptor(root)
-        directory_flags = self._directory_open_flags()
+            raise PathValidationError(f"Path escapes search root: {original_path!r}")
+
+        descriptor = os.dup(root_descriptor)
         try:
             for part in relative_parts[:-1]:
                 next_descriptor = os.open(
                     part,
-                    directory_flags,
+                    self._directory_open_flags(),
                     dir_fd=descriptor,
                 )
                 os.close(descriptor)
@@ -550,7 +567,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
         except OSError as exc:
             if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise PathValidationError(f"Path changed during access: {path!r}") from exc
+                raise PathValidationError(
+                    f"Path changed during access: {original_path!r}"
+                ) from exc
             raise
         finally:
             os.close(descriptor)
@@ -625,16 +644,54 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 os.path.relpath(os.path.join(root, filename), self.search_root)
                 for root, _, files in os.walk(self.search_root)
                 for filename in files
+                if self._is_database_filename(filename)
             ]
 
-        descriptor = self._duplicate_search_root_descriptor(self._canonical_root())
+        root_descriptor = self._duplicate_search_root_descriptor(
+            self._canonical_root()
+        )
         try:
-            return self._walk_regular_files(descriptor)
+            return self._walk_regular_files(root_descriptor)
         finally:
-            os.close(descriptor)
+            os.close(root_descriptor)
 
-    def _walk_regular_files(self, descriptor: int, prefix: str = "") -> list[str]:
+    def _walk_regular_files(self, root_descriptor: int) -> list[str]:
         paths = []
+        pending_directories = [""]
+        while pending_directories:
+            relative_directory = pending_directories.pop()
+            try:
+                descriptor = self._open_relative_descriptor(
+                    root_descriptor,
+                    relative_directory,
+                    os.O_RDONLY | os.O_DIRECTORY,
+                    original_path=relative_directory,
+                )
+            except OSError as exc:
+                if self._is_skippable_walk_error(exc):
+                    continue
+                raise
+            try:
+                child_directories = self._scan_database_directory(
+                    descriptor,
+                    relative_directory,
+                    paths,
+                )
+                pending_directories.extend(reversed(child_directories))
+            except OSError as exc:
+                if not self._is_skippable_walk_error(exc):
+                    raise
+            finally:
+                os.close(descriptor)
+        return paths
+
+    def _scan_database_directory(
+        self,
+        descriptor: int,
+        prefix: str,
+        paths: list[str],
+    ) -> list[str]:
+        child_directories = []
         for name in os.listdir(descriptor):
             try:
                 entry = os.stat(
@@ -646,12 +703,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if self._is_skippable_walk_error(exc):
                     continue
                 raise
-
             relative_path = os.path.join(prefix, name) if prefix else name
             if stat.S_ISREG(entry.st_mode):
-                paths.append(relative_path)
+                if self._is_database_filename(name):
+                    paths.append(relative_path)
                 continue
             if stat.S_ISLNK(entry.st_mode):
+                if not self._is_database_filename(name):
+                    continue
                 try:
                     file_descriptor = self._open_descriptor_within_root(
                         relative_path, os.O_RDONLY
@@ -670,28 +729,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 continue
             if not stat.S_ISDIR(entry.st_mode):
                 continue
+            child_directories.append(relative_path)
+        return child_directories
 
-            try:
-                child_descriptor = os.open(
-                    name,
-                    self._directory_open_flags(),
-                    dir_fd=descriptor,
-                )
-            except OSError as exc:
-                if self._is_skippable_walk_error(exc):
-                    continue
-                raise
-            try:
-                try:
-                    paths.extend(
-                        self._walk_regular_files(child_descriptor, relative_path)
-                    )
-                except OSError as exc:
-                    if not self._is_skippable_walk_error(exc):
-                        raise
-            finally:
-                os.close(child_descriptor)
-        return paths
+    @staticmethod
+    def _is_database_filename(filename: str) -> bool:
+        return filename.lower().endswith((".db", ".sqlite"))
 
     @staticmethod
     def _is_skippable_walk_error(exc: OSError) -> bool:

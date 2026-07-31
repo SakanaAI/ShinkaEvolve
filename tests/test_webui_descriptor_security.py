@@ -176,6 +176,55 @@ def test_database_listing_skips_unreadable_subdirectory(tmp_path):
 
 
 @requires_descriptor_traversal
+def test_database_listing_handles_tree_deeper_than_fd_limit(tmp_path):
+    resource = pytest.importorskip("resource")
+    directory = tmp_path
+    relative_parts = []
+    for depth in range(48):
+        name = f"d{depth}"
+        relative_parts.append(name)
+        directory /= name
+        directory.mkdir()
+    (directory / "programs.sqlite").write_text("", encoding="utf-8")
+    handler = _handler(tmp_path)
+
+    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard_limit < 32:
+        pytest.skip("file descriptor hard limit is below test threshold")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (32, hard_limit))
+    try:
+        expected = os.path.join(*relative_parts, "programs.sqlite")
+        assert handler._walk_files_within_root() == [expected]
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft_limit, hard_limit))
+
+
+@requires_descriptor_traversal
+def test_database_listing_walk_ignores_non_database_files(tmp_path):
+    (tmp_path / "programs.sqlite").write_text("", encoding="utf-8")
+    for index in range(20):
+        (tmp_path / f"artifact-{index}.txt").write_text("x", encoding="utf-8")
+
+    assert _handler(tmp_path)._walk_files_within_root() == ["programs.sqlite"]
+
+
+@requires_descriptor_traversal
+def test_database_listing_preserves_os_walk_sibling_order(tmp_path):
+    for name in ("gamma", "beta", "alpha"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "programs.sqlite").write_text("", encoding="utf-8")
+
+    expected = [
+        os.path.relpath(os.path.join(root, filename), tmp_path)
+        for root, _, files in os.walk(tmp_path)
+        for filename in files
+    ]
+
+    assert _handler(tmp_path)._walk_files_within_root() == expected
+
+
+@requires_descriptor_traversal
 def test_directory_listing_rejects_symlink_swap_after_resolution(
     tmp_path, monkeypatch
 ):
