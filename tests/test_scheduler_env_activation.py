@@ -97,13 +97,18 @@ def test_submit_conda_recovers_job_id_after_sbatch_timeout(
                 "squeue",
                 "--name",
                 submitted_job_name,
+                "--user",
+                "1000",
                 "--noheader",
-                "--format=%A",
+                "--format=%A|%U",
             ]
-            return subprocess.CompletedProcess(cmd, 0, stdout="456\n", stderr="")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="456|1000\n", stderr=""
+            )
         raise AssertionError(cmd)
 
     monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+    monkeypatch.setattr("shinka.launch.slurm._get_current_user_id", lambda: "1000")
 
     job_id = submit_conda(
         log_dir=str(tmp_path / "logs"),
@@ -140,10 +145,13 @@ def test_submit_conda_reconciles_invalid_sbatch_stdout(
                 stderr="",
             )
         if cmd[0] == "squeue":
-            return subprocess.CompletedProcess(cmd, 0, stdout="456\n", stderr="")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="456|1000\n", stderr=""
+            )
         raise AssertionError(cmd)
 
     monkeypatch.setattr("shinka.launch.slurm.subprocess.run", fake_run)
+    monkeypatch.setattr("shinka.launch.slurm._get_current_user_id", lambda: "1000")
 
     job_id = submit_conda(
         log_dir=str(tmp_path / "logs"),
@@ -178,7 +186,7 @@ def test_submit_conda_cancels_by_name_when_timeout_recovery_is_unavailable(
             )
             submitted_job_name = job_name_line.split("=", 1)[1]
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
-        if cmd[0] == "squeue":
+        if cmd[0] in {"squeue", "sacct"}:
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
         if cmd[0] == "scancel":
             assert cmd == ["scancel", "--name", submitted_job_name, "--quiet"]
