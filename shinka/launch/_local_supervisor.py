@@ -2,6 +2,7 @@
 
 import ctypes
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -13,6 +14,8 @@ LOCAL_PROCESS_TOKEN_ENV = "SHINKA_LOCAL_JOB_TOKEN"
 TERMINATION_GRACE_SECONDS = 1.0
 GROUP_POLL_INTERVAL_SECONDS = 0.1
 GROUP_QUIESCENCE_SECONDS = 0.2
+GROUP_GUARD_START_TIMEOUT_SECONDS = 1.0
+GROUP_GUARD_STOP_TIMEOUT_SECONDS = 1.0
 PR_SET_PDEATHSIG = 1
 
 
@@ -26,12 +29,12 @@ def _report_launch_status(status_fd: int, message: str) -> bool:
         os.close(status_fd)
 
 
-def _signal_group_members(signum: int) -> bool:
+def _signal_group_members(signum: int, ignored_pid: int | None = None) -> bool:
     supervisor_pid = os.getpid()
     process_group_id = os.getpgrp()
     all_signaled = True
     for process in psutil.process_iter(["pid"]):
-        if process.pid == supervisor_pid:
+        if process.pid in (supervisor_pid, ignored_pid):
             continue
         try:
             if os.getpgid(process.pid) == process_group_id:
@@ -43,11 +46,11 @@ def _signal_group_members(signum: int) -> bool:
     return all_signaled
 
 
-def _group_has_members() -> bool | None:
+def _group_has_members(ignored_pid: int | None = None) -> bool | None:
     supervisor_pid = os.getpid()
     process_group_id = os.getpgrp()
     for process in psutil.process_iter(["pid"]):
-        if process.pid == supervisor_pid:
+        if process.pid in (supervisor_pid, ignored_pid):
             continue
         try:
             if (
@@ -62,17 +65,107 @@ def _group_has_members() -> bool | None:
     return False
 
 
-def _terminate_group(signum: int) -> bool:
-    _signal_group_members(signum)
+def _terminate_group(signum: int, ignored_pid: int | None = None) -> bool:
+    _signal_group_members(signum, ignored_pid)
     deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
     while time.monotonic() < deadline:
-        group_has_members = _group_has_members()
+        group_has_members = _group_has_members(ignored_pid)
         if group_has_members is False:
             return True
         time.sleep(0.01)
-    _signal_group_members(signal.SIGKILL)
+    _signal_group_members(signal.SIGKILL, ignored_pid)
     time.sleep(0.01)
-    return _group_has_members() is False
+    return _group_has_members(ignored_pid) is False
+
+
+def _start_group_guard(status_fd: int) -> tuple[int, int]:
+    """Keep a token-bearing member that kills the group on supervisor death."""
+    read_fd, write_fd = os.pipe()
+    ready_read_fd, ready_write_fd = os.pipe()
+    try:
+        guard_pid = os.fork()
+    except OSError:
+        for file_descriptor in (
+            read_fd,
+            write_fd,
+            ready_read_fd,
+            ready_write_fd,
+        ):
+            os.close(file_descriptor)
+        raise
+    if guard_pid == 0:
+        os.close(write_fd)
+        os.close(ready_read_fd)
+        os.close(status_fd)
+        if os.getpgrp() != os.getppid():
+            os._exit(127)
+        os.write(ready_write_fd, b"A")
+        os.close(ready_write_fd)
+        try:
+            clean_shutdown = os.read(read_fd, 1) == b"C"
+        except OSError:
+            clean_shutdown = False
+        finally:
+            os.close(read_fd)
+        if not clean_shutdown:
+            try:
+                os.killpg(os.getpgrp(), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os._exit(0)
+    os.close(read_fd)
+    os.close(ready_write_fd)
+    readable, _, _ = select.select(
+        [ready_read_fd], [], [], GROUP_GUARD_START_TIMEOUT_SECONDS
+    )
+    armed = bool(readable) and os.read(ready_read_fd, 1) == b"A"
+    os.close(ready_read_fd)
+    if not armed:
+        _stop_group_guard(guard_pid, write_fd)
+        raise RuntimeError("Local process-group guard did not arm")
+    return guard_pid, write_fd
+
+
+def _stop_group_guard(guard_pid: int, write_fd: int) -> bool:
+    clean_shutdown_sent = False
+    try:
+        clean_shutdown_sent = os.write(write_fd, b"C") == 1
+    except OSError:
+        pass
+    finally:
+        os.close(write_fd)
+    deadline = time.monotonic() + GROUP_GUARD_STOP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            waited_pid, status = os.waitpid(guard_pid, os.WNOHANG)
+        except ChildProcessError:
+            return False
+        if waited_pid == guard_pid:
+            return clean_shutdown_sent and os.waitstatus_to_exitcode(status) == 0
+        time.sleep(0.01)
+
+    try:
+        os.kill(guard_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    kill_deadline = time.monotonic() + GROUP_GUARD_STOP_TIMEOUT_SECONDS
+    while time.monotonic() < kill_deadline:
+        try:
+            waited_pid, _ = os.waitpid(guard_pid, os.WNOHANG)
+        except ChildProcessError:
+            return False
+        if waited_pid == guard_pid:
+            return False
+        time.sleep(0.01)
+    return False
+
+
+def _group_guard_exited(guard_pid: int) -> bool:
+    try:
+        waited_pid, _ = os.waitpid(guard_pid, os.WNOHANG)
+    except ChildProcessError:
+        return True
+    return waited_pid == guard_pid
 
 
 def _parent_death_kills_evaluator(supervisor_pid: int) -> None:
@@ -100,12 +193,23 @@ def main(status_fd: int, command: list[str]) -> int:
 
     supervisor_pid = os.getpid()
     try:
+        guard_pid, guard_write_fd = _start_group_guard(status_fd)
+    except (OSError, RuntimeError) as error:
+        error_number = error.errno if isinstance(error, OSError) else 1
+        _report_launch_status(status_fd, f"ERROR:{error_number or 1}:{error}")
+        return 127
+    if _group_guard_exited(guard_pid):
+        os.close(guard_write_fd)
+        _report_launch_status(status_fd, "ERROR:1:Local process-group guard exited")
+        return 127
+    try:
         evaluator = subprocess.Popen(
             command,
             env=evaluator_env,
             preexec_fn=lambda: _parent_death_kills_evaluator(supervisor_pid),
         )
     except OSError as error:
+        _stop_group_guard(guard_pid, guard_write_fd)
         _report_launch_status(status_fd, f"ERROR:{error.errno or 1}:{error}")
         return 127
     _report_launch_status(status_fd, "READY")
@@ -113,19 +217,27 @@ def main(status_fd: int, command: list[str]) -> int:
     evaluator_returncode = None
     group_empty_since = None
     while True:
+        if _group_guard_exited(guard_pid):
+            os.close(guard_write_fd)
+            _terminate_group(signal.SIGKILL)
+            return 127
         if received_signal is not None:
-            if _terminate_group(received_signal):
+            if _terminate_group(received_signal, guard_pid):
                 evaluator.poll()
+                if not _stop_group_guard(guard_pid, guard_write_fd):
+                    return 127
                 return 128 + received_signal
             time.sleep(0.1)
             continue
         if evaluator_returncode is None:
             evaluator_returncode = evaluator.poll()
         if evaluator_returncode is not None:
-            if _group_has_members() is False:
+            if _group_has_members(guard_pid) is False:
                 if group_empty_since is None:
                     group_empty_since = time.monotonic()
                 elif time.monotonic() - group_empty_since >= GROUP_QUIESCENCE_SECONDS:
+                    if not _stop_group_guard(guard_pid, guard_write_fd):
+                        return 127
                     return evaluator_returncode
             else:
                 group_empty_since = None

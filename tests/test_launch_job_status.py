@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shinka.launch import local, slurm
+from shinka.launch import _local_supervisor, local, slurm
 from shinka.launch.local import (
     LocalProcessIdentity,
     ProcessWithLogging,
@@ -100,10 +100,11 @@ def test_preallocated_local_token_recovers_live_process(tmp_path, monkeypatch):
 
     try:
         with monkeypatch.context() as recovery_context:
+            supervisor = local.psutil.Process(process.pid)
             recovery_context.setattr(
                 local.psutil,
                 "process_iter",
-                lambda _attrs: [local.psutil.Process(process.pid)],
+                lambda _attrs: [supervisor, *supervisor.children()],
             )
             recovered = find_local_process_identities(token)
 
@@ -856,6 +857,76 @@ def test_supervisor_termination_reaps_sanitized_evaluator(tmp_path, termination)
         proc.cleanup_logging()
 
 
+def test_supervisor_sigkill_reaps_wrapper_grandchild(tmp_path):
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    proc = submit(
+        str(tmp_path),
+        [
+            "bash",
+            "-c",
+            f"sleep 60 & echo $! > {grandchild_pid_file}; wait",
+        ],
+    )
+
+    grandchild_pid = None
+    try:
+        deadline = time.time() + 5
+        while not grandchild_pid_file.exists() and time.time() < deadline:
+            time.sleep(0.01)
+        grandchild_pid = int(grandchild_pid_file.read_text())
+        os.kill(grandchild_pid, 0)
+
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+
+        try:
+            grandchild = local.psutil.Process(grandchild_pid)
+        except local.psutil.NoSuchProcess:
+            grandchild = None
+        if grandchild is not None:
+            deadline = time.time() + 2
+            while (
+                grandchild.is_running()
+                and grandchild.status() != local.psutil.STATUS_ZOMBIE
+                and time.time() < deadline
+            ):
+                time.sleep(0.01)
+            assert (
+                not grandchild.is_running()
+                or grandchild.status() == local.psutil.STATUS_ZOMBIE
+            )
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+        if grandchild_pid is not None:
+            try:
+                os.kill(grandchild_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.cleanup_logging()
+
+
+def test_stopped_group_guard_is_killed_within_bound(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    guard_pid = os.fork()
+    if guard_pid == 0:
+        os.close(write_fd)
+        os.kill(os.getpid(), signal.SIGSTOP)
+        os.read(read_fd, 1)
+        os._exit(0)
+    os.close(read_fd)
+    monkeypatch.setattr(
+        _local_supervisor, "GROUP_GUARD_STOP_TIMEOUT_SECONDS", 0.05
+    )
+
+    start = time.monotonic()
+    assert _local_supervisor._stop_group_guard(guard_pid, write_fd) is False
+    assert time.monotonic() - start < 0.5
+    with pytest.raises(ChildProcessError):
+        os.waitpid(guard_pid, os.WNOHANG)
+
+
 def test_supervisor_survives_closed_readiness_pipe(tmp_path):
     status_read_fd, status_write_fd = os.pipe()
     os.close(status_read_fd)
@@ -930,9 +1001,21 @@ def test_local_supervisor_waits_for_entire_process_group(tmp_path):
 
         supervisor = local.psutil.Process(proc.pid)
         deadline = time.time() + 5
-        while supervisor.children() and time.time() < deadline:
+        evaluator_children = supervisor.children()
+        while (
+            any(
+                child.environ().get(local.LOCAL_PROCESS_TOKEN_ENV)
+                != proc.identity.token
+                for child in evaluator_children
+            )
+            and time.time() < deadline
+        ):
             time.sleep(0.01)
-        assert supervisor.children() == []
+            evaluator_children = supervisor.children()
+        assert all(
+            child.environ().get(local.LOCAL_PROCESS_TOKEN_ENV) == proc.identity.token
+            for child in evaluator_children
+        )
         assert proc.poll() is None
 
         assert proc.wait(timeout=5) == 7

@@ -181,6 +181,8 @@ class LocalProcessIdentity:
             if process.pid == self.pid:
                 continue
             try:
+                if process.environ().get(LOCAL_PROCESS_TOKEN_ENV) == self.token:
+                    continue
                 process.send_signal(signum)
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
@@ -226,6 +228,28 @@ class ProcessWithLogging:
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
         return getattr(self.process, name)
+
+    def poll(self):
+        """Report completion only after the authenticated group is gone."""
+        returncode = self.process.poll()
+        if (
+            returncode is not None
+            and self.identity is not None
+            and not self.identity.is_terminated()
+        ):
+            return None
+        return returncode
+
+    def wait(self, timeout: Optional[float] = None):
+        """Wait for both the supervisor and every authenticated group member."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        returncode = self.process.wait(timeout=timeout)
+        while self.identity is not None and not self.identity.is_terminated():
+            if deadline is not None and time.monotonic() >= deadline:
+                assert timeout is not None
+                raise subprocess.TimeoutExpired(self.process.args, timeout)
+            time.sleep(0.01)
+        return returncode
 
     def kill(self) -> bool:
         """Kill token-verified processes belonging to this local evaluation.
