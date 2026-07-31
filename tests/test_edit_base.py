@@ -1326,6 +1326,35 @@ value = 1
     assert "EVOLVE-BLOCK-START\nvalue = 2" in updated_content
 
 
+def test_leading_blank_search_uses_first_nonblank_match_indentation():
+    original_content = """# EVOLVE-BLOCK-START
+def evaluate():
+
+    value = 1
+# EVOLVE-BLOCK-END"""
+    patch_str = "\n".join(
+        [
+            "<" * 7 + " SEARCH",
+            "",
+            "value = 1",
+            "=" * 7,
+            "value = 2",
+            ">" * 7 + " REPLACE",
+        ]
+    )
+
+    updated_content, num_applied, _, error, _, _ = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+
+    assert error is None
+    assert num_applied == 1
+    assert "def evaluate():\n    value = 2" in updated_content
+
+
 def test_indentation_equivalent_match_prefers_editable_region():
     original_content = """def immutable():
     if ready:

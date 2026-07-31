@@ -761,7 +761,9 @@ def apply_search_replace(
             # Extract indentation from the matched search
             matched_lines = matched_search.splitlines()
             if matched_lines:
-                first_matched_line = matched_lines[0]
+                first_matched_line = next(
+                    line for line in matched_lines if line.strip()
+                )
                 indent_len = len(first_matched_line) - len(first_matched_line.lstrip())
                 indent_str = first_matched_line[:indent_len]
                 replace = _apply_indentation_to_replace(replace, indent_str)
