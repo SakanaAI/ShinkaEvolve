@@ -56,6 +56,11 @@ source .venv/bin/activate    # macOS/Linux
 uv pip install -e .
 ```
 
+!!! note
+    The async runner's secure results-directory and durable-resume workflow
+    currently requires Linux. It fails closed on macOS and Windows because
+    equivalent native ACL and reparse-point validation is not yet implemented.
+
 ### Option 2: conda/pip
 
 ```bash

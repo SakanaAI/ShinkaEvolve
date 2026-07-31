@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import struct
 from dataclasses import replace
 from pathlib import Path
 
@@ -151,6 +153,133 @@ def test_runner_rejects_untrusted_results_root_before_catalog_io(
     assert list(results_root.iterdir()) == []
 
 
+def test_runner_rejects_named_untrusted_acl_writer_before_catalog_io(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "results"
+    results_root.mkdir(mode=0o700)
+    results_root.chmod(0o770)
+    undefined_id = 0xFFFFFFFF
+    acl_data = b"".join(
+        [
+            struct.pack("<I", async_runner.POSIX_ACL_XATTR_VERSION),
+            struct.pack("<HHI", 0x01, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_USER, 0o7, os.geteuid() + 1),
+            struct.pack("<HHI", 0x04, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_MASK, 0o7, undefined_id),
+            struct.pack("<HHI", 0x20, 0, undefined_id),
+        ]
+    )
+
+    def fake_getxattr(_fd, attribute_name):
+        if attribute_name == "system.posix_acl_access":
+            return acl_data
+        raise OSError(async_runner.errno.ENODATA, "No data available")
+
+    monkeypatch.setattr(async_runner.os, "getxattr", fake_getxattr)
+    monkeypatch.setattr(
+        async_runner,
+        "load_run_pricing_snapshot",
+        lambda _path: pytest.fail("catalog read preceded ACL validation"),
+    )
+
+    with pytest.raises(PermissionError, match="untrusted user"):
+        ShinkaEvolveRunner(
+            evo_config=EvolutionConfig(
+                llm_models=["gpt-5-mini"],
+                llm_dynamic_selection=None,
+                meta_rec_interval=None,
+                embedding_model=None,
+                num_generations=1,
+                results_dir=str(results_root),
+            ),
+            job_config=LocalJobConfig(),
+            db_config=DatabaseConfig(),
+            verbose=False,
+        )
+
+
+def test_results_root_rejects_default_acl_writable_by_other_users(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "results"
+    results_root.mkdir(mode=0o700)
+    undefined_id = 0xFFFFFFFF
+    default_acl = b"".join(
+        [
+            struct.pack("<I", async_runner.POSIX_ACL_XATTR_VERSION),
+            struct.pack("<HHI", async_runner.POSIX_ACL_USER_OBJ, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_GROUP_OBJ, 0, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_MASK, 0, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_OTHER, 0o2, undefined_id),
+        ]
+    )
+
+    def fake_getxattr(_fd, attribute_name):
+        if attribute_name == "system.posix_acl_default":
+            return default_acl
+        raise OSError(async_runner.errno.ENODATA, "No data available")
+
+    monkeypatch.setattr(async_runner.os, "getxattr", fake_getxattr)
+
+    with pytest.raises(PermissionError, match="other users"):
+        async_runner._prepare_results_root(results_root, create=False)
+
+
+def test_results_path_rejects_ancestor_acl_with_untrusted_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    ancestor = tmp_path / "shared"
+    ancestor.mkdir(mode=0o770)
+    results_root = ancestor / "results"
+    results_root.mkdir()
+    undefined_id = async_runner.POSIX_ACL_UNDEFINED_ID
+    ancestor_acl = b"".join(
+        [
+            struct.pack("<I", async_runner.POSIX_ACL_XATTR_VERSION),
+            struct.pack("<HHI", async_runner.POSIX_ACL_USER_OBJ, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_USER, 0o7, os.geteuid() + 1),
+            struct.pack("<HHI", async_runner.POSIX_ACL_GROUP_OBJ, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_MASK, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_OTHER, 0, undefined_id),
+        ]
+    )
+
+    def fake_getxattr(fd, attribute_name):
+        opened_path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        if (
+            opened_path == ancestor
+            and attribute_name == "system.posix_acl_access"
+        ):
+            return ancestor_acl
+        raise OSError(async_runner.errno.ENODATA, "No data available")
+
+    monkeypatch.setattr(async_runner.os, "getxattr", fake_getxattr)
+
+    with pytest.raises(PermissionError, match="untrusted user"):
+        async_runner._prepare_results_root(results_root, create=False)
+
+
+def test_results_root_rejects_duplicate_acl_masks():
+    undefined_id = async_runner.POSIX_ACL_UNDEFINED_ID
+    malformed_acl = b"".join(
+        [
+            struct.pack("<I", async_runner.POSIX_ACL_XATTR_VERSION),
+            struct.pack("<HHI", async_runner.POSIX_ACL_USER_OBJ, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_GROUP_OBJ, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_MASK, 0o7, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_MASK, 0, undefined_id),
+            struct.pack("<HHI", async_runner.POSIX_ACL_OTHER, 0, undefined_id),
+        ]
+    )
+
+    with pytest.raises(PermissionError, match="invalid POSIX ACL"):
+        async_runner._parse_posix_acl_entries(malformed_acl)
+
+
 def test_runner_rejects_symlinked_results_path_ancestor_before_catalog_io(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -243,6 +372,18 @@ def test_windows_results_root_fails_closed(
 
     with pytest.raises(RuntimeError, match="unsupported on Windows"):
         async_runner._prepare_results_root(results_root, create=create)
+
+
+def test_non_linux_posix_acl_validation_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    monkeypatch.setattr(async_runner.sys, "platform", "darwin")
+
+    with pytest.raises(RuntimeError, match="POSIX ACL validation is unsupported"):
+        async_runner._prepare_results_root(results_root, create=False)
 
 
 def test_missing_results_root_skips_snapshot_read(

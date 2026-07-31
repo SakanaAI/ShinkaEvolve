@@ -94,6 +94,11 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install -e .
 ```
 
+> [!NOTE]
+> The async runner's secure results-directory and durable-resume workflow
+> currently requires Linux. It fails closed on macOS and Windows because
+> equivalent native ACL and reparse-point validation is not yet implemented.
+
 For detailed installation instructions and usage examples, see the [Getting Started Guide](https://sakanaai.github.io/ShinkaEvolve/getting_started/).
 
 ## Examples 📖

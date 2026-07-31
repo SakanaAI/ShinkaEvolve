@@ -5,11 +5,14 @@ Provides fully asynchronous evolution pipeline with concurrent LLM sampling.
 
 import json
 import asyncio
+import errno
 import logging
 import re
 import shutil
 import signal
 import stat
+import struct
+import sys
 import time
 import uuid
 import os
@@ -103,13 +106,122 @@ JOB_STATUS_UNKNOWN_TIMEOUT_SECONDS = MAX_UNKNOWN_STATUS_POLLS * 10.0
 SLURM_JOB_ID_PATTERN = re.compile(r"[0-9]+")
 SLURM_JOB_NAME_PATTERN = re.compile(r"(?:conda|docker)-[0-9a-f]{32}")
 LOCAL_JOB_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
+POSIX_ACL_XATTR_VERSION = 2
+POSIX_ACL_USER_OBJ = 0x01
+POSIX_ACL_USER = 0x02
+POSIX_ACL_GROUP_OBJ = 0x04
+POSIX_ACL_GROUP = 0x08
+POSIX_ACL_MASK = 0x10
+POSIX_ACL_OTHER = 0x20
+POSIX_ACL_WRITE = 0x02
+POSIX_ACL_UNDEFINED_ID = 0xFFFFFFFF
+POSIX_ACL_XATTRS = ("system.posix_acl_access", "system.posix_acl_default")
 
 
 def _monotonic_time() -> float:
     return time.monotonic()
 
 
-def _validate_results_root_stat(root_stat: os.stat_result) -> None:
+def _parse_posix_acl_entries(acl_data: bytes) -> list[tuple[int, int, int]]:
+    if len(acl_data) < 4 or (len(acl_data) - 4) % 8 != 0:
+        raise PermissionError("Results directory has a malformed POSIX ACL")
+    (version,) = struct.unpack_from("<I", acl_data)
+    if version != POSIX_ACL_XATTR_VERSION:
+        raise PermissionError("Results directory has an unsupported POSIX ACL")
+    entries = [
+        struct.unpack_from("<HHI", acl_data, offset)
+        for offset in range(4, len(acl_data), 8)
+    ]
+    allowed_tags = {
+        POSIX_ACL_USER_OBJ,
+        POSIX_ACL_USER,
+        POSIX_ACL_GROUP_OBJ,
+        POSIX_ACL_GROUP,
+        POSIX_ACL_MASK,
+        POSIX_ACL_OTHER,
+    }
+    if any(tag not in allowed_tags or permissions & ~0o7 for tag, permissions, _ in entries):
+        raise PermissionError("Results directory has an invalid POSIX ACL")
+    for base_tag in {POSIX_ACL_USER_OBJ, POSIX_ACL_GROUP_OBJ, POSIX_ACL_OTHER}:
+        if sum(tag == base_tag for tag, _permissions, _entry_id in entries) != 1:
+            raise PermissionError("Results directory has an invalid POSIX ACL")
+    named_entries = [
+        (tag, entry_id)
+        for tag, _permissions, entry_id in entries
+        if tag in {POSIX_ACL_USER, POSIX_ACL_GROUP}
+    ]
+    if any(entry_id == POSIX_ACL_UNDEFINED_ID for _tag, entry_id in named_entries):
+        raise PermissionError("Results directory has an invalid POSIX ACL")
+    if len(named_entries) != len(set(named_entries)):
+        raise PermissionError("Results directory has an invalid POSIX ACL")
+    mask_count = sum(tag == POSIX_ACL_MASK for tag, _permissions, _entry_id in entries)
+    if (named_entries and mask_count != 1) or (
+        not named_entries and mask_count > 1
+    ):
+        raise PermissionError("Results directory has an invalid POSIX ACL")
+    for tag, _permissions, entry_id in entries:
+        if tag not in {POSIX_ACL_USER, POSIX_ACL_GROUP} and (
+            entry_id != POSIX_ACL_UNDEFINED_ID
+        ):
+            raise PermissionError("Results directory has an invalid POSIX ACL")
+    return entries
+
+
+def _validate_posix_acl(root_fd: int, root_stat: os.stat_result) -> None:
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("Secure POSIX ACL validation is unsupported")
+    trusted_user_ids = {0, os.geteuid()}
+    trusted_group_ids = {os.getegid(), *os.getgroups()}
+    missing_acl_errors = {
+        errno.ENODATA,
+        getattr(errno, "ENOATTR", errno.ENODATA),
+    }
+    for attribute_name in POSIX_ACL_XATTRS:
+        try:
+            acl_data = os.getxattr(root_fd, attribute_name)
+        except OSError as error:
+            if error.errno in missing_acl_errors:
+                continue
+            raise PermissionError(
+                "Cannot inspect results-directory POSIX ACL"
+            ) from error
+
+        entries = _parse_posix_acl_entries(acl_data)
+        mask_permissions = next(
+            (permissions for tag, permissions, _entry_id in entries if tag == POSIX_ACL_MASK),
+            0o7,
+        )
+        for tag, permissions, entry_id in entries:
+            effective_permissions = permissions
+            if tag not in {POSIX_ACL_USER_OBJ, POSIX_ACL_OTHER}:
+                effective_permissions &= mask_permissions
+            if not effective_permissions & POSIX_ACL_WRITE:
+                continue
+            if tag == POSIX_ACL_USER and entry_id not in trusted_user_ids:
+                raise PermissionError(
+                    "Results directory ACL grants write access to an untrusted user"
+                )
+            if tag == POSIX_ACL_GROUP and entry_id not in trusted_group_ids:
+                raise PermissionError(
+                    "Results directory ACL grants write access to an untrusted group"
+                )
+            if (
+                tag == POSIX_ACL_GROUP_OBJ
+                and root_stat.st_gid not in trusted_group_ids
+            ):
+                raise PermissionError(
+                    "Results directory ACL grants write access to an untrusted group"
+                )
+            if tag == POSIX_ACL_OTHER:
+                raise PermissionError(
+                    "Results directory ACL grants write access to other users"
+                )
+
+
+def _validate_results_root_stat(
+    root_stat: os.stat_result,
+    root_fd: Optional[int] = None,
+) -> None:
     if hasattr(os, "geteuid") and root_stat.st_uid != os.geteuid():
         raise PermissionError("Results directory is owned by another user")
     if root_stat.st_mode & 0o002:
@@ -122,6 +234,8 @@ def _validate_results_root_stat(root_stat: os.stat_result) -> None:
             raise PermissionError(
                 "Results directory is writable by an untrusted group"
             )
+    if root_fd is not None:
+        _validate_posix_acl(root_fd, root_stat)
 
 
 def _validate_results_ancestor_stat(
@@ -160,7 +274,7 @@ def _prepare_posix_results_root(results_root: Path, create: bool) -> bool:
     current_fd = os.open(current_path, open_flags)
     try:
         if len(path_parts) == 1:
-            _validate_results_root_stat(os.fstat(current_fd))
+            _validate_results_root_stat(os.fstat(current_fd), current_fd)
             return True
         for index, path_part in enumerate(path_parts[1:], start=1):
             is_results_root = index == len(path_parts) - 1
@@ -179,9 +293,10 @@ def _prepare_posix_results_root(results_root: Path, create: bool) -> bool:
             try:
                 child_stat = os.fstat(child_fd)
                 if is_results_root:
-                    _validate_results_root_stat(child_stat)
+                    _validate_results_root_stat(child_stat, child_fd)
                 else:
                     _validate_results_ancestor_stat(child_stat, child_path)
+                    _validate_posix_acl(child_fd, child_stat)
             except BaseException:
                 os.close(child_fd)
                 raise
@@ -5892,7 +6007,7 @@ class ShinkaEvolveRunner:
             )
             archive_fd: Optional[int] = None
             try:
-                _validate_results_root_stat(os.fstat(root_fd))
+                _validate_results_root_stat(os.fstat(root_fd), root_fd)
 
                 for generation in generations:
                     source_name = f"{FOLDER_PREFIX}_{generation}"
