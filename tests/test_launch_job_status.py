@@ -183,6 +183,165 @@ def test_sacct_success_without_rows_returns_unknown(monkeypatch):
     assert slurm.get_job_status("999") is None
 
 
+def test_timed_out_submission_recovers_fast_completed_job_from_sacct(monkeypatch):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+    user_id = "1000"
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        assert kwargs["timeout"] == slurm.SUBMISSION_RECOVERY_COMMAND_TIMEOUT_SECONDS
+        if cmd[0] == "squeue":
+            return _FakeCompleted("")
+        if cmd[0] == "sacct":
+            return _FakeCompleted(f"123|{job_name}|{user_id}\n")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: user_id)
+    monkeypatch.setattr(
+        slurm.time,
+        "sleep",
+        lambda _seconds: pytest.fail("recovery should finish on first attempt"),
+    )
+
+    assert slurm._recover_timed_out_submission(job_name) == "123"
+    assert commands == [
+        [
+            "squeue",
+            "--name",
+            job_name,
+            "--user",
+            user_id,
+            "--noheader",
+            "--format=%A|%U",
+        ],
+        [
+            "sacct",
+            "--name",
+            job_name,
+            "--user",
+            user_id,
+            "--starttime=now-10minutes",
+            "--allocations",
+            "--noheader",
+            "--parsable2",
+            "--format=JobIDRaw,JobName%128,UID",
+        ],
+    ]
+
+
+@pytest.mark.parametrize(
+    "accounting_output",
+    [
+        "123|different-name|1000\n",
+        "123|conda-0123456789abcdef0123456789abcdef|1000\n"
+        "456|conda-0123456789abcdef0123456789abcdef|1000\n",
+        "--user=other|conda-0123456789abcdef0123456789abcdef|1000\n",
+        "123|conda-0123456789abcdef0123456789abcdef|2000\n",
+    ],
+)
+def test_timed_out_submission_rejects_ambiguous_accounting_rows(
+    monkeypatch,
+    accounting_output,
+):
+    monkeypatch.setattr(
+        slurm.subprocess,
+        "run",
+        lambda _cmd, **_kwargs: _FakeCompleted(accounting_output),
+    )
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+
+    recovered = slurm._recover_submission_from_sacct(
+        "conda-0123456789abcdef0123456789abcdef"
+    )
+
+    assert recovered is None
+
+
+def test_sbatch_timeout_returns_completed_accounting_job(monkeypatch):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+    user_id = "1000"
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "sbatch":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if cmd[0] == "squeue":
+            return _FakeCompleted("")
+        if cmd[0] == "sacct":
+            return _FakeCompleted(f"321|{job_name}|{user_id}\n")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: user_id)
+
+    assert slurm._submit_sbatch("job.sbatch", job_name) == "321"
+
+
+def test_timed_out_submission_waits_for_delayed_accounting(monkeypatch):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+    accounting_polls = 0
+
+    def fake_run(cmd, **_kwargs):
+        nonlocal accounting_polls
+        if cmd[0] == "squeue":
+            return _FakeCompleted("")
+        accounting_polls += 1
+        if accounting_polls < 5:
+            return _FakeCompleted("")
+        return _FakeCompleted(f"456|{job_name}|1000\n")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+    monkeypatch.setattr(slurm.time, "sleep", lambda _seconds: None)
+
+    assert slurm._recover_timed_out_submission(job_name) == "456"
+    assert accounting_polls == 5
+
+
+def test_timed_out_submission_does_not_collapse_multiple_queue_ids(monkeypatch):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "squeue":
+            return _FakeCompleted("123|1000\n456|1000\n")
+        pytest.fail("ambiguous queue result must not fall through to accounting")
+
+    monkeypatch.setattr(slurm.subprocess, "run", fake_run)
+    monkeypatch.setattr(slurm, "_get_current_user_id", lambda: "1000")
+
+    with pytest.raises(slurm.AmbiguousSlurmSubmissionError):
+        slurm._recover_timed_out_submission(job_name)
+
+
+def test_cancelled_submission_rechecks_accounting_before_resolution(monkeypatch):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+    recovery_results = iter([None, "789"])
+    monkeypatch.setattr(
+        slurm,
+        "_recover_timed_out_submission",
+        lambda _job_name: next(recovery_results),
+    )
+    monkeypatch.setattr(slurm, "_cancel_ambiguous_submission", lambda _job_name: True)
+    monkeypatch.setattr(slurm, "get_job_status_by_name", lambda _job_name: "")
+
+    assert slurm._reconcile_ambiguous_submission(job_name) == "789"
+
+
+def test_cancelled_submission_without_accounting_stays_ambiguous(monkeypatch):
+    job_name = "conda-0123456789abcdef0123456789abcdef"
+    monkeypatch.setattr(
+        slurm,
+        "_recover_timed_out_submission",
+        lambda _job_name: None,
+    )
+    monkeypatch.setattr(slurm, "_cancel_ambiguous_submission", lambda _job_name: True)
+    monkeypatch.setattr(slurm, "get_job_status_by_name", lambda _job_name: "")
+
+    with pytest.raises(slurm.AmbiguousSlurmSubmissionError):
+        slurm._reconcile_ambiguous_submission(job_name)
+
+
 def test_scheduler_preserves_unknown_slurm_status(monkeypatch):
     monkeypatch.setattr(slurm, "get_job_status", lambda _job_id: None)
     scheduler = JobScheduler(

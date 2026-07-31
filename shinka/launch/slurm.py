@@ -45,8 +45,9 @@ LOCAL_JOBS: dict[str, dict] = {}
 MAX_UNKNOWN_STATUS_POLLS = 30
 SLURM_COMMAND_TIMEOUT_SECONDS = 30
 DOCKER_COMMAND_TIMEOUT_SECONDS = 600
-SUBMISSION_RECOVERY_ATTEMPTS = 3
+SUBMISSION_RECOVERY_ATTEMPTS = 10
 SUBMISSION_RECOVERY_DELAY_SECONDS = 1
+SUBMISSION_RECOVERY_COMMAND_TIMEOUT_SECONDS = 5
 SLURM_ALLOCATION_ID_PATTERN = re.compile(r"[0-9]+")
 SLURM_JOB_ID_PATTERN = re.compile(
     r"[0-9]+(?:_[0-9]+|\+[0-9]+)?(?:\.(?:batch|extern|[0-9]+))?"
@@ -250,8 +251,66 @@ exit $?
 """
 
 
+def _get_current_user_id() -> str:
+    """Return the numeric Unix user ID used for Slurm submission ownership."""
+    if not hasattr(os, "geteuid"):
+        raise RuntimeError("Slurm submission recovery requires a Unix user ID")
+    return str(os.geteuid())
+
+
+def _recover_submission_from_sacct(
+    job_name: str,
+    user_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return one exact allocation ID for a recently submitted job name."""
+    if user_id is None:
+        user_id = _get_current_user_id()
+    try:
+        result = subprocess.run(
+            [
+                "sacct",
+                "--name",
+                job_name,
+                "--user",
+                user_id,
+                "--starttime=now-10minutes",
+                "--allocations",
+                "--noheader",
+                "--parsable2",
+                "--format=JobIDRaw,JobName%128,UID",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=SUBMISSION_RECOVERY_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        return None
+
+    job_ids = set()
+    for line in result.stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) != 3:
+            continue
+        job_id, reported_name, reported_user_id = (
+            field.strip() for field in fields
+        )
+        if (
+            reported_name == job_name
+            and reported_user_id == user_id
+            and _is_valid_slurm_allocation_id(job_id)
+        ):
+            job_ids.add(job_id)
+    return next(iter(job_ids)) if len(job_ids) == 1 else None
+
+
 def _recover_timed_out_submission(job_name: str) -> Optional[str]:
     """Recover a Slurm job ID when sbatch accepted work but lost its response."""
+    user_id = _get_current_user_id()
     for attempt in range(SUBMISSION_RECOVERY_ATTEMPTS):
         try:
             result = subprocess.run(
@@ -259,13 +318,15 @@ def _recover_timed_out_submission(job_name: str) -> Optional[str]:
                     "squeue",
                     "--name",
                     job_name,
+                    "--user",
+                    user_id,
                     "--noheader",
-                    "--format=%A",
+                    "--format=%A|%U",
                 ],
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
+                timeout=SUBMISSION_RECOVERY_COMMAND_TIMEOUT_SECONDS,
             )
         except (
             subprocess.CalledProcessError,
@@ -274,12 +335,39 @@ def _recover_timed_out_submission(job_name: str) -> Optional[str]:
         ):
             result = None
 
-        job_ids = result.stdout.split() if result is not None else []
-        if len(job_ids) == 1 and _is_valid_slurm_allocation_id(job_ids[0]):
-            logger.warning(
-                "Recovered Slurm job %s after sbatch response timeout", job_ids[0]
+        job_ids = set()
+        if result is not None:
+            for line in result.stdout.splitlines():
+                fields = line.split("|")
+                if len(fields) != 2:
+                    continue
+                job_id, reported_user_id = (field.strip() for field in fields)
+                if (
+                    reported_user_id == user_id
+                    and _is_valid_slurm_allocation_id(job_id)
+                ):
+                    job_ids.add(job_id)
+        if len(job_ids) > 1:
+            logger.error(
+                "Multiple Slurm allocations matched timed-out submission %s",
+                job_name,
             )
-            return job_ids[0]
+            raise AmbiguousSlurmSubmissionError(job_name)
+        if len(job_ids) == 1:
+            recovered_job_id = next(iter(job_ids))
+            logger.warning(
+                "Recovered Slurm job %s after sbatch response timeout",
+                recovered_job_id,
+            )
+            return recovered_job_id
+        recovered_job_id = _recover_submission_from_sacct(job_name, user_id)
+        if recovered_job_id is not None:
+            logger.warning(
+                "Recovered completed Slurm job %s from accounting after "
+                "sbatch response timeout",
+                recovered_job_id,
+            )
+            return recovered_job_id
         if attempt + 1 < SUBMISSION_RECOVERY_ATTEMPTS:
             time.sleep(SUBMISSION_RECOVERY_DELAY_SECONDS)
     return None
@@ -303,17 +391,15 @@ def _cancel_ambiguous_submission(job_name: str) -> bool:
     return result.returncode == 0
 
 
-def _reconcile_ambiguous_submission(job_name: str) -> Optional[str]:
+def _reconcile_ambiguous_submission(job_name: str) -> str:
     recovered_job_id = _recover_timed_out_submission(job_name)
     if recovered_job_id is not None:
         return recovered_job_id
     if _cancel_ambiguous_submission(job_name):
         if get_job_status_by_name(job_name) == "":
-            logger.warning(
-                "Cancelled ambiguous Slurm submission by unique name %s",
-                job_name,
-            )
-            return None
+            recovered_job_id = _recover_timed_out_submission(job_name)
+            if recovered_job_id is not None:
+                return recovered_job_id
     raise AmbiguousSlurmSubmissionError(job_name)
 
 
@@ -329,27 +415,16 @@ def _submit_sbatch(sbatch_path: str, job_name: str) -> str:
             timeout=SLURM_COMMAND_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        recovered_job_id = _reconcile_ambiguous_submission(job_name)
-        if recovered_job_id is not None:
-            return recovered_job_id
-        raise
+        return _reconcile_ambiguous_submission(job_name)
 
     output_parts = result.stdout.strip().split()
     if output_parts:
         job_id = output_parts[-1].split(";", 1)[0]
         if _is_valid_slurm_allocation_id(job_id):
             return job_id
-        recovered_job_id = _reconcile_ambiguous_submission(job_name)
-        if recovered_job_id is not None:
-            return recovered_job_id
-        raise RuntimeError(
-            f"Slurm returned no usable job ID for cancelled submission {job_name}"
-        )
+        return _reconcile_ambiguous_submission(job_name)
 
-    recovered_job_id = _reconcile_ambiguous_submission(job_name)
-    if recovered_job_id is not None:
-        return recovered_job_id
-    raise RuntimeError(f"Slurm returned no job ID for cancelled submission {job_name}")
+    return _reconcile_ambiguous_submission(job_name)
 
 
 def submit_docker(
