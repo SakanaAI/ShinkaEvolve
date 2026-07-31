@@ -14,7 +14,7 @@
 
 ## Executive summary
 
-The codebase is capable and feature-rich, with genuinely good foundations in places (parameterized SQL throughout, `yaml.safe_load`, tuned SQLite PRAGMAs + WAL, a vectorized bandit, secrets kept out of the DB and git history). The concerns cluster in five areas:
+The codebase is capable and feature-rich, with genuinely good foundations in places (parameterized SQL throughout, `yaml.safe_load`, tuned SQLite PRAGMAs + WAL, a vectorized bandit, standard provider credentials loaded from environment variables). The concerns cluster in five areas:
 
 | Area | Headline | Worst severity |
 |---|---|---|
