@@ -33,8 +33,8 @@ def test_cross_component_supports_configured_distance_metric():
 
 
 def test_cross_component_falls_back_to_random_without_embeddings(monkeypatch):
-    parent = _program("parent", [])
-    random_inspiration = _program("random", [])
+    parent = _program("parent", None)
+    random_inspiration = _program("random", None)
 
     monkeypatch.setattr(
         "shinka.prompts.prompts_cross.random.choice",

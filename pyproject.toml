@@ -101,8 +101,17 @@ docs = [
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
+norecursedirs = [
+    "results",
+    "results*",
+    "shinka_scale*",
+]
 markers = [
     "integration: live external/provider integration coverage",
     "models_dev_live: live models.dev catalog contract coverage",
     "requires_secrets: tests that need CI secrets or private credentials",
 ]
+
+[tool.ruff.lint]
+# Preserve the repository's established correctness baseline across Ruff releases.
+select = ["E4", "E7", "E9", "F"]

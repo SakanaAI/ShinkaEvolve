@@ -2,7 +2,6 @@ import random
 from typing import List, Optional
 
 import numpy as np
-from sklearn.metrics import pairwise_distances
 
 from shinka.database import Program
 from .prompts_base import perf_str
@@ -58,11 +57,14 @@ IMPORTANT: Make sure your rewritten program maintains the same inputs and output
 
 
 def _embedding_distance(
-    parent_embedding: List[float],
-    inspiration_embedding: List[float],
+    parent_embedding: Optional[List[float]],
+    inspiration_embedding: Optional[List[float]],
     metric: str,
 ) -> Optional[float]:
     """Return the configured distance, or None for unusable embeddings."""
+    if not parent_embedding or not inspiration_embedding:
+        return None
+
     try:
         parent_vector = np.asarray(parent_embedding, dtype=float)
         inspiration_vector = np.asarray(inspiration_embedding, dtype=float)
@@ -79,11 +81,24 @@ def _embedding_distance(
     ):
         return None
 
-    distance = pairwise_distances(
-        parent_vector.reshape(1, -1),
-        inspiration_vector.reshape(1, -1),
-        metric=metric,
-    )[0, 0]
+    if metric == "cosine":
+        parent_norm = np.linalg.norm(parent_vector)
+        inspiration_norm = np.linalg.norm(inspiration_vector)
+        if parent_norm == 0 or inspiration_norm == 0:
+            return None
+        distance = 1.0 - np.dot(parent_vector, inspiration_vector) / (
+            parent_norm * inspiration_norm
+        )
+    elif metric in {"euclidean", "l2"}:
+        distance = np.linalg.norm(parent_vector - inspiration_vector)
+    elif metric in {"manhattan", "l1", "cityblock"}:
+        distance = np.abs(parent_vector - inspiration_vector).sum()
+    else:
+        raise ValueError(
+            f"Unsupported inspiration distance metric: {metric!r}. "
+            "Choose cosine, euclidean, or manhattan."
+        )
+
     return float(distance) if np.isfinite(distance) else None
 
 
