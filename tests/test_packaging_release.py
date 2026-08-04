@@ -113,12 +113,20 @@ def test_secure_headless_image_is_one_universal_recipe():
         in dockerfile
     )
     assert "ARG HEADLESS_VERSION=0.5.0" in dockerfile
-    assert "ARG AGY_VERSION=1.1.8" in dockerfile
-    assert "AGY_SHA256_AMD64=" in dockerfile
-    assert "AGY_SHA256_ARM64=" in dockerfile
+    assert "ARG CLAUDE_VERSION=2.1.221" in dockerfile
+    assert "ARG CODEX_VERSION=0.146.0" in dockerfile
+    assert "ARG GEMINI_VERSION=0.53.1" in dockerfile
+    assert "ARG OPENCODE_VERSION=1.18.12" in dockerfile
+    assert "ARG PI_PACKAGE=@earendil-works/pi-coding-agent" in dockerfile
+    assert "ARG PI_VERSION=0.83.0" in dockerfile
+    assert "ARG CURSOR_AGENT_VERSION=2026.07.23-e383d2b" in dockerfile
+    assert "ARG AGY_RELEASE=1.1.10" in dockerfile
+    assert "AGY_SHA512_AMD64=" in dockerfile
+    assert "AGY_SHA512_ARM64=" in dockerfile
     assert "github.com/google-antigravity/antigravity-cli/releases/download/" in dockerfile
-    assert "sha256sum -c -" in dockerfile
-    assert "AGY_SHA512" not in dockerfile
+    assert "sha512sum -c -" in dockerfile
+    assert "AGY_VERSION" not in dockerfile
+    assert "AGY_SHA256" not in dockerfile
     assert "storage.googleapis.com/antigravity-public" not in dockerfile
     assert "HOME=/headless-home" in dockerfile
     for executable in ("agy", "claude", "codex", "agent", "gemini", "opencode", "pi"):

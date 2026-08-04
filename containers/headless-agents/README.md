@@ -6,6 +6,9 @@ Pi. Package versions and the Node base are pinned; Cursor and Antigravity
 downloads are architecture-specific and checksum-verified for AMD64/ARM64.
 There is deliberately no separate Antigravity image: it has the same image,
 runtime identity, and preflight contract as every other route.
+The current pins are Headless 0.5.0, Claude 2.1.221, Codex 0.146.0, Gemini
+0.53.1, OpenCode 1.18.12, Pi 0.83.0, Cursor Agent 2026.07.23-e383d2b, and
+Antigravity CLI 1.1.10.
 
 Build in a trusted preparation step, push to the operator registry, and configure
 the resulting immutable `repository@sha256:<manifest-digest>` reference. Runtime

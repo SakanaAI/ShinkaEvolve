@@ -1,22 +1,23 @@
-FROM node:22-bookworm-slim@sha256:d415caac2f1f77b98caaf9415c5f807e14bc8d7bdea62561ea2fef4fbd08a73c
+FROM node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46
 
 ARG TARGETARCH
 ARG HEADLESS_VERSION=0.5.0
-ARG CLAUDE_VERSION=2.1.119
-ARG CODEX_VERSION=0.125.0
-ARG GEMINI_VERSION=0.39.1
-ARG OPENCODE_VERSION=1.14.25
-ARG PI_VERSION=0.70.2
-ARG CURSOR_AGENT_VERSION=2026.04.17-787b533
-ARG CURSOR_AGENT_SHA256_AMD64=942b2b583239497715f2390336eb8e2df3673703bd167bd59f7be33a27e15c5a
-ARG CURSOR_AGENT_SHA256_ARM64=985191ffc606da1317e1399f99306481f58643f345ed2252033b011504c780ce
-ARG AGY_VERSION=1.1.8
-ARG AGY_SHA256_AMD64=e92e6215532b3ce84455e341944067753ad90f6d24cebcec8002ce137e5162ce
-ARG AGY_SHA256_ARM64=e75cebb03fce0fcad7d3bb682eb84c356a3c50ff8fb3dc4a89d2051f34fca0ab
+ARG CLAUDE_VERSION=2.1.221
+ARG CODEX_VERSION=0.146.0
+ARG GEMINI_VERSION=0.53.1
+ARG OPENCODE_VERSION=1.18.12
+ARG PI_PACKAGE=@earendil-works/pi-coding-agent
+ARG PI_VERSION=0.83.0
+ARG CURSOR_AGENT_VERSION=2026.07.23-e383d2b
+ARG CURSOR_AGENT_SHA256_AMD64=702ad595213bee5df0268be9f80a19f29fcceaa2a42fc55e39f2b5199051f0c4
+ARG CURSOR_AGENT_SHA256_ARM64=f40b99647cb24e0da885e97620a2048034f1fe8961910d573d827d77c4d26dcb
+ARG AGY_RELEASE=1.1.10
+ARG AGY_SHA512_AMD64=e64d4e58ede0f8440f2b3dc021f9d6d36b05f5c2f74d5a9215c1f11b20d536c8c2e020f4ce5257aa67e940e94c94d5a16d3aa6461cda18ee7f3e74d3a20ca1ac
+ARG AGY_SHA512_ARM64=2d64c4e09eb22c824bc298ca61e48cb0e62688353db4122996b2e4bba8c9a1570d2cbf6e6452ed7ef30df0940bf8f058789e466aed5264c1ae2e4613eca5b573
 
 LABEL io.shinka.headless.version="${HEADLESS_VERSION}" \
       io.shinka.headless.agents="antigravity,claude,codex,cursor,gemini,opencode,pi" \
-      io.shinka.antigravity.release="${AGY_VERSION}" \
+      io.shinka.antigravity.release="${AGY_RELEASE}" \
       io.shinka.claude.version="${CLAUDE_VERSION}" \
       io.shinka.codex.version="${CODEX_VERSION}" \
       io.shinka.cursor.version="${CURSOR_AGENT_VERSION}" \
@@ -38,7 +39,7 @@ RUN npm install -g \
         "@roberttlange/headless@${HEADLESS_VERSION}" \
         "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
         "@google/gemini-cli@${GEMINI_VERSION}" \
-        "@mariozechner/pi-coding-agent@${PI_VERSION}" \
+        "${PI_PACKAGE}@${PI_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
         "opencode-ai@${OPENCODE_VERSION}"
 
@@ -59,13 +60,13 @@ RUN set -eu; \
 
 RUN set -eu; \
     case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-        amd64) agy_file="agy_cli_linux_x64.tar.gz"; agy_sha256="${AGY_SHA256_AMD64}" ;; \
-        arm64) agy_file="agy_cli_linux_arm64.tar.gz"; agy_sha256="${AGY_SHA256_ARM64}" ;; \
+        amd64) agy_file="agy_cli_linux_x64.tar.gz"; agy_sha512="${AGY_SHA512_AMD64}" ;; \
+        arm64) agy_file="agy_cli_linux_arm64.tar.gz"; agy_sha512="${AGY_SHA512_ARM64}" ;; \
         *) echo "unsupported Antigravity architecture: ${TARGETARCH:-unknown}" >&2; exit 1 ;; \
     esac; \
     agy_tarball="/tmp/agy.tar.gz"; \
-    curl "https://github.com/google-antigravity/antigravity-cli/releases/download/${AGY_VERSION}/${agy_file}" -fsSL -o "${agy_tarball}"; \
-    echo "${agy_sha256}  ${agy_tarball}" | sha256sum -c -; \
+    curl "https://github.com/google-antigravity/antigravity-cli/releases/download/${AGY_RELEASE}/${agy_file}" -fsSL -o "${agy_tarball}"; \
+    echo "${agy_sha512}  ${agy_tarball}" | sha512sum -c -; \
     tar -xzf "${agy_tarball}" -C /tmp antigravity; \
     install -m 0755 /tmp/antigravity /usr/local/bin/agy; \
     rm -f "${agy_tarball}" /tmp/antigravity
@@ -87,10 +88,10 @@ RUN groupadd --gid 65532 shinka \
 ENV AGY_CLI_DISABLE_AUTO_UPDATE=true \
     DISABLE_AUTOUPDATER=1 \
     GEMINI_CLI_NO_UPDATE_NOTIFIER=true \
+    HOME=/headless-home \
     NODE_USE_ENV_PROXY=1 \
     NO_UPDATE_NOTIFIER=1 \
     OPENCODE_DISABLE_AUTOUPDATE=true \
-    HOME=/headless-home \
     PATH="/headless-home/.local/bin:/headless-home/.cursor/bin:/headless-home/.cursor/cli/bin:${PATH}"
 
 WORKDIR /workspace
