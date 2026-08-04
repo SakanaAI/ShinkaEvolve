@@ -6,27 +6,12 @@ def _program(program_id, embedding):
     return Program(id=program_id, code=program_id, embedding=embedding)
 
 
-def test_cross_component_selects_most_distant_inspiration():
+def test_cross_component_selects_most_distant_inspiration_with_cosine_distance():
     parent = _program("parent", [1.0, 0.0])
     near = _program("near", [0.99, 0.1])
     far = _program("far", [0.0, 1.0])
 
-    component = get_cross_component(
-        [near], [far], parent=parent, distance_metric="cosine"
-    )
-
-    assert "far" in component
-    assert "near" not in component
-
-
-def test_cross_component_supports_configured_distance_metric():
-    parent = _program("parent", [0.0, 1.0])
-    near = _program("near", [0.0, 2.0])
-    far = _program("far", [4.0, 0.0])
-
-    component = get_cross_component(
-        [near], [far], parent=parent, distance_metric="euclidean"
-    )
+    component = get_cross_component([near], [far], parent=parent)
 
     assert "far" in component
     assert "near" not in component

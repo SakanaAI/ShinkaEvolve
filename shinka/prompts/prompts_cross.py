@@ -59,9 +59,8 @@ IMPORTANT: Make sure your rewritten program maintains the same inputs and output
 def _embedding_distance(
     parent_embedding: Optional[List[float]],
     inspiration_embedding: Optional[List[float]],
-    metric: str,
 ) -> Optional[float]:
-    """Return the configured distance, or None for unusable embeddings."""
+    """Return cosine distance, or None for unusable embeddings."""
     if not parent_embedding or not inspiration_embedding:
         return None
 
@@ -81,23 +80,13 @@ def _embedding_distance(
     ):
         return None
 
-    if metric == "cosine":
-        parent_norm = np.linalg.norm(parent_vector)
-        inspiration_norm = np.linalg.norm(inspiration_vector)
-        if parent_norm == 0 or inspiration_norm == 0:
-            return None
-        distance = 1.0 - np.dot(parent_vector, inspiration_vector) / (
-            parent_norm * inspiration_norm
-        )
-    elif metric in {"euclidean", "l2"}:
-        distance = np.linalg.norm(parent_vector - inspiration_vector)
-    elif metric in {"manhattan", "l1", "cityblock"}:
-        distance = np.abs(parent_vector - inspiration_vector).sum()
-    else:
-        raise ValueError(
-            f"Unsupported inspiration distance metric: {metric!r}. "
-            "Choose cosine, euclidean, or manhattan."
-        )
+    parent_norm = np.linalg.norm(parent_vector)
+    inspiration_norm = np.linalg.norm(inspiration_vector)
+    if parent_norm == 0 or inspiration_norm == 0:
+        return None
+    distance = 1.0 - np.dot(parent_vector, inspiration_vector) / (
+        parent_norm * inspiration_norm
+    )
 
     return float(distance) if np.isfinite(distance) else None
 
@@ -105,7 +94,6 @@ def _embedding_distance(
 def _select_inspiration(
     parent: Optional[Program],
     inspirations: List[Program],
-    metric: str,
 ) -> Program:
     """Select the most distant inspiration, falling back to random sampling."""
     if not inspirations:
@@ -114,9 +102,7 @@ def _select_inspiration(
     if parent is not None:
         distances = []
         for index, inspiration in enumerate(inspirations):
-            distance = _embedding_distance(
-                parent.embedding, inspiration.embedding, metric
-            )
+            distance = _embedding_distance(parent.embedding, inspiration.embedding)
             if distance is not None:
                 distances.append((distance, index))
 
@@ -133,11 +119,10 @@ def get_cross_component(
     language: str = "python",
     *,
     parent: Optional[Program] = None,
-    distance_metric: str = "cosine",
 ) -> str:
     all_inspirations = archive_inspirations + top_k_inspirations
 
-    inspiration = _select_inspiration(parent, all_inspirations, distance_metric)
+    inspiration = _select_inspiration(parent, all_inspirations)
 
     crossover_inspiration = "# Crossover Inspiration Programs\n"
     crossover_inspiration += f"```{language}\n{inspiration.code}\n```\n\n"
