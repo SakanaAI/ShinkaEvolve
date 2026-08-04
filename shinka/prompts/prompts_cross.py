@@ -1,5 +1,8 @@
 import random
-from typing import List
+from typing import List, Optional
+
+import numpy as np
+from sklearn.metrics import pairwise_distances
 
 from shinka.database import Program
 from .prompts_base import perf_str
@@ -54,17 +57,72 @@ IMPORTANT: Make sure your rewritten program maintains the same inputs and output
 """.rstrip()
 
 
+def _embedding_distance(
+    parent_embedding: List[float],
+    inspiration_embedding: List[float],
+    metric: str,
+) -> Optional[float]:
+    """Return the configured distance, or None for unusable embeddings."""
+    try:
+        parent_vector = np.asarray(parent_embedding, dtype=float)
+        inspiration_vector = np.asarray(inspiration_embedding, dtype=float)
+    except (TypeError, ValueError):
+        return None
+
+    if (
+        parent_vector.ndim != 1
+        or inspiration_vector.ndim != 1
+        or parent_vector.shape != inspiration_vector.shape
+        or parent_vector.size == 0
+        or not np.isfinite(parent_vector).all()
+        or not np.isfinite(inspiration_vector).all()
+    ):
+        return None
+
+    distance = pairwise_distances(
+        parent_vector.reshape(1, -1),
+        inspiration_vector.reshape(1, -1),
+        metric=metric,
+    )[0, 0]
+    return float(distance) if np.isfinite(distance) else None
+
+
+def _select_inspiration(
+    parent: Optional[Program],
+    inspirations: List[Program],
+    metric: str,
+) -> Program:
+    """Select the most distant inspiration, falling back to random sampling."""
+    if not inspirations:
+        raise ValueError("At least one crossover inspiration is required")
+
+    if parent is not None:
+        distances = []
+        for index, inspiration in enumerate(inspirations):
+            distance = _embedding_distance(
+                parent.embedding, inspiration.embedding, metric
+            )
+            if distance is not None:
+                distances.append((distance, index))
+
+        if distances:
+            _, selected_index = max(distances, key=lambda item: item[0])
+            return inspirations[selected_index]
+
+    return random.choice(inspirations)
+
+
 def get_cross_component(
     archive_inspirations: List[Program],
     top_k_inspirations: List[Program],
     language: str = "python",
+    *,
+    parent: Optional[Program] = None,
+    distance_metric: str = "cosine",
 ) -> str:
     all_inspirations = archive_inspirations + top_k_inspirations
 
-    # TODO(RobertTLange): Compute embedding distance between all inspirations and parent - max?! for more diversity
-
-    # Sample a random inspiration
-    inspiration = random.choice(all_inspirations)
+    inspiration = _select_inspiration(parent, all_inspirations, distance_metric)
 
     crossover_inspiration = "# Crossover Inspiration Programs\n"
     crossover_inspiration += f"```{language}\n{inspiration.code}\n```\n\n"

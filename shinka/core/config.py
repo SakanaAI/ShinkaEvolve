@@ -38,6 +38,7 @@ class EvolutionConfig:
     meta_max_recommendations: int = 5
     sample_single_meta_rec: bool = True
     embedding_model: Optional[str] = "text-embedding-3-small"
+    inspiration_distance_metric: str = "cosine"
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
 

@@ -445,6 +445,7 @@ class ShinkaEvolveRunner:
             patch_type_probs=evo_config.patch_type_probs,
             use_text_feedback=evo_config.use_text_feedback,
             inspiration_sort_order=evo_config.inspiration_sort_order,
+            inspiration_distance_metric=evo_config.inspiration_distance_metric,
         )
 
         # Meta summarizer (create both sync and async versions)

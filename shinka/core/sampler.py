@@ -36,6 +36,7 @@ class PromptSampler:
         inspiration_sort_order: Literal[
             "ascending", "chronological", "none"
         ] = "ascending",
+        inspiration_distance_metric: str = "cosine",
     ):
         if patch_types is None:
             patch_types = default_patch_types()
@@ -54,6 +55,7 @@ class PromptSampler:
             )
         # Whether to use text feedback in the prompt
         self.use_text_feedback = use_text_feedback
+        self.inspiration_distance_metric = inspiration_distance_metric
         # Context builder for sorting inspirations (least-to-most by default)
         self.context_builder = InspirationContextBuilder(
             sort_order=inspiration_sort_order
@@ -196,6 +198,8 @@ class PromptSampler:
                 archive_inspirations,
                 top_k_inspirations,
                 language=self.language,
+                parent=parent,
+                distance_metric=self.inspiration_distance_metric,
             )
         elif patch_type == "paper":
             raise NotImplementedError("Paper edit not implemented.")
