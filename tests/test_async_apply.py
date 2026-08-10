@@ -158,11 +158,11 @@ def test_validate_code_async_python_delegates_to_helper(
     assert recorded["timeout"] == 11
 
 
-def test_validate_code_async_rust_delegates_to_rustc(
+def test_validate_code_async_rust_delegates_to_rustfmt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Rust validation must stay on stable-channel rustc flags.
+    """Rust validation must use stable, non-mutating rustfmt flags.
 
     `-Zparse-only` is nightly-only, so a stable toolchain rejects the flag
     before parsing and reports every candidate invalid.
@@ -172,8 +172,13 @@ def test_validate_code_async_rust_delegates_to_rustc(
     async def fake_helper(*args: str, timeout: int) -> tuple[bool, str | None]:
         recorded["args"] = args
         recorded["timeout"] = timeout
+        config_path = Path(args[args.index("--config-path") + 1])
+        recorded["config_path"] = config_path
+        recorded["config_existed"] = config_path.is_file()
+        recorded["config_contents"] = config_path.read_text(encoding="utf-8")
         return True, None
 
+    monkeypatch.setattr(async_apply.shutil, "which", lambda _name: "/usr/bin/rustfmt")
     monkeypatch.setattr(async_apply, "_run_validation_subprocess", fake_helper)
 
     is_valid, error = asyncio.run(
@@ -188,53 +193,80 @@ def test_validate_code_async_rust_delegates_to_rustc(
 
     args = recorded["args"]
     assert isinstance(args, tuple)
-    assert args[0] == "rustc"
+    assert args[0] == "rustfmt"
     assert args[-1] == str(tmp_path / "candidate.rs")
+    assert "--config-path" in args
+    assert "--emit" in args
+    assert args[args.index("--emit") + 1] == "stdout"
     assert "--edition" in args
-    assert args[args.index("--edition") + 1] == "2021"
-    assert "--crate-type=lib" in args
-    assert "--emit=dep-info" in args
-    assert "--out-dir" in args
-    # No nightly-gated flag may be reintroduced: any `-Z` option makes stable
-    # rustc exit before it parses the candidate.
+    assert args[args.index("--edition") + 1] == "2015"
+    assert "--config" in args
+    assert args[args.index("--config") + 1] == "skip_children=true"
+    # No nightly-gated flag may be reintroduced: stable Rust tooling rejects
+    # `-Z` options before it parses the candidate.
     assert not any(arg.startswith("-Z") for arg in args)
+    assert recorded["config_existed"] is True
+    assert recorded["config_contents"] == ""
+    config_path = recorded["config_path"]
+    assert isinstance(config_path, Path)
+    assert config_path.exists() is False
 
 
-def test_validate_code_async_rust_discards_dep_info_output(
+def test_validate_code_async_rust_reports_missing_rustfmt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """dep-info output goes to a temporary directory that is then removed.
+    """A minimal Rust toolchain gets an actionable dependency error."""
 
-    Without an explicit `--out-dir` rustc writes the dependency file into the
-    working directory, which would leave artifacts beside the evolved program.
-    """
-    observed: dict[str, object] = {}
+    async def fail_helper(*args: str, timeout: int) -> tuple[bool, str | None]:
+        raise AssertionError(f"unexpected validator invocation: {args}")
 
-    async def fake_helper(*args: str, timeout: int) -> tuple[bool, str | None]:
-        out_dir = Path(args[args.index("--out-dir") + 1])
-        observed["out_dir"] = out_dir
-        observed["existed_during_call"] = out_dir.is_dir()
-        return True, None
+    monkeypatch.setattr(async_apply.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(async_apply, "_run_validation_subprocess", fail_helper)
 
-    monkeypatch.setattr(async_apply, "_run_validation_subprocess", fake_helper)
-
-    asyncio.run(
+    is_valid, error = asyncio.run(
         async_apply.validate_code_async(
             str(tmp_path / "candidate.rs"), language="rust", timeout=5
         )
     )
 
-    out_dir = observed["out_dir"]
-    assert isinstance(out_dir, Path)
-    assert observed["existed_during_call"] is True
-    assert out_dir.is_dir() is False
-    assert out_dir != tmp_path
-    assert list(tmp_path.iterdir()) == []
+    assert is_valid is False
+    assert error == (
+        "Rust validation requires rustfmt on PATH. Install it with "
+        "`rustup component add rustfmt`."
+    )
 
 
-@pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc is not installed")
-def test_validate_code_async_rust_accepts_valid_program_on_real_rustc(
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_does_not_read_host_files(
+    tmp_path: Path,
+) -> None:
+    """Syntax validation must not read files through macros or modules."""
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host-secret-must-not-leak !!!", encoding="utf-8")
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text(
+        f'#[path = r"{secret}"]\n'
+        "mod secret;\n"
+        f'compile_error!(include_str!(r"{secret}"));\n',
+        encoding="utf-8",
+    )
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(str(candidate), language="rust", timeout=60)
+    )
+
+    assert is_valid is True, error
+    assert error is None
+    assert candidate.read_text(encoding="utf-8") == (
+        f'#[path = r"{secret}"]\n'
+        "mod secret;\n"
+        f'compile_error!(include_str!(r"{secret}"));\n'
+    )
+
+
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_accepts_valid_program_on_real_rustfmt(
     tmp_path: Path,
 ) -> None:
     """End-to-end guard against the nightly-flag regression."""
@@ -260,8 +292,8 @@ def test_validate_code_async_rust_accepts_valid_program_on_real_rustc(
     assert error is None
 
 
-@pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc is not installed")
-def test_validate_code_async_rust_rejects_broken_program_on_real_rustc(
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_rejects_broken_program_on_real_rustfmt(
     tmp_path: Path,
 ) -> None:
     """A syntax error must be reported as a rust error, not a flag error."""
@@ -276,6 +308,67 @@ def test_validate_code_async_rust_rejects_broken_program_on_real_rustc(
     assert error is not None
     assert "nightly" not in error
     assert "error" in error.lower()
+
+
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_ignores_project_config_that_disables_parsing(
+    tmp_path: Path,
+) -> None:
+    """An ambient rustfmt.toml cannot make malformed Rust pass validation."""
+    (tmp_path / "rustfmt.toml").write_text(
+        "disable_all_formatting = true\n",
+        encoding="utf-8",
+    )
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("pub fn broken( -> {\n", encoding="utf-8")
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(str(candidate), language="rust", timeout=60)
+    )
+
+    assert is_valid is False
+    assert error is not None
+    assert "error" in error.lower()
+
+
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_accepts_type_errors(
+    tmp_path: Path,
+) -> None:
+    """Validation remains syntax-only and does not run the type checker."""
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text(
+        'pub fn wrong_type() -> u32 { "not a number" }\n',
+        encoding="utf-8",
+    )
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(str(candidate), language="rust", timeout=60)
+    )
+
+    assert is_valid is True, error
+    assert error is None
+
+
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_honors_configured_edition(
+    tmp_path: Path,
+) -> None:
+    """Projects can override the default for edition-sensitive syntax."""
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("pub async fn modern() {}\n", encoding="utf-8")
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(
+            str(candidate),
+            language="rust",
+            timeout=60,
+            rust_edition="2021",
+        )
+    )
+
+    assert is_valid is True, error
+    assert error is None
 
 
 def test_validate_code_async_fortran_delegates_to_gfortran(

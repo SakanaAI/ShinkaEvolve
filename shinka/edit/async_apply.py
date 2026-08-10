@@ -5,6 +5,7 @@ Provides async versions of patch application and validation.
 
 import asyncio
 import logging
+import shutil
 import tempfile
 from typing import Tuple, Optional
 from pathlib import Path
@@ -110,7 +111,10 @@ async def apply_patch_async(
 
 
 async def validate_code_async(
-    code_path: str, language: str = "python", timeout: int = 30
+    code_path: str,
+    language: str = "python",
+    timeout: int = 30,
+    rust_edition: str = "2015",
 ) -> Tuple[bool, Optional[str]]:
     """Async code validation using subprocess.
 
@@ -118,6 +122,7 @@ async def validate_code_async(
         code_path: Path to code file to validate
         language: Programming language
         timeout: Timeout for validation in seconds
+        rust_edition: Rust edition used when validating Rust source
 
     Returns:
         Tuple of (is_valid, error_message)
@@ -138,26 +143,41 @@ async def validate_code_async(
             )
 
         elif language == "rust":
-            # Use rustc for Rust syntax checking.
+            # Use rustfmt for Rust syntax checking.
             #
             # `-Zparse-only` is gated to the nightly channel: on a stable
             # toolchain rustc rejects the flag and exits non-zero before it
             # parses anything, so every candidate would be reported invalid.
-            # `--emit=dep-info` is the closest stable equivalent that still
-            # skips type checking, so a program with a type error is accepted
-            # here exactly as it was under `-Zparse-only`. The edition is
-            # pinned so the accepted syntax does not shift with the toolchain
-            # default, and dep-info output is written to a temporary directory
-            # instead of the working directory.
-            with tempfile.TemporaryDirectory(prefix="shinka-rustc-") as out_dir:
+            # Stable rustc has no parse-only equivalent. In particular,
+            # `--emit=dep-info` performs name resolution and expands built-in
+            # macros, which both rejects valid dependency-backed code and lets
+            # generated code read host files via `include_str!`. rustfmt parses
+            # the token stream without type checking or macro expansion.
+            # `skip_children` prevents `mod` declarations (including `#[path]`
+            # overrides) from making rustfmt read other host files. A clean
+            # config prevents a project rustfmt.toml from disabling parsing.
+            # Stdout mode also guarantees validation never rewrites the source.
+            if shutil.which("rustfmt") is None:
+                return (
+                    False,
+                    (
+                        "Rust validation requires rustfmt on PATH. Install it with "
+                        "`rustup component add rustfmt`."
+                    ),
+                )
+            with tempfile.TemporaryDirectory(prefix="shinka-rustfmt-") as config_dir:
+                config_path = Path(config_dir) / "rustfmt.toml"
+                config_path.touch()
                 return await _run_validation_subprocess(
-                    "rustc",
+                    "rustfmt",
+                    "--config-path",
+                    str(config_path),
+                    "--emit",
+                    "stdout",
                     "--edition",
-                    "2021",
-                    "--crate-type=lib",
-                    "--emit=dep-info",
-                    "--out-dir",
-                    out_dir,
+                    rust_edition,
+                    "--config",
+                    "skip_children=true",
                     code_path,
                     timeout=timeout,
                 )
