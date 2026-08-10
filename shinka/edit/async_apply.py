@@ -5,6 +5,7 @@ Provides async versions of patch application and validation.
 
 import asyncio
 import logging
+import tempfile
 from typing import Tuple, Optional
 from pathlib import Path
 from .apply_diff import apply_diff_patch
@@ -137,14 +138,29 @@ async def validate_code_async(
             )
 
         elif language == "rust":
-            # Use rustc for Rust syntax checking
-            return await _run_validation_subprocess(
-                "rustc",
-                "--crate-type=lib",
-                "-Zparse-only",
-                code_path,
-                timeout=timeout,
-            )
+            # Use rustc for Rust syntax checking.
+            #
+            # `-Zparse-only` is gated to the nightly channel: on a stable
+            # toolchain rustc rejects the flag and exits non-zero before it
+            # parses anything, so every candidate would be reported invalid.
+            # `--emit=dep-info` is the closest stable equivalent that still
+            # skips type checking, so a program with a type error is accepted
+            # here exactly as it was under `-Zparse-only`. The edition is
+            # pinned so the accepted syntax does not shift with the toolchain
+            # default, and dep-info output is written to a temporary directory
+            # instead of the working directory.
+            with tempfile.TemporaryDirectory(prefix="shinka-rustc-") as out_dir:
+                return await _run_validation_subprocess(
+                    "rustc",
+                    "--edition",
+                    "2021",
+                    "--crate-type=lib",
+                    "--emit=dep-info",
+                    "--out-dir",
+                    out_dir,
+                    code_path,
+                    timeout=timeout,
+                )
         elif language == "swift":
             # Use swiftc for Swift compilation check
             return await _run_validation_subprocess(
