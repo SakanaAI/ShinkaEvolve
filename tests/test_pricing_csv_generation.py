@@ -164,6 +164,29 @@ def test_generate_embedding_rows_maps_azure_alias_and_manual_google_entry():
     ]
 
 
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+def test_generate_latest_gemini_flash_from_manual_overlay(model_name: str):
+    rows = generate_llm_rows(
+        _payload(),
+        [TargetModel("llm", model_name, "google")],
+    )
+
+    assert rows == [
+        {
+            "model_name": model_name,
+            "provider": "google",
+            "input_price": "0.75",
+            "output_price": "3.75",
+            "input_price_tier2": "",
+            "output_price_tier2": "",
+            "tier_threshold": "",
+            "is_reasoning": "True",
+            "think_temp_fixed": "0",
+            "requires_reasoning": "0",
+        }
+    ]
+
+
 def test_load_models_dev_payload_uses_browser_safe_user_agent(monkeypatch):
     captured = {}
 

@@ -1,3 +1,5 @@
+import pytest
+
 from shinka.llm.kwargs import sample_model_kwargs
 from shinka.llm.providers.pricing import is_reasoning_model, requires_reasoning
 
@@ -44,6 +46,74 @@ def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs_without_temperature
     assert "temperature" not in kwargs
     assert kwargs["max_output_tokens"] == 8192
     assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
+
+
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+@pytest.mark.parametrize(
+    ("reasoning_effort", "expected_level"),
+    [
+        ("min", "LOW"),
+        ("low", "LOW"),
+        ("medium", "MEDIUM"),
+        ("high", "HIGH"),
+        ("max", "HIGH"),
+    ],
+)
+def test_latest_gemini_flash_maps_reasoning_effort_to_thinking_level(
+    model_name: str,
+    reasoning_effort: str,
+    expected_level: str,
+):
+    kwargs = sample_model_kwargs(
+        model_names=[model_name],
+        temperatures=[0.25],
+        max_tokens=[4096],
+        reasoning_efforts=[reasoning_effort],
+    )
+
+    assert kwargs == {
+        "model_name": model_name,
+        "max_tokens": 4096,
+        "thinking_level": expected_level,
+    }
+
+
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+def test_latest_gemini_flash_disabled_reasoning_omits_thinking_controls(
+    model_name: str,
+):
+    kwargs = sample_model_kwargs(
+        model_names=[model_name],
+        temperatures=[0.25],
+        max_tokens=[4096],
+        reasoning_efforts=["disabled"],
+    )
+
+    assert kwargs == {"model_name": model_name, "max_tokens": 4096}
+    for unsupported_kwarg in (
+        "temperature",
+        "top_p",
+        "top_k",
+        "candidate_count",
+        "thinking_budget",
+    ):
+        assert unsupported_kwarg not in kwargs
+
+
+def test_legacy_gemini_keeps_token_budget_reasoning():
+    kwargs = sample_model_kwargs(
+        model_names=["gemini-2.5-flash"],
+        temperatures=[0.25],
+        max_tokens=[4096],
+        reasoning_efforts=["medium"],
+    )
+
+    assert kwargs == {
+        "model_name": "gemini-2.5-flash",
+        "temperature": 0.25,
+        "max_tokens": 4096,
+        "thinking_budget": 1024,
+    }
 
 
 def test_deepseek_v4_reasoning_kwargs_enable_thinking_mode():

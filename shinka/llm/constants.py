@@ -25,3 +25,16 @@ BACKOFF_MAX_TIME = _env_int(
     "SHINKA_LLM_BACKOFF_MAX_TIME",
     TIMEOUT * BACKOFF_MAX_TIME_MULTIPLIER,
 )
+
+GEMINI_THINKING_LEVEL_MODELS = frozenset(
+    {
+        "gemini-3.6-flash",
+    }
+)
+GEMINI_THINKING_LEVEL_BY_EFFORT = {
+    "min": "LOW",
+    "low": "LOW",
+    "medium": "MEDIUM",
+    "high": "HIGH",
+    "max": "HIGH",
+}

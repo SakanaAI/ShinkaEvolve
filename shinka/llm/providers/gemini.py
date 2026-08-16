@@ -2,7 +2,12 @@ import backoff
 import logging
 from typing import Any, cast
 from google.genai import types
-from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
+from shinka.llm.constants import (
+    BACKOFF_MAX_TIME,
+    BACKOFF_MAX_TRIES,
+    BACKOFF_MAX_VALUE,
+    GEMINI_THINKING_LEVEL_MODELS,
+)
 from .pricing import calculate_cost
 from .result import QueryResult
 
@@ -32,6 +37,24 @@ def build_gemini_thinking_config(thinking_budget: int):
     return thinking_config_cls(**config_kwargs)
 
 
+def build_gemini_thinking_level_config(thinking_level: str | None):
+    """Build level-based thinking config for current Gemini Flash models."""
+    config_kwargs: dict[str, object] = {"include_thoughts": True}
+    if thinking_level is not None:
+        valid_levels = {
+            "LOW": types.ThinkingLevel.LOW,
+            "MEDIUM": types.ThinkingLevel.MEDIUM,
+            "HIGH": types.ThinkingLevel.HIGH,
+        }
+        try:
+            config_kwargs["thinking_level"] = valid_levels[thinking_level.upper()]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported Gemini thinking level: {thinking_level}") from exc
+
+    thinking_config_cls = cast(Any, types.ThinkingConfig)
+    return thinking_config_cls(**config_kwargs)
+
+
 def build_gemini_afc_config():
     """Build Gemini automatic function-calling config without SDK warnings."""
     model_fields = getattr(types.AutomaticFunctionCallingConfig, "model_fields", {})
@@ -45,6 +68,37 @@ def build_gemini_afc_config():
 
     afc_config_cls = cast(Any, types.AutomaticFunctionCallingConfig)
     return afc_config_cls(**config_kwargs)
+
+
+def build_gemini_generation_config(
+    *,
+    model: str,
+    temperature: float,
+    top_p: float,
+    max_tokens: int,
+    system_instruction: str | None,
+    thinking_budget: int,
+    thinking_level: str | None,
+):
+    """Build a model-compatible config for sync and async requests."""
+    config_kwargs: dict[str, object] = {
+        "max_output_tokens": int(max_tokens),
+        "system_instruction": system_instruction,
+        "automatic_function_calling": build_gemini_afc_config(),
+    }
+    if model in GEMINI_THINKING_LEVEL_MODELS:
+        config_kwargs["thinking_config"] = build_gemini_thinking_level_config(
+            thinking_level
+        )
+    else:
+        config_kwargs.update(
+            temperature=float(temperature),
+            top_p=float(top_p),
+            thinking_config=build_gemini_thinking_config(thinking_budget),
+        )
+
+    generation_config_cls = cast(Any, types.GenerateContentConfig)
+    return generation_config_cls(**config_kwargs)
 
 
 def get_gemini_costs(response, model):
@@ -175,13 +229,14 @@ def query_gemini(
     max_tokens = kwargs.get("max_tokens", 2048)
     thinking_budget = kwargs.get("thinking_budget", 1024)
 
-    generation_config = types.GenerateContentConfig(
-        temperature=float(temperature),
-        top_p=float(top_p),
-        max_output_tokens=int(max_tokens),
+    generation_config = build_gemini_generation_config(
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
         system_instruction=system_msg if system_msg else None,
-        automatic_function_calling=build_gemini_afc_config(),
-        thinking_config=build_gemini_thinking_config(thinking_budget),
+        thinking_budget=thinking_budget,
+        thinking_level=kwargs.get("thinking_level"),
     )
 
     response = client.models.generate_content(
@@ -251,13 +306,14 @@ async def query_gemini_async(
     max_tokens = kwargs.get("max_tokens", 2048)
     thinking_budget = kwargs.get("thinking_budget", 0)
 
-    generation_config = types.GenerateContentConfig(
-        temperature=float(temperature),
-        top_p=float(top_p),
-        max_output_tokens=int(max_tokens),
+    generation_config = build_gemini_generation_config(
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
         system_instruction=system_msg if system_msg else None,
-        automatic_function_calling=build_gemini_afc_config(),
-        thinking_config=build_gemini_thinking_config(thinking_budget),
+        thinking_budget=thinking_budget,
+        thinking_level=kwargs.get("thinking_level"),
     )
 
     response = await client.aio.models.generate_content(

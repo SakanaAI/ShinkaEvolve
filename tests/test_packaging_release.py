@@ -82,6 +82,12 @@ def test_httpx_dependency_allows_compatible_updates() -> None:
     assert "httpx>=0.27" in dependencies
 
 
+def test_google_genai_dependency_supports_thinking_levels() -> None:
+    dependencies = _read_pyproject()["project"]["dependencies"]
+
+    assert "google-genai>=2.13,<3" in dependencies
+
+
 def test_readme_documents_package_install():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
