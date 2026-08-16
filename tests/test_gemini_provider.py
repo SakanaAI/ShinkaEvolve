@@ -277,7 +277,7 @@ def test_async_query_uses_shared_generation_config_builder(monkeypatch):
         "top_p": 1.0,
         "max_tokens": 4096,
         "system_instruction": "system",
-        "thinking_budget": 0,
+        "thinking_budget": 1024,
         "thinking_level": "LOW",
     }
     assert captured["request"]["config"] == "config"

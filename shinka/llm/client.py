@@ -8,6 +8,7 @@ from shinka.env import load_shinka_dotenv
 from shinka.google_genai import _google_genai_timeout_ms, build_google_genai_client
 from shinka.local_openai_config import resolve_local_openai_api_key
 from .constants import OPENAI_MAX_RETRIES, TIMEOUT
+from .providers.errors import StructuredOutputNotSupportedError
 from .providers.model_resolver import resolve_model_backend
 
 load_shinka_dotenv()
@@ -71,12 +72,11 @@ def get_client_llm(
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
     elif provider == "google":
-        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
         if structured_output:
-            client = instructor.from_openai(
-                client,
-                mode=instructor.Mode.GEMINI_JSON,
+            raise StructuredOutputNotSupportedError(
+                "Gemini does not support structured output."
             )
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
     elif provider == "openrouter":
         client = openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
@@ -159,9 +159,11 @@ def get_async_client_llm(
         if structured_output:
             client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
     elif provider == "google":
-        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
         if structured_output:
-            raise ValueError("Gemini does not support structured output.")
+            raise StructuredOutputNotSupportedError(
+                "Gemini does not support structured output."
+            )
+        client = build_google_genai_client(timeout_ms=_google_genai_timeout_ms(TIMEOUT))
     elif provider == "openrouter":
         client = openai.AsyncOpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
