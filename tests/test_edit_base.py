@@ -963,6 +963,59 @@ g[x_] := x^3
     assert "g[x_] := x^3\n(* EVOLVE-BLOCK-END *)" in updated_content
 
 
+def test_insertion_appends_after_code_on_marker_line():
+    """When code precedes the END marker on the same line, insertion must
+    append after that code, not before it."""
+    original_content = """# EVOLVE-BLOCK-START
+existing = 1  # EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+inserted = 2
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    lines = updated_content.splitlines()
+    existing_idx = next(i for i, ln in enumerate(lines) if "existing = 1" in ln)
+    inserted_idx = next(i for i, ln in enumerate(lines) if "inserted = 2" in ln)
+    assert existing_idx < inserted_idx
+    assert lines[-1].strip() == "# EVOLVE-BLOCK-END"
+
+
+def test_empty_insertion_is_noop():
+    """Empty SEARCH plus empty REPLACE must not change the content."""
+    original_content = """# EVOLVE-BLOCK-START
+x = 1
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert error is None
+    assert updated_content == original_content
+
+
 # ============================================================================
 # Tests for Enhanced Error Messages
 # ============================================================================
