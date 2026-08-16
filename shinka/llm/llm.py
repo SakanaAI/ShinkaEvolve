@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Union, Optional
+from typing import Dict, List, Optional, Sequence, Union
 import re
 import json
 import multiprocessing as mp
@@ -9,10 +9,37 @@ import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
+from .providers.errors import NonRetryableLLMError, StructuredOutputNotSupportedError
 from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_structured_output_models(
+    output_model: Optional[BaseModel],
+    model_names: Sequence[Optional[str]],
+    model_sample_probs: Optional[List[float]] = None,
+) -> None:
+    if output_model is None:
+        return
+
+    active_models = model_names
+    if model_sample_probs is not None:
+        active_models = [
+            model_name
+            for model_name, probability in zip(model_names, model_sample_probs)
+            if probability > 0
+        ]
+
+    if any(
+        model_name is not None
+        and resolve_model_backend(model_name).provider == "google"
+        for model_name in active_models
+    ):
+        raise StructuredOutputNotSupportedError(
+            "Gemini does not support structured output."
+        )
 
 
 class LLMClient:
@@ -61,6 +88,11 @@ class LLMClient:
             msg (str): The message to query the LLM with.
             system_msg (str): The system message to query the LLM with.
         """
+        _validate_structured_output_models(
+            self.output_model,
+            [kwargs.get("model_name") for kwargs in llm_kwargs],
+        )
+
         # Repeat msg, system_msg, msg_history num_samples times
         if isinstance(msg, str):
             msg = [msg] * num_samples
@@ -100,6 +132,8 @@ class LLMClient:
                 try:
                     idx, result = async_result.get()
                     results.append((idx, result))
+                except NonRetryableLLMError:
+                    raise
                 except Exception as e:
                     logger.error(f"Error in batch query: {str(e)}")
 
@@ -154,6 +188,9 @@ class LLMClient:
             if model_sample_probs is not None
             else self.model_sample_probs
         )
+        _validate_structured_output_models(
+            self.output_model, self.model_names, posterior
+        )
 
         # multiprocess sample_kwargs_query
         num_processes = min(num_samples, mp.cpu_count())
@@ -195,6 +232,8 @@ class LLMClient:
                 try:
                     idx, result = async_result.get()
                     results.append((idx, result))
+                except NonRetryableLLMError:
+                    raise
                 except Exception as e:
                     logger.error(f"Error in batch query: {str(e)}")
 
@@ -322,6 +361,8 @@ class LLMClient:
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 model_name = llm_kwargs.get("model_name", "<unknown>")
                 logger.error(
@@ -329,6 +370,8 @@ class LLMClient:
                     f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
                 )
                 try_count += 1
+                if try_count < MAX_RETRIES:
+                    time.sleep(1)
         return None
 
 
@@ -378,6 +421,11 @@ class AsyncLLMClient:
             msg (str): The message to query the LLM with.
             system_msg (str): The system message to query the LLM with.
         """
+        _validate_structured_output_models(
+            self.output_model,
+            [kwargs.get("model_name") for kwargs in llm_kwargs],
+        )
+
         # Repeat msg, system_msg, msg_history num_samples times
         if isinstance(msg, str):
             msg = [msg] * num_samples
@@ -409,6 +457,8 @@ class AsyncLLMClient:
         # Process results and filter out exceptions
         final_results = []
         for i, result in enumerate(results):
+            if isinstance(result, NonRetryableLLMError):
+                raise result
             if isinstance(result, Exception):
                 logger.info(f"Error in batch query task {i}: {str(result)}")
             elif result is not None and len(result) > 1 and result[1] is not None:
@@ -461,6 +511,9 @@ class AsyncLLMClient:
             if model_sample_probs is not None
             else self.model_sample_probs
         )
+        _validate_structured_output_models(
+            self.output_model, self.model_names, posterior
+        )
 
         if self.verbose:
             lines = [f"==> SAMPLING {num_samples} SAMPLES:"]
@@ -490,6 +543,8 @@ class AsyncLLMClient:
         # Process results and filter out exceptions
         final_results = []
         for i, result in enumerate(results):
+            if isinstance(result, NonRetryableLLMError):
+                raise result
             if isinstance(result, Exception):
                 logger.info(f"Error in batch query task {i}: {str(result)}")
             elif result is not None and len(result) > 1 and result[1] is not None:
@@ -615,6 +670,8 @@ class AsyncLLMClient:
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
@@ -647,6 +704,8 @@ class AsyncLLMClient:
                     **kwargs,
                 )
                 return idx, result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
@@ -695,6 +754,8 @@ class AsyncLLMClient:
                     **kwargs,
                 )
                 return idx, result
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                 try_count += 1
@@ -728,6 +789,8 @@ def query_fn(
                 **kwargs,
             )
             return idx, result
+        except NonRetryableLLMError:
+            raise
         except Exception as e:
             logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
             try_count += 1
@@ -789,6 +852,8 @@ def sample_kwargs_query_fn(
                 **kwargs,
             )
             return idx, result
+        except NonRetryableLLMError:
+            raise
         except Exception as e:
             logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
             try_count += 1
