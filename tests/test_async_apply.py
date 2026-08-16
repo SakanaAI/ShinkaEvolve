@@ -20,8 +20,10 @@ class _FakeProcess:
         self._stderr = stderr
         self.kill_called = False
         self.wait_called = False
+        self.communicate_calls = 0
 
     async def communicate(self) -> tuple[bytes, bytes]:
+        self.communicate_calls += 1
         return self._stdout, self._stderr
 
     def kill(self) -> None:
@@ -63,7 +65,7 @@ def test_run_validation_subprocess_success(monkeypatch: pytest.MonkeyPatch) -> N
     assert is_valid is True
     assert error is None
     assert recorded["args"] == ("python", "-m", "py_compile", "candidate.py")
-    assert recorded["stdout"] == asyncio.subprocess.PIPE
+    assert recorded["stdout"] == asyncio.subprocess.DEVNULL
     assert recorded["stderr"] == asyncio.subprocess.PIPE
 
 
@@ -125,7 +127,41 @@ def test_run_validation_subprocess_timeout_kills_process(
     assert is_valid is False
     assert error == "Validation timeout after 3s"
     assert proc.kill_called is True
-    assert proc.wait_called is True
+    assert proc.communicate_calls == 1
+
+
+def test_run_validation_subprocess_cancellation_kills_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _FakeProcess()
+
+    async def fake_create_subprocess_exec(
+        *args: str,
+        stdout: int | None = None,
+        stderr: int | None = None,
+    ) -> _FakeProcess:
+        return proc
+
+    async def fake_wait_for(awaitable: object, timeout: int) -> object:
+        del awaitable, timeout
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        async_apply.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(async_apply.asyncio, "wait_for", fake_wait_for)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            async_apply._run_validation_subprocess(
+                "rustfmt", "candidate.rs", timeout=3
+            )
+        )
+
+    assert proc.kill_called is True
+    assert proc.communicate_calls == 1
 
 
 def test_validate_code_async_python_delegates_to_helper(
@@ -194,6 +230,7 @@ def test_validate_code_async_rust_delegates_to_rustfmt(
     args = recorded["args"]
     assert isinstance(args, tuple)
     assert args[0] == "rustfmt"
+    assert args[-2] == "--"
     assert args[-1] == str(tmp_path / "candidate.rs")
     assert "--config-path" in args
     assert "--emit" in args
@@ -307,6 +344,24 @@ def test_validate_code_async_rust_rejects_broken_program_on_real_rustfmt(
     assert is_valid is False
     assert error is not None
     assert "nightly" not in error
+    assert "error" in error.lower()
+
+
+@pytest.mark.skipif(shutil.which("rustfmt") is None, reason="rustfmt is not installed")
+def test_validate_code_async_rust_rejects_option_shaped_filename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    candidate = Path("--version")
+    candidate.write_text("pub fn broken( -> {\n", encoding="utf-8")
+
+    is_valid, error = asyncio.run(
+        async_apply.validate_code_async(str(candidate), language="rust", timeout=60)
+    )
+
+    assert is_valid is False
+    assert error is not None
     assert "error" in error.lower()
 
 

@@ -32,22 +32,36 @@ async def _run_validation_subprocess(
     """Run a validator subprocess and normalize timeout/error handling."""
     proc = await asyncio.create_subprocess_exec(
         *args,
-        stdout=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
+    communication = asyncio.create_task(proc.communicate())
 
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        _, stderr = await asyncio.wait_for(
+            asyncio.shield(communication), timeout=timeout
+        )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        _kill_validation_process(proc)
+        await communication
         return False, f"Validation timeout after {timeout}s"
+    except asyncio.CancelledError:
+        _kill_validation_process(proc)
+        await asyncio.shield(communication)
+        raise
 
     if proc.returncode == 0:
         return True, None
 
     error_msg = stderr.decode() if stderr else "Unknown compilation error"
     return False, error_msg
+
+
+def _kill_validation_process(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
 
 
 async def apply_patch_async(
@@ -178,6 +192,7 @@ async def validate_code_async(
                     rust_edition,
                     "--config",
                     "skip_children=true",
+                    "--",
                     code_path,
                     timeout=timeout,
                 )
