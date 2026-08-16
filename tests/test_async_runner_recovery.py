@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from shinka.core.async_runner import (
     ShinkaEvolveRunner,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.database import DatabaseConfig, Program, ProgramDatabase
 
 
 class _FakeAsyncDB:
@@ -1541,6 +1543,13 @@ def test_job_monitor_processes_completed_jobs_inline():
         runner._retry_failed_db_jobs = lambda: asyncio.sleep(0, result=None)
         runner._record_progress = lambda: None
         runner._mark_surplus_completed_jobs_for_discard = lambda jobs: None
+        lifecycle = []
+
+        async def update_completed_generations():
+            lifecycle.append("updated")
+
+        runner._update_completed_generations = update_completed_generations
+        runner._log_wandb_population_progress = lambda: lifecycle.append("wandb")
 
         batch_started = asyncio.Event()
         allow_finish = asyncio.Event()
@@ -1581,5 +1590,70 @@ def test_job_monitor_processes_completed_jobs_inline():
         runner.should_stop.set()
         allow_finish.set()
         await asyncio.wait_for(monitor_task, timeout=0.2)
+
+        assert lifecycle == ["updated", "wandb"]
+
+    asyncio.run(_run())
+
+
+def test_wandb_population_snapshots_are_offloaded_and_coalesced():
+    async def _run():
+        runner = _build_runner()
+        runner._wandb_population_interval_seconds = 0.0
+        first_started = asyncio.Event()
+        release_first = threading.Event()
+        loop_thread = threading.get_ident()
+        call_threads = []
+        active = 0
+        max_active = 0
+
+        class Logger:
+            def log_population_progress(self, *, db):
+                nonlocal active, max_active
+                call_threads.append(threading.get_ident())
+                active += 1
+                max_active = max(max_active, active)
+                if len(call_threads) == 1:
+                    loop.call_soon_threadsafe(first_started.set)
+                    release_first.wait(timeout=1)
+                active -= 1
+
+        loop = asyncio.get_running_loop()
+        runner.wandb_logger = Logger()
+        runner._log_wandb_population_progress()
+        await asyncio.wait_for(first_started.wait(), timeout=0.2)
+
+        runner._log_wandb_population_progress()
+        runner._log_wandb_population_progress()
+        await asyncio.sleep(0)
+        release_first.set()
+        await runner._wait_for_wandb_population_progress()
+
+        assert len(call_threads) == 2
+        assert all(thread_id != loop_thread for thread_id in call_threads)
+        assert max_active == 1
+
+    asyncio.run(_run())
+
+
+def test_wandb_population_snapshot_uses_worker_owned_database_connection(tmp_path):
+    async def _run():
+        db = ProgramDatabase(
+            DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"))
+        )
+        db.add(Program(id="program", code="pass"), defer_maintenance=True)
+        observed_ids = []
+
+        class Logger:
+            def log_population_progress(self, *, db):
+                observed_ids.extend(program.id for program in db.get_all_programs())
+
+        runner = _build_runner(db=db)
+        runner.wandb_logger = Logger()
+        runner._log_wandb_population_progress()
+        await runner._wait_for_wandb_population_progress()
+        db.close()
+
+        assert observed_ids == ["program"]
 
     asyncio.run(_run())

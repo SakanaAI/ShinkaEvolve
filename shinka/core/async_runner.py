@@ -13,7 +13,9 @@ import os
 import math
 import psutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
 from dataclasses import dataclass, field
@@ -69,6 +71,7 @@ from shinka.pricing.catalog import (
     write_run_pricing_snapshot,
 )
 from shinka.wandb_logging import ShinkaWandbLogger
+from shinka.wandb_metrics import build_program_log_payload, is_island_copy
 from shinka.utils import (
     get_language_extension,
     parse_time_to_seconds,
@@ -77,6 +80,11 @@ from shinka.utils import (
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+
+_WANDB_CANDIDATE_QUEUE_SIZE = 256
+_WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
+_WANDB_POPULATION_INTERVAL_SECONDS = 5.0
+_WANDB_CANDIDATE_STOP = object()
 
 
 def _print_gradient_logo_and_mirror(
@@ -568,6 +576,17 @@ class ShinkaEvolveRunner:
         self._background_side_effects_busy_count = 0
         self._completed_job_batch_tasks: Set[asyncio.Task] = set()
         self._completed_jobs_pending = 0
+        self._wandb_population_task: Optional[asyncio.Task] = None
+        self._wandb_population_delay_task: Optional[asyncio.Task] = None
+        self._wandb_population_pending = False
+        self._wandb_last_population_snapshot_at: Optional[float] = None
+        self._wandb_population_interval_seconds = _WANDB_POPULATION_INTERVAL_SECONDS
+        self._wandb_executor: Optional[ThreadPoolExecutor] = None
+        self._wandb_candidate_queue: Optional[asyncio.Queue] = None
+        self._wandb_candidate_worker_task: Optional[asyncio.Task] = None
+        self._wandb_candidate_queue_size = _WANDB_CANDIDATE_QUEUE_SIZE
+        self._wandb_dropped_candidate_events = 0
+        self._wandb_last_drop_warning_at: Optional[float] = None
         self._meta_side_effect_lock = asyncio.Lock()
         self._prompt_side_effect_lock = asyncio.Lock()
         self._best_solution_lock = asyncio.Lock()
@@ -1183,12 +1202,14 @@ class ShinkaEvolveRunner:
         if self.evo_config.evolve_prompts:
             await self._setup_prompt_evolution()
 
-        self.wandb_logger.start(
-            evo_config=self.evo_config,
-            db_config=self.db_config,
-            job_config=self.job_config,
-            results_dir=Path(self.results_dir),
-        )
+        if self.wandb_logger.enabled:
+            await self._run_wandb_operation(
+                self.wandb_logger.start,
+                evo_config=self.evo_config,
+                db_config=self.db_config,
+                job_config=self.job_config,
+                results_dir=Path(self.results_dir),
+            )
 
         # Check if we're resuming from an existing database
         resuming_run = db_path.exists() and self.db.last_iteration > 0
@@ -1236,6 +1257,8 @@ class ShinkaEvolveRunner:
                         "generating initial program with LLM..."
                     )
                 await self._generate_initial_program()
+
+        self._log_wandb_population_progress()
 
     async def _setup_prompt_evolution(self):
         """Setup prompt evolution database and components."""
@@ -2125,6 +2148,7 @@ class ShinkaEvolveRunner:
                         await self._process_completed_jobs_safely(completed_jobs)
                         old_completed = self.completed_generations
                         await self._update_completed_generations()
+                        self._log_wandb_population_progress()
 
                         if self.verbose:
                             if self.completed_generations != old_completed:
@@ -4021,6 +4045,7 @@ class ShinkaEvolveRunner:
             )
 
             await self._update_completed_generations()
+            self._log_wandb_population_progress()
             self._record_progress()
             self.slot_available.set()
             self._log_program_to_wandb(program)
@@ -4628,6 +4653,7 @@ class ShinkaEvolveRunner:
                 self._mark_surplus_completed_jobs_for_discard(completed_jobs)
                 await self._process_completed_jobs_safely(completed_jobs)
                 await self._update_completed_generations()
+                self._log_wandb_population_progress()
                 self.slot_available.set()
         finally:
             self._completed_jobs_pending = max(
@@ -4934,6 +4960,7 @@ class ShinkaEvolveRunner:
                     if str(job.job_id) in self.submitted_jobs:
                         del self.submitted_jobs[str(job.job_id)]
                     await self._update_completed_generations()
+                    self._log_wandb_population_progress()
                     self._record_progress()
                     self.slot_available.set()
                     logger.info(
@@ -5524,7 +5551,7 @@ class ShinkaEvolveRunner:
                     logger.warning(f"Failed to recompute prompt percentiles: {e}")
 
             # Cleanup database
-            self._finish_wandb_logging()
+            await self._finish_wandb_logging()
             await self.async_db.close_async()
 
             # Cleanup scheduler
@@ -5535,19 +5562,334 @@ class ShinkaEvolveRunner:
 
     def _log_program_to_wandb(self, program: Program) -> None:
         wandb_logger = getattr(self, "wandb_logger", None)
-        if wandb_logger is not None:
-            wandb_logger.log_program(program)
+        if (
+            wandb_logger is not None
+            and getattr(wandb_logger, "active", True)
+            and not is_island_copy(program)
+            and hasattr(wandb_logger, "log_program_payload")
+        ):
+            self._enqueue_wandb_candidate(
+                wandb_logger.log_program_payload,
+                program.id,
+                build_program_log_payload(program),
+            )
 
-    def _finish_wandb_logging(self) -> None:
+    def _log_wandb_population_progress(self) -> None:
+        wandb_logger = getattr(self, "wandb_logger", None)
+        db = getattr(self, "db", None)
+        if (
+            wandb_logger is None
+            or db is None
+            or getattr(wandb_logger, "active", True) is False
+        ):
+            return
+
+        snapshot_task = getattr(self, "_wandb_population_task", None)
+        delay_task = getattr(self, "_wandb_population_delay_task", None)
+        snapshot_running = snapshot_task is not None and not snapshot_task.done()
+        delay_running = delay_task is not None and not delay_task.done()
+        if snapshot_running or delay_running:
+            self._wandb_population_pending = True
+            return
+
+        loop = asyncio.get_running_loop()
+        last_snapshot_at = getattr(
+            self, "_wandb_last_population_snapshot_at", None
+        )
+        interval = getattr(
+            self,
+            "_wandb_population_interval_seconds",
+            _WANDB_POPULATION_INTERVAL_SECONDS,
+        )
+        delay = (
+            0.0
+            if last_snapshot_at is None
+            else max(0.0, interval - (loop.time() - last_snapshot_at))
+        )
+        if delay:
+            self._wandb_population_pending = True
+            self._wandb_population_delay_task = asyncio.create_task(
+                self._run_delayed_wandb_population_snapshot(delay),
+                name="wandb_population_delay",
+            )
+            return
+        self._start_wandb_population_snapshot(wandb_logger, db)
+
+    def _start_wandb_population_snapshot(
+        self, wandb_logger: Any, db: ProgramDatabase
+    ) -> None:
+        try:
+            population_snapshot = self._capture_wandb_population_snapshot(db)
+        except Exception as exc:
+            logger.warning(
+                "Failed to query in-memory W&B population snapshot: %s", exc
+            )
+            return
+        if population_snapshot is None:
+            if not hasattr(wandb_logger, "log_population_progress"):
+                return
+        elif not hasattr(wandb_logger, "log_population_snapshot"):
+            return
+        else:
+            self._wandb_last_population_snapshot_at = (
+                asyncio.get_running_loop().time()
+            )
+
+        self._wandb_population_pending = False
+        self._wandb_population_task = asyncio.create_task(
+            self._run_wandb_population_snapshot(
+                wandb_logger, db, population_snapshot
+            ),
+            name="wandb_population_snapshot",
+        )
+
+    async def _run_delayed_wandb_population_snapshot(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._wandb_population_delay_task = None
+        wandb_logger = getattr(self, "wandb_logger", None)
+        db = getattr(self, "db", None)
+        if (
+            wandb_logger is not None
+            and db is not None
+            and getattr(wandb_logger, "active", True)
+        ):
+            self._start_wandb_population_snapshot(wandb_logger, db)
+
+    async def _run_wandb_population_snapshot(
+        self,
+        wandb_logger: Any,
+        db: ProgramDatabase,
+        population_snapshot: Optional[List[Dict[str, Any]]],
+    ) -> None:
+        try:
+            if population_snapshot is None:
+                await self._run_wandb_operation(
+                    self._log_wandb_population_snapshot,
+                    wandb_logger,
+                    db,
+                )
+            else:
+                await self._run_wandb_operation(
+                    wandb_logger.log_population_snapshot,
+                    population_snapshot,
+                )
+        except Exception as exc:
+            logger.warning("Failed to run background W&B snapshot: %s", exc)
+        finally:
+            if population_snapshot is None:
+                self._wandb_last_population_snapshot_at = (
+                    asyncio.get_running_loop().time()
+                )
+            self._wandb_population_task = None
+        if self._wandb_population_pending:
+            self._wandb_population_pending = False
+            self._log_wandb_population_progress()
+
+    async def _wait_for_wandb_population_progress(self) -> None:
+        while (
+            task := getattr(self, "_wandb_population_task", None)
+            or getattr(self, "_wandb_population_delay_task", None)
+        ) is not None:
+            await asyncio.shield(task)
+
+    async def _skip_delayed_wandb_population_progress(self) -> None:
+        delay_task = getattr(self, "_wandb_population_delay_task", None)
+        if delay_task is not None:
+            delay_task.cancel()
+            try:
+                await delay_task
+            except asyncio.CancelledError:
+                pass
+            self._wandb_population_delay_task = None
+        self._wandb_population_pending = False
+        while (task := getattr(self, "_wandb_population_task", None)) is not None:
+            await asyncio.shield(task)
+
+    @staticmethod
+    def _capture_wandb_population_snapshot(
+        db: ProgramDatabase,
+    ) -> Optional[List[Dict[str, Any]]]:
+        config = getattr(db, "config", None)
+        if config is None or getattr(config, "db_path", None):
+            return None
+        return db.get_population_telemetry()
+
+    @staticmethod
+    def _wandb_snapshot_db(db: ProgramDatabase) -> Tuple[ProgramDatabase, bool]:
+        config = getattr(db, "config", None)
+        db_path = getattr(config, "db_path", None)
+        if not db_path:
+            return db, False
+        return ProgramDatabase(config, read_only=True), True
+
+    @classmethod
+    def _log_wandb_population_snapshot(
+        cls, wandb_logger: Any, db: ProgramDatabase
+    ) -> None:
+        snapshot_db, should_close = cls._wandb_snapshot_db(db)
+        try:
+            wandb_logger.log_population_progress(db=snapshot_db)
+        finally:
+            if should_close:
+                snapshot_db.close()
+
+    @classmethod
+    def _log_final_wandb_snapshot(
+        cls,
+        wandb_logger: Any,
+        db: ProgramDatabase,
+        total_proposals_generated: Optional[int],
+        total_cost: Optional[float],
+    ) -> None:
+        snapshot_db, should_close = cls._wandb_snapshot_db(db)
+        try:
+            wandb_logger.log_final(
+                db=snapshot_db,
+                total_proposals_generated=total_proposals_generated,
+                total_api_cost=total_cost,
+                total_cost=total_cost,
+            )
+        finally:
+            if should_close:
+                snapshot_db.close()
+
+    async def _finish_wandb_logging(self) -> None:
         wandb_logger = getattr(self, "wandb_logger", None)
         if wandb_logger is None:
             return
-        wandb_logger.log_final(
-            db=getattr(self, "db", None),
-            total_proposals_generated=getattr(self, "total_proposals_generated", None),
-            total_api_cost=getattr(self, "total_api_cost", None),
-        )
-        wandb_logger.finish()
+        await self._skip_delayed_wandb_population_progress()
+        await self._drain_wandb_candidate_queue()
+        total_cost = getattr(self, "total_api_cost", None)
+        db = getattr(self, "db", None)
+        if db is not None:
+            try:
+                config = getattr(db, "config", None)
+                if config is not None and not getattr(config, "db_path", None):
+                    programs = db.get_all_programs()
+                    await self._run_wandb_operation(
+                        wandb_logger.log_final_programs,
+                        programs,
+                        total_proposals_generated=getattr(
+                            self, "total_proposals_generated", None
+                        ),
+                        total_api_cost=total_cost,
+                        total_cost=total_cost,
+                    )
+                else:
+                    await self._run_wandb_operation(
+                        self._log_final_wandb_snapshot,
+                        wandb_logger,
+                        db,
+                        getattr(self, "total_proposals_generated", None),
+                        total_cost,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to run final W&B snapshot: %s", exc)
+        try:
+            await self._run_wandb_operation(wandb_logger.finish)
+        finally:
+            await self._stop_wandb_candidate_worker()
+            await self._shutdown_wandb_executor()
+
+    def _wandb_thread_pool(self) -> ThreadPoolExecutor:
+        executor = getattr(self, "_wandb_executor", None)
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="shinka-wandb",
+            )
+            self._wandb_executor = executor
+        return executor
+
+    async def _run_wandb_operation(
+        self, callback: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        loop = asyncio.get_running_loop()
+        operation = partial(callback, *args, **kwargs)
+        return await loop.run_in_executor(self._wandb_thread_pool(), operation)
+
+    def _wandb_candidate_event_queue(self) -> asyncio.Queue:
+        queue = getattr(self, "_wandb_candidate_queue", None)
+        if queue is None:
+            queue = asyncio.Queue(
+                maxsize=getattr(
+                    self,
+                    "_wandb_candidate_queue_size",
+                    _WANDB_CANDIDATE_QUEUE_SIZE,
+                )
+            )
+            self._wandb_candidate_queue = queue
+        return queue
+
+    def _enqueue_wandb_candidate(
+        self, callback: Any, program_id: str, payload: Dict[str, Any]
+    ) -> None:
+        queue = self._wandb_candidate_event_queue()
+        if queue.full():
+            self._wandb_dropped_candidate_events = (
+                getattr(self, "_wandb_dropped_candidate_events", 0) + 1
+            )
+            now = time.monotonic()
+            last_warning = getattr(self, "_wandb_last_drop_warning_at", None)
+            if (
+                last_warning is None
+                or now - last_warning >= _WANDB_DROP_WARNING_INTERVAL_SECONDS
+            ):
+                logger.warning(
+                    "W&B candidate queue full; dropping newest candidate event. "
+                    "Population and final snapshots remain authoritative."
+                )
+                self._wandb_last_drop_warning_at = now
+            return
+        queue.put_nowait((callback, program_id, payload))
+        worker = getattr(self, "_wandb_candidate_worker_task", None)
+        if worker is None or worker.done():
+            self._wandb_candidate_worker_task = asyncio.create_task(
+                self._run_wandb_candidate_worker(),
+                name="wandb_candidate_worker",
+            )
+
+    async def _run_wandb_candidate_worker(self) -> None:
+        queue = self._wandb_candidate_event_queue()
+        while True:
+            operation = await queue.get()
+            try:
+                if operation is _WANDB_CANDIDATE_STOP:
+                    return
+                callback, program_id, payload = operation
+                try:
+                    await self._run_wandb_operation(
+                        callback, program_id, payload
+                    )
+                except Exception as exc:
+                    logger.warning("Failed W&B candidate operation: %s", exc)
+            finally:
+                queue.task_done()
+
+    async def _drain_wandb_candidate_queue(self) -> None:
+        queue = getattr(self, "_wandb_candidate_queue", None)
+        if queue is not None:
+            await queue.join()
+
+    async def _stop_wandb_candidate_worker(self) -> None:
+        worker = getattr(self, "_wandb_candidate_worker_task", None)
+        if worker is None:
+            return
+        queue = self._wandb_candidate_event_queue()
+        queue.put_nowait(_WANDB_CANDIDATE_STOP)
+        await worker
+        self._wandb_candidate_worker_task = None
+
+    async def _shutdown_wandb_executor(self) -> None:
+        executor = getattr(self, "_wandb_executor", None)
+        if executor is None:
+            return
+        self._wandb_executor = None
+        await asyncio.to_thread(executor.shutdown, True)
 
     async def _print_final_summary(self):
         """Print final evolution summary."""
