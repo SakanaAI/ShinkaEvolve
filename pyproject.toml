@@ -51,7 +51,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-wandb = ["wandb"]
+wandb = ["wandb>=0.19"]
 
 [project.scripts]
 shinka_launch = "shinka.cli.launch:main"

@@ -1645,6 +1645,136 @@ class ProgramDatabase:
         return best_overall
 
     @db_retry()
+    def get_population_telemetry(self) -> List[Dict[str, Any]]:
+        """Return compact per-island aggregates for progress telemetry.
+
+        The query never selects program code, embeddings, evaluation metrics, or
+        full metadata. Final reporting can still use :meth:`get_all_programs`.
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        self.cursor.execute(
+            """
+            WITH metadata_source AS (
+                SELECT
+                    island_idx,
+                    correct,
+                    combined_score,
+                    COALESCE(metadata, '{}') AS metadata,
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(COALESCE(metadata, '{}'), '-Infinity', 'null'),
+                            'Infinity', 'null'
+                        ),
+                        'NaN', 'null'
+                    ) AS finite_metadata
+                FROM programs
+            ), source AS (
+                SELECT
+                    island_idx,
+                    correct,
+                    combined_score,
+                    CASE
+                        WHEN json_valid(metadata) THEN metadata
+                        WHEN json_valid(finite_metadata) THEN finite_metadata
+                        ELSE '{}'
+                    END AS metadata
+                FROM metadata_source
+            ), raw AS (
+                SELECT
+                    island_idx,
+                    correct,
+                    CASE WHEN combined_score > -1e999 AND combined_score < 1e999
+                        THEN combined_score END AS combined_score,
+                    CASE WHEN
+                        COALESCE(json_extract(metadata, '$._is_island_copy'), 0) = 1
+                        OR COALESCE(json_extract(metadata, '$._spawned_island'), 0) = 1
+                    THEN 1 ELSE 0 END AS is_copy,
+                    COALESCE(
+                        NULLIF(json_extract(metadata, '$.model_name'), ''),
+                        NULLIF(json_extract(metadata, '$.model'), ''),
+                        NULLIF(json_extract(metadata, '$.llm_result.model_name'), ''),
+                        NULLIF(json_extract(metadata, '$.llm_result.model'), '')
+                    ) AS model_name,
+                    COALESCE(
+                        json_extract(metadata, '$.headless_pricing_unknown'), 0
+                    ) AS pricing_unknown,
+                    CASE WHEN json_type(metadata, '$.api_costs') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.api_costs') ELSE 0 END AS api_cost,
+                    CASE WHEN json_type(metadata, '$.embed_cost') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.embed_cost') ELSE 0 END AS embed_cost,
+                    CASE WHEN json_type(metadata, '$.novelty_cost') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.novelty_cost') ELSE 0 END AS novelty_cost,
+                    CASE WHEN json_type(metadata, '$.meta_cost') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.meta_cost') ELSE 0 END AS meta_cost,
+                    CASE WHEN json_type(metadata, '$.sampling_seconds') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.sampling_seconds') ELSE 0 END AS sampling_seconds,
+                    CASE WHEN json_type(metadata, '$.evaluation_seconds') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.evaluation_seconds') ELSE 0 END AS evaluation_seconds,
+                    CASE WHEN json_type(metadata, '$.postprocess_seconds') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.postprocess_seconds') ELSE 0 END AS postprocess_seconds,
+                    CASE WHEN json_type(metadata, '$.pipeline_seconds') IN ('integer', 'real')
+                        THEN json_extract(metadata, '$.pipeline_seconds') ELSE 0 END AS pipeline_seconds
+                FROM source
+            ), telemetry AS (
+                SELECT
+                    island_idx,
+                    correct,
+                    combined_score,
+                    is_copy,
+                    model_name,
+                    CASE WHEN api_cost > -1e999 AND api_cost < 1e999
+                        THEN api_cost ELSE 0 END AS api_cost,
+                    CASE WHEN embed_cost > -1e999 AND embed_cost < 1e999
+                        THEN embed_cost ELSE 0 END AS embed_cost,
+                    CASE WHEN novelty_cost > -1e999 AND novelty_cost < 1e999
+                        THEN novelty_cost ELSE 0 END AS novelty_cost,
+                    CASE WHEN meta_cost > -1e999 AND meta_cost < 1e999
+                        THEN meta_cost ELSE 0 END AS meta_cost,
+                    CASE WHEN sampling_seconds > -1e999 AND sampling_seconds < 1e999
+                        THEN sampling_seconds ELSE 0 END AS sampling_seconds,
+                    CASE WHEN evaluation_seconds > -1e999 AND evaluation_seconds < 1e999
+                        THEN evaluation_seconds ELSE 0 END AS evaluation_seconds,
+                    CASE WHEN postprocess_seconds > -1e999 AND postprocess_seconds < 1e999
+                        THEN postprocess_seconds ELSE 0 END AS postprocess_seconds,
+                    CASE WHEN pipeline_seconds > -1e999 AND pipeline_seconds < 1e999
+                        THEN pipeline_seconds ELSE 0 END AS pipeline_seconds,
+                    CASE WHEN model_name GLOB 'headless/*' AND pricing_unknown = 1
+                        THEN 1 ELSE 0 END AS api_cost_unknown
+                FROM raw
+            )
+            SELECT
+                island_idx,
+                COUNT(*) AS count,
+                SUM(CASE WHEN is_copy = 0 THEN 1 ELSE 0 END) AS evaluated_count,
+                SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) AS correct_count,
+                COUNT(combined_score) AS score_count,
+                COALESCE(SUM(combined_score), 0) AS score_sum,
+                MAX(combined_score) AS best_score,
+                MAX(CASE WHEN correct = 1 THEN combined_score END) AS best_correct_score,
+                SUM(CASE WHEN is_copy = 0 AND api_cost_unknown = 0
+                    THEN api_cost ELSE 0 END) AS api_cost,
+                SUM(CASE WHEN is_copy = 0 THEN embed_cost ELSE 0 END) AS embed_cost,
+                SUM(CASE WHEN is_copy = 0 THEN novelty_cost ELSE 0 END) AS novelty_cost,
+                SUM(CASE WHEN is_copy = 0 THEN meta_cost ELSE 0 END) AS meta_cost,
+                SUM(CASE WHEN is_copy = 0 AND api_cost_unknown = 1
+                    THEN 1 ELSE 0 END) AS pricing_unknown_count,
+                SUM(CASE WHEN is_copy = 0 THEN sampling_seconds ELSE 0 END)
+                    AS sampling_seconds,
+                SUM(CASE WHEN is_copy = 0 THEN evaluation_seconds ELSE 0 END)
+                    AS evaluation_seconds,
+                SUM(CASE WHEN is_copy = 0 THEN postprocess_seconds ELSE 0 END)
+                    AS postprocess_seconds,
+                SUM(CASE WHEN is_copy = 0 THEN pipeline_seconds ELSE 0 END)
+                    AS pipeline_seconds
+            FROM telemetry
+            GROUP BY island_idx
+            ORDER BY island_idx
+            """
+        )
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    @db_retry()
     def get_all_programs(self) -> List[Program]:
         """Get all programs from the database."""
         if not self.cursor:

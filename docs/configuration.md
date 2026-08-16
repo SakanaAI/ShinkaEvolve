@@ -94,18 +94,37 @@ pip install 'shinka-evolve[wandb]'
 # Authenticate online runs. In CI, provide this through a secret manager.
 export WANDB_API_KEY=<your-api-key>
 
-# Add W&B metrics and a compact individuals table alongside the WebUI database.
+# Add W&B metrics and a compact final table alongside the WebUI database.
 shinka_run --task-dir examples/circle_packing --results_dir results/circle_wandb --num_generations 20 \
   --set evo.enable_wandb_logging=true \
   --set evo.wandb_project=shinka-evolve
 ```
 
-Each evaluated individual logs `score/individual` against `generation`. When a
-results directory is resumed, its `.wandb_run_id` is reused with
-`wandb_resume='allow'` by default. Online mode uses the credentials from
+Population and island snapshots use the monotonic
+`population/evaluated_count` axis. They include counts, correctness, scores,
+cumulative `cost/*`, and cumulative `timing/*_total`. Raw evaluated candidates
+use `score/individual` and `individual/*` fields without binding those events to
+generation. Administrative island copies remain in population/table counts but
+are excluded from evaluated count, candidate history, and costs. The compact
+`population/final_table` omits program code, embeddings, and unrestricted
+metadata. When a results directory is resumed, its `.wandb_run_id` is reused
+with `wandb_resume='allow'` by default. Online mode uses credentials from
 `wandb login` or `WANDB_API_KEY`; set `wandb_mode=offline` to record locally
 without uploading. W&B failures are non-fatal and do not alter the existing
 database or WebUI path.
+
+The integration disables W&B console, Git, code, requirements, machine, and
+system-stat capture. Its run config contains only an explicit allowlist of safe
+scalar experiment settings; `wandb_config` remains an explicit extension and is
+recursively redacted for secret-like keys. Arbitrary `wandb_config` values cross
+the upload boundary when their keys are not recognized as sensitive, so do not
+put secrets or private data there. Candidate events omit private metrics and
+include at most 64 public numeric metrics whose full keys are at most 128
+characters; secret-like keys are discarded. Population snapshots use a compact
+database aggregate on a dedicated serialized telemetry worker, run at most once
+every five seconds, and overlapping refresh requests are coalesced. If the
+bounded raw-candidate queue saturates, the newest candidate event is dropped
+with a rate-limited warning; population and final snapshots remain authoritative.
 
 ### DatabaseConfig (`shinka.database.DatabaseConfig`)
 

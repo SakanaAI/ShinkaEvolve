@@ -192,13 +192,31 @@ shinka_run --task-dir examples/circle_packing \
 ```
 
 W&B logging is additive: the existing SQLite database and WebUI logging remain
-enabled. Each evaluated individual logs `score/individual` against `generation`,
-along with compact evaluation, cost, and timing metrics. Resuming the same
-results directory reuses its persisted W&B run ID by default. Online mode uses
-the credentials from `wandb login` or `WANDB_API_KEY`; use `wandb_mode=offline`
-to record locally without uploading. See
+enabled. Population and island snapshots use the monotonic
+`population/evaluated_count` axis for counts, correctness, scores, cumulative
+`cost/*`, and cumulative `timing/*_total`. Raw evaluated candidates use
+`score/individual` and `individual/*` fields without binding those events to a
+generation step. Administrative island copies remain in population/table counts
+but are excluded from evaluated count, candidate history, and costs. The final
+population is available as `population/final_table`, without program code or
+embeddings. Resuming the same results directory reuses its persisted W&B run ID
+by default. Online mode uses credentials from `wandb login` or `WANDB_API_KEY`;
+use `wandb_mode=offline` to record locally without uploading. See
 [Configuration](docs/configuration.md#evolutionconfig-shinkacoreconfigevolutionconfig)
 for all W&B options.
+
+Shinka disables W&B console, Git, code, requirements, machine, and system-stat
+capture. Run configuration contains an explicit allowlist of scalar experiment
+settings plus the recursively redacted `wandb_config` extension. Arbitrary
+`wandb_config` values cross the upload boundary when their keys are not
+recognized as sensitive, so do not put secrets or private data there. Candidate
+telemetry excludes private metrics and logs at most 64 public numeric metrics
+with keys no longer than 128 characters; secret-like metric names are dropped.
+Population snapshots use a dedicated serialized telemetry worker and a compact
+database aggregate, throttled to at most once every five seconds. Overlapping
+requests are coalesced so telemetry cannot stall active job processing. The
+bounded candidate queue drops the newest raw event with a rate-limited warning
+if saturated; population and final snapshots remain authoritative.
 
 <details>
 <summary><strong>EvolutionConfig Parameters</strong> (click to expand)</summary>

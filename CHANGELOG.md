@@ -10,8 +10,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Added native Google Gemini 3.6 Flash support with current pricing and
   level-based thinking controls. Thanks @anantgar.
 - Added optional Weights & Biases logging with resumable run IDs, per-individual
-  scores, timing and cost metrics, and final run summaries in PR #149. Thanks
-  @anantgar.
+  scores, timing and cost metrics, and final run summaries in PR #149. PR #177
+  adds monotonic population/island snapshots and a secured metadata boundary.
+  Thanks @anantgar.
 - Added Verilog/SystemVerilog as a first-class evolution target in PR #137,
   including `.sv` task detection, syntax validation, EVOLVE-BLOCK marker support,
   failure-artifact rendering, and a self-contained RTLLM example. Thanks @Tyronita.

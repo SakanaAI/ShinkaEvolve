@@ -4,63 +4,17 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from shinka.core.config import EvolutionConfig
-from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database import DatabaseConfig, Program
+from shinka.launch.scheduler import LocalJobConfig
 from shinka.wandb_logging import (
+    EVALUATED_COUNT_METRIC,
     INDIVIDUAL_SCORE_METRIC,
     PROGRAM_TABLE_COLUMNS,
     PROGRAM_TABLE_KEY,
     ShinkaWandbLogger,
-    build_program_log_payload,
-    build_run_summary,
     ensure_wandb_run_id,
 )
-
-
-def _make_db(tmp_path):
-    db = ProgramDatabase(DatabaseConfig(db_path=str(tmp_path / "programs.sqlite")))
-    first = Program(
-        id="p0",
-        code="print(0)",
-        generation=0,
-        correct=True,
-        combined_score=1.0,
-        public_metrics={
-            "score": 1.0,
-            "nested": {"accuracy": 0.5},
-            "bulky_text": "not a chart metric",
-        },
-        private_metrics={"hidden": 2.0},
-        metadata={
-            "api_costs": 0.10,
-            "embed_cost": 0.01,
-            "novelty_cost": 0.02,
-            "meta_cost": 0.03,
-            "patch_type": "init",
-            "pipeline_seconds": 2.0,
-            "evaluation_seconds": 1.5,
-            "model_name": "test-model",
-        },
-    )
-    second = Program(
-        id="p1",
-        code="print(1)",
-        generation=1,
-        parent_id="p0",
-        correct=False,
-        combined_score=0.25,
-        public_metrics={"score": 0.25},
-        metadata={
-            "api_costs": 0.20,
-            "embed_cost": 0.02,
-            "novelty_cost": 0.03,
-            "meta_cost": 0.04,
-            "patch_type": "diff",
-            "llm_result": {"model": "fallback-model"},
-        },
-    )
-    db.add(first, defer_maintenance=True)
-    db.add(second, defer_maintenance=True)
-    return db, first, second
+from wandb_test_utils import make_db
 
 
 def test_wandb_logging_is_opt_in_and_does_not_configure_webui():
@@ -83,50 +37,6 @@ def test_wandb_run_id_is_reused_and_can_be_overridden(tmp_path):
     )
 
 
-def test_program_payload_logs_one_compact_event_per_individual(tmp_path):
-    _, _, second = _make_db(tmp_path)
-
-    payload = build_program_log_payload(second)
-
-    assert payload["generation"] == 1
-    assert payload[INDIVIDUAL_SCORE_METRIC] == 0.25
-    assert payload["individual/model_name"] == "fallback-model"
-    assert "public_metrics/score" not in payload
-    assert payload["cost/api"] == pytest.approx(0.20)
-    assert "program/combined_score" not in payload
-    assert not any(key.startswith("metadata/") for key in payload)
-    assert not any("latest" in key for key in payload)
-
-
-def test_program_payload_skips_bulky_values_and_duplicate_timing(tmp_path):
-    _, first, _ = _make_db(tmp_path)
-
-    payload = build_program_log_payload(first)
-
-    assert payload["public_metrics/nested/accuracy"] == 0.5
-    assert payload["private_metrics/hidden"] == 2.0
-    assert "public_metrics/bulky_text" not in payload
-    assert payload["timing/pipeline_seconds"] == 2.0
-    assert "metadata/pipeline_seconds" not in payload
-
-
-def test_run_summary_uses_correct_programs_for_best_score(tmp_path):
-    db, _, _ = _make_db(tmp_path)
-
-    summary = build_run_summary(
-        db.get_all_programs(),
-        total_proposals_generated=2,
-        total_api_cost=0.5,
-    )
-
-    assert summary["run/program_count"] == 2
-    assert summary["run/correct_rate"] == 0.5
-    assert summary["run/best_score"] == 1.0
-    assert summary["run/max_generation"] == 1
-    assert summary["run/total_proposals_generated"] == 2
-    assert summary["run/total_api_cost"] == 0.5
-
-
 def test_invalid_wandb_config_is_non_fatal(tmp_path, monkeypatch, caplog):
     fake_wandb = ModuleType("wandb")
     fake_wandb.init = lambda **kwargs: pytest.fail("wandb.init should not be called")
@@ -144,8 +54,119 @@ def test_invalid_wandb_config_is_non_fatal(tmp_path, monkeypatch, caplog):
     assert "Failed to initialize W&B logging" in caplog.text
 
 
+def test_wandb_history_failure_is_non_fatal_and_retryable(tmp_path, caplog):
+    _, first, _ = make_db(tmp_path)
+
+    class FlakyRun:
+        def __init__(self):
+            self.calls = 0
+
+        def log(self, _payload):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary telemetry failure")
+
+    logger = ShinkaWandbLogger(enabled=True)
+    logger._run = FlakyRun()
+
+    logger.log_program(first)
+    logger.log_program(first)
+
+    assert logger._run.calls == 2
+    assert "Failed to log individual p0 to W&B" in caplog.text
+
+
+@pytest.mark.parametrize("copy_marker", ["_is_island_copy", "_spawned_island"])
+def test_wandb_history_skips_administrative_copies(copy_marker):
+    logged_payloads = []
+    logger = ShinkaWandbLogger(enabled=True)
+    logger._run = SimpleNamespace(log=logged_payloads.append)
+    copy = Program(id="copy", code="pass", metadata={copy_marker: True})
+
+    logger.log_program(copy)
+
+    assert logged_payloads == []
+
+
+def test_final_history_failure_does_not_suppress_summary_or_table(tmp_path, caplog):
+    db, _, _ = make_db(tmp_path)
+    logged = []
+
+    class Run:
+        summary = {}
+
+        def log(self, payload):
+            if not logged:
+                logged.append("history-failed")
+                raise RuntimeError("history")
+            logged.append(payload)
+
+    logger = ShinkaWandbLogger(enabled=True)
+    logger._run = Run()
+    logger._wandb = SimpleNamespace(Table=lambda **kwargs: SimpleNamespace(**kwargs))
+
+    logger.log_final(db=db, total_api_cost=0.4, total_cost=0.5)
+
+    assert logger._run.summary["run/total_api_cost"] == 0.4
+    assert PROGRAM_TABLE_KEY in logged[-1]
+    assert "final W&B history" in caplog.text
+
+
+def test_final_summary_failure_does_not_suppress_table(tmp_path, caplog):
+    db, _, _ = make_db(tmp_path)
+    logged = []
+
+    class BrokenSummary(dict):
+        def update(self, values):
+            raise RuntimeError("summary")
+
+    logger = ShinkaWandbLogger(enabled=True)
+    logger._run = SimpleNamespace(summary=BrokenSummary(), log=logged.append)
+    logger._wandb = SimpleNamespace(Table=lambda **kwargs: SimpleNamespace(**kwargs))
+
+    logger.log_final(db=db, total_api_cost=0.4)
+
+    assert PROGRAM_TABLE_KEY in logged[-1]
+    assert "final W&B summary" in caplog.text
+
+
+def test_final_table_construction_failure_keeps_history_and_summary(tmp_path, caplog):
+    db, _, _ = make_db(tmp_path)
+    logged = []
+    summary = {}
+    logger = ShinkaWandbLogger(enabled=True)
+    logger._run = SimpleNamespace(summary=summary, log=logged.append)
+    logger._wandb = SimpleNamespace(
+        Table=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("table"))
+    )
+
+    logger.log_final(db=db, total_api_cost=0.4)
+
+    assert logged[0]["run/total_api_cost"] == 0.4
+    assert summary["run/total_api_cost"] == 0.4
+    assert "final W&B table" in caplog.text
+
+
+def test_final_table_log_failure_is_non_fatal(tmp_path, caplog):
+    db, _, _ = make_db(tmp_path)
+    summary = {}
+
+    def log(payload):
+        if PROGRAM_TABLE_KEY in payload:
+            raise RuntimeError("table log")
+
+    logger = ShinkaWandbLogger(enabled=True)
+    logger._run = SimpleNamespace(summary=summary, log=log)
+    logger._wandb = SimpleNamespace(Table=lambda **kwargs: SimpleNamespace(**kwargs))
+
+    logger.log_final(db=db, total_api_cost=0.4)
+
+    assert summary["run/total_api_cost"] == 0.4
+    assert "log final W&B table" in caplog.text
+
+
 def test_wandb_logger_dry_run_and_resume_use_fake_wandb(tmp_path, monkeypatch):
-    db, first, second = _make_db(tmp_path)
+    db, first, second = make_db(tmp_path)
     logged_payloads = []
     init_kwargs = {}
 
@@ -169,6 +190,10 @@ def test_wandb_logger_dry_run_and_resume_use_fake_wandb(tmp_path, monkeypatch):
             self.columns = columns
             self.data = data
 
+    class FakeSettings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     fake_run = FakeRun()
     fake_wandb = ModuleType("wandb")
 
@@ -178,44 +203,91 @@ def test_wandb_logger_dry_run_and_resume_use_fake_wandb(tmp_path, monkeypatch):
 
     fake_wandb.init = fake_init
     fake_wandb.Table = FakeTable
+    fake_wandb.Settings = FakeSettings
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     evo_config = EvolutionConfig(
         wandb_project="project",
         wandb_name="name",
         wandb_mode="offline",
+        task_sys_msg="private task instructions",
+        wandb_config={
+            "nested": {
+                "api_key": "wandb-extra-secret",
+                "apiKey": "camel-api-secret",
+                "accessToken": "camel-access-secret",
+                "clientSecret": "camel-client-secret",
+                "AuthorizationHeader": "camel-authorization-secret",
+                "aws_secret_access_key": "aws-secret",
+                "Authorization": "Bearer auth-secret",
+                "safe_value": 2,
+            }
+        },
     )
     logger = ShinkaWandbLogger(enabled=True)
     logger.start(
         evo_config=evo_config,
         db_config=SimpleNamespace(),
-        job_config=SimpleNamespace(),
+        job_config=LocalJobConfig(
+            extra_cmd_args={"access_token": "job-secret", "workers": 2}
+        ),
         results_dir=tmp_path,
     )
     logger.log_program(first)
     logger.log_program(first)
     logger.log_program(second)
+    logger.log_population_progress(db=db)
+    logger.log_population_progress(db=db)
     logger.log_final(
         db=db,
         total_proposals_generated=2,
-        total_api_cost=0.5,
+        total_cost=0.5,
     )
     logger.finish()
 
     assert init_kwargs["project"] == "project"
     assert init_kwargs["mode"] == "offline"
+    assert init_kwargs["save_code"] is False
+    assert init_kwargs["settings"].kwargs == {
+        "console": "off",
+        "disable_git": True,
+        "disable_code": True,
+        "x_disable_stats": True,
+        "x_disable_machine_info": True,
+        "x_save_requirements": False,
+    }
     assert init_kwargs["id"]
     assert init_kwargs["resume"] == "allow"
     assert (tmp_path / ".wandb_run_id").read_text(encoding="utf-8").strip() == (
         init_kwargs["id"]
     )
-    assert init_kwargs["config"]["evolution"]["wandb_run_id"] == init_kwargs["id"]
+    assert "private task instructions" not in repr(init_kwargs["config"])
+    assert "wandb-extra-secret" not in repr(init_kwargs["config"])
+    assert "camel-api-secret" not in repr(init_kwargs["config"])
+    assert "camel-access-secret" not in repr(init_kwargs["config"])
+    assert "camel-client-secret" not in repr(init_kwargs["config"])
+    assert "camel-authorization-secret" not in repr(init_kwargs["config"])
+    assert "aws-secret" not in repr(init_kwargs["config"])
+    assert "auth-secret" not in repr(init_kwargs["config"])
+    assert "job-secret" not in repr(init_kwargs["config"])
+    assert init_kwargs["config"]["nested"]["safe_value"] == 2
+    assert "task_sys_msg" not in init_kwargs["config"]["evolution"]
+    assert "init_program_path" not in init_kwargs["config"]["evolution"]
+    assert "llm_kwargs" not in init_kwargs["config"]["evolution"]
+    assert "db_path" not in init_kwargs["config"]["database"]
+    assert "extra_cmd_args" not in init_kwargs["config"]["job"]
     assert fake_run.finished is True
     assert [payload[INDIVIDUAL_SCORE_METRIC] for payload in logged_payloads[:2]] == [
         1.0,
         0.25,
     ]
-    assert len(logged_payloads) == 3
+    assert len(logged_payloads) == 5
+    assert logged_payloads[2][EVALUATED_COUNT_METRIC] == 2
+    assert logged_payloads[3][EVALUATED_COUNT_METRIC] == 2
+    assert logged_payloads[3]["cost/embed"] == pytest.approx(0.03)
+    assert logged_payloads[3]["cost/total"] == pytest.approx(0.35)
+    assert logged_payloads[3]["run/evaluated_count"] == 2
+    assert logged_payloads[3]["run/total_cost"] == 0.5
     table = logged_payloads[-1][PROGRAM_TABLE_KEY]
     assert isinstance(table, FakeTable)
     assert table.columns == PROGRAM_TABLE_COLUMNS
@@ -223,10 +295,16 @@ def test_wandb_logger_dry_run_and_resume_use_fake_wandb(tmp_path, monkeypatch):
     assert "code" not in table.columns
     assert "embedding" not in table.columns
     assert fake_run.summary["run/best_score"] == 1.0
+    assert fake_run.summary["run/evaluated_count"] == 2
+    assert fake_run.summary["run/total_cost"] == 0.5
     score_definition = next(
         item for item in fake_run.defined if item[0] == (INDIVIDUAL_SCORE_METRIC,)
     )
-    assert score_definition[1] == {"step_metric": "generation"}
+    assert score_definition[1] == {}
+    population_definition = next(
+        item for item in fake_run.defined if item[0] == ("population/count",)
+    )
+    assert population_definition[1] == {"step_metric": EVALUATED_COUNT_METRIC}
 
     first_run_id = init_kwargs["id"]
     resumed_config = EvolutionConfig(
@@ -252,7 +330,7 @@ def test_wandb_logger_dry_run_and_resume_use_fake_wandb(tmp_path, monkeypatch):
 def test_wandb_online_logging_with_authenticated_sdk(tmp_path, monkeypatch, caplog):
     import wandb
 
-    db, first, second = _make_db(tmp_path)
+    db, first, second = make_db(tmp_path)
     monkeypatch.delenv("WANDB_MODE", raising=False)
     wandb.login(verify=True)
 
@@ -278,7 +356,7 @@ def test_wandb_online_logging_with_authenticated_sdk(tmp_path, monkeypatch, capl
         logger.log_final(
             db=db,
             total_proposals_generated=2,
-            total_api_cost=0.5,
+            total_cost=0.5,
         )
     finally:
         logger.finish()
