@@ -1,43 +1,43 @@
 import ast
-from radon.complexity import cc_visit
-from radon.metrics import h_visit
-from radon.raw import analyze
 import math
 import re
+
+from radon.complexity import cc_visit_ast
+from radon.metrics import h_visit_ast
+from radon.raw import analyze
+
+
+class _NestingVisitor(ast.NodeVisitor):
+    """Track the deepest chain of nested control structures."""
+
+    def __init__(self):
+        self.current_depth = 0
+        self.max_depth = 0
+
+    def _visit_nested(self, node):
+        self.current_depth += 1
+        self.max_depth = max(self.max_depth, self.current_depth)
+        self.generic_visit(node)
+        self.current_depth -= 1
+
+    visit_If = _visit_nested
+    visit_For = _visit_nested
+    visit_While = _visit_nested
+    visit_With = _visit_nested
+    visit_Try = _visit_nested
+    visit_FunctionDef = _visit_nested
+    visit_AsyncFunctionDef = _visit_nested
+
+
+def _max_nesting_depth(tree):
+    visitor = _NestingVisitor()
+    visitor.visit(tree)
+    return visitor.max_depth
 
 
 def max_nesting_depth(code_string):
     """Calculate maximum nesting depth for Python code using AST."""
-
-    class NestingVisitor(ast.NodeVisitor):
-        def __init__(self):
-            self.current_depth = 0
-            self.max_depth = 0
-
-        def generic_visit(self, node):
-            if isinstance(
-                node,
-                (
-                    ast.If,
-                    ast.For,
-                    ast.While,
-                    ast.With,
-                    ast.Try,
-                    ast.FunctionDef,
-                    ast.AsyncFunctionDef,
-                ),
-            ):
-                self.current_depth += 1
-                self.max_depth = max(self.max_depth, self.current_depth)
-                super().generic_visit(node)
-                self.current_depth -= 1
-            else:
-                super().generic_visit(node)
-
-    tree = ast.parse(code_string)
-    visitor = NestingVisitor()
-    visitor.visit(tree)
-    return visitor.max_depth
+    return _max_nesting_depth(ast.parse(code_string))
 
 
 def analyze_python_complexity(code_string):
@@ -54,11 +54,13 @@ def analyze_python_complexity(code_string):
     Raises:
         SyntaxError: If the code cannot be parsed as valid Python
     """
-    cc_results = cc_visit(code_string)
+    tree = ast.parse(code_string)
+
+    cc_results = cc_visit_ast(tree)
     total_cc = sum(block.complexity for block in cc_results)
     avg_cc = total_cc / len(cc_results) if cc_results else 0
 
-    h_metrics = h_visit(code_string)
+    h_metrics = h_visit_ast(tree)
     halstead_total = h_metrics.total if h_metrics.total else None
     halstead_volume = halstead_total.volume if halstead_total else 1
     halstead_difficulty = halstead_total.difficulty if halstead_total else 0
@@ -76,7 +78,7 @@ def analyze_python_complexity(code_string):
         - 16.2 * (math.log2(loc) if loc > 0 else 0)
     )
 
-    nesting_depth = max_nesting_depth(code_string)
+    nesting_depth = _max_nesting_depth(tree)
 
     # Normalized scores for aggregation
     norm_cc = total_cc / 10  # Assuming 10 is high complexity
