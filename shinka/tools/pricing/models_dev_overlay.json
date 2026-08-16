@@ -84,6 +84,14 @@
   "llm_overrides": [
     {
       "provider": "google",
+      "model_name": "gemini-3.7-flash",
+      "input_price": 0.75,
+      "output_price": 3.75,
+      "is_reasoning": true,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "google",
       "model_name": "gemini-3.6-flash",
       "input_price": 0.75,
       "output_price": 3.75,
