@@ -26,6 +26,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed Rust candidate validation on stable toolchains by replacing the
+  nightly-only parser flag with isolated, non-mutating `rustfmt` syntax checks
+  in PR #179. Thanks @Atharva-Kanherkar.
 - Fixed Azure OpenAI LLM client construction to use the v1 base URL contract,
   avoiding doubled `/openai/v1/openai` request paths and 404 responses reported
   in issue #147.
