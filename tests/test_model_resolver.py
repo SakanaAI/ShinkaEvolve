@@ -57,12 +57,25 @@ def test_claude_opus_keeps_standard_pricing_across_context_window(
     }
 
 
-def test_gemini_3_5_flash_pricing_is_registered():
-    resolved = resolve_model_backend("gemini-3.5-flash")
+@pytest.mark.parametrize(
+    "model_name",
+    ["gemini-3.6-flash"],
+)
+def test_latest_gemini_flash_pricing_is_registered(model_name: str):
+    resolved = resolve_model_backend(model_name)
     assert resolved.provider == "google"
-    assert resolved.api_model_name == "gemini-3.5-flash"
+    assert resolved.api_model_name == model_name
 
+    prices = get_model_prices(model_name)
+    assert prices == {
+        "input_price": 0.75 / 1_000_000,
+        "output_price": 3.75 / 1_000_000,
+    }
+
+
+def test_gemini_3_5_flash_pricing_is_registered():
     prices = get_model_prices("gemini-3.5-flash")
+
     assert prices == {
         "input_price": 1.5 / 1_000_000,
         "output_price": 9.0 / 1_000_000,

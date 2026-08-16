@@ -45,7 +45,7 @@ dependencies = [
     "adjustText",
     "markdown",
     "aiofiles",
-    "google-genai",
+    "google-genai>=2.13,<3",
     "psutil",
     "httpx>=0.27"
 ]
