@@ -164,7 +164,7 @@ def test_generate_embedding_rows_maps_azure_alias_and_manual_google_entry():
     ]
 
 
-@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash", "gemini-3.7-flash"])
 def test_generate_latest_gemini_flash_from_manual_overlay(model_name: str):
     rows = generate_llm_rows(
         _payload(),

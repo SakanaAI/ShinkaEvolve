@@ -29,6 +29,7 @@ BACKOFF_MAX_TIME = _env_int(
 GEMINI_THINKING_LEVEL_MODELS = frozenset(
     {
         "gemini-3.6-flash",
+        "gemini-3.7-flash",
     }
 )
 GEMINI_THINKING_LEVEL_BY_EFFORT = {

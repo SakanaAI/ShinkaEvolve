@@ -59,7 +59,7 @@ def test_claude_opus_keeps_standard_pricing_across_context_window(
 
 @pytest.mark.parametrize(
     "model_name",
-    ["gemini-3.6-flash"],
+    ["gemini-3.6-flash", "gemini-3.7-flash"],
 )
 def test_latest_gemini_flash_pricing_is_registered(model_name: str):
     resolved = resolve_model_backend(model_name)

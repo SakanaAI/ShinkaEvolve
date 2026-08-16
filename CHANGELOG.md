@@ -6,6 +6,7 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added native Google Gemini 3.7 Flash support at its introductory 2026 price.
 - Added native Google Gemini 3.6 Flash support with current pricing and
   level-based thinking controls. Thanks @anantgar.
 - Added optional Weights & Biases logging with resumable run IDs, per-individual

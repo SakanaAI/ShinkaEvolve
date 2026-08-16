@@ -48,7 +48,7 @@ def test_gpt5_mini_pricing_metadata_enables_reasoning_kwargs_without_temperature
     assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
 
 
-@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash", "gemini-3.7-flash"])
 @pytest.mark.parametrize(
     ("reasoning_effort", "expected_level"),
     [
@@ -78,7 +78,7 @@ def test_latest_gemini_flash_maps_reasoning_effort_to_thinking_level(
     }
 
 
-@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash", "gemini-3.7-flash"])
 def test_latest_gemini_flash_disabled_reasoning_omits_thinking_controls(
     model_name: str,
 ):

@@ -110,7 +110,7 @@ def test_build_gemini_thinking_level_config_rejects_unknown_level():
         gemini.build_gemini_thinking_level_config("NOT_A_LEVEL")
 
 
-@pytest.mark.parametrize("model_name", ["gemini-3.6-flash"])
+@pytest.mark.parametrize("model_name", ["gemini-3.6-flash", "gemini-3.7-flash"])
 def test_latest_gemini_generation_config_omits_unsupported_fields(
     monkeypatch,
     model_name: str,
