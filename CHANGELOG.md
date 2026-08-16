@@ -22,6 +22,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Changed
 
+- Relaxed the exact HTTPX dependency pin to a `>=0.27` compatibility lower
+  bound in issue #180. Thanks @htmai-880.
 - Removed the automatic Claude Code Review pull-request workflow.
 
 ### Fixed
