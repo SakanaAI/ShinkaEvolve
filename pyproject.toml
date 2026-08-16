@@ -86,7 +86,7 @@ shinka = [
 dev = [
     "pytest>=6.0",
     "pytest-cov",
-    "ruff",
+    "ruff==0.15.6",
     "mypy",
     "black",
     "isort",
