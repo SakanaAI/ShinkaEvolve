@@ -22,6 +22,12 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Set up stable Rust formatter
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustfmt --version
+
       - name: Install project
         run: uv sync --dev
 

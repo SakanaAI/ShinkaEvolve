@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -12,6 +11,17 @@ def test_public_ci_excludes_secret_backed_tests() -> None:
     workflow = _read(".github/workflows/ci.yml")
 
     assert 'pytest -q -m "not requires_secrets and not models_dev_live"' in workflow
+
+
+def test_public_ci_installs_stable_rustfmt() -> None:
+    workflow = _read(".github/workflows/ci.yml")
+
+    assert (
+        "rustup toolchain install stable --profile minimal --component rustfmt"
+        in workflow
+    )
+    assert "rustup default stable" in workflow
+    assert "rustfmt --version" in workflow
 
 
 def test_integration_workflow_exists_for_secret_backed_tests() -> None:
