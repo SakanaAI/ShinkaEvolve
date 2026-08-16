@@ -623,7 +623,13 @@ def apply_search_replace(
                 msg = _create_no_evolve_block_error(new_text, "insertion")
                 raise PatchError(msg)
             a, b = mutable[-1]
-            new_text = new_text[:b] + replace + new_text[b:]
+            # `b` points at the END marker itself and `replace` has no
+            # trailing newline (stripped above), so splicing at `b` would
+            # glue the marker onto the payload's last line. Insert at the
+            # start of the marker's line instead and keep the marker intact.
+            line_start = new_text.rfind("\n", 0, b) + 1
+            insertion = replace if replace.endswith("\n") else replace + "\n"
+            new_text = new_text[:line_start] + insertion + new_text[line_start:]
             num_applied += 1
             continue
 
