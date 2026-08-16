@@ -76,6 +76,12 @@ def test_project_metadata_targets_pypi_release():
     }
 
 
+def test_httpx_dependency_allows_compatible_updates() -> None:
+    dependencies = _read_pyproject()["project"]["dependencies"]
+
+    assert "httpx>=0.27" in dependencies
+
+
 def test_readme_documents_package_install():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
