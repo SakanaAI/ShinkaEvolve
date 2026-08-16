@@ -34,6 +34,11 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed diff insertions (empty SEARCH blocks) splicing the payload directly
+  against the EVOLVE-BLOCK-END marker, which corrupted the marker line, let
+  consecutive insertions merge code lines into invalid programs, and caused
+  marker validation to reject every insertion patch for block-comment
+  languages such as Wolfram.
 - Fixed Gemini retry handling so unsupported structured-output requests fail
   immediately, synchronous retries are paced, and sync/async calls share the
   same default thinking budget.
