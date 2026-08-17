@@ -966,13 +966,15 @@ g[x_] := x^3
 def test_insertion_appends_after_code_on_marker_line():
     """When code precedes the END marker on the same line, insertion must
     append after that code, not before it."""
-    original_content = """# EVOLVE-BLOCK-START
-existing = 1  # EVOLVE-BLOCK-END"""
+    original_content = """def outer():
+    # EVOLVE-BLOCK-START
+    existing = 1  # EVOLVE-BLOCK-END
+    return existing"""
 
     patch_str = """<<<<<<< SEARCH
 
 =======
-inserted = 2
+    inserted = 2
 >>>>>>> REPLACE"""
 
     result = apply_diff_patch(
@@ -983,13 +985,16 @@ inserted = 2
     )
     updated_content, num_applied, output_path, error, patch_txt, diff_path = result
 
-    assert num_applied == 1
-    assert error is None
-    lines = updated_content.splitlines()
-    existing_idx = next(i for i, ln in enumerate(lines) if "existing = 1" in ln)
-    inserted_idx = next(i for i, ln in enumerate(lines) if "inserted = 2" in ln)
-    assert existing_idx < inserted_idx
-    assert lines[-1].strip() == "# EVOLVE-BLOCK-END"
+    assert (updated_content, num_applied, error) == (
+        """def outer():
+    # EVOLVE-BLOCK-START
+    existing = 1
+    inserted = 2
+    # EVOLVE-BLOCK-END
+    return existing""",
+        1,
+        None,
+    )
 
 
 def test_empty_insertion_is_noop():

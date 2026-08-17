@@ -634,8 +634,20 @@ def apply_search_replace(
             # of that line; when code precedes the marker on the same line,
             # append after that code and move the marker to its own line.
             line_start = new_text.rfind("\n", 0, b) + 1
-            if new_text[line_start:b].strip():
-                new_text = new_text[:b] + "\n" + replace + "\n" + new_text[b:]
+            marker_line_prefix = new_text[line_start:b]
+            if marker_line_prefix.strip():
+                leading_whitespace = marker_line_prefix[
+                    : len(marker_line_prefix) - len(marker_line_prefix.lstrip())
+                ]
+                new_text = (
+                    new_text[:line_start]
+                    + marker_line_prefix.rstrip()
+                    + "\n"
+                    + replace
+                    + "\n"
+                    + leading_whitespace
+                    + new_text[b:]
+                )
             else:
                 new_text = (
                     new_text[:line_start] + replace + "\n" + new_text[line_start:]
