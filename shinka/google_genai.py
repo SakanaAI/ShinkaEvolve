@@ -217,15 +217,31 @@ def _log_auto_fallback_once() -> None:
     _LOGGED_AUTO_FALLBACK = True
 
 
-def build_google_genai_client(timeout_ms: int | None = None) -> genai.Client:
+def build_google_genai_client(
+    timeout_ms: int | None = None,
+    *,
+    auth_mode: str | None = None,
+    api_key: str | None = None,
+    project: str | None = None,
+    location: str | None = None,
+) -> genai.Client:
     """Build a Google GenAI client for either direct Gemini API or Vertex AI."""
     kwargs: dict[str, Any] = {}
     if timeout_ms is not None:
         kwargs["http_options"] = genai.types.HttpOptions(timeout=timeout_ms)
 
-    if google_genai_auth_mode() == "vertexai":
-        project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
-        location = os.getenv("GOOGLE_CLOUD_LOCATION", "").strip()
+    resolved_auth_mode = auth_mode or google_genai_auth_mode()
+    if resolved_auth_mode == "vertexai":
+        project = (
+            project
+            if project is not None
+            else os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+        )
+        location = (
+            location
+            if location is not None
+            else os.getenv("GOOGLE_CLOUD_LOCATION", "").strip()
+        )
         if not project:
             raise ValueError(
                 "GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_VERTEXAI is enabled."
@@ -242,7 +258,11 @@ def build_google_genai_client(timeout_ms: int | None = None) -> genai.Client:
             **kwargs,
         )
 
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    api_key = (
+        api_key
+        if api_key is not None
+        else os.getenv("GEMINI_API_KEY", "").strip()
+    )
     if not api_key:
         raise ValueError(
             "Set GEMINI_API_KEY for Gemini API mode, or set "

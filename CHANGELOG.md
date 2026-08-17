@@ -26,6 +26,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Changed
 
+- Reused provider SDK clients and their HTTP connection pools across compatible
+  requests, with explicit credential/configuration isolation, process-safe sync
+  caching, event-loop-scoped async caching, and cache shutdown helpers.
 - Reduced Python complexity-analysis overhead by parsing each candidate AST once
   while preserving the existing metrics contract. Thanks @dexhunter.
 - Relaxed the exact HTTPX dependency pin to a `>=0.27` compatibility lower
