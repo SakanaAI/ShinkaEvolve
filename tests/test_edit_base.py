@@ -847,6 +847,180 @@ def func():
     assert "y = 2" in updated_content
 
 
+def test_insertion_keeps_end_marker_on_own_line():
+    """Insertion must not glue the payload onto the EVOLVE-BLOCK-END marker."""
+    original_content = """# EVOLVE-BLOCK-START
+def f(x):
+    return x
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+def g(x):
+    return x * 2
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    assert "    return x * 2\n# EVOLVE-BLOCK-END" in updated_content
+    assert updated_content.splitlines()[-1] == "# EVOLVE-BLOCK-END"
+
+
+def test_insertion_preserves_indented_end_marker():
+    """Insertion before an indented END marker keeps the marker's own line."""
+    original_content = """def outer():
+    # EVOLVE-BLOCK-START
+    x = 1
+    # EVOLVE-BLOCK-END
+    return x"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+    y = 2
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    assert "    y = 2\n    # EVOLVE-BLOCK-END" in updated_content
+
+
+def test_consecutive_insertions_stay_valid_python():
+    """Compounding insertions across generations must not merge code lines."""
+    import ast
+
+    original_content = """# EVOLVE-BLOCK-START
+def f(x):
+    return x
+# EVOLVE-BLOCK-END"""
+
+    def insertion_patch(payload):
+        return f"""<<<<<<< SEARCH
+
+=======
+{payload}
+>>>>>>> REPLACE"""
+
+    first, num_first, _, first_error, _, _ = apply_diff_patch(
+        patch_str=insertion_patch("y = 2"),
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    second, num_second, _, second_error, _, _ = apply_diff_patch(
+        patch_str=insertion_patch("z = 3"),
+        original_str=first,
+        language="python",
+        verbose=False,
+    )
+
+    assert num_first == 1 and first_error is None
+    assert num_second == 1 and second_error is None
+    assert "y = 2\nz = 3\n# EVOLVE-BLOCK-END" in second
+    ast.parse(second)  # previously produced "y = 2z = 3# EVOLVE-BLOCK-END"
+
+
+def test_insertion_accepted_for_block_comment_language():
+    """Wolfram insertions were rejected by marker validation when the payload
+    was glued onto the (* EVOLVE-BLOCK-END *) marker line."""
+    original_content = """(* EVOLVE-BLOCK-START *)
+f[x_] := x
+(* EVOLVE-BLOCK-END *)"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+g[x_] := x^3
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="wolfram",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    assert "g[x_] := x^3\n(* EVOLVE-BLOCK-END *)" in updated_content
+
+
+def test_insertion_appends_after_code_on_marker_line():
+    """When code precedes the END marker on the same line, insertion must
+    append after that code, not before it."""
+    original_content = """def outer():
+    # EVOLVE-BLOCK-START
+    existing = 1  # EVOLVE-BLOCK-END
+    return existing"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+    inserted = 2
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert (updated_content, num_applied, error) == (
+        """def outer():
+    # EVOLVE-BLOCK-START
+    existing = 1
+    inserted = 2
+    # EVOLVE-BLOCK-END
+    return existing""",
+        1,
+        None,
+    )
+
+
+def test_empty_insertion_is_noop():
+    """Empty SEARCH plus empty REPLACE must not change the content."""
+    original_content = """# EVOLVE-BLOCK-START
+x = 1
+# EVOLVE-BLOCK-END"""
+
+    patch_str = """<<<<<<< SEARCH
+
+=======
+
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch_str,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert error is None
+    assert updated_content == original_content
+
+
 # ============================================================================
 # Tests for Enhanced Error Messages
 # ============================================================================

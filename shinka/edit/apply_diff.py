@@ -622,8 +622,36 @@ def apply_search_replace(
             if not mutable:
                 msg = _create_no_evolve_block_error(new_text, "insertion")
                 raise PatchError(msg)
+            if not replace:
+                # Empty payload: keep the historical content no-op.
+                num_applied += 1
+                continue
             a, b = mutable[-1]
-            new_text = new_text[:b] + replace + new_text[b:]
+            # `b` points at the END marker itself and `replace` has no
+            # trailing newline (stripped above), so splicing at `b` would
+            # glue the marker onto the payload's last line. When the marker
+            # sits on its own (possibly indented) line, insert at the start
+            # of that line; when code precedes the marker on the same line,
+            # append after that code and move the marker to its own line.
+            line_start = new_text.rfind("\n", 0, b) + 1
+            marker_line_prefix = new_text[line_start:b]
+            if marker_line_prefix.strip():
+                leading_whitespace = marker_line_prefix[
+                    : len(marker_line_prefix) - len(marker_line_prefix.lstrip())
+                ]
+                new_text = (
+                    new_text[:line_start]
+                    + marker_line_prefix.rstrip()
+                    + "\n"
+                    + replace
+                    + "\n"
+                    + leading_whitespace
+                    + new_text[b:]
+                )
+            else:
+                new_text = (
+                    new_text[:line_start] + replace + "\n" + new_text[line_start:]
+                )
             num_applied += 1
             continue
 
