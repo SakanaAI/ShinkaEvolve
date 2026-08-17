@@ -1011,9 +1011,17 @@ class ShinkaEvolveRunner:
             # asyncio.get_running_loop raises RuntimeError when no loop exists.
             if "no running event loop" not in str(exc):
                 raise
+
         asyncio.run(self.run_async())
 
     async def run_async(self):
+        """Run evolution while retaining provider clients for this loop user."""
+        from shinka.llm.client import async_client_cache_scope
+
+        async with async_client_cache_scope():
+            await self._run_async()
+
+    async def _run_async(self):
         """Main async evolution loop."""
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
