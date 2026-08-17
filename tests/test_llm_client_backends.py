@@ -152,6 +152,7 @@ def test_get_client_llm_azure_responses_request_uses_v1_url(monkeypatch):
 
 
 def test_get_client_llm_gemini_sets_timeout(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     captured_kwargs = {}
     fake_client = object()
 
@@ -178,6 +179,7 @@ def test_get_client_llm_gemini_sets_timeout(monkeypatch):
 
 
 def test_get_async_client_llm_gemini_sets_timeout(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     captured_kwargs = {}
     fake_client = object()
 
