@@ -28,3 +28,11 @@ def test_live_models_dev_catalog_prices_representative_models(tmp_path: Path) ->
 
     embedding = snapshot.catalog.get_by_name("text-embedding-3-small", kind="embedding")
     assert embedding.input_price > 0
+
+    pinned_embedding_prices = {
+        "gemini-embedding-exp-03-07": 0.0,
+        "gemini-embedding-2-preview": 0.2 / 1_000_000,
+    }
+    for model_name, expected_price in pinned_embedding_prices.items():
+        embedding = snapshot.catalog.get_by_name(model_name, kind="embedding")
+        assert embedding.input_price == pytest.approx(expected_price)
