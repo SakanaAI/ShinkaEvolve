@@ -37,6 +37,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed Anthropic and DeepSeek token/cost accounting parity across synchronous
+  and asynchronous queries, including thinking-token decomposition and safe
+  zero-cost fallback for models missing from the pricing catalog. Runtime
+  models.dev refreshes now preserve pinned embedding-price overrides.
 - Fixed diff insertions (empty SEARCH blocks) splicing the payload directly
   against the EVOLVE-BLOCK-END marker, which corrupted the marker line, let
   consecutive insertions merge code lines into invalid programs, and caused

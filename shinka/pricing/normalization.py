@@ -215,8 +215,7 @@ def _apply_embedding_overrides(
         if entry is None:
             continue
         values = asdict(entry)
-        for field in ("input_price", "output_price"):
-            _apply_price_override(values, override, field)
+        _apply_price_override(values, override, "input_price")
         entries[("embedding", provider, model_name)] = ModelPrice(**values)
 
 

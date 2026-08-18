@@ -34,7 +34,8 @@ def get_deepseek_costs(response, model):
     in_tokens = response.usage.prompt_tokens
     all_out_tokens = response.usage.completion_tokens
     completion_details = getattr(response.usage, "completion_tokens_details", None)
-    thinking_tokens = getattr(completion_details, "reasoning_tokens", 0) or 0
+    reported_thinking = getattr(completion_details, "reasoning_tokens", 0) or 0
+    thinking_tokens = min(max(int(reported_thinking), 0), all_out_tokens)
     out_tokens = all_out_tokens - thinking_tokens
 
     if model_exists(model):

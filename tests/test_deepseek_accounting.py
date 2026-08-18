@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import shinka.llm.providers.deepseek as deepseek_provider
 from shinka.llm.providers.deepseek import (
     get_deepseek_costs,
     query_deepseek,
@@ -66,6 +67,29 @@ def test_unknown_model_preserves_tokens_and_defaults_cost_to_zero():
     }
 
 
+def test_reasoning_tokens_are_separated_but_billed_as_output(monkeypatch):
+    billed_usage = []
+
+    def calculate_cost(model, input_tokens, output_tokens):
+        billed_usage.append((model, input_tokens, output_tokens))
+        return 1.0, 2.0
+
+    monkeypatch.setattr(deepseek_provider, "model_exists", lambda _model: True)
+    monkeypatch.setattr(deepseek_provider, "calculate_cost", calculate_cost)
+
+    costs = get_deepseek_costs(_response(10, 30, 12), "deepseek-test")
+
+    assert costs == {
+        "input_tokens": 10,
+        "output_tokens": 18,
+        "thinking_tokens": 12,
+        "input_cost": 1.0,
+        "output_cost": 2.0,
+        "cost": 3.0,
+    }
+    assert billed_usage == [("deepseek-test", 10, 30)]
+
+
 def test_sync_and_async_treat_missing_reasoning_count_as_zero():
     response = _response(reasoning_tokens=None)
 
@@ -85,3 +109,13 @@ def test_sync_and_async_treat_missing_reasoning_count_as_zero():
 
     assert sync_result.output_tokens == async_result.output_tokens == 30
     assert sync_result.thinking_tokens == async_result.thinking_tokens == 0
+
+
+def test_reasoning_tokens_are_bounded_by_billed_output():
+    costs = get_deepseek_costs(
+        _response(completion_tokens=15, reasoning_tokens=20),
+        "deepseek/not-in-catalog",
+    )
+
+    assert costs["output_tokens"] == 0
+    assert costs["thinking_tokens"] == 15

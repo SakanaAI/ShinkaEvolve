@@ -1,46 +1,61 @@
 """Regression tests for runtime embedding-price overlays."""
 
-from shinka.pricing.catalog import ModelPrice
-from shinka.pricing.normalization import MILLION, _apply_embedding_overrides
+import json
+from pathlib import Path
+
+from shinka.pricing.catalog import catalog_from_models_dev_payload
 
 
-def _embedding_price(input_price: float) -> ModelPrice:
-    return ModelPrice(
-        model_name="gemini-embedding-exp-03-07",
-        api_model_name="gemini-embedding-exp-03-07",
-        provider="google",
-        kind="embedding",
-        input_price=input_price,
-        output_price=0.0,
+MODEL_NAME = "gemini-embedding-exp-03-07"
+
+
+def _runtime_catalog(tmp_path: Path, overrides):
+    overlay_path = tmp_path / "overlay.json"
+    overlay_path.write_text(
+        json.dumps({"embedding_overrides": overrides}), encoding="utf-8"
+    )
+    payload = {
+        "google": {
+            "models": {
+                MODEL_NAME: {
+                    "family": "embedding",
+                    "cost": {"input": 1.5},
+                }
+            }
+        }
+    }
+    return catalog_from_models_dev_payload(
+        payload,
+        overlay_path=overlay_path,
+        include_bundled=False,
     )
 
 
-def test_embedding_overrides_replace_runtime_discovery_price():
-    key = ("embedding", "google", "gemini-embedding-exp-03-07")
-    entries = {key: _embedding_price(input_price=1.5 / MILLION)}
-
-    _apply_embedding_overrides(
-        entries,
+def test_embedding_overrides_replace_runtime_discovery_price(tmp_path: Path):
+    catalog = _runtime_catalog(
+        tmp_path,
         [
             {
                 "provider": "google",
-                "model_name": "gemini-embedding-exp-03-07",
+                "model_name": MODEL_NAME,
                 "input_price": 0.0,
+                "output_price": 999.0,
             }
         ],
     )
 
-    assert entries[key].input_price == 0.0
+    entry = catalog.get("google", MODEL_NAME, kind="embedding")
+    assert entry.input_price == 0.0
+    assert entry.output_price is None
 
 
-def test_embedding_overrides_ignore_unknown_and_malformed_entries():
-    key = ("embedding", "google", "gemini-embedding-exp-03-07")
-    entries = {key: _embedding_price(input_price=2.0 / MILLION)}
-    _apply_embedding_overrides(entries, "not-a-list")
-    _apply_embedding_overrides(entries, [{"provider": "google"}])
-    _apply_embedding_overrides(
-        entries,
-        [{"provider": "unknown", "model_name": "unknown", "input_price": 0.0}],
+def test_embedding_overrides_ignore_unknown_and_malformed_entries(tmp_path: Path):
+    catalog = _runtime_catalog(
+        tmp_path,
+        [
+            {"provider": "google"},
+            {"provider": "unknown", "model_name": "unknown", "input_price": 0.0},
+        ],
     )
 
-    assert entries[key].input_price == 2.0 / MILLION
+    assert catalog.get("google", MODEL_NAME, kind="embedding").input_price == 1.5e-6

@@ -14,12 +14,13 @@ MAX_TIME = BACKOFF_MAX_TIME
 
 
 def get_anthropic_costs(response, model):
-    """Get the costs for the given response and model."""
-    # Get token counts and costs
+    """Return billed costs with thinking separated from visible output."""
     input_tokens = response.usage.input_tokens
     all_out_tokens = response.usage.output_tokens
-    # Unclear how to get thinking tokens from Anthropic
-    thinking_tokens = 0
+    output_details = getattr(response.usage, "output_tokens_details", None)
+    reported_thinking = getattr(output_details, "thinking_tokens", 0) or 0
+    thinking_tokens = min(max(int(reported_thinking), 0), all_out_tokens)
+    output_tokens = all_out_tokens - thinking_tokens
     # Fall back to a zero cost (with a warning) on an unknown model instead of
     # raising, mirroring openai/local so a pricing-catalog miss never aborts a
     # completed generation.
@@ -32,7 +33,7 @@ def get_anthropic_costs(response, model):
         input_cost, output_cost = 0.0, 0.0
     return {
         "input_tokens": input_tokens,
-        "output_tokens": all_out_tokens,
+        "output_tokens": output_tokens,
         "thinking_tokens": thinking_tokens,
         "input_cost": input_cost,
         "output_cost": output_cost,
