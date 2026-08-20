@@ -41,6 +41,26 @@ def get_anthropic_costs(response, model):
     }
 
 
+def split_content_blocks(response):
+    """Split response blocks into visible text and thinking, keyed on block type.
+
+    Anthropic returns a list of typed blocks (text, thinking, redacted_thinking,
+    tool_use, ...) whose attributes differ per type, and the ordering and count
+    are not guaranteed. Unknown types are skipped.
+    """
+    text_parts = []
+    thought_parts = []
+    for block in response.content:
+        block_type = getattr(block, "type", None)
+        if block_type == "text":
+            text_parts.append(block.text)
+        elif block_type == "thinking":
+            thought_parts.append(block.thinking)
+        elif block_type == "redacted_thinking":
+            thought_parts.append(getattr(block, "data", ""))
+    return "\n".join(text_parts), "\n".join(thought_parts)
+
+
 def backoff_handler(details):
     exc = details.get("exception")
     if exc:
@@ -91,13 +111,7 @@ def query_anthropic(
             messages=new_msg_history,
             **kwargs,
         )
-        # Separate thinking from non-thinking content
-        if len(response.content) == 1:
-            thought = ""
-            content = response.content[0].text
-        else:
-            thought = response.content[0].thinking
-            content = response.content[1].text
+        content, thought = split_content_blocks(response)
     else:
         raise NotImplementedError("Structured output not supported for Anthropic.")
     new_msg_history.append(
@@ -169,13 +183,7 @@ async def query_anthropic_async(
             messages=new_msg_history,
             **kwargs,
         )
-        # Separate thinking from non-thinking content
-        if len(response.content) == 1:
-            thought = ""
-            content = response.content[0].text
-        else:
-            thought = response.content[0].thinking
-            content = response.content[1].text
+        content, thought = split_content_blocks(response)
     else:
         raise NotImplementedError("Structured output not supported for Anthropic.")
     new_msg_history.append(
