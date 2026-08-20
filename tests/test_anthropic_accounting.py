@@ -1,7 +1,9 @@
-"""Regression tests for Anthropic pricing fallback parity."""
+"""Regression tests for Anthropic pricing parity and response block parsing."""
 
 import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 import shinka.llm.providers.anthropic as anthropic_provider
 from shinka.llm.providers.anthropic import (
@@ -22,7 +24,7 @@ def _response(
         else SimpleNamespace(thinking_tokens=thinking_tokens)
     )
     return SimpleNamespace(
-        content=[SimpleNamespace(text="ok")],
+        content=[SimpleNamespace(type="text", text="ok")],
         usage=SimpleNamespace(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -107,3 +109,96 @@ def test_sync_and_async_share_thinking_accounting():
 
     assert sync_result.output_tokens == async_result.output_tokens == 13
     assert sync_result.thinking_tokens == async_result.thinking_tokens == 7
+
+
+def _blocks_response(blocks):
+    return SimpleNamespace(
+        content=[SimpleNamespace(type=name, **attrs) for name, attrs in blocks],
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=20,
+            output_tokens_details=None,
+        ),
+    )
+
+
+CONTENT_BLOCK_CASES = [
+    pytest.param([("text", {"text": "a"})], "a", "", id="text-only"),
+    pytest.param(
+        [("thinking", {"thinking": "t"}), ("text", {"text": "a"})],
+        "a",
+        "t",
+        id="thinking-then-text",
+    ),
+    pytest.param(
+        [
+            ("thinking", {"thinking": "t"}),
+            ("redacted_thinking", {"data": "e"}),
+            ("text", {"text": "a"}),
+        ],
+        "a",
+        "t\ne",
+        id="redacted-thinking-in-the-middle",
+    ),
+    pytest.param(
+        [("redacted_thinking", {"data": "e"}), ("text", {"text": "a"})],
+        "a",
+        "e",
+        id="redacted-thinking-first",
+    ),
+    pytest.param([("thinking", {"thinking": "t"})], "", "t", id="thinking-only"),
+    pytest.param(
+        [
+            ("thinking", {"thinking": "t"}),
+            ("text", {"text": "p1"}),
+            ("text", {"text": "p2"}),
+        ],
+        "p1\np2",
+        "t",
+        id="several-text-blocks",
+    ),
+    pytest.param(
+        [("text", {"text": "a"}), ("tool_use", {"id": "u1", "name": "f", "input": {}})],
+        "a",
+        "",
+        id="unhandled-block-type-is-skipped",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "blocks, expected_content, expected_thought", CONTENT_BLOCK_CASES
+)
+def test_content_blocks_are_split_by_type(blocks, expected_content, expected_thought):
+    result = query_anthropic(
+        _Client(_blocks_response(blocks)),
+        "anthropic/not-in-catalog",
+        "msg",
+        "sys",
+        [],
+        None,
+    )
+
+    assert result.content == expected_content
+    assert result.thought == expected_thought
+
+
+@pytest.mark.parametrize(
+    "blocks, expected_content, expected_thought", CONTENT_BLOCK_CASES
+)
+def test_async_content_blocks_are_split_by_type(
+    blocks, expected_content, expected_thought
+):
+    result = asyncio.run(
+        query_anthropic_async(
+            _Client(_blocks_response(blocks), asynchronous=True),
+            "anthropic/not-in-catalog",
+            "msg",
+            "sys",
+            [],
+            None,
+        )
+    )
+
+    assert result.content == expected_content
+    assert result.thought == expected_thought
