@@ -37,6 +37,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed Anthropic response parsing to dispatch by content-block type, avoiding
+  crashes and truncated output for redacted, thinking-only, and multi-block
+  responses in PR #188. Thanks @Atharva-Kanherkar.
 - Fixed Anthropic and DeepSeek token/cost accounting parity across synchronous
   and asynchronous queries, including thinking-token decomposition and safe
   zero-cost fallback for models missing from the pricing catalog. Runtime
