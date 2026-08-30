@@ -175,6 +175,29 @@ def test_fixed_sampler_persistence():
         print("✅ FixedSampler persistence test passed!")
 
 
+def test_bandit_persistence_restores_next_random_selection(tmp_path):
+    source = FixedSampler(
+        arm_names=["a", "b", "c"],
+        prior_probs=np.array([0.2, 0.3, 0.5]),
+        seed=123,
+    )
+    source.select_llm()
+    state_path = tmp_path / "bandit_state.pkl"
+    source.save_state(state_path)
+    expected_one_hot, expected_posterior = source.select_llm()
+
+    restored = FixedSampler(
+        arm_names=["a", "b", "c"],
+        prior_probs=np.array([0.2, 0.3, 0.5]),
+        seed=999,
+    )
+    restored.load_state(state_path)
+    actual_one_hot, actual_posterior = restored.select_llm()
+
+    assert np.array_equal(actual_one_hot, expected_one_hot)
+    assert np.array_equal(actual_posterior, expected_posterior)
+
+
 def test_asymmetric_ucb_loads_state_into_more_arms():
     source = AsymmetricUCB(arm_names=["a", "b", "c"], seed=0)
     source.update_submitted("a")

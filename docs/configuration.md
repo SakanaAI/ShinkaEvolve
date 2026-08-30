@@ -47,6 +47,8 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `embedding_model` | `Optional[str]` | `'text-embedding-3-small'` | Embedding model for code similarity. Also supports `local/<model>@http(s)://host[:port]/v1` for local OpenAI-compatible embedding endpoints, with optional `?api_key_env=ENV_VAR` for per-model credentials. |
 | `init_program_path` | `Optional[str]` | `'initial.py'` | Initial program path. |
 | `results_dir` | `Optional[str]` | `None` | Results directory; auto-assigned when `None`. |
+| `random_seed` | `Optional[int]` | `None` | Seed for Shinka-owned Python and NumPy random streams. |
+| `checkpoint_resume_mode` | `str` | `'if_available'` | Resume policy: `strict`, `if_available`, or `reseed`. See [Checkpointing](checkpointing.md). |
 | `enable_wandb_logging` | `bool` | `False` | Mirror evolution metrics to W&B. Existing SQLite and WebUI logging remains enabled. Install the `wandb` extra first. |
 | `wandb_project` | `Optional[str]` | `'shinka-evolve'` | W&B project used when wandb logging is enabled. |
 | `wandb_entity` | `Optional[str]` | `None` | Optional W&B entity/team. |

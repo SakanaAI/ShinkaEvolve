@@ -195,6 +195,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override ShinkaEvolveRunner max_db_workers.",
     )
 
+    checkpoint_group = parser.add_argument_group("checkpoint/resume")
+    checkpoint_group.add_argument(
+        "--random-seed",
+        type=int,
+        default=None,
+        help="Seed Shinka-owned Python and NumPy random streams.",
+    )
+    checkpoint_group.add_argument(
+        "--checkpoint-resume-mode",
+        choices=("strict", "if_available", "reseed"),
+        default=None,
+        help=(
+            "Resume policy for an existing results directory. Ctrl-C requests "
+            "a clean drain/checkpoint/exit."
+        ),
+    )
+
     output_group = parser.add_argument_group("output/verbosity")
     output_group.add_argument(
         "--verbose",
@@ -463,6 +480,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         evo_values.update(parsed_overrides["evo"])
         evo_values["results_dir"] = str(results_dir)
         evo_values["num_generations"] = args.num_generations
+        if args.random_seed is not None:
+            evo_values["random_seed"] = args.random_seed
+        if args.checkpoint_resume_mode is not None:
+            evo_values["checkpoint_resume_mode"] = args.checkpoint_resume_mode
 
         db_values = _build_default_db_values()
         db_values.update(file_overrides["db"])

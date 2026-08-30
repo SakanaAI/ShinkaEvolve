@@ -50,6 +50,8 @@ def test_shinka_run_help_is_detailed(capsys):
     assert "--config-fname" in help_output
     assert "unknown namespace/field: non-zero exit" in help_output
     assert "--results_dir always sets evo.results_dir" in help_output
+    assert "--random-seed" in help_output
+    assert "--checkpoint-resume-mode" in help_output
 
 
 def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatch):
@@ -119,6 +121,36 @@ def test_shinka_run_happy_path_with_authoritative_overrides(tmp_path, monkeypatc
     assert not hasattr(evo_config, "max_db_workers")
     assert "def run" in init_program_str
     assert "def main" in evaluate_str
+
+
+def test_shinka_run_checkpoint_flags_override_config(tmp_path, monkeypatch):
+    _reset_dummy_runner()
+    task_dir = _make_task_dir(tmp_path)
+    results_dir = tmp_path / "results_checkpoint"
+    monkeypatch.setattr(cli_run, "ShinkaEvolveRunner", _DummyRunner)
+
+    cli_run.main(
+        [
+            "--task-dir",
+            str(task_dir),
+            "--results_dir",
+            str(results_dir),
+            "--num_generations",
+            "7",
+            "--random-seed",
+            "123",
+            "--checkpoint-resume-mode",
+            "strict",
+            "--set",
+            "evo.random_seed=999",
+            "--set",
+            "evo.checkpoint_resume_mode=reseed",
+        ]
+    )
+
+    evo_config = _DummyRunner.last_kwargs["evo_config"]
+    assert evo_config.random_seed == 123
+    assert evo_config.checkpoint_resume_mode == "strict"
 
 
 @pytest.mark.parametrize("extension", [".f90", ".f95", ".f03", ".f08"])

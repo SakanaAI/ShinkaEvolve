@@ -97,7 +97,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
                     JOIN archive a ON p.id = a.program_id
                     WHERE p.island_idx = ? AND p.correct = 1
                     AND p.id NOT IN ({placeholders_rand})
-                    ORDER BY RANDOM() LIMIT ?
+                    ORDER BY shinka_random() LIMIT ?
                 """
                 params_rand = [parent_island_idx] + list(insp_ids) + [needed]
 
@@ -117,7 +117,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
                                  JOIN archive a ON p.id = a.program_id
                                  WHERE p.correct = 1
                                  AND p.id NOT IN ({placeholders_rand})
-                                 ORDER BY RANDOM() LIMIT ?
+                                 ORDER BY shinka_random() LIMIT ?
                                  """
                 params_rand = list(insp_ids) + [needed]
                 self.cursor.execute(sql_rand, params_rand)

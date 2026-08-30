@@ -322,15 +322,15 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
                 # Exclude elites from migration
                 placeholders = ",".join(["?"] * len(elite_ids))
                 selection_query += f" AND id NOT IN ({placeholders})"
-                selection_query += " ORDER BY RANDOM() LIMIT ?"
+                selection_query += " ORDER BY shinka_random() LIMIT ?"
                 params = [source_idx] + elite_ids + [num_migrants]
             else:
-                selection_query += " ORDER BY RANDOM() LIMIT ?"
+                selection_query += " ORDER BY shinka_random() LIMIT ?"
                 params = [source_idx, num_migrants]
         else:
             # Simple random selection (excluding generation 0,
             # only correct programs)
-            selection_query += " ORDER BY RANDOM() LIMIT ?"
+            selection_query += " ORDER BY shinka_random() LIMIT ?"
             params = [source_idx, num_migrants]
 
         # First check how many correct non-generation-0 programs are available
@@ -742,7 +742,7 @@ class CombinedIslandManager:
         self.cursor.execute(
             """SELECT p.* FROM programs p
                INNER JOIN archive a ON p.id = a.program_id
-               ORDER BY RANDOM() LIMIT 1"""
+               ORDER BY shinka_random() LIMIT 1"""
         )
         row = self.cursor.fetchone()
         return dict(row) if row else None

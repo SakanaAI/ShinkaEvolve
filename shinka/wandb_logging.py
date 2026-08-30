@@ -60,6 +60,8 @@ _EVOLUTION_CONFIG_FIELDS = (
     "max_patch_attempts",
     "job_type",
     "language",
+    "random_seed",
+    "checkpoint_resume_mode",
     "meta_rec_interval",
     "meta_max_recommendations",
     "sample_single_meta_rec",

@@ -12,6 +12,8 @@ import uuid
 import os
 import math
 import psutil
+import random
+import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from rich.console import Console
 from rich.table import Table
 import rich.box
+import numpy as np
 
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
 from shinka.database.async_dbase import AsyncProgramDatabase
@@ -62,6 +65,11 @@ from shinka.core.prompt_evolver import (
     AsyncSystemPromptEvolver,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.core.checkpointing import (
+    RunnerCheckpointMixin,
+    load_checkpoint,
+    restore_rng_states,
+)
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
 from shinka.pricing.catalog import (
@@ -84,6 +92,7 @@ logger = logging.getLogger(__name__)
 _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
 _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
+_CHECKPOINT_WANDB_FINISH_TIMEOUT_SECONDS = 10.0
 _WANDB_CANDIDATE_STOP = object()
 
 
@@ -235,7 +244,7 @@ def _validate_evo_config_model_env_access(evo_config: EvolutionConfig) -> None:
     )
 
 
-class ShinkaEvolveRunner:
+class ShinkaEvolveRunner(RunnerCheckpointMixin):
     """Fully async evolution runner with concurrent proposal generation."""
 
     def __init__(
@@ -270,6 +279,10 @@ class ShinkaEvolveRunner:
             evaluate_str: Optional string content for evaluate script
                 (will be saved to results dir and path updated in job_config)
         """
+        if evo_config.random_seed is not None:
+            random.seed(evo_config.random_seed)
+            np.random.seed(evo_config.random_seed)
+
         pricing_snapshot = (
             load_run_pricing_snapshot(Path(evo_config.results_dir))
             if evo_config.results_dir is not None
@@ -394,6 +407,10 @@ class ShinkaEvolveRunner:
         self.console = RichTeeConsole(Console(), Path(log_filename))
 
         # Initialize LLM selection strategy
+        llm_selection_kwargs = dict(evo_config.llm_dynamic_selection_kwargs)
+        if evo_config.random_seed is not None:
+            llm_selection_kwargs.setdefault("seed", evo_config.random_seed)
+        self._llm_selection_seed = llm_selection_kwargs.get("seed")
         if evo_config.llm_dynamic_selection is None:
             self.llm_selection = None
         elif isinstance(evo_config.llm_dynamic_selection, BanditBase):
@@ -401,19 +418,19 @@ class ShinkaEvolveRunner:
         elif evo_config.llm_dynamic_selection.lower() == "fixed":
             self.llm_selection = FixedSampler(
                 arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
+                **llm_selection_kwargs,
             )
         elif (evo_config.llm_dynamic_selection.lower() == "ucb") or (
             evo_config.llm_dynamic_selection.lower() == "ucb1"
         ):
             self.llm_selection = AsymmetricUCB(
                 arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
+                **llm_selection_kwargs,
             )
         elif evo_config.llm_dynamic_selection.lower() == "thompson":
             self.llm_selection = ThompsonSampler(
                 arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
+                **llm_selection_kwargs,
             )
         else:
             raise ValueError("Invalid llm_dynamic_selection")
@@ -542,8 +559,15 @@ class ShinkaEvolveRunner:
         self.slot_available = asyncio.Event()
         self.should_stop = asyncio.Event()
         self.finalization_complete = asyncio.Event()
+        self.pause_new_proposals = asyncio.Event()
+        self.checkpoint_requested = asyncio.Event()
+        self.checkpoint_complete = asyncio.Event()
         self.proposal_queue = asyncio.Queue()
         self.active_proposal_tasks: Dict[str, asyncio.Task] = {}
+        self._run_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._checkpoint_published = False
+        self._checkpoint_error: Optional[BaseException] = None
+        self._resume_metadata: Dict[str, Any] = {}
 
         # Performance tracking
         self.total_proposals_generated = 0
@@ -623,14 +647,17 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.warning(f"Failed to save bandit state: {e}")
 
-    def _load_bandit_state(self) -> None:
+    def _load_bandit_state(self, *, restore_rng: bool = True) -> None:
         """Load the LLM selection bandit state from disk."""
         if self.llm_selection is None:
             return
         try:
             bandit_path = Path(self.results_dir) / "bandit_state.pkl"
             if bandit_path.exists():
-                self.llm_selection.load_state(bandit_path)
+                self.llm_selection.load_state(
+                    bandit_path,
+                    restore_rng=restore_rng,
+                )
                 logger.info(f"Loaded bandit state from {bandit_path}")
                 if hasattr(self.llm_selection, "print_summary"):
                     self.llm_selection.print_summary(console=self.console)
@@ -1012,7 +1039,23 @@ class ShinkaEvolveRunner:
             if "no running event loop" not in str(exc):
                 raise
 
-        asyncio.run(self.run_async())
+        previous_sigint = None
+        signal_installed = threading.current_thread() is threading.main_thread()
+        if signal_installed:
+            previous_sigint = signal.getsignal(signal.SIGINT)
+
+            def checkpoint_on_interrupt(signum: int, frame: Any) -> None:
+                if self.checkpoint_requested.is_set():
+                    signal.default_int_handler(signum, frame)
+                    return
+                self.request_checkpoint_and_exit()
+
+            signal.signal(signal.SIGINT, checkpoint_on_interrupt)
+        try:
+            asyncio.run(self.run_async())
+        finally:
+            if signal_installed and previous_sigint is not None:
+                signal.signal(signal.SIGINT, previous_sigint)
 
     async def run_async(self):
         """Run evolution while retaining provider clients for this loop user."""
@@ -1023,6 +1066,7 @@ class ShinkaEvolveRunner:
 
     async def _run_async(self):
         """Main async evolution loop."""
+        self._run_loop = asyncio.get_running_loop()
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
@@ -1064,11 +1108,17 @@ class ShinkaEvolveRunner:
                     )
                 await self._wait_for_background_side_effects()
             await self._shutdown_background_side_effect_worker()
-            if self._prompt_percentile_recompute_task is not None:
+            while self._prompt_percentile_recompute_task is not None:
+                prompt_task = self._prompt_percentile_recompute_task
                 await asyncio.gather(
-                    self._prompt_percentile_recompute_task,
+                    prompt_task,
                     return_exceptions=True,
                 )
+
+            if self.checkpoint_requested.is_set():
+                await self._publish_clean_checkpoint()
+                logger.info("Clean checkpoint complete; exiting evolution run")
+                return
 
             # Perform final operations before cleanup
             if self.verbose:
@@ -1171,6 +1221,9 @@ class ShinkaEvolveRunner:
                 )
 
         except Exception as e:
+            if self.checkpoint_requested.is_set() and not self._checkpoint_published:
+                self._checkpoint_error = e
+                self.checkpoint_complete.set()
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
@@ -1182,6 +1235,7 @@ class ShinkaEvolveRunner:
             if tasks:  # Only gather if there are tasks
                 await asyncio.gather(*tasks, return_exceptions=True)
             await self._cleanup_async()
+            self._run_loop = None
 
         # Print final summary
         await self._print_final_summary()
@@ -1190,6 +1244,7 @@ class ShinkaEvolveRunner:
         """Setup initial program (results directory already created)."""
         # Update database path to be in results directory
         db_path = Path(f"{self.results_dir}/programs.sqlite")
+        database_preexisting = db_path.is_file()
 
         # Update database config with results directory path
         self.db_config.db_path = str(db_path)
@@ -1210,6 +1265,70 @@ class ShinkaEvolveRunner:
         if self.evo_config.evolve_prompts:
             await self._setup_prompt_evolution()
 
+        # Check if we're resuming from an existing database
+        program_count = await self.async_db.get_total_program_count_async()
+        resuming_run = database_preexisting and program_count > 0
+        checkpoint_rng_state: Optional[Dict[str, Any]] = None
+
+        if resuming_run:
+            logger.info("=" * 80)
+            logger.info("RESUMING PREVIOUS ASYNC EVOLUTION RUN")
+            logger.info("=" * 80)
+            logger.info(f"Resuming from generation {self.db.last_iteration}")
+            logger.info(f"Found {program_count} programs in database")
+
+            # Load existing API costs from database
+            existing_costs = await self._get_total_api_costs()
+            self.total_api_cost = existing_costs
+            logger.info(f"Loaded existing API costs: ${existing_costs:.4f}")
+
+            logger.info("=" * 80)
+            mode = self.evo_config.checkpoint_resume_mode
+            if mode == "reseed":
+                self._load_bandit_state(restore_rng=False)
+                await self._restore_resume_progress()
+                self._record_resume_status(
+                    deterministic_resume=False,
+                    checkpoint_id=None,
+                    detail="explicit reseed resume",
+                )
+            else:
+                try:
+                    loaded = load_checkpoint(self.results_dir)
+                    self._validate_checkpoint_payload(loaded.payload)
+                    self._restore_checkpoint_without_rng(loaded.payload)
+                    checkpoint_rng_state = loaded.payload["random_streams"]
+                    self._record_resume_status(
+                        deterministic_resume=True,
+                        checkpoint_id=loaded.payload["checkpoint_id"],
+                        detail=f"restored {loaded.path.name}",
+                    )
+                except Exception as exc:
+                    if mode == "strict":
+                        self._record_resume_status(
+                            deterministic_resume=False,
+                            checkpoint_id=None,
+                            detail=f"strict resume rejected: {exc}",
+                        )
+                        raise
+                    logger.warning(
+                        "Checkpoint unavailable or invalid; continuing with "
+                        "best-effort resume: %s",
+                        exc,
+                    )
+                    self._load_bandit_state()
+                    await self._restore_resume_progress()
+                    self._record_resume_status(
+                        deterministic_resume=False,
+                        checkpoint_id=None,
+                        detail=f"best-effort fallback: {exc}",
+                    )
+
+        if self._resume_metadata:
+            self.evo_config.wandb_config = {
+                **self.evo_config.wandb_config,
+                "checkpoint_resume": self._resume_metadata,
+            }
         if self.wandb_logger.enabled:
             await self._run_wandb_operation(
                 self.wandb_logger.start,
@@ -1219,29 +1338,22 @@ class ShinkaEvolveRunner:
                 results_dir=Path(self.results_dir),
             )
 
-        # Check if we're resuming from an existing database
-        resuming_run = db_path.exists() and self.db.last_iteration > 0
-
-        # Load bandit state if resuming
-        if resuming_run:
-            logger.info("=" * 80)
-            logger.info("RESUMING PREVIOUS ASYNC EVOLUTION RUN")
-            logger.info("=" * 80)
-            logger.info(f"Resuming from generation {self.db.last_iteration}")
-            program_count = await self.async_db.get_total_program_count_async()
-            logger.info(f"Found {program_count} programs in database")
-
-            # Load existing API costs from database
-            existing_costs = await self._get_total_api_costs()
-            self.total_api_cost = existing_costs
-            logger.info(f"Loaded existing API costs: ${existing_costs:.4f}")
-
-            logger.info("=" * 80)
-            self._load_bandit_state()
-
-            # Update state for resuming
-            await self._restore_resume_progress()
+        # Restore/reseed last so constructors, database setup, and observability
+        # initialization cannot consume the continuation stream.
+        if checkpoint_rng_state is not None:
+            restore_rng_states(
+                checkpoint_rng_state,
+                self._owned_rng_generators(),
+            )
+        elif resuming_run:
+            self._seed_random_streams(
+                force=self.evo_config.checkpoint_resume_mode == "reseed",
+                include_named=self.evo_config.checkpoint_resume_mode == "reseed",
+            )
         else:
+            self._seed_random_streams()
+
+        if not resuming_run:
             # Generate or copy initial program only if NOT resuming
             if (
                 self.evo_config.init_program_path
@@ -1285,12 +1397,12 @@ class ShinkaEvolveRunner:
         self.prompt_db = SystemPromptDatabase(prompt_config)
 
         # Check if we're resuming from existing prompt database
-        if prompt_db_path.exists() and self.prompt_db.last_generation > 0:
+        prompt_count = self.prompt_db._count_prompts_in_db()
+        if prompt_count > 0:
             logger.info(
                 f"Resuming prompt evolution from generation "
                 f"{self.prompt_db.last_generation}"
             )
-            prompt_count = self.prompt_db._count_prompts_in_db()
             logger.info(f"Found {prompt_count} prompts in database")
         else:
             # Add initial prompt to database
@@ -2235,7 +2347,11 @@ class ShinkaEvolveRunner:
                     self.slot_available.set()
 
                 # Retry any failed DB jobs
-                if self.completed_generations >= self.evo_config.num_generations:
+                checkpoint_requested = self.checkpoint_requested.is_set()
+                if (
+                    self.completed_generations >= self.evo_config.num_generations
+                    and not checkpoint_requested
+                ):
                     await self._cancel_surplus_inflight_work()
 
                 if self.failed_jobs_for_retry:
@@ -2243,6 +2359,25 @@ class ShinkaEvolveRunner:
                         await self._retry_failed_db_jobs()
                     except Exception as e:
                         logger.error(f"Error retrying failed DB jobs: {e}")
+
+                if checkpoint_requested:
+                    monitor_drained = (
+                        not self.running_jobs
+                        and not self.active_proposal_tasks
+                        and not self.failed_jobs_for_retry
+                        and self._get_completed_job_work_count() == 0
+                    )
+                    if monitor_drained:
+                        logger.info(
+                            "Checkpoint drain reached the proposal/evaluation/DB "
+                            "boundary"
+                        )
+                        self.should_stop.set()
+                        self.slot_available.set()
+                        self.finalization_complete.set()
+                        break
+                    await asyncio.sleep(0.1)
+                    continue
 
                 # Check if we've exceeded the API cost limit
                 # Use committed cost for early detection, actual cost for final check
@@ -2418,6 +2553,10 @@ class ShinkaEvolveRunner:
         """Coordinate proposal generation to keep evaluation queue full."""
         while not self.should_stop.is_set():
             try:
+                if self.pause_new_proposals.is_set():
+                    await self._wait_for_slot_or_stop(timeout=0.1)
+                    continue
+
                 # Check for stuck system before normal processing
                 if self._is_system_stuck():
                     recovery_success = await self._handle_stuck_system()
@@ -2547,6 +2686,9 @@ class ShinkaEvolveRunner:
         oversample more proposal generations than the configured budget.
         """
         for _ in range(num_proposals):
+            if self.pause_new_proposals.is_set() or self.should_stop.is_set():
+                break
+
             # Only stop if we've reached max proposal concurrency
             if len(self.active_proposal_tasks) >= self.max_proposal_jobs:
                 break
@@ -5533,7 +5675,11 @@ class ShinkaEvolveRunner:
                 )
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
-            if self.prompt_db is not None and self.db is not None:
+            if (
+                not self._checkpoint_published
+                and self.prompt_db is not None
+                and self.db is not None
+            ):
                 try:
                     # Get all correct program scores from main database
                     all_programs = self.db.get_all_programs()
@@ -5558,8 +5704,23 @@ class ShinkaEvolveRunner:
                 except Exception as e:
                     logger.warning(f"Failed to recompute prompt percentiles: {e}")
 
-            # Cleanup database
-            await self._finish_wandb_logging()
+            # Once the clean selection-state checkpoint is on disk,
+            # observability shutdown is best effort and bounded.
+            if self._checkpoint_published:
+                try:
+                    await asyncio.wait_for(
+                        self._finish_wandb_logging(),
+                        timeout=_CHECKPOINT_WANDB_FINISH_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "W&B shutdown exceeded %.1fs after checkpoint publication; "
+                        "continuing local cleanup",
+                        _CHECKPOINT_WANDB_FINISH_TIMEOUT_SECONDS,
+                    )
+                    await self._cancel_wandb_tasks_without_waiting()
+            else:
+                await self._finish_wandb_logging()
             await self.async_db.close_async()
 
             # Cleanup scheduler
@@ -5891,6 +6052,29 @@ class ShinkaEvolveRunner:
         queue.put_nowait(_WANDB_CANDIDATE_STOP)
         await worker
         self._wandb_candidate_worker_task = None
+
+    async def _cancel_wandb_tasks_without_waiting(self) -> None:
+        tasks = [
+            task
+            for task in (
+                getattr(self, "_wandb_population_task", None),
+                getattr(self, "_wandb_population_delay_task", None),
+                getattr(self, "_wandb_candidate_worker_task", None),
+            )
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._wandb_population_task = None
+        self._wandb_population_delay_task = None
+        self._wandb_candidate_worker_task = None
+
+        executor = getattr(self, "_wandb_executor", None)
+        if executor is not None:
+            self._wandb_executor = None
+            executor.shutdown(wait=False, cancel_futures=True)
 
     async def _shutdown_wandb_executor(self) -> None:
         executor = getattr(self, "_wandb_executor", None)
