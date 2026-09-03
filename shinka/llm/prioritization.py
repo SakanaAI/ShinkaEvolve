@@ -1337,13 +1337,18 @@ class ThompsonSampler(BanditBase):
         one_minus = 1.0 - factor
 
         if self.use_exponential_scaling and self.asymmetric_scaling:
+            # shrink in exp space to match original score scale. Arms that have
+            # never been updated sit at s = -inf, and np.where evaluates both
+            # branches, so the unused branch computes -inf + inf for them; the
+            # result is discarded, so silence it as AsymmetricUCB.decay does.
             s = self.s
-            log1p_term = np.where(
-                s > 0.0,
-                s + np.log(one_minus + np.exp(-s)),
-                np.log1p(one_minus * np.exp(s)),
-            )
-            self.s = s + np.log(factor) - log1p_term
+            with np.errstate(divide="ignore", invalid="ignore"):
+                log1p_term = np.where(
+                    s > 0.0,
+                    s + np.log(one_minus + np.exp(-s)),
+                    np.log1p(one_minus * np.exp(s)),
+                )
+                self.s = s + np.log(factor) - log1p_term
 
             if self.adaptive_scale and np.isfinite(self._obs_max):
                 means_log = self._mean()
