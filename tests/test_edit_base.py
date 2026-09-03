@@ -1159,3 +1159,99 @@ return result
 
     assert num_applied == 0
     assert error is not None
+
+
+def test_find_indented_match_search_block_carries_its_own_indent():
+    """Search text copied out of a nested scope keeps its own base indent.
+
+    The base indent must be re-based against the match, not added on top of
+    it, or the block is never found and the patch is silently dropped.
+    """
+    original = """class Outer:
+    class Inner:
+        def score(self, x):
+            total = 0
+            return total"""
+
+    # Same block, re-emitted one level shallower than it appears in the file.
+    search = """    def score(self, x):
+        total = 0
+        return total"""
+
+    matched, pos = _find_indented_match(search, original)
+
+    expected = """        def score(self, x):
+            total = 0
+            return total"""
+    assert matched == expected
+    assert pos != -1
+
+
+def test_find_indented_match_search_deeper_than_target():
+    """The same re-basing has to work when the search block is too deep."""
+    original = """class A:
+    def foo(self):
+        x = 1
+        return x"""
+
+    search = """        def foo(self):
+            x = 1
+            return x"""
+
+    matched, pos = _find_indented_match(search, original)
+
+    expected = """    def foo(self):
+        x = 1
+        return x"""
+    assert matched == expected
+    assert pos != -1
+
+
+def test_apply_indentation_to_replace_rebases_existing_indent():
+    """Replace text that already carries a base indent is re-based, not stacked."""
+    replace_text = """    def foo(self):
+        x = 1
+        return x"""
+
+    result = _apply_indentation_to_replace(replace_text, "        ")
+
+    expected = """        def foo(self):
+            x = 1
+            return x"""
+    assert result == expected
+
+
+def test_apply_diff_patch_reindents_nested_block():
+    """End-to-end: a re-indented search block applies at the target indent."""
+    original_content = """# EVOLVE-BLOCK-START
+class Solver:
+    class Inner:
+        def score(self, x):
+            total = 0
+            return total
+# EVOLVE-BLOCK-END
+"""
+
+    patch = """<<<<<<< SEARCH
+    def score(self, x):
+        total = 0
+        return total
+=======
+    def score(self, x):
+        total = sum(x)
+        return total
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    # The replacement lands at the file's indentation, not the patch's.
+    assert "        def score(self, x):" in updated_content
+    assert "            total = sum(x)" in updated_content

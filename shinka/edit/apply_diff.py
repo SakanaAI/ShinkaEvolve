@@ -93,18 +93,24 @@ def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int
             line_indent = len(line) - len(line.lstrip())
             indent_str = line[:line_indent]
 
-            # Apply this indentation to all lines in search_text
+            # Apply this indentation to all lines in search_text. Indentation
+            # is re-based on the first line: a search block copied out of a
+            # nested scope carries its own leading indentation, and adding
+            # that absolute indent to `indent_str` would count the base twice
+            # and the block would never be found.
+            base_indent = len(search_lines[0]) - len(search_lines[0].lstrip())
             indented_search_lines = []
             for j, search_line in enumerate(search_lines):
                 if j == 0:
                     # First line: use the found indentation
                     indented_search_lines.append(indent_str + search_line.strip())
                 else:
-                    # Other lines: preserve relative indentation
+                    # Other lines: preserve indentation relative to the first
                     search_line_indent = len(search_line) - len(search_line.lstrip())
+                    relative_indent = max(search_line_indent - base_indent, 0)
                     if search_line.strip():  # Non-empty line
                         indented_search_lines.append(
-                            indent_str + " " * search_line_indent + search_line.strip()
+                            indent_str + " " * relative_indent + search_line.strip()
                         )
                     else:  # Empty line
                         indented_search_lines.append("")
@@ -127,11 +133,24 @@ def _apply_indentation_to_replace(replace_text: str, indent_str: str) -> str:
     replace_lines = replace_text.splitlines()
     indented_replace_lines = []
 
+    # Re-base on the block's own first non-empty line so that line lands at
+    # exactly `indent_str`. Treating each line's absolute indent as relative
+    # would add the block's existing base indentation on top of the target
+    # indentation and push the whole replacement too far right.
+    base_indent = 0
+    for line in replace_lines:
+        if line.strip():
+            base_indent = len(line) - len(line.lstrip())
+            break
+
     for line in replace_lines:
         if line.strip():  # Non-empty line
             # Preserve any existing relative indentation
             line_indent = len(line) - len(line.lstrip())
-            indented_replace_lines.append(indent_str + " " * line_indent + line.strip())
+            relative_indent = max(line_indent - base_indent, 0)
+            indented_replace_lines.append(
+                indent_str + " " * relative_indent + line.strip()
+            )
         else:  # Empty line
             indented_replace_lines.append("")
 
