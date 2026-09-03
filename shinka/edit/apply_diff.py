@@ -62,6 +62,33 @@ def _strip_trailing_whitespace(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.splitlines())
 
 
+def _indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _shift_indentation(text: str, offset: int, indent_chars: str = "") -> str:
+    """Shift every non-empty line of text by a signed indentation offset.
+
+    Relative indentation between lines is preserved exactly, including lines
+    that dedent below the first line; only the final indentation is clamped at
+    column zero. The leading whitespace is drawn from ``indent_chars`` (the
+    whitespace of the line the block was matched at, so tabs stay tabs) and
+    padded with spaces beyond it. Empty lines are emitted empty.
+    """
+    shifted = []
+    for line in text.splitlines():
+        if line.strip():
+            indent = max(_indent_of(line) + offset, 0)
+            if indent <= len(indent_chars):
+                whitespace = indent_chars[:indent]
+            else:
+                whitespace = indent_chars + " " * (indent - len(indent_chars))
+            shifted.append(whitespace + line.strip())
+        else:
+            shifted.append("")
+    return "\n".join(shifted)
+
+
 def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int]:
     """
     Try to find search_text in original_text, and if not found, try to find
@@ -85,33 +112,17 @@ def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int
     if not first_search_line:
         return "", -1
 
-    # Look for the first line in the original text
-    original_lines = original_text.splitlines()
-    for i, line in enumerate(original_lines):
+    # A search block copied out of a nested scope carries its own base
+    # indentation. Measure the signed offset from that base to each candidate
+    # line in the original and shift the whole block by it, so lines that
+    # dedent below the first line keep dedenting and cannot be flattened onto
+    # a same-indent block that lives in a different scope.
+    base_indent = _indent_of(search_lines[0])
+    for line in original_text.splitlines():
         if line.strip() == first_search_line:
-            # Found a potential match, get its indentation
-            line_indent = len(line) - len(line.lstrip())
-            indent_str = line[:line_indent]
-
-            # Apply this indentation to all lines in search_text
-            indented_search_lines = []
-            for j, search_line in enumerate(search_lines):
-                if j == 0:
-                    # First line: use the found indentation
-                    indented_search_lines.append(indent_str + search_line.strip())
-                else:
-                    # Other lines: preserve relative indentation
-                    search_line_indent = len(search_line) - len(search_line.lstrip())
-                    if search_line.strip():  # Non-empty line
-                        indented_search_lines.append(
-                            indent_str + " " * search_line_indent + search_line.strip()
-                        )
-                    else:  # Empty line
-                        indented_search_lines.append("")
-
-            indented_search = "\n".join(indented_search_lines)
-
-            # Check if this indented version exists in original
+            offset = _indent_of(line) - base_indent
+            indent_chars = line[: _indent_of(line)]
+            indented_search = _shift_indentation(search_text, offset, indent_chars)
             indented_pos = original_text.find(indented_search)
             if indented_pos != -1:
                 return indented_search, indented_pos
@@ -119,23 +130,18 @@ def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int
     return "", -1
 
 
-def _apply_indentation_to_replace(replace_text: str, indent_str: str) -> str:
-    """Apply the same indentation pattern to replace text."""
+def _apply_indentation_to_replace(
+    replace_text: str, indent_offset: int, indent_chars: str = ""
+) -> str:
+    """Shift the replace text by the offset the search block was matched at.
+
+    Using the search-derived offset, rather than re-basing the replace block on
+    its own first line, keeps any intentional difference between the search
+    and replace first-line indentation.
+    """
     if not replace_text.strip():
         return replace_text
-
-    replace_lines = replace_text.splitlines()
-    indented_replace_lines = []
-
-    for line in replace_lines:
-        if line.strip():  # Non-empty line
-            # Preserve any existing relative indentation
-            line_indent = len(line) - len(line.lstrip())
-            indented_replace_lines.append(indent_str + " " * line_indent + line.strip())
-        else:  # Empty line
-            indented_replace_lines.append("")
-
-    return "\n".join(indented_replace_lines)
+    return _shift_indentation(replace_text, indent_offset, indent_chars)
 
 
 def _clean_evolve_markers(text: str) -> str:
@@ -670,15 +676,19 @@ def apply_search_replace(
             msg = _create_evolve_block_error(matched_search, pos, new_text, mutable)
             raise PatchError(msg)
 
-        # If we found an indented match, apply same indentation to replace text
+        # If we found an indented match, shift the replace text by the same
+        # signed offset the search block was shifted by
         if matched_search != search:
-            # Extract indentation from the matched search
             matched_lines = matched_search.splitlines()
-            if matched_lines:
-                first_matched_line = matched_lines[0]
-                indent_len = len(first_matched_line) - len(first_matched_line.lstrip())
-                indent_str = first_matched_line[:indent_len]
-                replace = _apply_indentation_to_replace(replace, indent_str)
+            search_lines = search.splitlines()
+            if matched_lines and search_lines:
+                indent_offset = _indent_of(matched_lines[0]) - _indent_of(
+                    search_lines[0]
+                )
+                indent_chars = matched_lines[0][: _indent_of(matched_lines[0])]
+                replace = _apply_indentation_to_replace(
+                    replace, indent_offset, indent_chars
+                )
                 logger.debug("Applied indentation correction to search/replace block")
 
         new_text = new_text.replace(matched_search, replace, 1)
