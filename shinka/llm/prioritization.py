@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Union, Sequence, List, Any, Dict
@@ -12,6 +13,8 @@ from shinka.local_openai_config import parse_local_openai_model
 
 Arm = Union[int, str]
 Subset = Optional[Union[np.ndarray, Sequence[Arm]]]
+
+logger = logging.getLogger(__name__)
 
 
 def _logadd(x_log, y_log, w1=1.0, w2=1.0):
@@ -290,6 +293,27 @@ class BanditBase(ABC):
 
         self._obs_max = float(finite_means.max()) if finite_means.size > 0 else -np.inf
         self._obs_min = float(finite_means.min()) if finite_means.size > 0 else np.inf
+
+    def _discard_invalid_linear_state(self) -> bool:
+        """Drop reward statistics that cannot have come from linear accumulation.
+
+        Before exponential scaling was tied to ``asymmetric_scaling``, a bandit
+        configured with ``asymmetric_scaling=False`` initialised ``s`` to -inf
+        and then added rewards to it linearly, so states saved by such runs
+        carry ``s = -inf`` for every arm. Loaded into linear mode those values
+        never recover, so reset the reward state to the prior and say so. The
+        reward history is not recoverable from the file.
+        """
+        if self.use_exponential_scaling or not np.any(np.isneginf(self.s)):
+            return False
+        logger.warning(
+            "Bandit state contains s = -inf in linear mode, which can only come "
+            "from a run where exponential scaling was applied with "
+            "asymmetric_scaling=False. Resetting reward statistics to the prior; "
+            "delete bandit_state.pkl to start cleanly."
+        )
+        self._reset_reward_state()
+        return True
 
 
 class AsymmetricUCB(BanditBase):
@@ -935,6 +959,20 @@ class AsymmetricUCB(BanditBase):
             "max_cost_observed": self.max_cost_observed,
         }
 
+    def _reset_reward_state(self) -> None:
+        # Only reached in linear mode, where s holds plain sums.
+        n = self.n_arms
+        self.n_submitted = np.zeros(n, dtype=np.float64)
+        self.n_completed = np.zeros(n, dtype=np.float64)
+        self.s = np.zeros(n, dtype=np.float64)
+        self.divs = np.zeros(n, dtype=np.float64)
+        if self.asymmetric_scaling:
+            self._obs_min = 0.0
+            self._obs_max = 0.0
+        else:
+            self._obs_max = -np.inf
+            self._obs_min = np.inf
+
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
         self.n_submitted = self._align_state_array(
@@ -946,7 +984,8 @@ class AsymmetricUCB(BanditBase):
         self.s = self._align_state_array(state, "s", self.s)
         self.divs = self._align_state_array(state, "divs", self.divs)
         self._baseline = state["baseline"]
-        self._restore_observation_range(state)
+        if not self._discard_invalid_linear_state():
+            self._restore_observation_range(state)
         self.n_costs = self._align_state_array(state, "n_costs", self.n_costs)
         self.total_costs = self._align_state_array(
             state, "total_costs", self.total_costs
@@ -1468,6 +1507,22 @@ class ThompsonSampler(BanditBase):
             "obs_min": self._obs_min,
         }
 
+    def _reset_reward_state(self) -> None:
+        # Only reached in linear mode, where s holds plain sums.
+        n = self.n_arms
+        self.n_submitted = np.zeros(n, dtype=np.float64)
+        self.n_completed = np.zeros(n, dtype=np.float64)
+        self.s = np.zeros(n, dtype=np.float64)
+        self.divs = np.zeros(n, dtype=np.float64)
+        self.alpha = np.full(n, self.a_prior, dtype=np.float64)
+        self.beta = np.full(n, self.b_prior, dtype=np.float64)
+        if self.asymmetric_scaling:
+            self._obs_min = 0.0
+            self._obs_max = 0.0
+        else:
+            self._obs_max = -np.inf
+            self._obs_min = np.inf
+
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
         self.n_submitted = self._align_state_array(
@@ -1481,4 +1536,5 @@ class ThompsonSampler(BanditBase):
         self.alpha = self._align_state_array(state, "alpha", self.alpha)
         self.beta = self._align_state_array(state, "beta", self.beta)
         self._baseline = state["baseline"]
-        self._restore_observation_range(state)
+        if not self._discard_invalid_linear_state():
+            self._restore_observation_range(state)
