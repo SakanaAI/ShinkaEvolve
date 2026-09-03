@@ -37,6 +37,11 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed `AsymmetricUCB` and `ThompsonSampler` with `asymmetric_scaling=False`:
+  `exponential_base` defaults to `1.0`, which initialised the reward accumulator
+  in log-space while `update()` accumulated it linearly, so every arm stayed at
+  `-inf` and model selection collapsed to uniform. Exponential scaling now only
+  activates together with asymmetric scaling.
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.

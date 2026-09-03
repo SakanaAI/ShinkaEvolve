@@ -346,7 +346,14 @@ class AsymmetricUCB(BanditBase):
         else:
             self.cost_exploration_coef = float(cost_exploration_coef)
 
-        self.use_exponential_scaling = self.exponential_base is not None
+        # Log-space accumulation needs every shifted reward to be >= 0, which
+        # only asymmetric clamping guarantees, so exponential scaling is only
+        # active together with asymmetric_scaling. Without that, `s` would be
+        # initialised in log-space (-inf) but accumulated linearly in update()
+        # and never leave -inf.
+        self.use_exponential_scaling = (
+            self.exponential_base is not None and self.asymmetric_scaling
+        )
 
         # if none, no exponential scaling
         if self.exponential_base is not None:
@@ -1134,7 +1141,14 @@ class ThompsonSampler(BanditBase):
         self.asymmetric_scaling = bool(asymmetric_scaling)
         self.exponential_base = exponential_base
 
-        self.use_exponential_scaling = self.exponential_base is not None
+        # Log-space accumulation needs every shifted reward to be >= 0, which
+        # only asymmetric clamping guarantees, so exponential scaling is only
+        # active together with asymmetric_scaling. Without that, `s` would be
+        # initialised in log-space (-inf) but accumulated linearly in update()
+        # and never leave -inf.
+        self.use_exponential_scaling = (
+            self.exponential_base is not None and self.asymmetric_scaling
+        )
 
         if self.exponential_base is not None:
             assert self.exponential_base > 0.0, "exponential_base must be > 0"
