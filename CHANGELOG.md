@@ -37,6 +37,12 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed `extract_between` treating its start/end tags as regular expressions:
+  a ```` ```c++ ```` fence compiled to a possessive quantifier that matched only
+  the `c`, and with `language: "c++"` even the canonical ```` ```cpp ```` fence
+  did the same, so full rewrites for C++ came back with a stray `++`/`pp` line
+  and no error (on Python 3.10 the tag raised `re.error` instead). Tags are now
+  matched literally.
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.
