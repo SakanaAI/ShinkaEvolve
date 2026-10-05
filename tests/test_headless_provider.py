@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sqlite3
 import stat
 import sys
 import asyncio
@@ -21,8 +22,25 @@ from shinka.llm.providers.model_resolver import resolve_model_backend
 from shinka.model_availability import validate_model_env_access
 
 
-def _make_fake_headless(tmp_path: Path) -> Path:
+def _make_fake_headless(tmp_path: Path, *, vary_outputs: bool = False) -> Path:
     script = tmp_path / "fake_headless.py"
+    score_lines = (
+        [
+            "active_generations = [int(path.parent.name.removeprefix('gen_')) "
+            "for path in work_dir.glob('gen_*/.generation_lock')]",
+            "generation = max(active_generations, default=1)",
+            "model = sys.argv[sys.argv.index('--model') + 1] "
+            "if '--model' in sys.argv else 'default'",
+            "print(f'# selected-model: {model}')",
+            "print('def score():')",
+            "print(f'    return {float(generation)!r}')",
+        ]
+        if vary_outputs
+        else [
+            "print('def score():')",
+            "print('    return 1.0')",
+        ]
+    )
     script.write_text(
         "\n".join(
             [
@@ -47,8 +65,7 @@ def _make_fake_headless(tmp_path: Path) -> Path:
                 "print('<CODE>')",
                 "print('```python')",
                 "print('# EVOLVE-BLOCK-START')",
-                "print('def score():')",
-                "print('    return 1.0')",
+                *score_lines,
                 "print('# EVOLVE-BLOCK-END')",
                 "print('```')",
                 "print('</CODE>')",
@@ -363,3 +380,126 @@ def test_shinka_run_full_headless_cli_mutation_succeeds(tmp_path, monkeypatch):
         for path in metrics_files
     )
     assert best_score == pytest.approx(1.0)
+
+
+def _checkpoint_trace(results_dir: Path) -> list[dict[str, object]]:
+    with sqlite3.connect(results_dir / "programs.sqlite") as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT id, generation, code, parent_id, archive_inspiration_ids,
+                   top_k_inspiration_ids, combined_score, correct, island_idx,
+                   metadata
+            FROM programs
+            ORDER BY generation, id
+            """
+        ).fetchall()
+
+    generation_by_id = {row["id"]: row["generation"] for row in rows}
+
+    def generations(raw_ids: str) -> list[int]:
+        return sorted(generation_by_id[item] for item in json.loads(raw_ids))
+
+    return [
+        {
+            "generation": row["generation"],
+            "code": row["code"],
+            "parent_generation": generation_by_id.get(row["parent_id"]),
+            "archive_generations": generations(row["archive_inspiration_ids"]),
+            "top_k_generations": generations(row["top_k_inspiration_ids"]),
+            "score": row["combined_score"],
+            "correct": row["correct"],
+            "island": row["island_idx"],
+            "model": json.loads(row["metadata"] or "{}").get("model_name"),
+        }
+        for row in rows
+    ]
+
+
+@pytest.mark.integration
+def test_seeded_checkpoint_resume_matches_uninterrupted_evolution(
+    tmp_path, monkeypatch
+):
+    fake_headless = _make_fake_headless(tmp_path, vary_outputs=True)
+    task_dir = _make_task_dir(tmp_path)
+    uninterrupted_dir = tmp_path / "uninterrupted"
+    resumed_dir = tmp_path / "resumed"
+    monkeypatch.setenv("SHINKA_HEADLESS_COMMAND", _fake_headless_command(fake_headless))
+    monkeypatch.setenv("SHINKA_HEADLESS_TIMEOUT", "10")
+
+    original_build_runner = cli_run._build_runner
+
+    def build_runner_with_checkpoint(**kwargs):
+        runner = original_build_runner(**kwargs)
+        checkpoint_path = Path(runner.results_dir) / "checkpoint.pkl"
+        if Path(runner.results_dir) == resumed_dir and not checkpoint_path.exists():
+            original_update = runner._update_completed_generations
+
+            async def update_and_request_checkpoint():
+                await original_update()
+                if (
+                    runner.completed_generations >= 4
+                    and not runner.checkpoint_requested.is_set()
+                ):
+                    runner.request_checkpoint_and_exit()
+                    await asyncio.sleep(0)
+
+            runner._update_completed_generations = update_and_request_checkpoint
+        return runner
+
+    monkeypatch.setattr(cli_run, "_build_runner", build_runner_with_checkpoint)
+
+    def run(results_dir: Path) -> int:
+        return cli_run.main(
+            [
+                "--task-dir",
+                str(task_dir),
+                "--results_dir",
+                str(results_dir),
+                "--num_generations",
+                "8",
+                "--random-seed",
+                "20260830",
+                "--checkpoint-resume-mode",
+                "strict",
+                "--max-evaluation-jobs",
+                "1",
+                "--max-proposal-jobs",
+                "1",
+                "--max-db-workers",
+                "1",
+                "--no-verbose",
+                "--set",
+                'evo.llm_models=["headless/codex@model-a","headless/codex@model-b"]',
+                "--set",
+                "evo.llm_dynamic_selection=fixed",
+                "--set",
+                "evo.embedding_model=null",
+                "--set",
+                'evo.patch_types=["full"]',
+                "--set",
+                "evo.patch_type_probs=[1.0]",
+                "--set",
+                "evo.max_patch_resamples=1",
+                "--set",
+                "evo.max_novelty_attempts=1",
+                "--set",
+                "evo.max_patch_attempts=1",
+                "--set",
+                "db.num_islands=1",
+                "--set",
+                "db.archive_size=4",
+            ]
+        )
+
+    assert run(uninterrupted_dir) == 0
+    assert run(resumed_dir) == 0
+    assert (resumed_dir / "checkpoint.pkl").is_file()
+    assert len(_checkpoint_trace(resumed_dir)) == 4
+
+    assert run(resumed_dir) == 0
+    resume_audit = json.loads(
+        (resumed_dir / "checkpoint_resume.json").read_text(encoding="utf-8")
+    )
+    assert resume_audit["deterministic_resume"] is True
+    assert _checkpoint_trace(resumed_dir) == _checkpoint_trace(uninterrupted_dir)

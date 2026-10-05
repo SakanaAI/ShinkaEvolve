@@ -171,6 +171,9 @@ def _build_runner(**overrides):
     runner.slot_available = overrides.get("slot_available", _FakeEvent())
     runner.should_stop = overrides.get("should_stop", _FakeEvent())
     runner.finalization_complete = overrides.get("finalization_complete", _FakeEvent())
+    runner.pause_new_proposals = overrides.get("pause_new_proposals", _FakeEvent())
+    runner.checkpoint_requested = overrides.get("checkpoint_requested", _FakeEvent())
+    runner.checkpoint_complete = overrides.get("checkpoint_complete", _FakeEvent())
     runner.max_evaluation_jobs = overrides.get("max_evaluation_jobs", 2)
     runner.max_proposal_jobs = overrides.get("max_proposal_jobs", 1)
     runner.max_db_workers = overrides.get("max_db_workers", 1)
@@ -283,6 +286,51 @@ def test_job_monitor_stops_when_target_reached_with_no_running_jobs():
 
         assert runner.should_stop.is_set() is True
         assert runner.finalization_complete.is_set() is True
+
+    asyncio.run(_run())
+
+
+def test_checkpoint_request_drains_and_stops_below_generation_target():
+    async def _run():
+        checkpoint_requested = _FakeEvent()
+        checkpoint_requested.set()
+        pause_new_proposals = _FakeEvent()
+        pause_new_proposals.set()
+        runner = _build_runner(
+            running_jobs=[],
+            active_proposal_tasks={},
+            failed_jobs_for_retry={},
+            completed_generations=3,
+            evo_config=SimpleNamespace(num_generations=50, max_api_costs=None),
+            checkpoint_requested=checkpoint_requested,
+            pause_new_proposals=pause_new_proposals,
+        )
+        runner._retry_failed_db_jobs = lambda: asyncio.sleep(0, result=None)
+
+        await runner._job_monitor_task()
+
+        assert runner.should_stop.is_set() is True
+        assert runner.finalization_complete.is_set() is True
+
+    asyncio.run(_run())
+
+
+def test_paused_admission_starts_no_new_proposals():
+    async def _run():
+        pause_new_proposals = _FakeEvent()
+        pause_new_proposals.set()
+        runner = _build_runner(
+            pause_new_proposals=pause_new_proposals,
+            active_proposal_tasks={},
+            next_generation_to_submit=1,
+            evo_config=SimpleNamespace(num_generations=10),
+        )
+
+        await runner._start_proposals(4)
+
+        assert runner.active_proposal_tasks == {}
+        assert runner.next_generation_to_submit == 1
+        assert runner.assigned_generations == set()
 
     asyncio.run(_run())
 

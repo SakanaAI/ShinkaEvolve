@@ -99,6 +99,44 @@ class BanditBase(ABC):
             raise ValueError("auto_decay must be in (0, 1]")
         self._auto_decay = auto_decay
 
+    def checkpoint_config(self) -> Dict[str, Any]:
+        """Return stable constructor identity for strict checkpoint matching."""
+        return {
+            "type": f"{type(self).__module__}.{type(self).__qualname__}",
+            "arm_names": self._state_arm_names(),
+            "n_arms": self.n_arms,
+            "auto_decay": self._auto_decay,
+            "shift_by_baseline": self._shift_by_baseline,
+            "shift_by_parent": self._shift_by_parent,
+        }
+
+    def get_rng_state(self) -> Dict[str, Any]:
+        """Return the owned NumPy Generator state."""
+        return {
+            "bit_generator": (
+                f"{type(self.rng.bit_generator).__module__}."
+                f"{type(self.rng.bit_generator).__qualname__}"
+            ),
+            "state": self.rng.bit_generator.state,
+        }
+
+    def set_rng_state(self, state: Dict[str, Any]) -> None:
+        """Restore the owned NumPy Generator state after type validation."""
+        expected = (
+            f"{type(self.rng.bit_generator).__module__}."
+            f"{type(self.rng.bit_generator).__qualname__}"
+        )
+        saved = state.get("bit_generator")
+        if saved != expected:
+            raise ValueError(
+                f"bandit BitGenerator mismatch: saved={saved}, current={expected}"
+            )
+        self.rng.bit_generator.state = state["state"]
+
+    def reseed(self, seed: Optional[int]) -> None:
+        """Start the owned generator from an explicit new seed."""
+        self.rng = np.random.default_rng(seed)
+
     @property
     def n_arms(self) -> int:
         return self._n_arms
@@ -208,10 +246,16 @@ class BanditBase(ABC):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         state = self.get_state()
+        state["_rng_state"] = self.get_rng_state()
         with open(path, "wb") as f:
             pickle.dump(state, f)
 
-    def load_state(self, path: Union[str, Path]) -> None:
+    def load_state(
+        self,
+        path: Union[str, Path],
+        *,
+        restore_rng: bool = True,
+    ) -> None:
         """Load bandit state from a pickle file."""
         path = Path(path)
         if not path.exists():
@@ -219,6 +263,9 @@ class BanditBase(ABC):
         with open(path, "rb") as f:
             state = pickle.load(f)
         self.set_state(state)
+        rng_state = state.get("_rng_state")
+        if restore_rng and rng_state is not None:
+            self.set_rng_state(rng_state)
 
     def _state_arm_names(self) -> Optional[List[str]]:
         if self._arm_names is None:

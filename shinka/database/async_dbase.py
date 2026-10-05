@@ -96,6 +96,7 @@ class AsyncProgramDatabase:
         # Use multiple workers for better concurrency with proper coordination
         if max_workers < 1:
             max_workers = 1
+        self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.write_executor = ThreadPoolExecutor(max_workers=max_workers)
         self._lock = asyncio.Lock()
@@ -1026,6 +1027,25 @@ class AsyncProgramDatabase:
             self._debug_track_end(op_id, success=False)
             logger.error(f"Error in batch_sample_async: {e}")
             raise
+
+    async def flush_async(self) -> None:
+        """Wait for scheduled maintenance and all queued DB executor work."""
+        embedding_task = self._embedding_recompute_task
+        if embedding_task is not None and not embedding_task.done():
+            await asyncio.shield(embedding_task)
+
+        loop = asyncio.get_running_loop()
+
+        async def drain_executor(executor: ThreadPoolExecutor) -> None:
+            barrier = threading.Barrier(self.max_workers)
+            markers = [
+                loop.run_in_executor(executor, barrier.wait)
+                for _ in range(self.max_workers)
+            ]
+            await asyncio.gather(*markers)
+
+        await drain_executor(self.write_executor)
+        await drain_executor(self.executor)
 
     async def close_async(self):
         """Close the async database wrapper."""
