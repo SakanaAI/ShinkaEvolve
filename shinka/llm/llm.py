@@ -880,7 +880,12 @@ def extract_between(
     Returns:
         str: The extracted text, or None if no text is found
     """
-    match = re.search(f"{start}\\s*(.*?)\\s*{end}", content, re.DOTALL)
+    # The tags are literal text, not patterns: a fence such as ```c++ must not
+    # compile to a possessive quantifier that matches "c" and leaves "++" in
+    # the extracted code.
+    match = re.search(
+        f"{re.escape(start)}\\s*(.*?)\\s*{re.escape(end)}", content, re.DOTALL
+    )
     if match:
         matched_str = match.group(1).strip()
         if return_dict:
