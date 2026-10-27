@@ -189,10 +189,26 @@ class DatabaseDisplay:
         best_score = 0.0  # Initialize best_score
         num_with_scores = 0
         all_scores = []
+        stored_generations = set()
+        island_copies = 0
+        seed_programs = 0
+        evolved_programs = 0
+        correct_evolved = 0
         if self.cursor:  # Ensure cursor is not None
-            query = "SELECT metadata, combined_score, correct FROM programs"
+            query = "SELECT metadata, combined_score, correct, generation FROM programs"
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
+                metadata = json.loads(row["metadata"] or "{}")
+                is_copy = bool(metadata.get("_is_island_copy") or metadata.get("_spawned_island"))
+                if is_copy:
+                    island_copies += 1
+                else:
+                    stored_generations.add(row["generation"])
+                    if row["generation"] == 0:
+                        seed_programs += 1
+                    elif metadata.get("node_kind") != "failed_proposal":
+                        evolved_programs += 1
+                        correct_evolved += bool(row["correct"])
                 if row["metadata"]:
                     metadata = json.loads(row["metadata"] or "{}")
                     if "api_costs" in metadata:
@@ -237,11 +253,13 @@ class DatabaseDisplay:
         # Gather data for summary
         total_programs = self.count_programs_func()
         total_programs_display = f"[bold]{total_programs}[/bold]"
+        summary_table.add_row("Total DB Rows", total_programs_display)
         if total_program_target is not None:
-            total_programs_display = (
-                f"[bold]{total_programs}[/bold] / {total_program_target}"
-            )
-        summary_table.add_row("Total Programs", total_programs_display)
+            summary_table.add_row("Stored Generations", f"{len(stored_generations)} / {total_program_target}")
+        summary_table.add_row("Seed Programs", str(seed_programs))
+        summary_table.add_row("Island Copies", str(island_copies))
+        summary_table.add_row("Evolved Programs", str(evolved_programs))
+        summary_table.add_row("Correct Evolved", f"{correct_evolved} / {evolved_programs}")
 
         # Correctness info
         self.cursor.execute("SELECT COUNT(*) FROM programs WHERE correct = 1")
@@ -250,7 +268,7 @@ class DatabaseDisplay:
             (correct_programs / total_programs * 100) if total_programs > 0 else 0
         )
         summary_table.add_row(
-            "Correct Programs",
+            "Correct DB Rows",
             f"[bold]{correct_programs}[/bold] / {total_programs} "
             f"({correct_percentage:.0f}%)",
         )

@@ -37,6 +37,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Local OpenAI-compatible endpoints fail without proposal retries on HTTP 401/403/404, with a typed endpoint failure preserved in `failure.json`.
+- `shinka_run` exits 1 when evolution was requested but no evolved program was produced. Seed-only runs (one generation) and partial runs with evaluated candidates keep exit 0.
+- The final database summary separates stored generation progress, seed programs, island copies, and evolved programs; row correctness is labeled as including copies.
+
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.
