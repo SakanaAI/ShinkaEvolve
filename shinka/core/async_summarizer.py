@@ -251,9 +251,9 @@ class AsyncMetaSummarizer:
             system_msg=META_STEP2_SYSTEM_MSG,
         )
 
-        if response is None:
+        if response is None or not response.content:
             logger.error("Step 2: Failed to get response from async meta LLM client")
-            return None, 0.0
+            return None, (response.cost or 0.0) if response else 0.0
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 2 - Global insights generated (cost: ${cost:.4f})")
@@ -292,9 +292,9 @@ class AsyncMetaSummarizer:
             system_msg=META_STEP3_SYSTEM_MSG,
         )
 
-        if response is None:
+        if response is None or not response.content:
             logger.error("Step 3: Failed to get response from async meta LLM client")
-            return None, 0.0
+            return None, (response.cost or 0.0) if response else 0.0
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 3 - Recommendations generated (cost: ${cost:.4f})")

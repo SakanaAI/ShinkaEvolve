@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 class QueryResult:
     def __init__(
         self,
-        content: str,
+        content: Optional[str],
         msg: str,
         system_msg: str,
         new_msg_history: List[Dict],
@@ -77,7 +77,7 @@ class QueryResult:
             lines.append(self.thought)
             lines.append("-" * 80)
         lines.append("Content:")
-        lines.append(self.content)
+        lines.append(self.content or "")
         if self.model_posteriors:
             lines.append("-" * 80)
             lines.append("Model Posteriors:")

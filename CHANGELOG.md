@@ -37,6 +37,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed OpenAI replies that are billed but contain no text (for example when a
+  reasoning model spends all of `max_output_tokens` on reasoning) being left out
+  of `max_api_costs`. Their cost now reaches the runner, and a reply cut off by
+  `max_output_tokens` is no longer resent unchanged (#210).
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.

@@ -1,11 +1,14 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
+from shinka.llm.providers.errors import EmptyResponseError
 from shinka.llm.providers.openai import (
     _retry_after_seconds,
     get_openai_costs,
     query_openai,
+    query_openai_async,
 )
 
 
@@ -199,6 +202,69 @@ def test_query_openai_raises_clear_error_when_response_has_no_text():
             None,
             max_output_tokens=8192,
         )
+
+
+def _out_of_tokens_response():
+    response = SimpleNamespace(
+        output=[SimpleNamespace(type="reasoning", summary=[])],
+        output_text="",
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        usage=_usage(
+            input_tokens=1000,
+            output_tokens=65536,
+            reasoning_tokens=65536,
+            cost_details={
+                "upstream_inference_input_cost": 0.25,
+                "upstream_inference_output_cost": 3.3,
+            },
+        ),
+    )
+    return response
+
+
+def test_query_openai_keeps_cost_of_reply_without_text():
+    with pytest.raises(EmptyResponseError) as exc_info:
+        query_openai(
+            _FakeOpenAIClient(_out_of_tokens_response()),
+            "gpt-5-mini",
+            "problem",
+            "system",
+            [],
+            None,
+            max_output_tokens=65536,
+        )
+
+    exc = exc_info.value
+    assert exc.incomplete_reason == "max_output_tokens"
+    assert exc.hit_output_limit
+    assert exc.cost == pytest.approx(3.55)
+    assert exc.cost_results["thinking_tokens"] == 65536
+    assert "raise max_tokens" in str(exc)
+
+
+def test_query_openai_async_keeps_cost_of_reply_without_text():
+    response = _out_of_tokens_response()
+
+    async def create(**kwargs):
+        return response
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    with pytest.raises(EmptyResponseError) as exc_info:
+        asyncio.run(
+            query_openai_async(
+                client,
+                "gpt-5-mini",
+                "problem",
+                "system",
+                [],
+                None,
+                max_output_tokens=65536,
+            )
+        )
+
+    assert exc_info.value.cost == pytest.approx(3.55)
 
 
 def test_query_openai_does_not_treat_reasoning_text_as_output():

@@ -1891,6 +1891,9 @@ class ShinkaEvolveRunner:
                 model_sample_probs=model_sample_probs,
                 model_posterior=model_posterior,
             )
+            # A reply without content can still be billed.
+            if response is not None:
+                total_costs += response.cost or 0.0
 
             if response is None or response.content is None:
                 error_msg = "LLM response content was None."
@@ -1922,8 +1925,6 @@ class ShinkaEvolveRunner:
                     continue
                 else:
                     break
-
-            total_costs += response.cost or 0.0
 
             # Extract code using language-specific markers
             initial_code = extract_between(
@@ -3459,6 +3460,9 @@ class ShinkaEvolveRunner:
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
+                # A reply without content can still be billed.
+                if response is not None:
+                    total_costs += response.cost or 0.0
 
                 if not response or not response.content:
                     error_str = "LLM response content was None."
@@ -3482,8 +3486,6 @@ class ShinkaEvolveRunner:
                         continue
                     else:
                         break
-
-                total_costs += response.cost if response.cost else 0.0
 
                 patch_name = extract_between(
                     response.content, "<NAME>", "</NAME>", False
@@ -3683,6 +3685,9 @@ class ShinkaEvolveRunner:
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
+                # A reply without content can still be billed.
+                if response is not None:
+                    total_costs += response.cost or 0.0
 
                 if not response or not response.content:
                     error_str = "LLM response content was None."
@@ -3707,8 +3712,6 @@ class ShinkaEvolveRunner:
                         continue
                     else:
                         break
-
-                total_costs += response.cost if response.cost else 0.0
 
                 # Extract patch name and description from LLM response
                 patch_name = extract_between(

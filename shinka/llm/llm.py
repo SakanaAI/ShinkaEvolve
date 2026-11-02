@@ -9,11 +9,81 @@ import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
-from .providers.errors import NonRetryableLLMError, StructuredOutputNotSupportedError
+from .providers.errors import (
+    EmptyResponseError,
+    NonRetryableLLMError,
+    StructuredOutputNotSupportedError,
+)
 from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
+
+_COST_FIELDS = ("cost", "input_cost", "output_cost")
+_TOKEN_FIELDS = ("input_tokens", "output_tokens", "thinking_tokens")
+
+
+class _UnansweredReplies:
+    """Costs of billed replies that had no text, across the tries of one query."""
+
+    def __init__(self) -> None:
+        self.totals = dict.fromkeys(_COST_FIELDS + _TOKEN_FIELDS, 0.0)
+        self.count = 0
+
+    def record(self, exc: EmptyResponseError) -> None:
+        self.count += 1
+        for field in self.totals:
+            self.totals[field] += exc.cost_results.get(field, 0) or 0
+
+    def add_costs_to(self, result: Optional[QueryResult]) -> None:
+        """Charge earlier unanswered replies to the reply that finally answered."""
+        if not self.count or result is None:
+            return
+        for field in _COST_FIELDS:
+            setattr(result, field, (getattr(result, field) or 0.0) + self.totals[field])
+
+    def as_result(
+        self,
+        msg: str,
+        system_msg: str,
+        msg_history: List[Dict],
+        llm_kwargs: Dict,
+        model_posteriors: Optional[Dict[str, float]],
+    ) -> Optional[QueryResult]:
+        """Result without content that still carries what was billed."""
+        if not self.count:
+            return None
+        return QueryResult(
+            content=None,
+            msg=msg,
+            system_msg=system_msg,
+            new_msg_history=msg_history + [{"role": "user", "content": msg}],
+            model_name=llm_kwargs.get("model_name", "<unknown>"),
+            kwargs=llm_kwargs,
+            input_tokens=int(self.totals["input_tokens"]),
+            output_tokens=int(self.totals["output_tokens"]),
+            thinking_tokens=int(self.totals["thinking_tokens"]),
+            cost=self.totals["cost"],
+            input_cost=self.totals["input_cost"],
+            output_cost=self.totals["output_cost"],
+            model_posteriors=model_posteriors,
+            num_total_queries=self.count,
+        )
+
+
+def _stop_after_empty_reply(exc: Exception, unanswered: _UnansweredReplies) -> bool:
+    """Record a billed reply without text; True if retrying would not help."""
+    if not isinstance(exc, EmptyResponseError):
+        return False
+    unanswered.record(exc)
+    if exc.hit_output_limit:
+        logger.warning(
+            "Not retrying: the reply ran out of output tokens before any text "
+            "(billed $%.4f). Raise max_tokens or lower the reasoning effort.",
+            exc.cost,
+        )
+        return True
+    return False
 
 
 def _validate_structured_output_models(
@@ -347,6 +417,7 @@ class LLMClient:
             model_posteriors = dict(zip(self.model_names, model_posterior))
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
+        unanswered = _UnansweredReplies()
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
@@ -358,6 +429,7 @@ class LLMClient:
                     model_posteriors=model_posteriors,
                     **llm_kwargs,
                 )
+                unanswered.add_costs_to(result)
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
@@ -369,10 +441,14 @@ class LLMClient:
                     f"{try_count + 1}/{MAX_RETRIES} Error in query "
                     f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
                 )
+                if _stop_after_empty_reply(e, unanswered):
+                    break
                 try_count += 1
                 if try_count < MAX_RETRIES:
                     time.sleep(1)
-        return None
+        return unanswered.as_result(
+            msg, system_msg, msg_history, llm_kwargs, model_posteriors
+        )
 
 
 class AsyncLLMClient:
@@ -656,6 +732,7 @@ class AsyncLLMClient:
             model_posteriors = dict(zip(self.model_names, model_posterior))
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
+        unanswered = _UnansweredReplies()
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
@@ -667,6 +744,7 @@ class AsyncLLMClient:
                     model_posteriors=model_posteriors,
                     **llm_kwargs,
                 )
+                unanswered.add_costs_to(result)
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
@@ -674,10 +752,14 @@ class AsyncLLMClient:
                 raise
             except Exception as e:
                 logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                if _stop_after_empty_reply(e, unanswered):
+                    break
                 try_count += 1
                 if try_count < MAX_RETRIES:
                     await asyncio.sleep(1)
-        return None
+        return unanswered.as_result(
+            msg, system_msg, msg_history, llm_kwargs, model_posteriors
+        )
 
     async def _query_async_with_retry(
         self,
