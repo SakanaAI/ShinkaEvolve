@@ -206,3 +206,72 @@ def test_invalid_worker_configuration_raises(tmp_path: Path) -> None:
             run_workers=1,
             max_workers_cap=0,
         )
+
+
+def test_run_shinka_eval_loads_dataclass_with_postponed_annotations(
+    tmp_path: Path,
+) -> None:
+    program_path = _write_program(
+        tmp_path,
+        """
+        from __future__ import annotations
+
+        from dataclasses import dataclass
+
+
+        @dataclass
+        class Config:
+            scale: int = 3
+
+
+        def run_experiment(seed):
+            return float(Config().scale * seed)
+        """,
+    )
+
+    metrics, correct, error_msg = run_shinka_eval(
+        program_path=program_path,
+        results_dir=_results_dir(tmp_path, "postponed_annotations"),
+        experiment_fn_name="run_experiment",
+        num_runs=2,
+        aggregate_metrics_fn=lambda results: {"combined_score": sum(results)},
+    )
+
+    assert error_msg is None
+    assert correct is True
+    assert metrics["combined_score"] == 9.0
+
+
+def test_run_shinka_eval_parallel_returns_program_defined_types(
+    tmp_path: Path,
+) -> None:
+    program_path = _write_program(
+        tmp_path,
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass
+        class RunResult:
+            score: float
+
+
+        def run_experiment(seed):
+            return RunResult(score=float(seed))
+        """,
+    )
+
+    metrics, correct, error_msg = run_shinka_eval(
+        program_path=program_path,
+        results_dir=_results_dir(tmp_path, "program_types"),
+        experiment_fn_name="run_experiment",
+        num_runs=3,
+        aggregate_metrics_fn=lambda results: {
+            "combined_score": sum(result.score for result in results)
+        },
+        run_workers=2,
+    )
+
+    assert error_msg is None
+    assert correct is True
+    assert metrics["combined_score"] == 6.0
