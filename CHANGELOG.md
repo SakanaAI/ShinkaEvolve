@@ -6,6 +6,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added current OpenAI GPT-6, Claude 5.5/Fable 5.1, and Gemini 4 Argon/3.8
+  Flash/3.5 Flash-Lite models to the bundled offline catalog, with provider-specific
+  reasoning and thinking controls.
 - Added native Google Gemini 3.7 Flash support at its introductory 2026 price.
 - Added native Google Gemini 3.6 Flash support with current pricing and
   level-based thinking controls. Thanks @anantgar.
