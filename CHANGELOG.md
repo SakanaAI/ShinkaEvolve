@@ -48,6 +48,11 @@ All notable changes to `shinka-evolve` are documented in this file.
 - `shinka_run` exits 1 when evolution was requested but no evolved program was produced. Seed-only runs (one generation) and partial runs with evaluated candidates keep exit 0.
 - The final database summary separates stored generation progress, seed programs, island copies, and evolved programs; row correctness is labeled as including copies.
 
+- Fixed the per-job timeout (`LocalJobConfig.time`) being measured from the start of
+  the LLM proposal instead of the evaluation. With slow proposers such as headless
+  agents (minutes per proposal), candidates were killed the moment their evaluation
+  launched (score 0, empty job log), while fast proposers' candidates survived.
+  Fixed in PR #198. Thanks @fortunto2.
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.

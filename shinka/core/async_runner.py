@@ -144,6 +144,21 @@ class RichTeeConsole:
             logger.debug(f"Failed to mirror rich output to log file: {e}")
 
 
+def evaluation_clock_start(
+    proposal_started_at: float,
+    evaluation_submitted_at: Optional[float],
+    evaluation_started_at: Optional[float],
+) -> float:
+    """Reference time for the per-job timeout (``LocalJobConfig.time``).
+
+    The scheduler kills a job once ``now - start_time`` exceeds ``job.time``. That
+    budget is meant for the evaluation, so it must not include the LLM proposal that
+    produced the candidate: with slow proposers (e.g. headless agents taking minutes)
+    the candidate would be killed the moment its evaluation launched.
+    """
+    return evaluation_started_at or evaluation_submitted_at or proposal_started_at
+
+
 @dataclass
 class AsyncRunningJob:
     """Async version of RunningJob with additional async metadata."""
@@ -2952,7 +2967,11 @@ class ShinkaEvolveRunner:
                     job_id=job_id,
                     exec_fname=exec_fname,
                     results_dir=results_dir,
-                    start_time=proposal_started_at,
+                    start_time=evaluation_clock_start(
+                        proposal_started_at,
+                        evaluation_submitted_at,
+                        evaluation_started_at,
+                    ),
                     proposal_started_at=proposal_started_at,
                     evaluation_submitted_at=evaluation_submitted_at,
                     generation=generation,
