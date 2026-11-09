@@ -14,6 +14,15 @@ from rich.table import Table as RichTable  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+# Cost fields that cost totals sum over every program row.
+_COST_KEYS = ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
+
+
+def _zero_copy_costs(metadata: Dict[str, Any]) -> None:
+    """Zero the costs of an island copy: making a copy calls no API."""
+    for key in _COST_KEYS:
+        metadata[key] = 0.0
+
 
 class IslandStrategy(ABC):
     """Abstract base class for island strategies."""
@@ -628,6 +637,7 @@ class CombinedIslandManager:
             # Add metadata to indicate this is a copy
             copy_metadata["_is_island_copy"] = True
             copy_metadata["_original_program_id"] = program.id
+            _zero_copy_costs(copy_metadata)
             # Serialize JSON data
             public_metrics_json = json.dumps(program.public_metrics or {})
             private_metrics_json = json.dumps(program.private_metrics or {})
@@ -821,6 +831,7 @@ class CombinedIslandManager:
         metadata["_spawn_strategy"] = strategy
         if not is_root:
             metadata["_spawned_as_child"] = True
+        _zero_copy_costs(metadata)
 
         # Serialize JSON data
         public_metrics_json = source_program.get("public_metrics") or "{}"
