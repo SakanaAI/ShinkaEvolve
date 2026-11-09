@@ -47,10 +47,11 @@ def build_gemini_thinking_config(thinking_budget: int):
 
 
 def build_gemini_thinking_level_config(thinking_level: str | None):
-    """Build level-based thinking config for current Gemini Flash models."""
+    """Build level-based thinking config for current Gemini models."""
     config_kwargs: dict[str, object] = {"include_thoughts": True}
     if thinking_level is not None:
         valid_levels = {
+            "MINIMAL": types.ThinkingLevel.MINIMAL,
             "LOW": types.ThinkingLevel.LOW,
             "MEDIUM": types.ThinkingLevel.MEDIUM,
             "HIGH": types.ThinkingLevel.HIGH,
@@ -58,7 +59,9 @@ def build_gemini_thinking_level_config(thinking_level: str | None):
         try:
             config_kwargs["thinking_level"] = valid_levels[thinking_level.upper()]
         except KeyError as exc:
-            raise ValueError(f"Unsupported Gemini thinking level: {thinking_level}") from exc
+            raise NonRetryableLLMError(
+                f"Unsupported Gemini thinking level: {thinking_level}"
+            ) from exc
 
     thinking_config_cls = cast(Any, types.ThinkingConfig)
     return thinking_config_cls(**config_kwargs)
@@ -90,6 +93,14 @@ def build_gemini_generation_config(
     thinking_level: str | None,
 ):
     """Build a model-compatible config for sync and async requests."""
+    if (
+        model in {"gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"}
+        and thinking_level is not None
+        and thinking_level.upper() == "MINIMAL"
+    ):
+        raise NonRetryableLLMError(
+            f"MINIMAL thinking level is not supported by {model}; use LOW, MEDIUM, or HIGH."
+        )
     config_kwargs: dict[str, object] = {
         "max_output_tokens": int(max_tokens),
         "system_instruction": system_instruction,
@@ -228,9 +239,7 @@ def query_gemini(
     Based on: https://ai.google.dev/gemini-api/docs/text-generation
     """
     if output_model is not None:
-        raise GeminiStructuredOutputError(
-            "Gemini does not support structured output."
-        )
+        raise GeminiStructuredOutputError("Gemini does not support structured output.")
 
     # Build structured contents
     contents = gemini_build_contents(msg_history, msg)
@@ -308,9 +317,7 @@ async def query_gemini_async(
     Based on: https://ai.google.dev/gemini-api/docs/text-generation
     """
     if output_model is not None:
-        raise GeminiStructuredOutputError(
-            "Gemini does not support structured output."
-        )
+        raise GeminiStructuredOutputError("Gemini does not support structured output.")
 
     # Build structured contents
     contents = gemini_build_contents(msg_history, msg)
