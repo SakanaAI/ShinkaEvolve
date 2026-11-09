@@ -1889,6 +1889,7 @@ class ShinkaEvolveRunner:
             response = await self.llm.query(
                 msg=user_msg,
                 system_msg=sys_msg,
+                llm_kwargs=llm_kwargs,
                 model_sample_probs=model_sample_probs,
                 model_posterior=model_posterior,
             )
@@ -3465,6 +3466,7 @@ class ShinkaEvolveRunner:
                     msg=patch_msg,
                     system_msg=patch_sys,
                     msg_history=msg_history,
+                    llm_kwargs=llm_kwargs,
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
@@ -3697,6 +3699,7 @@ class ShinkaEvolveRunner:
                     msg=patch_msg,
                     system_msg=patch_sys,
                     msg_history=msg_history,
+                    llm_kwargs=llm_kwargs,
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
