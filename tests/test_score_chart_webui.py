@@ -19,9 +19,10 @@ def test_webui_tree_render_cache_does_not_drop_pending_node_selection():
     assert "if (!forceRender && !window.pendingNodeSelectionId && currentHash === lastRenderedDataHash" in html
 
 
-def test_webui_score_charts_draw_cumulative_max_as_marked_step_line():
+def test_webui_score_charts_hold_previous_max_until_improvement_is_evaluated():
     html = VIZ_TREE_HTML.read_text(encoding="utf-8")
 
-    assert "stepped: 'after'," in html
+    # Chart.js 'before' holds the previous score until the next point's x value.
+    assert "stepped: 'before'," in html
     assert "const isCumulativeMaxImprovement = (ctx) => {" in html
     assert html.count("...cumulativeMaxStepStyle") == 3
