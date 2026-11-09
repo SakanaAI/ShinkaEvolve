@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Tuple
 from collections import defaultdict
 import rich.box  # type: ignore
 import rich  # type: ignore
@@ -230,6 +230,10 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         migrations_summary = defaultdict(lambda: defaultdict(list))
         # Track all programs selected for migration
         all_migrated_programs = set()
+        # Select every island's migrants before moving any, so island sizes and
+        # candidates come from the pre-migration populations rather than
+        # including programs that just arrived from an earlier island
+        planned_migrations: List[Tuple[str, int]] = []
 
         # For each island, select migrants to move
         for source_idx in range(num_islands):
@@ -266,13 +270,15 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
                         "migration, skipping duplicate"
                     )
 
-            # Move each unique migrant to a new island
             for migrant_id in unique_migrants:
-                dest_idx = random.choice(dest_islands)
-                self._migrate_program(
-                    migrant_id, source_idx, dest_idx, current_generation
-                )
-                migrations_summary[source_idx][dest_idx].append(migrant_id)
+                planned_migrations.append((migrant_id, source_idx))
+
+        # Move each unique migrant to a new island
+        for migrant_id, source_idx in planned_migrations:
+            dest_islands = [i for i in range(num_islands) if i != source_idx]
+            dest_idx = random.choice(dest_islands)
+            self._migrate_program(migrant_id, source_idx, dest_idx, current_generation)
+            migrations_summary[source_idx][dest_idx].append(migrant_id)
 
         self.conn.commit()
 
