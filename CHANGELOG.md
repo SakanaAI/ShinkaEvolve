@@ -37,6 +37,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed proposal metadata and LLM request settings diverging by reusing each
+  proposal's sampled kwargs in PR #213. Thanks @yuiandyuki.
+- Fixed evaluated-program imports for dataclasses with postponed annotations
+  and pickling program-defined result types in PR #212. Thanks @yuiandyuki.
 - Fixed scores for invalid circle packings in PR #205 (issue #197), while
   retaining raw packing data and validation diagnostics. Thanks @Yushu-Li
   and @iamgahr.
