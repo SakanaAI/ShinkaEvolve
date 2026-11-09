@@ -24,9 +24,54 @@ keep offline runs working; resumes reuse their recorded run snapshot. Use
 ```yaml
 evo_config:
   llm_models:
-    - gpt-5-mini
-    - claude-sonnet-4-6
+    - gpt-6.1-sol
+    - claude-sonnet-5-5
 ```
+
+The packaged offline catalog includes these current text models:
+
+| Provider | Model IDs | Reference |
+|----------|-----------|-----------|
+| OpenAI | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` | [OpenAI models](https://developers.openai.com/api/docs/models) |
+| Anthropic | `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | [Claude models](https://platform.claude.com/docs/en/models/overview) |
+| Google | `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash-lite` | [Gemini models](https://ai.google.dev/gemini-api/docs/models) |
+
+Live discovery can add models before the packaged snapshot is updated. Discovery
+provides pricing and routing metadata; model-specific request settings still
+need provider support in Shinka.
+
+For a new run, opt into a current OpenAI and Google mutation pool explicitly:
+
+```yaml
+evo_config:
+  llm_models:
+    - gpt-6-luna
+    - gemini-3.8-flash
+    - gemini-4-argon
+    - gpt-6.1-sol
+```
+
+Existing defaults are retained pending a representative benchmark of the new
+pool. To use Claude, set `ANTHROPIC_API_KEY` and explicitly include a Claude model
+in your pool. When resuming with a frozen `pricing_snapshot.json`, preserve the
+original model pool: the recorded catalog may not contain newly added IDs.
+
+Shinka translates `llm_kwargs.reasoning_efforts` into each model's supported
+reasoning or thinking controls. GPT-6 Astra and GPT-6.1 Sol require reasoning;
+Shinka uses low effort when reasoning is disabled for those models. Claude
+Fable 5.1 and Opus 5.5 use adaptive
+thinking that is always on; disabling reasoning in Shinka cannot turn it off
+for those models. Thinking tokens contribute to billed output, so use a suitable
+token limit and run budget when comparing models.
+
+Gemini 4 Argon's bundled price is introductory through November 30, 2026;
+refresh pricing for runs after that date. Its synchronous output limit is
+65,536 tokens; larger outputs require Google's background API, which Shinka
+does not currently use. See the [Argon guide](https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-argon).
+
+Older IDs removed from `models.dev` retain explicitly labeled historical prices
+in the overlay so their bundled snapshots remain reproducible. A retained ID
+does not guarantee that the provider still serves it.
 
 ### 2) Dynamic OpenRouter models
 

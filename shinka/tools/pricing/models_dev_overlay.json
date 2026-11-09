@@ -83,6 +83,26 @@
   ],
   "llm_overrides": [
     {
+      "provider": "openai",
+      "model_name": "gpt-6-astra",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "openai",
+      "model_name": "gpt-6.1-sol",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-fable-5-1",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "anthropic",
+      "model_name": "claude-opus-5-5",
+      "requires_reasoning": true
+    },
+    {
       "provider": "google",
       "model_name": "gemini-3.7-flash",
       "input_price": 0.75,
@@ -264,21 +284,41 @@
     {
       "provider": "openai",
       "model_name": "gpt-5.1-codex",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 1.25,
+      "output_price": 10.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true,
       "requires_reasoning": true
     },
     {
       "provider": "openai",
       "model_name": "gpt-5.1-codex-max",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 1.25,
+      "output_price": 10.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true,
       "requires_reasoning": true
     },
     {
       "provider": "openai",
       "model_name": "gpt-5.1-codex-mini",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 0.25,
+      "output_price": 2.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true,
       "requires_reasoning": true
     },
     {
       "provider": "openai",
       "model_name": "gpt-5.2-codex",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 1.75,
+      "output_price": 14.0,
+      "is_reasoning": true,
+      "think_temp_fixed": true,
       "requires_reasoning": true
     },
     {
@@ -356,6 +396,36 @@
       "provider": "openrouter",
       "model_name": "moonshotai/kimi-k2-thinking",
       "requires_reasoning": true
+    },
+    {
+      "provider": "deepseek",
+      "model_name": "deepseek-chat",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 0.14,
+      "output_price": 0.28,
+      "is_reasoning": false,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "deepseek",
+      "model_name": "deepseek-reasoner",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 0.14,
+      "output_price": 0.28,
+      "is_reasoning": true,
+      "think_temp_fixed": false
+    },
+    {
+      "provider": "google",
+      "model_name": "gemini-3-pro-preview",
+      "source": "Historical bundled prices at 43bef4a; absent from models.dev as of 2026-11-09.",
+      "input_price": 2.0,
+      "output_price": 12.0,
+      "input_price_tier2": 4.0,
+      "output_price_tier2": 18.0,
+      "tier_threshold": 200000,
+      "is_reasoning": true,
+      "think_temp_fixed": false
     }
   ],
   "embedding_overrides": [

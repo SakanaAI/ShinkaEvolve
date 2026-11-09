@@ -6,9 +6,12 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
-- Added native Google Gemini 3.7 Flash support at its introductory 2026 price.
-- Added native Google Gemini 3.6 Flash support with current pricing and
-  level-based thinking controls. Thanks @anantgar.
+- Expanded the bundled model catalog with OpenAI GPT-6, Claude 5.5/Fable 5.1,
+  Gemini 4 Argon, Gemini 3.5 Flash-Lite and 3.6–3.8 Flash, and DeepSeek V4 Flash
+  and V4 Pro. Added provider-specific reasoning and thinking controls, refreshed
+  pricing, and historical-price overlays for upstream-removed IDs in PR #214.
+  Gemini 3.7 Flash and Gemini 4 Argon use introductory 2026 pricing. Existing
+  default model pools remain unchanged. Thanks @anantgar for Gemini 3.6 support.
 - Added optional Weights & Biases logging with resumable run IDs, per-individual
   scores, timing and cost metrics, and final run summaries in PR #149. PR #177
   adds monotonic population/island snapshots and a secured metadata boundary.
@@ -20,8 +23,11 @@ All notable changes to `shinka-evolve` are documented in this file.
   validated offline fallback, provider-qualified model discovery, and per-run
   pricing snapshots in PR #141. The tutorial now includes a no-cost catalog
   preflight. Thanks @rodmarkun.
-- Added DeepSeek V4 Flash and V4 Pro pricing entries to the DeepSeek LLM pricing catalog.
-- Added controls to reduce evaluation stdout bloat: `JobConfig.eval_verbose` suppresses framework evaluation progress output, and `DatabaseConfig.max_stdout_log_chars` can persist only the tail of `stdout_log` metadata while keeping full logs on disk. Thanks @marcopirazzini.
+- Added evaluation output controls: `JobConfig.eval_verbose` suppresses framework
+  progress output, and `DatabaseConfig.max_stdout_log_chars` limits persisted
+  `stdout_log` metadata to its tail while keeping full logs on disk. Quiet mode
+  (`run_shinka_eval(..., verbose=False)`) also suppresses result-save framework
+  output. Thanks @marcopirazzini.
 - Added SLURM support for `numeric_threads_per_job`, applying numeric-library thread caps consistently across local and SLURM evaluation jobs. Thanks @marcopirazzini.
 
 ### Changed
@@ -37,60 +43,50 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
-- Fixed duplicate archive inspirations across fallback selection in PR #202.
+- Fixed population selection: archive inspirations stay unique across fallback
+  selection (PR #202), multi-criteria ranking ties cannot let worse newcomers
+  displace better programs (PR #199), and island migration selects all migrants
+  before moving programs to preserve quotas and elites (PR #200).
   Thanks @flyingdoubleG.
-- Fixed multi-criteria archive comparisons so worse newcomers cannot displace
-  better programs through an unfair ranking tie in PR #199. Thanks @flyingdoubleG.
-- Fixed island migration to select each island's migrants before moving any
-  programs, preserving outgoing quotas and elites, in PR #200. Thanks @flyingdoubleG.
-- Fixed indentation recovery for shifted SEARCH/REPLACE patches while preserving
-  relative indentation and dedents in PR #190. Thanks @yurekami.
 - Fixed chart-to-program selection and cumulative-max step timing in PR #201.
   Thanks @guudewie.
 - Fixed proposal metadata and LLM request settings diverging by reusing each
   proposal's sampled kwargs in PR #213. Thanks @yuiandyuki.
 - Fixed evaluated-program imports for dataclasses with postponed annotations
   and pickling program-defined result types in PR #212. Thanks @yuiandyuki.
-- Fixed scores for invalid circle packings in PR #205 (issue #197), while
-  retaining raw packing data and validation diagnostics. Thanks @Yushu-Li
-  and @iamgahr.
-- Fixed the circle-packing notebook validator to reject negative radii and
-  non-finite values in PR #209 (issue #203). Thanks @lll-hhh and @maximusrufus.
+- Fixed circle-packing validation and scoring: invalid packings retain raw data
+  and diagnostics while receiving the correct score in PR #205 (issue #197),
+  and the notebook validator rejects negative radii and non-finite values in
+  PR #209 (issue #203). Thanks @Yushu-Li, @iamgahr, @lll-hhh, and @maximusrufus.
 - Local OpenAI-compatible endpoints fail without proposal retries on HTTP
   401/403/404, with a typed endpoint failure preserved in `failure.json`, in
   PR #204 (issue #196). Thanks @ToolongTD and @iamgahr.
-- `shinka_run` exits 1 when evolution was requested but no evolved program was produced. Seed-only runs (one generation) and partial runs with evaluated candidates keep exit 0.
-- The final database summary separates stored generation progress, seed programs, island copies, and evolved programs; row correctness is labeled as including copies.
-
-- Fixed the per-job timeout (`LocalJobConfig.time`) being measured from the start of
-  the LLM proposal instead of the evaluation. With slow proposers such as headless
-  agents (minutes per proposal), candidates were killed the moment their evaluation
-  launched (score 0, empty job log), while fast proposers' candidates survived.
-  Fixed in PR #198. Thanks @fortunto2.
-- Fixed `extract_between` treating its start/end tags as regular expressions:
-  a ```` ```c++ ```` fence compiled to a possessive quantifier that matched only
-  the `c`, and with `language: "c++"` even the canonical ```` ```cpp ```` fence
-  did the same, so full rewrites for C++ came back with a stray `++`/`pp` line
-  and no error (on Python 3.10 the tag raised `re.error` instead). Tags are now
-  matched literally. Fixed in PR #193. Thanks @MaxFreedomPollard.
-- Fixed `ThompsonSampler.decay()` emitting `RuntimeWarning: invalid value
-  encountered in add` on every decay while any arm is still unsampled. The
-  warning came from the discarded branch of an `np.where`; the update is now
-  guarded the same way as in `AsymmetricUCB.decay()`. Fixed in PR #192.
-  Thanks @yurekami.
-- Fixed Anthropic response parsing to dispatch by content-block type, avoiding
-  crashes and truncated output for redacted, thinking-only, and multi-block
-  responses in PR #188. Thanks @Atharva-Kanherkar.
-- Fixed Anthropic and DeepSeek token/cost accounting parity across synchronous
-  and asynchronous queries, including thinking-token decomposition and safe
-  zero-cost fallback for models missing from the pricing catalog. Runtime
-  models.dev refreshes now preserve pinned embedding-price overrides.
-- Fixed diff insertions (empty SEARCH blocks) splicing the payload directly
-  against the EVOLVE-BLOCK-END marker, which corrupted the marker line, let
-  consecutive insertions merge code lines into invalid programs, and caused
-  marker validation to reject every insertion patch for block-comment
-  languages such as Wolfram. Reported in issue #183. Thanks
-  @Atharva-Kanherkar.
+- Fixed run completion reporting: `shinka_run` exits 1 when evolution produces
+  no evolved program; seed-only runs and partial runs with evaluated candidates
+  retain exit 0. The final database summary separates generation progress, seeds,
+  island copies, and evolved programs, and labels row correctness as including
+  copies.
+- Fixed evaluation timeouts to start when evaluation begins, so slow LLM proposals
+  no longer consume `LocalJobConfig.time` and cause immediate candidate termination
+  in PR #198. Thanks @fortunto2.
+- Fixed patch application and code extraction: shifted SEARCH/REPLACE patches
+  preserve relative indentation and dedents (PR #190; thanks @yurekami),
+  `extract_between` matches fence tags literally to avoid corrupting C++ rewrites
+  or raising `re.error` on Python 3.10 (PR #193; thanks @MaxFreedomPollard), and
+  empty SEARCH insertions preserve line boundaries and EVOLVE-BLOCK-END markers
+  for consecutive patches and block-comment languages such as Wolfram
+  (issue #183; thanks @Atharva-Kanherkar).
+- Fixed `ThompsonSampler.decay()` to avoid invalid-value warnings while arms
+  remain unsampled in PR #192. Thanks @yurekami.
+- Fixed provider response parsing: Anthropic dispatches by content-block type to
+  avoid crashes and truncation for redacted, thinking-only, and multi-block
+  responses (PR #188; thanks @Atharva-Kanherkar). OpenAI Responses finds assistant
+  text by content type without mistaking reasoning or tool text for an answer.
+- Fixed pricing and usage accounting: Anthropic and DeepSeek sync/async queries
+  agree on token costs, separate thinking tokens, and safely fall back to zero
+  cost for models missing from the catalog. Runtime models.dev refreshes preserve
+  pinned embedding-price overrides, and CSV reasoning flags handle whitespace
+  and mixed value types.
 - Fixed Gemini retry handling so unsupported structured-output requests fail
   immediately, synchronous retries are paced, and sync/async calls share the
   same default thinking budget.
@@ -101,14 +97,11 @@ All notable changes to `shinka-evolve` are documented in this file.
   avoiding doubled `/openai/v1/openai` request paths and 404 responses reported
   in issue #147.
 - Fixed OpenAI retry handling so ShinkaEvolve respects provider `retry_after` hints from transient Cloudflare/API 5xx responses.
-- Fixed DeepSeek V4 kwargs so ShinkaEvolve omits `temperature` for thinking-mode calls and includes model kwargs in retry error logs.
-- Fixed Claude Opus 4.8 kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for Anthropic and Bedrock calls.
-- Fixed OpenAI reasoning model kwargs so ShinkaEvolve omits the deprecated `temperature` parameter for GPT-5-series Responses API calls.
-- Fixed DeepSeek reasoning model kwargs so ShinkaEvolve passes DeepSeek thinking-mode controls and `reasoning_effort` for V4 models.
+- Fixed provider request compatibility: omitted unsupported `temperature` for
+  DeepSeek V4 thinking calls, Claude Opus 4.8 on Anthropic and Bedrock, and GPT-5
+  reasoning models on the Responses API. DeepSeek V4 receives thinking-mode
+  controls and `reasoning_effort`, and its retry logs include model kwargs.
 - Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google API hosts and prefer IPv4 when needed.
-- Fixed LLM pricing boolean metadata normalization so reasoning-model flags handle whitespace and mixed CSV value types.
-- Fixed OpenAI Responses parsing to find assistant text by content type while ignoring reasoning/tool text when no message output exists.
-- Fixed quiet evaluation mode so `run_shinka_eval(..., verbose=False)` also suppresses result-save framework stdout while preserving the default verbose behavior.
 
 ## 0.0.7 - 2026-06-02
 
