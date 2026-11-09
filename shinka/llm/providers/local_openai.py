@@ -5,6 +5,7 @@ from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MA
 
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
+from .errors import LLMEndpointError
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,14 @@ def backoff_handler(details):
         )
 
 
-def _extract_costs(model: str, in_tokens: int, all_out_tokens: int) -> tuple[float, float]:
+def _endpoint_error(exc: openai.APIStatusError) -> LLMEndpointError:
+    # Do not persist headers, credentials, request URLs or raw response bodies.
+    return LLMEndpointError(exc.status_code, str(exc.code or type(exc).__name__))
+
+
+def _extract_costs(
+    model: str, in_tokens: int, all_out_tokens: int
+) -> tuple[float, float]:
     if model_exists(model):
         return calculate_cost(model, in_tokens, all_out_tokens)
     return 0.0, 0.0
@@ -69,12 +77,17 @@ def query_local_openai(
         )
 
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system_msg}, *new_msg_history],
-        **kwargs,
-        n=1,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_msg}, *new_msg_history],
+            **kwargs,
+            n=1,
+        )
+    except openai.APIStatusError as exc:
+        if exc.status_code in {401, 403, 404}:
+            raise _endpoint_error(exc) from exc
+        raise
     content = response.choices[0].message.content or ""
     thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
     new_msg_history.append({"role": "assistant", "content": content})
@@ -130,12 +143,17 @@ async def query_local_openai_async(
         )
 
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system_msg}, *new_msg_history],
-        **kwargs,
-        n=1,
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_msg}, *new_msg_history],
+            **kwargs,
+            n=1,
+        )
+    except openai.APIStatusError as exc:
+        if exc.status_code in {401, 403, 404}:
+            raise _endpoint_error(exc) from exc
+        raise
     content = response.choices[0].message.content or ""
     thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
     new_msg_history.append({"role": "assistant", "content": content})
