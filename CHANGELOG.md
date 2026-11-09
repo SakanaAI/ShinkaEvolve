@@ -53,6 +53,12 @@ All notable changes to `shinka-evolve` are documented in this file.
   agents (minutes per proposal), candidates were killed the moment their evaluation
   launched (score 0, empty job log), while fast proposers' candidates survived.
   Fixed in PR #198. Thanks @fortunto2.
+- Fixed `extract_between` treating its start/end tags as regular expressions:
+  a ```` ```c++ ```` fence compiled to a possessive quantifier that matched only
+  the `c`, and with `language: "c++"` even the canonical ```` ```cpp ```` fence
+  did the same, so full rewrites for C++ came back with a stray `++`/`pp` line
+  and no error (on Python 3.10 the tag raised `re.error` instead). Tags are now
+  matched literally. Fixed in PR #193. Thanks @MaxFreedomPollard.
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.
