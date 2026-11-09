@@ -59,6 +59,11 @@ All notable changes to `shinka-evolve` are documented in this file.
   did the same, so full rewrites for C++ came back with a stray `++`/`pp` line
   and no error (on Python 3.10 the tag raised `re.error` instead). Tags are now
   matched literally. Fixed in PR #193. Thanks @MaxFreedomPollard.
+- Fixed `ThompsonSampler.decay()` emitting `RuntimeWarning: invalid value
+  encountered in add` on every decay while any arm is still unsampled. The
+  warning came from the discarded branch of an `np.where`; the update is now
+  guarded the same way as in `AsymmetricUCB.decay()`. Fixed in PR #192.
+  Thanks @yurekami.
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.
