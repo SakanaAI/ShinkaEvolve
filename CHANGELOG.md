@@ -37,6 +37,16 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed duplicate archive inspirations across fallback selection in PR #202.
+  Thanks @flyingdoubleG.
+- Fixed multi-criteria archive comparisons so worse newcomers cannot displace
+  better programs through an unfair ranking tie in PR #199. Thanks @flyingdoubleG.
+- Fixed island migration to select each island's migrants before moving any
+  programs, preserving outgoing quotas and elites, in PR #200. Thanks @flyingdoubleG.
+- Fixed indentation recovery for shifted SEARCH/REPLACE patches while preserving
+  relative indentation and dedents in PR #190. Thanks @yurekami.
+- Fixed chart-to-program selection and cumulative-max step timing in PR #201.
+  Thanks @guudewie.
 - Fixed proposal metadata and LLM request settings diverging by reusing each
   proposal's sampled kwargs in PR #213. Thanks @yuiandyuki.
 - Fixed evaluated-program imports for dataclasses with postponed annotations
