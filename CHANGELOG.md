@@ -37,6 +37,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed sync and async meta-summary metadata alignment and generation ordering
+  after failed batch responses in PR #208. Thanks @lll-hhh.
 - Fixed Anthropic response parsing to dispatch by content-block type, avoiding
   crashes and truncated output for redacted, thinking-only, and multi-block
   responses in PR #188. Thanks @Atharva-Kanherkar.
