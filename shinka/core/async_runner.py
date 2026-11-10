@@ -736,6 +736,14 @@ class ShinkaEvolveRunner:
             {"node_kind": "unattached_cost", "api_costs": cost},
         )
 
+    async def _record_meta_cost(self, program: Program, cost: float) -> None:
+        if cost <= 0.0:
+            return
+        self.total_api_cost += cost
+        program.metadata = dict(program.metadata or {})
+        program.metadata["meta_cost"] = (program.metadata.get("meta_cost") or 0.0) + cost
+        await self._persist_program_metadata_async(program)
+
     def _validate_concurrency_settings(
         self,
         max_evaluation_jobs: int,
@@ -1596,7 +1604,14 @@ class ShinkaEvolveRunner:
             self.total_api_cost += cost
 
             if new_prompt:
-                self.prompt_db.add(new_prompt, verbose=self.verbose)
+                try:
+                    self.prompt_db.add(new_prompt, verbose=self.verbose)
+                except Exception:
+                    if self.prompt_db.get(new_prompt.id) is None:
+                        await self._record_unattached_cost(
+                            cost, "prompt_evolution", current_program_generation
+                        )
+                    raise
                 logger.info(
                     f"Evolved new prompt {new_prompt.id[:8]}... "
                     f"(prompt_gen={new_prompt.generation}, prog_gen={current_program_generation}, "
@@ -1831,23 +1846,11 @@ class ShinkaEvolveRunner:
                     updated_recs,
                     meta_cost,
                 ) = await self.meta_summarizer.update_meta_memory_async(best_program)
+                await self._record_meta_cost(initial_program, meta_cost)
                 if updated_recs:
-                    # Write meta output file asynchronously
                     await self.meta_summarizer.write_meta_output_async(
                         str(self.results_dir)
                     )
-                    # Store meta cost for tracking
-                    if meta_cost > 0:
-                        logger.info(
-                            f"Meta recommendation generation cost: ${meta_cost:.4f}"
-                        )
-                        # Add meta cost to in-memory total for accurate budget tracking
-                        self.total_api_cost += meta_cost
-
-                        # Add meta cost to this program's metadata (the one that triggered the update)
-                        if initial_program.metadata is None:
-                            initial_program.metadata = {}
-                        initial_program.metadata["meta_cost"] = meta_cost
 
         # Set baseline score for LLM selection
         if self.llm_selection is not None:
@@ -4584,13 +4587,8 @@ class ShinkaEvolveRunner:
                             ) = await self.meta_summarizer.update_meta_memory_async(
                                 best_program
                             )
+                            await self._record_meta_cost(program, meta_cost)
                             if meta_cost > 0:
-                                self.total_api_cost += meta_cost
-                                if program.metadata is None:
-                                    program.metadata = {}
-                                program.metadata["meta_cost"] = (
-                                    program.metadata.get("meta_cost", 0.0) or 0.0
-                                ) + meta_cost
                                 metadata_persist_needed = True
                             if updated_recs:
                                 await self.meta_summarizer.write_meta_output_async(
