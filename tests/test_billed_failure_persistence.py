@@ -106,18 +106,19 @@ def test_exhausted_budget_does_not_send_another_initial_request(runner):
         asyncio.run(runner._generate_initial_program())
 
 
-def test_initial_cost_survives_attempt_artifact_failure(runner):
+@pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])
+def test_initial_cost_survives_attempt_artifact_failure(runner, error_type):
     async def query(**kwargs):
         return QueryResult(None, "msg", "sys", [], "gpt-5-mini", {}, 10, 0, cost=3.3)
 
     async def save(**kwargs):
-        raise OSError("artifact unavailable")
+        raise error_type("artifact unavailable")
 
     runner.llm = SimpleNamespace(
         query=query, get_kwargs=lambda **kwargs: {"model_name": "gpt-5-mini"}
     )
     runner._save_patch_attempt_async = save
-    with pytest.raises(OSError):
+    with pytest.raises(error_type):
         asyncio.run(runner._generate_initial_program())
     assert runner.total_api_cost == pytest.approx(3.3)
     assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(3.3)
@@ -166,15 +167,16 @@ def test_initialization_checks_known_cost_before_another_attempt(runner):
     assert runner.total_api_cost == pytest.approx(7.3)
 
 
-def test_proposal_cost_survives_failure_artifact_error(runner):
+@pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])
+def test_proposal_cost_survives_failure_artifact_error(runner, error_type):
     runner._update_avg_proposal_cost = lambda cost: None
     runner._classify_failed_proposal = lambda **kwargs: "proposal"
 
     async def artifact(**kwargs):
-        raise OSError("artifact unavailable")
+        raise error_type("artifact unavailable")
 
     runner._write_failure_artifact_async = artifact
-    with pytest.raises(OSError):
+    with pytest.raises(error_type):
         asyncio.run(
             runner._record_terminal_failed_proposal(
                 generation=1,

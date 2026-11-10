@@ -2085,7 +2085,7 @@ class ShinkaEvolveRunner:
                 "LLM failed to generate a valid initial program after "
                 f"{self.evo_config.max_patch_attempts} attempts."
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             # Setup can commit a program before posting its cost in memory.
             self.total_api_cost = max(self.total_api_cost, cost_before_setup + total_costs)
             persisted_cost = await self._get_total_api_costs()
@@ -3428,7 +3428,7 @@ class ShinkaEvolveRunner:
                 sampling_worker_id=sampling_worker_id,
                 active_proposals_at_start=active_proposals_at_start,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             await self._record_attempt_event(
                 generation, failure_stage, "failed",
                 {
