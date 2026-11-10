@@ -29,9 +29,11 @@ class _UnansweredReplies:
     def __init__(self) -> None:
         self.totals = dict.fromkeys(_COST_FIELDS + _TOKEN_FIELDS, 0.0)
         self.count = 0
+        self.incomplete_reason: Optional[str] = None
 
     def record(self, exc: EmptyResponseError) -> None:
         self.count += 1
+        self.incomplete_reason = exc.incomplete_reason
         for field in self.totals:
             self.totals[field] += exc.cost_results.get(field, 0) or 0
 
@@ -41,6 +43,9 @@ class _UnansweredReplies:
             return
         for field in _COST_FIELDS:
             setattr(result, field, (getattr(result, field) or 0.0) + self.totals[field])
+        for field in _TOKEN_FIELDS:
+            setattr(result, field, (getattr(result, field) or 0) + int(self.totals[field]))
+        result.num_total_queries += self.count
 
     def as_result(
         self,
@@ -68,6 +73,7 @@ class _UnansweredReplies:
             output_cost=self.totals["output_cost"],
             model_posteriors=model_posteriors,
             num_total_queries=self.count,
+            incomplete_reason=self.incomplete_reason,
         )
 
 

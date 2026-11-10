@@ -44,6 +44,11 @@ def _extract_response_text(response) -> str:
             if isinstance(text, str) and text.strip():
                 return text
 
+    raise _empty_response_error(response)
+
+
+def _empty_response_error(response) -> EmptyResponseError:
+    output = _sequence(_field(response, "output"))
     output_types = [_field(item, "type", type(item).__name__) for item in output]
     status = _field(response, "status")
     incomplete = _field(response, "incomplete_details")
@@ -58,7 +63,17 @@ def _extract_response_text(response) -> str:
             ". The model used the whole output budget before writing an answer; "
             "raise max_tokens or lower the reasoning effort."
         )
-    raise EmptyResponseError(message, incomplete_reason=incomplete_reason)
+    return EmptyResponseError(message, incomplete_reason=incomplete_reason)
+
+
+def _extract_billed_parsed(response, model):
+    cost_results = get_openai_costs(response, model)
+    content = _field(response, "output_parsed")
+    if content is None:
+        error = _empty_response_error(response)
+        error.cost_results = cost_results
+        raise error
+    return content, cost_results
 
 
 def _extract_billed_text(response, model) -> tuple[str, dict]:
@@ -211,12 +226,11 @@ def query_openai(
             text_format=output_model,
             **kwargs,
         )
-        content = response.output_parsed
+        content, cost_results = _extract_billed_parsed(response, model)
         new_content = ""
         for i in content:
             new_content += i[0] + ":" + i[1] + "\n"
         new_msg_history.append({"role": "assistant", "content": new_content})
-        cost_results = get_openai_costs(response, model)
 
     # Collect all results
     result = QueryResult(
@@ -281,12 +295,11 @@ async def query_openai_async(
             text_format=output_model,
             **kwargs,
         )
-        content = response.output_parsed
+        content, cost_results = _extract_billed_parsed(response, model)
         new_content = ""
         for i in content:
             new_content += i[0] + ":" + i[1] + "\n"
         new_msg_history.append({"role": "assistant", "content": new_content})
-        cost_results = get_openai_costs(response, model)
     result = QueryResult(
         content=content,
         msg=msg,
