@@ -38,6 +38,7 @@ from shinka.llm import (
     AsymmetricUCB,
     ThompsonSampler,
 )
+from shinka.llm.providers.errors import LLMEndpointError
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
@@ -141,6 +142,21 @@ class RichTeeConsole:
                     )
         except Exception as e:
             logger.debug(f"Failed to mirror rich output to log file: {e}")
+
+
+def evaluation_clock_start(
+    proposal_started_at: float,
+    evaluation_submitted_at: Optional[float],
+    evaluation_started_at: Optional[float],
+) -> float:
+    """Reference time for the per-job timeout (``LocalJobConfig.time``).
+
+    The scheduler kills a job once ``now - start_time`` exceeds ``job.time``. That
+    budget is meant for the evaluation, so it must not include the LLM proposal that
+    produced the candidate: with slow proposers (e.g. headless agents taking minutes)
+    the candidate would be killed the moment its evaluation launched.
+    """
+    return evaluation_started_at or evaluation_submitted_at or proposal_started_at
 
 
 @dataclass
@@ -1888,6 +1904,7 @@ class ShinkaEvolveRunner:
             response = await self.llm.query(
                 msg=user_msg,
                 system_msg=sys_msg,
+                llm_kwargs=llm_kwargs,
                 model_sample_probs=model_sample_probs,
                 model_posterior=model_posterior,
             )
@@ -2812,6 +2829,8 @@ class ShinkaEvolveRunner:
                             or meta_patch_data.get("error_attempt")
                             or "Patch generation failed before evaluation"
                         )
+                        if meta_patch_data.get("non_retryable"):
+                            break
                         continue
 
                     # We have a successful patch, break from resample loop
@@ -2827,6 +2846,9 @@ class ShinkaEvolveRunner:
             else:
                 # No successful patch in all resamples, continue to next novelty attempt
                 continue
+
+            if meta_patch_data.get("non_retryable"):
+                break
 
             # Get code embedding (only once per successful patch)
             if self.verbose:
@@ -2946,7 +2968,11 @@ class ShinkaEvolveRunner:
                     job_id=job_id,
                     exec_fname=exec_fname,
                     results_dir=results_dir,
-                    start_time=proposal_started_at,
+                    start_time=evaluation_clock_start(
+                        proposal_started_at,
+                        evaluation_submitted_at,
+                        evaluation_started_at,
+                    ),
                     proposal_started_at=proposal_started_at,
                     evaluation_submitted_at=evaluation_submitted_at,
                     generation=generation,
@@ -3133,6 +3159,8 @@ class ShinkaEvolveRunner:
         meta_patch_data: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Normalize pre-evaluation failures into stable classes for UI/analytics."""
+        if (meta_patch_data or {}).get("endpoint_error"):
+            return "llm_endpoint_error"
         if failure_stage == "novelty":
             return "novelty_rejected"
         if failure_stage == "evaluation_submit":
@@ -3295,6 +3323,7 @@ class ShinkaEvolveRunner:
             },
             "error_attempt": (meta_patch_data or {}).get("error_attempt"),
             "last_error_msg": (meta_patch_data or {}).get("last_error_msg"),
+            "endpoint_error": (meta_patch_data or {}).get("endpoint_error"),
             "artifacts": artifacts,
             "failure_json_path": str(failure_path),
         }
@@ -3457,6 +3486,7 @@ class ShinkaEvolveRunner:
                     msg=patch_msg,
                     system_msg=patch_sys,
                     msg_history=msg_history,
+                    llm_kwargs=llm_kwargs,
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
@@ -3617,6 +3647,14 @@ class ShinkaEvolveRunner:
 
             return None, meta_patch_data, False
 
+        except LLMEndpointError as exc:
+            return None, {
+                "api_costs": total_costs if "total_costs" in locals() else 0.0,
+                "error_attempt": str(exc),
+                "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
+                "non_retryable": True,
+            }, False
+
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
             return None, {"api_costs": 0.0, "error_attempt": str(e)}, False
@@ -3682,6 +3720,7 @@ class ShinkaEvolveRunner:
                     msg=patch_msg,
                     system_msg=patch_sys,
                     msg_history=msg_history,
+                    llm_kwargs=llm_kwargs,
                     model_sample_probs=model_sample_probs,
                     model_posterior=model_posterior,
                 )
@@ -3849,6 +3888,15 @@ class ShinkaEvolveRunner:
             }
 
             return None, meta_patch_data, False
+
+        except LLMEndpointError as exc:
+            self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            return None, {
+                "api_costs": total_costs if "total_costs" in locals() else 0.0,
+                "error_attempt": str(exc),
+                "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
+                "non_retryable": True,
+            }, False
 
         except Exception as e:
             logger.error(f"Error in async patch generation: {e}")
@@ -5903,7 +5951,20 @@ class ShinkaEvolveRunner:
         await asyncio.to_thread(executor.shutdown, True)
 
     async def _print_final_summary(self):
-        """Print final evolution summary."""
+        """Print final evolution summary and record whether evolution produced a program."""
+        evolved_programs = [
+            p for p in self.db.get_all_programs()
+            if p.generation > 0 and not is_island_copy(p)
+            and (p.metadata or {}).get("node_kind") != "failed_proposal"
+        ] if self.db else []
+        self.evolution_failed = (
+            self.evo_config.num_generations > 1 and not evolved_programs
+        )
+        if self.evolution_failed:
+            logger.error(
+                "ASYNC EVOLUTION FAILED: no evolved program was produced; "
+                "seed programs do not count as evolution success"
+            )
         if not self.verbose:
             return
 
@@ -5914,7 +5975,10 @@ class ShinkaEvolveRunner:
         )
 
         logger.info("=" * 80)
-        logger.info("ASYNC EVOLUTION COMPLETED")
+        logger.info(
+            "ASYNC EVOLUTION FAILED" if self.evolution_failed
+            else "ASYNC EVOLUTION COMPLETED"
+        )
         logger.info("=" * 80)
         logger.info(f"Target generations: {self.evo_config.num_generations}")
         logger.info(f"Stored programs: {self.completed_generations}")

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import sys
 import time
 import numpy as np
 import pickle
@@ -33,6 +34,9 @@ def load_program(program_path: str) -> Any:
         raise ImportError(f"Spec loader is None for module at {program_path}")
 
     module = importlib.util.module_from_spec(spec)
+    # Register before executing, like a normal import: dataclasses and pickle
+    # look up a class's module by name in sys.modules.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

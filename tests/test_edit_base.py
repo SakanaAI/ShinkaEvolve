@@ -522,8 +522,7 @@ if x > 5:
 else:
     print("small")"""
 
-    indent_str = "    "  # 4 spaces
-    result = _apply_indentation_to_replace(replace_text, indent_str)
+    result = _apply_indentation_to_replace(replace_text, 4)
 
     expected = """    x = 10
     if x > 5:
@@ -540,8 +539,7 @@ def test_apply_indentation_to_replace_empty_lines():
 
 y = 2"""
 
-    indent_str = "    "
-    result = _apply_indentation_to_replace(replace_text, indent_str)
+    result = _apply_indentation_to_replace(replace_text, 4)
 
     expected = """    x = 1
 
@@ -1159,3 +1157,221 @@ return result
 
     assert num_applied == 0
     assert error is not None
+
+
+def test_find_indented_match_search_block_carries_its_own_indent():
+    """Search text copied out of a nested scope keeps its own base indent.
+
+    The base indent must be re-based against the match, not added on top of
+    it, or the block is never found and the patch is silently dropped.
+    """
+    original = """class Outer:
+    class Inner:
+        def score(self, x):
+            total = 0
+            return total"""
+
+    # Same block, re-emitted one level shallower than it appears in the file.
+    search = """    def score(self, x):
+        total = 0
+        return total"""
+
+    matched, pos = _find_indented_match(search, original)
+
+    expected = """        def score(self, x):
+            total = 0
+            return total"""
+    assert matched == expected
+    assert pos != -1
+
+
+def test_find_indented_match_search_deeper_than_target():
+    """The same re-basing has to work when the search block is too deep."""
+    original = """class A:
+    def foo(self):
+        x = 1
+        return x"""
+
+    search = """        def foo(self):
+            x = 1
+            return x"""
+
+    matched, pos = _find_indented_match(search, original)
+
+    expected = """    def foo(self):
+        x = 1
+        return x"""
+    assert matched == expected
+    assert pos != -1
+
+
+def test_apply_indentation_to_replace_rebases_existing_indent():
+    """Replace text that already carries a base indent is re-based, not stacked."""
+    replace_text = """    def foo(self):
+        x = 1
+        return x"""
+
+    result = _apply_indentation_to_replace(replace_text, 4)
+
+    expected = """        def foo(self):
+            x = 1
+            return x"""
+    assert result == expected
+
+
+def test_apply_diff_patch_reindents_nested_block():
+    """End-to-end: a re-indented search block applies at the target indent."""
+    original_content = """# EVOLVE-BLOCK-START
+class Solver:
+    class Inner:
+        def score(self, x):
+            total = 0
+            return total
+# EVOLVE-BLOCK-END
+"""
+
+    patch = """<<<<<<< SEARCH
+    def score(self, x):
+        total = 0
+        return total
+=======
+    def score(self, x):
+        total = sum(x)
+        return total
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    # The replacement lands at the file's indentation, not the patch's.
+    assert "        def score(self, x):" in updated_content
+    assert "            total = sum(x)" in updated_content
+
+
+def test_find_indented_match_dedent_below_first_line_does_not_flatten():
+    """A later line that dedents below the first line must keep dedenting.
+
+    Clamping the relative indent would flatten it onto the first line and let
+    the block match same-indent code in a different scope.
+    """
+    original = """def f(a):
+    if a:
+        x()
+        y()
+    return 1"""
+
+    # The author means y() *after* the if, which does not exist in the file.
+    search = """            x()
+        y()"""
+
+    matched, pos = _find_indented_match(search, original)
+
+    assert matched == ""
+    assert pos == -1
+
+
+def test_apply_diff_patch_rejects_flattened_dedent_in_strict_mode():
+    """End to end, the false match must not be applied."""
+    original_content = """# EVOLVE-BLOCK-START
+def f(a):
+    if a:
+        x()
+        y()
+    return 1
+# EVOLVE-BLOCK-END
+"""
+
+    patch = """<<<<<<< SEARCH
+            x()
+        y()
+=======
+            x()
+        z()
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 0
+    assert error is not None
+    assert updated_content == original_content.rstrip("\n")
+
+
+def test_apply_diff_patch_preserves_dedent_in_replacement():
+    """A shifted block whose last line dedents keeps that dedent when applied."""
+    original_content = """# EVOLVE-BLOCK-START
+def f(a):
+    if a:
+        x()
+    y()
+    return 1
+# EVOLVE-BLOCK-END
+"""
+
+    # Same structure, emitted one level deeper than it appears in the file.
+    patch = """<<<<<<< SEARCH
+            x()
+        y()
+=======
+            x()
+        z()
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    assert "        x()\n    z()\n    return 1" in updated_content
+
+
+def test_apply_diff_patch_keeps_replace_relative_to_search():
+    """A replace block that starts deeper than the search block stays deeper."""
+    original_content = """# EVOLVE-BLOCK-START
+def f(a):
+    if a:
+        x()
+    return 1
+# EVOLVE-BLOCK-END
+"""
+
+    # Search is shifted right by 4; replace deliberately starts 4 deeper than
+    # the search, and must land 4 deeper than x() in the file.
+    patch = """<<<<<<< SEARCH
+            x()
+=======
+                if a > 1:
+                    x()
+>>>>>>> REPLACE"""
+
+    result = apply_diff_patch(
+        patch_str=patch,
+        original_str=original_content,
+        language="python",
+        verbose=False,
+    )
+    updated_content, num_applied, output_path, error, patch_txt, diff_path = result
+
+    assert num_applied == 1
+    assert error is None
+    assert (
+        "    if a:\n            if a > 1:\n                x()\n    return 1"
+        in updated_content
+    )

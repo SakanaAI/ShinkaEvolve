@@ -2275,12 +2275,14 @@ class ProgramDatabase:
 
         if use_ranked:
             # Use rank-based scoring with archive context
-            # Include both programs for fair ranking
+            # Rank each program against the archive and the other program, so
+            # both are ranked in the same population and their own comparison
+            # counts
             context = [
                 p for p in archive_programs if p.id not in (program1.id, program2.id)
             ]
-            s1 = self._compute_archive_score_ranked(program1, context)
-            s2 = self._compute_archive_score_ranked(program2, context)
+            s1 = self._compute_archive_score_ranked(program1, context + [program2])
+            s2 = self._compute_archive_score_ranked(program2, context + [program1])
 
             if s1 != s2:
                 return s1 > s2

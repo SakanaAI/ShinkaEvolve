@@ -30,12 +30,25 @@ GEMINI_THINKING_LEVEL_MODELS = frozenset(
     {
         "gemini-3.6-flash",
         "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-4-argon",
     }
 )
 GEMINI_THINKING_LEVEL_BY_EFFORT = {
     "min": "LOW",
+    "minimal": "LOW",
     "low": "LOW",
     "medium": "MEDIUM",
     "high": "HIGH",
     "max": "HIGH",
+    "xhigh": "HIGH",
 }
+
+OPENAI_GPT6_MODELS = frozenset(
+    {"gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"}
+)
+OPENAI_GPT6_REQUIRED_REASONING_MODELS = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
+CLAUDE_ADAPTIVE_MODELS = frozenset(
+    {"claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"}
+)
