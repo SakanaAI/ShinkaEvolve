@@ -10,9 +10,12 @@ import json
 import re
 
 import pytest
+from matplotlib.figure import Figure
 from rich.console import Console
 
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.plots import plot_costs, plot_evals_performance
+from shinka.utils.load_df import load_programs_to_df
 
 COSTS = {"api_costs": 0.5, "embed_cost": 0.25, "novelty_cost": 0.125, "meta_cost": 1.0}
 
@@ -79,6 +82,69 @@ def test_spawned_island_copies_carry_no_cost(tmp_path):
             assert {key: rows[original][key] for key in COSTS} == COSTS
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("costs", [{}, {"api_costs": 0.5}], ids=["empty", "api-only"])
+def test_island_copies_preserve_missing_cost_fields(tmp_path, costs):
+    db = _db(tmp_path, num_islands=2)
+    try:
+        seed = _program("seed", 0, 0.1)
+        seed.metadata = dict(costs)
+        db.add(seed)
+        assert db.island_manager.spawn_new_island()
+        rows = _rows(db)
+
+        copies = [
+            metadata for program_id, metadata in rows.items() if program_id != seed.id
+        ]
+        assert len(copies) == 2
+        for metadata in copies:
+            assert {
+                key: metadata[key] for key in COSTS if key in metadata
+            } == dict.fromkeys(costs, 0.0)
+        assert {
+            key: rows[seed.id][key] for key in COSTS if key in rows[seed.id]
+        } == costs
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "cost_keys",
+    [("api_costs",), ("api_costs", "embed_cost", "novelty_cost")],
+    ids=["api-only", "no-meta"],
+)
+@pytest.mark.parametrize(
+    "plotter, cost_label",
+    [(plot_evals_performance, "Cumulative Cost"), (plot_costs, "Total Cost")],
+    ids=["performance", "costs"],
+)
+def test_cost_plots_track_new_spend_after_island_copies(
+    tmp_path, cost_keys, plotter, cost_label
+):
+    costs = {key: COSTS[key] for key in cost_keys}
+    db = _db(tmp_path, num_islands=2)
+    try:
+        seed = _program("seed", 0, 0.1)
+        seed.metadata = dict(costs)
+        db.add(seed)
+        assert db.island_manager.spawn_new_island()
+        child = _program("child", 1, 0.2, parent_id="seed")
+        child.metadata = dict(costs)
+        db.add(child)
+        frame = load_programs_to_df(db.config.db_path, verbose=False)
+    finally:
+        db.close()
+
+    figure = Figure()
+    plotter(frame, fig=figure, ax=figure.subplots())
+    cost_curve = next(
+        line
+        for axis in figure.axes
+        for line in axis.lines
+        if line.get_label().startswith(cost_label)
+    )
+    assert cost_curve.get_ydata()[-1] == pytest.approx(2 * sum(costs.values()))
 
 
 @pytest.mark.parametrize("num_islands", [1, 2, 4])

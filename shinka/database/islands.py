@@ -19,9 +19,10 @@ _COST_KEYS = ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
 
 
 def _zero_copy_costs(metadata: Dict[str, Any]) -> None:
-    """Zero the costs of an island copy: making a copy calls no API."""
+    """Zero an island copy's existing costs without adding absent fields."""
     for key in _COST_KEYS:
-        metadata[key] = 0.0
+        if key in metadata:
+            metadata[key] = 0.0
 
 
 class IslandStrategy(ABC):
