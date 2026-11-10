@@ -781,26 +781,10 @@ class AsyncLLMClient:
             kwargs_str = [str(v) for v in kwargs.values()]
             logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
 
-        try_count = 0
-        while try_count < MAX_RETRIES:
-            try:
-                result = await query_async(
-                    msg=msg,
-                    system_msg=system_msg,
-                    msg_history=msg_history,
-                    output_model=self.output_model,
-                    **kwargs,
-                )
-                return idx, result
-            except NonRetryableLLMError:
-                raise
-            except Exception as e:
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-                try_count += 1
-                if try_count == MAX_RETRIES:
-                    return idx, None
-                await asyncio.sleep(1)  # Add delay between retries
-        return idx, None
+        result = await self.query(
+            msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs
+        )
+        return idx, result
 
     async def _sample_kwargs_query_async_with_retry(
         self,
@@ -820,37 +804,15 @@ class AsyncLLMClient:
         )
         kwargs = self._attach_headless_work_dir(kwargs)
 
-        # Create model_posteriors dict from model_names and model_sample_probs
-        model_posteriors = None
-        if model_sample_probs is not None and isinstance(self.model_names, list):
-            model_posteriors = dict(zip(self.model_names, model_sample_probs))
-            model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
-
         if self.verbose:
             kwargs_str = [str(v) for v in kwargs.values()]
             logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
 
-        try_count = 0
-        while try_count < MAX_RETRIES:
-            try:
-                result = await query_async(
-                    msg=msg,
-                    system_msg=system_msg,
-                    msg_history=msg_history,
-                    output_model=self.output_model,
-                    model_posteriors=model_posteriors,
-                    **kwargs,
-                )
-                return idx, result
-            except NonRetryableLLMError:
-                raise
-            except Exception as e:
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-                try_count += 1
-                if try_count == MAX_RETRIES:
-                    return idx, None
-                await asyncio.sleep(1)  # Add delay between retries
-        return idx, None
+        result = await self.query(
+            msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs,
+            model_posterior=model_sample_probs,
+        )
+        return idx, result
 
 
 def query_fn(
@@ -866,28 +828,10 @@ def query_fn(
     if verbose:
         kwargs_str = [str(v) for v in kwargs.values()]
         logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
-    try_count = 0
-    while try_count < MAX_RETRIES:
-        try:
-            result = query(
-                msg=msg,
-                system_msg=system_msg,
-                msg_history=msg_history,
-                output_model=output_model,
-                **kwargs,
-            )
-            return idx, result
-        except NonRetryableLLMError:
-            raise
-        except Exception as e:
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-            try_count += 1
-            if try_count == MAX_RETRIES:
-                # Return None result after max retries
-                return idx, None
-            # Add a small delay between retries
-            time.sleep(1)
-    return idx, None
+    client = LLMClient(
+        model_names=kwargs["model_name"], output_model=output_model, verbose=False
+    )
+    return idx, client.query(msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs)
 
 
 def sample_kwargs_query_fn(
@@ -920,37 +864,15 @@ def sample_kwargs_query_fn(
     ):
         kwargs = {**kwargs, "headless_work_dir": headless_work_dir}
 
-    # Create model_posteriors dict from model_names and model_sample_probs
-    model_posteriors = None
-    if model_sample_probs is not None and isinstance(model_names, list):
-        model_posteriors = dict(zip(model_names, model_sample_probs))
-        model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
     if verbose:
         kwargs_str = [str(v) for v in kwargs.values()]
         logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
-    try_count = 0
-    while try_count < MAX_RETRIES:
-        try:
-            result = query(
-                msg=msg,
-                system_msg=system_msg,
-                msg_history=msg_history,
-                output_model=output_model,
-                model_posteriors=model_posteriors,
-                **kwargs,
-            )
-            return idx, result
-        except NonRetryableLLMError:
-            raise
-        except Exception as e:
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-            try_count += 1
-            if try_count == MAX_RETRIES:
-                # Return None result after max retries
-                return idx, None
-            # Add a small delay between retries
-            time.sleep(1)
-    return idx, None
+    client = LLMClient(model_names=model_names, output_model=output_model, verbose=False)
+    result = client.query(
+        msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs,
+        model_posterior=model_sample_probs,
+    )
+    return idx, result
 
 
 def extract_between(
