@@ -6,9 +6,13 @@ from .providers.pricing import (
     requires_reasoning,
 )
 from .providers.model_resolver import resolve_model_backend
+from .providers.errors import NonRetryableLLMError
 from .constants import (
+    CLAUDE_ADAPTIVE_MODELS,
     GEMINI_THINKING_LEVEL_BY_EFFORT,
     GEMINI_THINKING_LEVEL_MODELS,
+    OPENAI_GPT6_MODELS,
+    OPENAI_GPT6_REQUIRED_REASONING_MODELS,
 )
 import logging
 
@@ -29,6 +33,32 @@ NO_TEMPERATURE_MODELS = {
     *GEMINI_THINKING_LEVEL_MODELS,
     "us.anthropic.claude-opus-4-8",
 }
+
+
+def _current_reasoning_effort(effort: str) -> str:
+    if effort in ("", "disabled", "none"):
+        return "none"
+    if effort in ("min", "minimal"):
+        return "low"
+    if effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise NonRetryableLLMError(f"Unsupported reasoning effort: {effort}")
+    return effort
+
+
+def _current_claude_kwargs(model: str, effort: str, max_tokens: int) -> dict[str, Any]:
+    effort = _current_reasoning_effort(effort)
+    thinking = {"type": "adaptive", "display": "summarized"}
+    if effort == "none":
+        effort = "low"
+        if model == "claude-sonnet-5-5":
+            thinking = {"type": "between_tools"}
+        elif model == "claude-haiku-5-5":
+            thinking = {"type": "disabled"}
+    return {
+        "max_tokens": min(max_tokens, 128_000),
+        "thinking": thinking,
+        "output_config": {"effort": effort},
+    }
 
 
 def sample_batch_kwargs(
@@ -114,6 +144,33 @@ def sample_model_kwargs(
     if provider == "headless":
         return kwargs_dict
 
+    # Current native APIs have effort contracts distinct from legacy budgets.
+    if provider in ("openai", "azure_openai") and api_model_name in OPENAI_GPT6_MODELS:
+        effort = _current_reasoning_effort(random.choice(reasoning_efforts))
+        if effort == "none" and api_model_name in OPENAI_GPT6_REQUIRED_REASONING_MODELS:
+            effort = "low"
+        reasoning = {"effort": effort}
+        if effort != "none":
+            reasoning["summary"] = "auto"
+        return {
+            **kwargs_dict,
+            "max_output_tokens": random.choice(max_tokens),
+            "reasoning": reasoning,
+        }
+
+    claude_model = (
+        api_model_name.rsplit(".", 1)[-1] if provider == "bedrock" else api_model_name
+    )
+    if provider in ("anthropic", "bedrock") and claude_model in CLAUDE_ADAPTIVE_MODELS:
+        return {
+            **kwargs_dict,
+            **_current_claude_kwargs(
+                claude_model,
+                random.choice(reasoning_efforts),
+                random.choice(max_tokens),
+            ),
+        }
+
     # 2. SAMPLE: reasoning effort
     if is_reasoning_model(model_name):
         r_effort = random.choice(reasoning_efforts)
@@ -162,10 +219,13 @@ def sample_model_kwargs(
     elif provider == "google" and is_reasoning_model(model_name):
         kwargs_dict["max_tokens"] = random.choice(max_tokens)
         if api_model_name in GEMINI_THINKING_LEVEL_MODELS:
-            if r_effort != "disabled":
-                kwargs_dict["thinking_level"] = GEMINI_THINKING_LEVEL_BY_EFFORT[
-                    r_effort
-                ]
+            if r_effort not in ("", "disabled", "none"):
+                kwargs_dict["thinking_level"] = (
+                    "MINIMAL"
+                    if api_model_name == "gemini-3.5-flash-lite"
+                    and r_effort in ("min", "minimal")
+                    else GEMINI_THINKING_LEVEL_BY_EFFORT[r_effort]
+                )
         elif r_effort != "disabled":
             t = THINKING_TOKENS[r_effort]
             thinking_tokens = t if t < kwargs_dict["max_tokens"] else 1024

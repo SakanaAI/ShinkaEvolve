@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Tuple
 from collections import defaultdict
 import rich.box  # type: ignore
 import rich  # type: ignore
@@ -13,6 +13,16 @@ from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+# Cost fields that cost totals sum over every program row.
+_COST_KEYS = ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
+
+
+def _zero_copy_costs(metadata: Dict[str, Any]) -> None:
+    """Zero an island copy's existing costs without adding absent fields."""
+    for key in _COST_KEYS:
+        if key in metadata:
+            metadata[key] = 0.0
 
 
 class IslandStrategy(ABC):
@@ -230,6 +240,10 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         migrations_summary = defaultdict(lambda: defaultdict(list))
         # Track all programs selected for migration
         all_migrated_programs = set()
+        # Select every island's migrants before moving any, so island sizes and
+        # candidates come from the pre-migration populations rather than
+        # including programs that just arrived from an earlier island
+        planned_migrations: List[Tuple[str, int]] = []
 
         # For each island, select migrants to move
         for source_idx in range(num_islands):
@@ -266,13 +280,15 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
                         "migration, skipping duplicate"
                     )
 
-            # Move each unique migrant to a new island
             for migrant_id in unique_migrants:
-                dest_idx = random.choice(dest_islands)
-                self._migrate_program(
-                    migrant_id, source_idx, dest_idx, current_generation
-                )
-                migrations_summary[source_idx][dest_idx].append(migrant_id)
+                planned_migrations.append((migrant_id, source_idx))
+
+        # Move each unique migrant to a new island
+        for migrant_id, source_idx in planned_migrations:
+            dest_islands = [i for i in range(num_islands) if i != source_idx]
+            dest_idx = random.choice(dest_islands)
+            self._migrate_program(migrant_id, source_idx, dest_idx, current_generation)
+            migrations_summary[source_idx][dest_idx].append(migrant_id)
 
         self.conn.commit()
 
@@ -622,6 +638,7 @@ class CombinedIslandManager:
             # Add metadata to indicate this is a copy
             copy_metadata["_is_island_copy"] = True
             copy_metadata["_original_program_id"] = program.id
+            _zero_copy_costs(copy_metadata)
             # Serialize JSON data
             public_metrics_json = json.dumps(program.public_metrics or {})
             private_metrics_json = json.dumps(program.private_metrics or {})
@@ -815,6 +832,7 @@ class CombinedIslandManager:
         metadata["_spawn_strategy"] = strategy
         if not is_root:
             metadata["_spawned_as_child"] = True
+        _zero_copy_costs(metadata)
 
         # Serialize JSON data
         public_metrics_json = source_program.get("public_metrics") or "{}"

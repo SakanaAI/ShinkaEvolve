@@ -502,7 +502,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error(str(exc))
 
     runner.run()
-    return 0
+    return 1 if getattr(runner, "evolution_failed", False) else 0
 
 
 if __name__ == "__main__":
