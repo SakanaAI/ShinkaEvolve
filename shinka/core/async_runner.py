@@ -1170,7 +1170,7 @@ class ShinkaEvolveRunner:
                                 ),
                                 timeout=600.0,  # 10 minute timeout for final meta summary
                             )
-                            if success and final_meta_cost > 0:
+                            if final_meta_cost > 0:
                                 self.total_api_cost += final_meta_cost
                             if self.verbose:
                                 if success and final_meta_cost > 0:
@@ -1603,6 +1603,9 @@ class ShinkaEvolveRunner:
                     f"patch={patch_type}, cost=${cost:.4f})"
                 )
             else:
+                await self._record_unattached_cost(
+                    cost, "prompt_evolution", current_program_generation
+                )
                 logger.warning(f"Prompt evolution failed (patch_type={patch_type})")
 
         except Exception as e:
@@ -4581,23 +4584,18 @@ class ShinkaEvolveRunner:
                             ) = await self.meta_summarizer.update_meta_memory_async(
                                 best_program
                             )
+                            if meta_cost > 0:
+                                self.total_api_cost += meta_cost
+                                if program.metadata is None:
+                                    program.metadata = {}
+                                program.metadata["meta_cost"] = (
+                                    program.metadata.get("meta_cost", 0.0) or 0.0
+                                ) + meta_cost
+                                metadata_persist_needed = True
                             if updated_recs:
-                                # Write meta output file asynchronously
                                 await self.meta_summarizer.write_meta_output_async(
                                     str(self.results_dir)
                                 )
-                                if meta_cost > 0:
-                                    logger.info(
-                                        f"Meta recommendation cost: ${meta_cost:.4f}"
-                                    )
-                                    # Add meta cost to in-memory total for accurate budget tracking
-                                    self.total_api_cost += meta_cost
-
-                                    # Add meta cost to this program's metadata
-                                    if program.metadata is None:
-                                        program.metadata = {}
-                                    program.metadata["meta_cost"] = meta_cost
-                                    metadata_persist_needed = True
                 except Exception as e:
                     logger.warning(f"Meta summarizer error for {job.job_id}: {e}")
                     # Don't fail the whole job for meta summarizer issues
