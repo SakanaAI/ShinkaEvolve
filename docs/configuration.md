@@ -79,11 +79,14 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `prompt_evolution_interval` | `Optional[int]` | `None` | Prompt-evolution interval in generations. |
 | `prompt_archive_size` | `int` | `10` | Prompt archive size. |
 | `prompt_llm_models` | `Optional[List[str]]` | `None` | Prompt-evolution model pool (falls back to `llm_models`). |
-| `prompt_llm_kwargs` | `dict` | `{}` | kwargs for prompt-evolution LLM calls. |
+| `prompt_llm_kwargs` | `dict` | `{}` | Prompt-client sampler settings, converted to provider arguments for each mutation. |
 | `prompt_ucb_exploration_constant` | `float` | `1.0` | UCB exploration constant for prompt sampler. |
 | `prompt_epsilon` | `float` | `0.1` | Epsilon-greedy exploration for prompt sampler. |
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
+
+Resuming prompt evolution reuses stored prompts, including when only the
+initial generation-zero prompt exists. Existing IDs and fitness data are retained.
 
 Billed OpenAI replies count toward `max_api_costs` even when they contain no
 usable text. A reply exhausted by `max_output_tokens` stops proposal retries;
