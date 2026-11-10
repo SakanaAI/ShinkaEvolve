@@ -51,7 +51,7 @@ def query_batch(client, method_name):
 
 
 @pytest.mark.parametrize(
-    "failure", [None, RuntimeError("request failed"), Response("")]
+    "failure", [None, RuntimeError("request failed"), Response("", 0.4)]
 )
 def test_meta_summaries_keep_metadata_and_generation_order(batch_client, failure):
     client = batch_client(
@@ -89,7 +89,8 @@ def test_meta_summaries_keep_metadata_and_generation_order(batch_client, failure
         "Summary three\n**Program Identifier:** "
         "Generation 3 - Patch Name p3 - Correct Program: False"
     )
-    assert cost == pytest.approx(0.5)
+    empty_cost = failure.cost if isinstance(failure, Response) else 0.0
+    assert cost == pytest.approx(0.5 + empty_cost)
 
 
 @pytest.mark.parametrize("failure", [None, RuntimeError("request failed")])

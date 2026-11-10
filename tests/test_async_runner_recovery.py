@@ -15,6 +15,7 @@ from shinka.core.async_runner import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.llm.providers import QueryResult
 
 
 class _FakeAsyncDB:
@@ -1657,3 +1658,57 @@ def test_wandb_population_snapshot_uses_worker_owned_database_connection(tmp_pat
         assert observed_ids == ["program"]
 
     asyncio.run(_run())
+
+
+def test_patch_attempts_without_content_still_count_their_cost():
+    queries = []
+
+    class _EmptyReplyLLM:
+        def get_kwargs(self, model_sample_probs=None):
+            return {"model_name": "gpt-5-mini"}
+
+        async def query(self, **kwargs):
+            queries.append(kwargs)
+            return QueryResult(
+                content=None,
+                msg=kwargs["msg"],
+                system_msg=kwargs["system_msg"],
+                new_msg_history=[],
+                model_name="gpt-5-mini",
+                kwargs={},
+                input_tokens=1000,
+                output_tokens=0,
+                thinking_tokens=65536,
+                cost=3.55,
+            )
+
+    saved_attempts = []
+
+    async def _save_patch_attempt_async(**kwargs):
+        saved_attempts.append(kwargs)
+
+    runner = _build_runner(
+        evo_config=SimpleNamespace(max_patch_attempts=2, language="python")
+    )
+    runner.llm = _EmptyReplyLLM()
+    runner.prompt_sampler = SimpleNamespace(
+        task_sys_msg="task",
+        sample=lambda **kwargs: ("sys", "patch me", "diff"),
+    )
+    runner._get_current_system_prompt = lambda: (None, None)
+    runner._save_patch_attempt_async = _save_patch_attempt_async
+
+    patch_text, meta, success = asyncio.run(
+        runner._run_patch_async(
+            parent_program=SimpleNamespace(id="parent"),
+            archive_programs=[],
+            top_k_programs=[],
+            generation=1,
+        )
+    )
+
+    assert patch_text is None
+    assert success is False
+    assert len(queries) == 2
+    assert len(saved_attempts) == 2
+    assert meta["api_costs"] == pytest.approx(7.10)

@@ -270,6 +270,8 @@ class MetaSummarizer:
         total_cost = 0.0
         summaries_with_gen = []
         for original_index, response in responses:
+            if response is not None:
+                total_cost += response.cost or 0.0
             if response and response.content:
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
@@ -281,7 +283,6 @@ class MetaSummarizer:
                 summaries_with_gen.append(
                     (generation_ids[original_index], program_summary)
                 )
-                total_cost += response.cost or 0.0
             else:
                 logger.warning(f"Step 1: Empty response for program {original_index}")
 
@@ -330,9 +331,9 @@ class MetaSummarizer:
             llm_kwargs=llm_params,
         )
 
-        if response is None:
+        if response is None or not response.content:
             logger.error("Step 2: Failed to get response from meta LLM client")
-            return None, 0.0
+            return None, (response.cost or 0.0) if response else 0.0
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 2 - Global insights generated (cost: ${cost:.4f})")
@@ -372,9 +373,9 @@ class MetaSummarizer:
             llm_kwargs=llm_params,
         )
 
-        if response is None:
+        if response is None or not response.content:
             logger.error("Step 3: Failed to get response from meta LLM client")
-            return None, 0.0
+            return None, (response.cost or 0.0) if response else 0.0
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 3 - Recommendations generated (cost: ${cost:.4f})")

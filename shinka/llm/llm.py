@@ -9,11 +9,88 @@ import time
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
-from .providers.errors import NonRetryableLLMError, StructuredOutputNotSupportedError
+from .providers.errors import (
+    BilledCancellationError,
+    EmptyResponseError,
+    NonRetryableLLMError,
+    StructuredOutputNotSupportedError,
+)
 from .providers.model_resolver import resolve_model_backend
 from .constants import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
+
+_COST_FIELDS = ("cost", "input_cost", "output_cost")
+_TOKEN_FIELDS = ("input_tokens", "output_tokens", "thinking_tokens")
+
+
+class _UnansweredReplies:
+    """Costs of billed replies that had no text, across the tries of one query."""
+
+    def __init__(self) -> None:
+        self.totals = dict.fromkeys(_COST_FIELDS + _TOKEN_FIELDS, 0.0)
+        self.count = 0
+        self.incomplete_reason: Optional[str] = None
+
+    def record(self, exc: EmptyResponseError) -> None:
+        self.count += 1
+        self.incomplete_reason = exc.incomplete_reason
+        for field in self.totals:
+            self.totals[field] += exc.cost_results.get(field, 0) or 0
+
+    def add_costs_to(self, result: Optional[QueryResult]) -> None:
+        """Charge earlier unanswered replies to the reply that finally answered."""
+        if not self.count or result is None:
+            return
+        for field in _COST_FIELDS:
+            setattr(result, field, (getattr(result, field) or 0.0) + self.totals[field])
+        for field in _TOKEN_FIELDS:
+            setattr(result, field, (getattr(result, field) or 0) + int(self.totals[field]))
+        result.num_total_queries += self.count
+
+    def as_result(
+        self,
+        msg: str,
+        system_msg: str,
+        msg_history: List[Dict],
+        llm_kwargs: Dict,
+        model_posteriors: Optional[Dict[str, float]],
+    ) -> Optional[QueryResult]:
+        """Result without content that still carries what was billed."""
+        if not self.count:
+            return None
+        return QueryResult(
+            content=None,
+            msg=msg,
+            system_msg=system_msg,
+            new_msg_history=msg_history + [{"role": "user", "content": msg}],
+            model_name=llm_kwargs.get("model_name", "<unknown>"),
+            kwargs=llm_kwargs,
+            input_tokens=int(self.totals["input_tokens"]),
+            output_tokens=int(self.totals["output_tokens"]),
+            thinking_tokens=int(self.totals["thinking_tokens"]),
+            cost=self.totals["cost"],
+            input_cost=self.totals["input_cost"],
+            output_cost=self.totals["output_cost"],
+            model_posteriors=model_posteriors,
+            num_total_queries=self.count,
+            incomplete_reason=self.incomplete_reason,
+        )
+
+
+def _stop_after_empty_reply(exc: Exception, unanswered: _UnansweredReplies) -> bool:
+    """Record a billed reply without text; True if retrying would not help."""
+    if not isinstance(exc, EmptyResponseError):
+        return False
+    unanswered.record(exc)
+    if exc.hit_output_limit:
+        logger.warning(
+            "Not retrying: the reply ran out of output tokens before any text "
+            "(billed $%.4f). Raise max_tokens or lower the reasoning effort.",
+            exc.cost,
+        )
+        return True
+    return False
 
 
 def _validate_structured_output_models(
@@ -165,7 +242,7 @@ class LLMClient:
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
     ) -> List[QueryResult]:
-        """Return successful batch responses in input order, omitting failures."""
+        """Return batch results in input order, including billed empty replies."""
         results = self.batch_kwargs_query_indexed(
             num_samples=num_samples,
             msg=msg,
@@ -183,9 +260,10 @@ class LLMClient:
         msg_history: Optional[Union[List[Dict], List[List[Dict]]]] = None,
         model_sample_probs: Optional[List[float]] = None,
     ) -> List[Tuple[int, QueryResult]]:
-        """Return successful responses paired with their original request indices.
+        """Return results paired with their original request indices.
 
-        Failed requests are omitted without renumbering later responses.
+        Billed empty replies are retained for cost accounting. Requests without
+        a result are omitted without renumbering later responses.
         Non-retryable errors propagate as in :meth:`batch_kwargs_query`.
 
         Args:
@@ -371,6 +449,7 @@ class LLMClient:
             model_posteriors = dict(zip(self.model_names, model_posterior))
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
+        unanswered = _UnansweredReplies()
         try_count = 0
         while try_count < MAX_RETRIES:
             try:
@@ -382,6 +461,7 @@ class LLMClient:
                     model_posteriors=model_posteriors,
                     **llm_kwargs,
                 )
+                unanswered.add_costs_to(result)
                 if self.verbose and hasattr(result, "cost") and result.cost is not None:
                     logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                 return result
@@ -393,10 +473,14 @@ class LLMClient:
                     f"{try_count + 1}/{MAX_RETRIES} Error in query "
                     f"for model={model_name} kwargs={llm_kwargs}: {str(e)}"
                 )
+                if _stop_after_empty_reply(e, unanswered):
+                    break
                 try_count += 1
                 if try_count < MAX_RETRIES:
                     time.sleep(1)
-        return None
+        return unanswered.as_result(
+            msg, system_msg, msg_history, llm_kwargs, model_posteriors
+        )
 
 
 class AsyncLLMClient:
@@ -512,7 +596,7 @@ class AsyncLLMClient:
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
     ) -> List[QueryResult]:
-        """Return successful batch responses in input order, omitting failures."""
+        """Return batch results in input order, including billed empty replies."""
         results = await self.batch_kwargs_query_indexed(
             num_samples=num_samples,
             msg=msg,
@@ -530,9 +614,10 @@ class AsyncLLMClient:
         msg_history: Optional[Union[List[Dict], List[List[Dict]]]] = None,
         model_sample_probs: Optional[List[float]] = None,
     ) -> List[Tuple[int, QueryResult]]:
-        """Return successful responses paired with their original request indices.
+        """Return results paired with their original request indices.
 
-        Failed requests are omitted without renumbering later responses.
+        Billed empty replies are retained for cost accounting. Requests without
+        a result are omitted without renumbering later responses.
         Non-retryable errors propagate as in :meth:`batch_kwargs_query`.
 
         Args:
@@ -702,28 +787,42 @@ class AsyncLLMClient:
             model_posteriors = dict(zip(self.model_names, model_posterior))
             model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
 
+        unanswered = _UnansweredReplies()
         try_count = 0
-        while try_count < MAX_RETRIES:
-            try:
-                result = await query_async(
-                    msg=msg,
-                    system_msg=system_msg,
-                    msg_history=msg_history,
-                    output_model=self.output_model,
-                    model_posteriors=model_posteriors,
-                    **llm_kwargs,
-                )
-                if self.verbose and hasattr(result, "cost") and result.cost is not None:
-                    logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
-                return result
-            except NonRetryableLLMError:
-                raise
-            except Exception as e:
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-                try_count += 1
-                if try_count < MAX_RETRIES:
-                    await asyncio.sleep(1)
-        return None
+        try:
+            while try_count < MAX_RETRIES:
+                try:
+                    result = await query_async(
+                        msg=msg,
+                        system_msg=system_msg,
+                        msg_history=msg_history,
+                        output_model=self.output_model,
+                        model_posteriors=model_posteriors,
+                        **llm_kwargs,
+                    )
+                    unanswered.add_costs_to(result)
+                    if self.verbose and hasattr(result, "cost") and result.cost is not None:
+                        logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
+                    return result
+                except NonRetryableLLMError:
+                    raise
+                except Exception as e:
+                    logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                    if _stop_after_empty_reply(e, unanswered):
+                        break
+                    try_count += 1
+                    if try_count < MAX_RETRIES:
+                        await asyncio.sleep(1)
+        except asyncio.CancelledError as exc:
+            if unanswered.count:
+                raise BilledCancellationError({
+                    **unanswered.totals,
+                    "num_total_queries": unanswered.count,
+                }) from exc
+            raise
+        return unanswered.as_result(
+            msg, system_msg, msg_history, llm_kwargs, model_posteriors
+        )
 
     async def _query_async_with_retry(
         self,
@@ -739,26 +838,10 @@ class AsyncLLMClient:
             kwargs_str = [str(v) for v in kwargs.values()]
             logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
 
-        try_count = 0
-        while try_count < MAX_RETRIES:
-            try:
-                result = await query_async(
-                    msg=msg,
-                    system_msg=system_msg,
-                    msg_history=msg_history,
-                    output_model=self.output_model,
-                    **kwargs,
-                )
-                return idx, result
-            except NonRetryableLLMError:
-                raise
-            except Exception as e:
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-                try_count += 1
-                if try_count == MAX_RETRIES:
-                    return idx, None
-                await asyncio.sleep(1)  # Add delay between retries
-        return idx, None
+        result = await self.query(
+            msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs
+        )
+        return idx, result
 
     async def _sample_kwargs_query_async_with_retry(
         self,
@@ -778,37 +861,15 @@ class AsyncLLMClient:
         )
         kwargs = self._attach_headless_work_dir(kwargs)
 
-        # Create model_posteriors dict from model_names and model_sample_probs
-        model_posteriors = None
-        if model_sample_probs is not None and isinstance(self.model_names, list):
-            model_posteriors = dict(zip(self.model_names, model_sample_probs))
-            model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
-
         if self.verbose:
             kwargs_str = [str(v) for v in kwargs.values()]
             logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
 
-        try_count = 0
-        while try_count < MAX_RETRIES:
-            try:
-                result = await query_async(
-                    msg=msg,
-                    system_msg=system_msg,
-                    msg_history=msg_history,
-                    output_model=self.output_model,
-                    model_posteriors=model_posteriors,
-                    **kwargs,
-                )
-                return idx, result
-            except NonRetryableLLMError:
-                raise
-            except Exception as e:
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-                try_count += 1
-                if try_count == MAX_RETRIES:
-                    return idx, None
-                await asyncio.sleep(1)  # Add delay between retries
-        return idx, None
+        result = await self.query(
+            msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs,
+            model_posterior=model_sample_probs,
+        )
+        return idx, result
 
 
 def query_fn(
@@ -824,28 +885,10 @@ def query_fn(
     if verbose:
         kwargs_str = [str(v) for v in kwargs.values()]
         logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
-    try_count = 0
-    while try_count < MAX_RETRIES:
-        try:
-            result = query(
-                msg=msg,
-                system_msg=system_msg,
-                msg_history=msg_history,
-                output_model=output_model,
-                **kwargs,
-            )
-            return idx, result
-        except NonRetryableLLMError:
-            raise
-        except Exception as e:
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-            try_count += 1
-            if try_count == MAX_RETRIES:
-                # Return None result after max retries
-                return idx, None
-            # Add a small delay between retries
-            time.sleep(1)
-    return idx, None
+    client = LLMClient(
+        model_names=kwargs["model_name"], output_model=output_model, verbose=False
+    )
+    return idx, client.query(msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs)
 
 
 def sample_kwargs_query_fn(
@@ -878,37 +921,15 @@ def sample_kwargs_query_fn(
     ):
         kwargs = {**kwargs, "headless_work_dir": headless_work_dir}
 
-    # Create model_posteriors dict from model_names and model_sample_probs
-    model_posteriors = None
-    if model_sample_probs is not None and isinstance(model_names, list):
-        model_posteriors = dict(zip(model_names, model_sample_probs))
-        model_posteriors = {k: float(v) for k, v in model_posteriors.items()}
     if verbose:
         kwargs_str = [str(v) for v in kwargs.values()]
         logger.info(f"==> SAMPLING: {idx + 1}/{total_samples} {kwargs_str}")
-    try_count = 0
-    while try_count < MAX_RETRIES:
-        try:
-            result = query(
-                msg=msg,
-                system_msg=system_msg,
-                msg_history=msg_history,
-                output_model=output_model,
-                model_posteriors=model_posteriors,
-                **kwargs,
-            )
-            return idx, result
-        except NonRetryableLLMError:
-            raise
-        except Exception as e:
-            logger.error(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-            try_count += 1
-            if try_count == MAX_RETRIES:
-                # Return None result after max retries
-                return idx, None
-            # Add a small delay between retries
-            time.sleep(1)
-    return idx, None
+    client = LLMClient(model_names=model_names, output_model=output_model, verbose=False)
+    result = client.query(
+        msg, system_msg, msg_history=msg_history, llm_kwargs=kwargs,
+        model_posterior=model_sample_probs,
+    )
+    return idx, result
 
 
 def extract_between(

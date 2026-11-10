@@ -23,6 +23,12 @@ from shinka.prompts.prompts_prompt_evo import (
 logger = logging.getLogger(__name__)
 
 
+def _empty_prompt_result(response):
+    if response is None:
+        return None, None, None, 0.0, None
+    return None, None, None, response.cost or 0.0, _extract_llm_metadata(response)
+
+
 def _extract_llm_metadata(response) -> dict:
     """
     Extract LLM metadata from a QueryResult response.
@@ -345,7 +351,7 @@ class SystemPromptEvolver:
 
             if response is None or not response.content:
                 logger.warning("Empty response from LLM for diff mutation")
-                return None, None, None, 0.0, None
+                return _empty_prompt_result(response)
 
             cost = response.cost or 0.0
 
@@ -406,7 +412,7 @@ class SystemPromptEvolver:
 
             if response is None or not response.content:
                 logger.warning("Empty response from LLM for full rewrite")
-                return None, None, None, 0.0, None
+                return _empty_prompt_result(response)
 
             cost = response.cost or 0.0
 
@@ -600,7 +606,7 @@ class AsyncSystemPromptEvolver:
             )
 
             if response is None or not response.content:
-                return None, None, None, 0.0, None
+                return _empty_prompt_result(response)
 
             cost = response.cost or 0.0
 
@@ -647,7 +653,7 @@ class AsyncSystemPromptEvolver:
             )
 
             if response is None or not response.content:
-                return None, None, None, 0.0, None
+                return _empty_prompt_result(response)
 
             cost = response.cost or 0.0
 

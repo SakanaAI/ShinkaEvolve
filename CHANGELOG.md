@@ -43,6 +43,11 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed billed empty OpenAI replies being omitted from budgets across single,
+  batch, proposal, novelty, prompt, and meta-analysis calls in PR #211
+  (issue #210). Output exhaustion stops proposal retries; failed charges survive
+  resume, and recovered replies retain complete billed usage. Thanks @prath47.
+
 - Fixed sync and async meta-summary metadata alignment and generation ordering
   after failed batch responses in PR #208. Thanks @lll-hhh.
 - Fixed duplicated API, embedding, novelty, and meta-analysis costs on initial

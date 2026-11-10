@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 class QueryResult:
     def __init__(
         self,
-        content: str,
+        content: Optional[str],
         msg: str,
         system_msg: str,
         new_msg_history: List[Dict],
@@ -20,6 +20,7 @@ class QueryResult:
         model_posteriors: Optional[Dict[str, float]] = None,
         num_tool_calls: int = 0,
         num_total_queries: int = 1,
+        incomplete_reason: Optional[str] = None,
     ):
         self.content = content
         self.msg = msg
@@ -37,6 +38,7 @@ class QueryResult:
         self.model_posteriors = model_posteriors or {}
         self.num_tool_calls = num_tool_calls
         self.num_total_queries = num_total_queries
+        self.incomplete_reason = incomplete_reason
 
     def to_dict(self):
         return {
@@ -56,6 +58,7 @@ class QueryResult:
             "model_posteriors": self.model_posteriors,
             "num_tool_calls": self.num_tool_calls,
             "num_total_queries": self.num_total_queries,
+            "incomplete_reason": self.incomplete_reason,
         }
 
     def __str__(self):
@@ -66,8 +69,13 @@ class QueryResult:
         lines.append(f"Total Cost: ${self.cost:.4f}")
         lines.append(f"  Input: ${self.input_cost:.4f} ({self.input_tokens} tokens)")
         lines.append(f"  Output: ${self.output_cost:.4f} ({self.output_tokens} tokens)")
+        thinking_ratio = (
+            f"{self.thinking_tokens / self.output_tokens:.2f}"
+            if self.output_tokens
+            else "n/a"
+        )
         lines.append(
-            f"  --> Thinking tokens: {self.thinking_tokens} ({self.thinking_tokens / self.output_tokens:.2f})"
+            f"  --> Thinking tokens: {self.thinking_tokens} ({thinking_ratio})"
         )
         if self.thinking_tokens > 0:
             lines.append(f"  Thinking: {self.thinking_tokens} tokens")
@@ -77,7 +85,7 @@ class QueryResult:
             lines.append(self.thought)
             lines.append("-" * 80)
         lines.append("Content:")
-        lines.append(self.content)
+        lines.append(self.content or "")
         if self.model_posteriors:
             lines.append("-" * 80)
             lines.append("Model Posteriors:")

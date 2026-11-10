@@ -189,6 +189,8 @@ class AsyncMetaSummarizer:
         total_cost = 0.0
         summaries_with_gen = []
         for original_index, response in responses:
+            if response is not None:
+                total_cost += response.cost or 0.0
             if response and response.content:
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
@@ -200,7 +202,6 @@ class AsyncMetaSummarizer:
                 summaries_with_gen.append(
                     (generation_ids[original_index], program_summary)
                 )
-                total_cost += response.cost or 0.0
             else:
                 logger.warning(f"Step 1: Empty response for program {original_index}")
 
@@ -248,9 +249,9 @@ class AsyncMetaSummarizer:
             system_msg=META_STEP2_SYSTEM_MSG,
         )
 
-        if response is None:
+        if response is None or not response.content:
             logger.error("Step 2: Failed to get response from async meta LLM client")
-            return None, 0.0
+            return None, (response.cost or 0.0) if response else 0.0
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 2 - Global insights generated (cost: ${cost:.4f})")
@@ -289,9 +290,9 @@ class AsyncMetaSummarizer:
             system_msg=META_STEP3_SYSTEM_MSG,
         )
 
-        if response is None:
+        if response is None or not response.content:
             logger.error("Step 3: Failed to get response from async meta LLM client")
-            return None, 0.0
+            return None, (response.cost or 0.0) if response else 0.0
 
         cost = response.cost or 0.0
         logger.info(f"==> Step 3 - Recommendations generated (cost: ${cost:.4f})")
@@ -323,53 +324,43 @@ class AsyncMetaSummarizer:
         )
 
         updated_recs, meta_cost = await self.update_meta_memory_async(best_program)
-        if updated_recs:
-            await self.write_meta_output_async(results_dir)
-            logger.info(f"Final meta summary completed (cost: ${meta_cost:.4f})")
-
-            # Store the final meta cost in the best program's metadata
-            if meta_cost > 0 and best_program and db_config:
-                try:
-                    import json
-
-                    def update_metadata():
-                        from shinka.database import ProgramDatabase
-
-                        thread_db = ProgramDatabase(db_config)
-                        try:
-                            if best_program.metadata is None:
-                                best_program.metadata = {}
-
-                            # Accumulate meta_cost if it already exists
-                            existing_meta_cost = best_program.metadata.get(
-                                "meta_cost", 0.0
-                            )
-                            best_program.metadata["meta_cost"] = (
-                                existing_meta_cost + meta_cost
-                            )
-
-                            metadata_json = json.dumps(best_program.metadata)
-                            thread_db.cursor.execute(
-                                ("UPDATE programs SET metadata = ? WHERE id = ?"),
-                                (metadata_json, best_program.id),
-                            )
-                            thread_db.conn.commit()
-                        finally:
-                            thread_db.close()
-
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, update_metadata)
-                    logger.info(
-                        f"Stored final meta cost ${meta_cost:.4f} "
-                        f"in best program metadata"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to store final meta cost in database: {e}")
-
-            return True, meta_cost
-        else:
+        await self._persist_final_meta_cost(meta_cost, best_program, db_config)
+        if not updated_recs:
             logger.warning("Final meta summary failed to generate recommendations")
-            return False, 0.0
+            return False, meta_cost
+        try:
+            await self.write_meta_output_async(results_dir)
+        except Exception as exc:
+            logger.warning("Failed to write final meta output: %s", exc)
+            return False, meta_cost
+        logger.info(f"Final meta summary completed (cost: ${meta_cost:.4f})")
+        return True, meta_cost
+
+    async def _persist_final_meta_cost(self, meta_cost, best_program, db_config):
+        if meta_cost <= 0 or best_program is None or db_config is None:
+            return
+
+        def update_metadata():
+            import json
+            from shinka.database import ProgramDatabase
+
+            thread_db = ProgramDatabase(db_config)
+            try:
+                metadata = dict(best_program.metadata or {})
+                metadata["meta_cost"] = (metadata.get("meta_cost") or 0.0) + meta_cost
+                thread_db.cursor.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata), best_program.id),
+                )
+                thread_db.conn.commit()
+                best_program.metadata = metadata
+            finally:
+                thread_db.close()
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, update_metadata)
+        except Exception as exc:
+            logger.warning("Failed to store final meta cost in database: %s", exc)
 
     async def write_meta_output_async(self, results_dir: str) -> None:
         """Async version of write_meta_output - write files in thread pool."""

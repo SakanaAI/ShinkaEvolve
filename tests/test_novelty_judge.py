@@ -186,7 +186,7 @@ def test_check_llm_novelty_handles_empty_response_and_exception():
 
     assert is_novel
     assert "empty" in explanation.lower()
-    assert cost == 0.0
+    assert cost == 0.5
 
     failing_llm = DummyNoveltyLLM(raise_on_query=RuntimeError("network down"))
     failing_judge = NoveltyJudge(novelty_llm_client=failing_llm)
