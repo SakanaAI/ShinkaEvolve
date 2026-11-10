@@ -85,6 +85,9 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
 
+Resuming prompt evolution reuses stored prompts, including when only the
+initial generation-zero prompt exists. Existing IDs and fitness data are retained.
+
 Billed OpenAI replies count toward `max_api_costs` even when they contain no
 usable text. A reply exhausted by `max_output_tokens` stops proposal retries;
 increase `llm_kwargs.max_tokens` or lower `reasoning_efforts` before retrying.

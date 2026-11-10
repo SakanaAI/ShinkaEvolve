@@ -11,6 +11,11 @@ import pytest
 import shinka.llm.llm as llm_module
 from shinka.core import EvolutionConfig
 from shinka.core.async_runner import ShinkaEvolveRunner
+from shinka.database.prompt_dbase import (
+    SystemPromptConfig,
+    SystemPromptDatabase,
+    create_system_prompt,
+)
 from shinka.llm.llm import AsyncLLMClient
 
 httpx = getattr(_base_client, "httpx", None) or getattr(_base_client, "httpx2")
@@ -116,3 +121,70 @@ def test_prompt_settings_serialize_through_sdk(
         captured[0]
     )
     assert prompt.metadata["llm"]["llm_kwargs"]["max_output_tokens"] == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "database_state", ["fresh", "empty", "seed", "evolved", "duplicate-seeds"]
+)
+def test_prompt_setup_reuses_persisted_prompts(runner, database_state):
+    existing_generations = {
+        "fresh": [],
+        "empty": [],
+        "seed": [0],
+        "evolved": [0, 1],
+        "duplicate-seeds": [0, 0],
+    }[database_state]
+    expected = {}
+    if database_state != "fresh":
+        db = SystemPromptDatabase(
+            SystemPromptConfig(db_path=runner.results_dir + "/prompts.sqlite")
+        )
+        try:
+            parent_id = None
+            for generation in existing_generations:
+                prompt = create_system_prompt(
+                    prompt_text=PROMPT_TEXT,
+                    generation=generation,
+                    parent_id=parent_id if generation else None,
+                    patch_type="full" if generation else "init",
+                    metadata={"llm": {"cost": 0.5 if generation else 0.0}},
+                )
+                db.add(prompt)
+                db.update_fitness(
+                    prompt.id,
+                    percentile=0.75,
+                    program_id="existing-program-" + prompt.id,
+                    correct=True,
+                    improvement=0.1,
+                    program_score=2.0,
+                )
+                parent_id = prompt.id
+            expected = {prompt.id: prompt.to_dict() for prompt in db.get_all_prompts()}
+        finally:
+            db.close()
+
+    expected_cost = 0.5 if database_state == "evolved" else 0.0
+    runner.prompt_llm = AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
+
+    async def run():
+        nonlocal expected
+        for _ in range(2):
+            await runner._setup_prompt_evolution()
+            actual = {
+                prompt.id: prompt.to_dict()
+                for prompt in runner.prompt_db.get_all_prompts()
+            }
+            if expected:
+                assert actual == expected
+            else:
+                assert len(actual) == 1
+                prompt = next(iter(actual.values()))
+                assert prompt["generation"] == 0
+                assert prompt["prompt_text"] == PROMPT_TEXT
+                expected = actual
+            assert runner.prompt_db.get_total_evolution_costs() == expected_cost
+            assert runner.prompt_sampler_evo.sample().id in expected
+            runner.prompt_db.close()
+            runner.prompt_db = None
+
+    asyncio.run(run())

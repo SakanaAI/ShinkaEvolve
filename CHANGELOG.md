@@ -43,6 +43,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed prompt evolution resume inserting another seed when only generation-zero
+  prompts exist, retaining stored prompt IDs, fitness history, and costs.
 - Fixed custom prompt-model sampler settings being forwarded as raw provider
   arguments, allowing configured token limits and reasoning settings to work
   for both diff and full prompt mutations.
