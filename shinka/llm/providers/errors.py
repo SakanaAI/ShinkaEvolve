@@ -1,4 +1,17 @@
+import asyncio
 from typing import Dict, Optional
+
+
+class BilledCancellationError(asyncio.CancelledError):
+    """Cancellation carrying provider usage already received by the caller."""
+
+    def __init__(self, cost_results: Dict):
+        super().__init__("LLM work cancelled after billed replies")
+        self.cost_results = dict(cost_results)
+
+    @property
+    def cost(self) -> float:
+        return float(self.cost_results.get("cost", 0.0) or 0.0)
 
 
 class NonRetryableLLMError(ValueError):

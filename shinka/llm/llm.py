@@ -10,6 +10,7 @@ from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
 from .providers.errors import (
+    BilledCancellationError,
     EmptyResponseError,
     NonRetryableLLMError,
     StructuredOutputNotSupportedError,
@@ -788,29 +789,37 @@ class AsyncLLMClient:
 
         unanswered = _UnansweredReplies()
         try_count = 0
-        while try_count < MAX_RETRIES:
-            try:
-                result = await query_async(
-                    msg=msg,
-                    system_msg=system_msg,
-                    msg_history=msg_history,
-                    output_model=self.output_model,
-                    model_posteriors=model_posteriors,
-                    **llm_kwargs,
-                )
-                unanswered.add_costs_to(result)
-                if self.verbose and hasattr(result, "cost") and result.cost is not None:
-                    logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
-                return result
-            except NonRetryableLLMError:
-                raise
-            except Exception as e:
-                logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
-                if _stop_after_empty_reply(e, unanswered):
-                    break
-                try_count += 1
-                if try_count < MAX_RETRIES:
-                    await asyncio.sleep(1)
+        try:
+            while try_count < MAX_RETRIES:
+                try:
+                    result = await query_async(
+                        msg=msg,
+                        system_msg=system_msg,
+                        msg_history=msg_history,
+                        output_model=self.output_model,
+                        model_posteriors=model_posteriors,
+                        **llm_kwargs,
+                    )
+                    unanswered.add_costs_to(result)
+                    if self.verbose and hasattr(result, "cost") and result.cost is not None:
+                        logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
+                    return result
+                except NonRetryableLLMError:
+                    raise
+                except Exception as e:
+                    logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
+                    if _stop_after_empty_reply(e, unanswered):
+                        break
+                    try_count += 1
+                    if try_count < MAX_RETRIES:
+                        await asyncio.sleep(1)
+        except asyncio.CancelledError as exc:
+            if unanswered.count:
+                raise BilledCancellationError({
+                    **unanswered.totals,
+                    "num_total_queries": unanswered.count,
+                }) from exc
+            raise
         return unanswered.as_result(
             msg, system_msg, msg_history, llm_kwargs, model_posteriors
         )
