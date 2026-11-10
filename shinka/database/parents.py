@@ -210,13 +210,13 @@ class PowerLawSamplingStrategy(ParentSamplingStrategy):
             self.cursor.execute(
                 """SELECT id FROM programs
                    WHERE correct = 1 AND island_idx = ?
-                   ORDER BY RANDOM() LIMIT 1""",
+                   ORDER BY shinka_random() LIMIT 1""",
                 (self.island_idx,),
             )
         else:
             self.cursor.execute(
                 """SELECT id FROM programs WHERE correct = 1
-                   ORDER BY RANDOM() LIMIT 1"""
+                   ORDER BY shinka_random() LIMIT 1"""
             )
         row = self.cursor.fetchone()
         if row:
@@ -280,13 +280,13 @@ class WeightedSamplingStrategy(ParentSamplingStrategy):
                 self.cursor.execute(
                     """SELECT id FROM programs
                        WHERE correct = 1 AND island_idx = ?
-                       ORDER BY RANDOM() LIMIT 1""",
+                       ORDER BY shinka_random() LIMIT 1""",
                     (self.island_idx,),
                 )
             else:
                 self.cursor.execute(
                     """SELECT id FROM programs WHERE correct = 1
-                       ORDER BY RANDOM() LIMIT 1"""
+                       ORDER BY shinka_random() LIMIT 1"""
                 )
             row = self.cursor.fetchone()
             if row:
@@ -525,7 +525,8 @@ class BeamSearchSamplingStrategy(ParentSamplingStrategy):
 
         # Final fallback
         self.cursor.execute(
-            "SELECT id FROM programs WHERE correct = 1 ORDER BY RANDOM() LIMIT 1"
+            "SELECT id FROM programs WHERE correct = 1 "
+            "ORDER BY shinka_random() LIMIT 1"
         )
         row = self.cursor.fetchone()
         return self.get_program(row["id"]) if row else None
@@ -845,13 +846,13 @@ class CombinedParentSelector:
                 self.cursor.execute(
                     """SELECT id FROM programs 
                        WHERE correct = 1 AND island_idx = ?
-                       ORDER BY RANDOM() LIMIT 1""",
+                       ORDER BY shinka_random() LIMIT 1""",
                     (island_idx,),
                 )
             else:
                 self.cursor.execute(
                     """SELECT id FROM programs 
-                       ORDER BY RANDOM() LIMIT 1"""
+                       ORDER BY shinka_random() LIMIT 1"""
                 )
             row = self.cursor.fetchone()
             if row:

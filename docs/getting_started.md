@@ -402,6 +402,11 @@ runner.run()
 | DB config | Must match the original run |
 | Prior state | Best solutions and meta-recommendations are preserved |
 
+For deterministic local RNG continuation, set `random_seed`, request a clean
+checkpoint with one Ctrl-C (or `runner.request_checkpoint_and_exit()`), and
+resume with `checkpoint_resume_mode="strict"`. See
+[Clean checkpoints and deterministic resume](checkpointing.md).
+
 ### Environment management
 
 | Mode | Config |

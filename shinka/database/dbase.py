@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
@@ -345,6 +346,14 @@ class ProgramDatabase:
             self.conn = sqlite3.connect(":memory:")
             logger.info("Initialized in-memory SQLite database.")
 
+        # SQLite's RANDOM() owns opaque state that cannot be seeded or
+        # checkpointed. Route randomized SQL ordering through Python's global
+        # RNG so seeded runs and clean checkpoints cover database sampling too.
+        self.conn.create_function(
+            "shinka_random",
+            0,
+            lambda: random.randrange(-(2**63), 2**63),
+        )
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
         if not self.read_only:

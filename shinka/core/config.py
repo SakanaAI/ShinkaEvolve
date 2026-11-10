@@ -40,6 +40,8 @@ class EvolutionConfig:
     embedding_model: Optional[str] = "text-embedding-3-small"
     init_program_path: Optional[str] = "initial.py"
     results_dir: Optional[str] = None
+    random_seed: Optional[int] = None
+    checkpoint_resume_mode: str = "if_available"
 
     # Optional W&B logging is additive to the existing database/WebUI logging.
     enable_wandb_logging: bool = False
@@ -84,3 +86,18 @@ class EvolutionConfig:
     prompt_epsilon: float = 0.1
     prompt_evo_top_k_programs: int = 3
     prompt_percentile_recompute_interval: int = 20
+
+    def __post_init__(self) -> None:
+        valid_resume_modes = {"strict", "if_available", "reseed"}
+        if self.checkpoint_resume_mode not in valid_resume_modes:
+            raise ValueError(
+                "checkpoint_resume_mode must be one of: "
+                + ", ".join(sorted(valid_resume_modes))
+            )
+        if self.random_seed is not None:
+            if isinstance(self.random_seed, bool) or not isinstance(
+                self.random_seed, int
+            ):
+                raise TypeError("random_seed must be an integer or None")
+            if not 0 <= self.random_seed < 2**32:
+                raise ValueError("random_seed must be between 0 and 2**32 - 1")
