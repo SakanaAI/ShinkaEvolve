@@ -1631,6 +1631,13 @@ class ShinkaEvolveRunner:
                 )
                 logger.warning(f"Prompt evolution failed (patch_type={patch_type})")
 
+        except BilledCancellationError as exc:
+            self.prompt_api_cost += exc.cost
+            self.total_api_cost += exc.cost
+            await self._record_unattached_cost(
+                exc.cost, "prompt_evolution", current_program_generation
+            )
+            raise
         except Exception as e:
             logger.error(f"Error during prompt evolution: {e}")
 

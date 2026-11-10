@@ -46,6 +46,12 @@ responses.
 Async counterpart for the same provider abstraction.
 Its indexed batch method follows the same request-index contract.
 
+Cancelling a single query after it received billed empty replies raises
+`BilledCancellationError`, a subclass of `asyncio.CancelledError`. Its
+`cost_results` contains the already-received costs, token totals, and query
+count. Direct callers can account for those charges before propagating
+cancellation. Charges for requests without a received usage report are unknown.
+
 ::: shinka.llm.llm.AsyncLLMClient
     handler: python
     options:

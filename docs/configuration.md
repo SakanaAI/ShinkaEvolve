@@ -92,6 +92,10 @@ Failed proposal, initialization, prompt, and meta-analysis charges are retained
 on resume. The budget stops new submissions; requests already running can
 complete and add costs.
 
+Cancellation of initialization, proposal generation, or prompt evolution
+retains known charges on resume. Small accounting writes finish before
+cancellation propagates, including when cancellation interrupts an insert.
+
 When calling the LLM clients directly, a billed failure can return a
 `QueryResult` with `content=None`, its cost and usage, and an
 `incomplete_reason`. Check `content` before using the answer. Batch clients
