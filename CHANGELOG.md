@@ -43,8 +43,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
-- Fixed billed OpenAI replies without text being omitted from query costs in
-  PR #211 (issue #210), with output-limit diagnostics. Thanks @prath47.
+- Fixed billed empty OpenAI replies being omitted from budgets across single,
+  batch, proposal, novelty, prompt, and meta-analysis calls in PR #211
+  (issue #210). Output exhaustion stops proposal retries; failed charges survive
+  resume, and recovered replies retain complete billed usage. Thanks @prath47.
 
 - Fixed duplicated API, embedding, novelty, and meta-analysis costs on initial
   and spawned island copies in PR #215, preserving original spend and cumulative

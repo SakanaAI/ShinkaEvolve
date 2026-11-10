@@ -10,6 +10,7 @@ from shinka.llm.llm import AsyncLLMClient, LLMClient
 from shinka.llm.providers import QueryResult
 from shinka.llm.providers.errors import EmptyResponseError
 from shinka.llm.providers.openai import query_openai, query_openai_async
+from pydantic import BaseModel
 
 
 def empty_reply(reason="max_output_tokens"):
@@ -130,3 +131,38 @@ def test_structured_empty_reply_preserves_billing_and_termination(mode):
             )
     assert caught.value.cost == 0.5
     assert caught.value.hit_output_limit
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_structured_success_preserves_parsed_model_and_cost(mode):
+    class Answer(BaseModel):
+        answer: str
+
+    parsed = Answer(answer="OK")
+    response = SimpleNamespace(
+        output_parsed=parsed,
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            output_tokens_details=SimpleNamespace(reasoning_tokens=0),
+            cost_details={
+                "upstream_inference_input_cost": 0.1,
+                "upstream_inference_output_cost": 0.4,
+            },
+        ),
+    )
+
+    async def parse_async(**kwargs):
+        return response
+
+    parse = (lambda **kwargs: response) if mode == "sync" else parse_async
+    client = SimpleNamespace(responses=SimpleNamespace(parse=parse))
+    if mode == "sync":
+        result = query_openai(client, "gpt-5-mini", "msg", "sys", [], Answer)
+    else:
+        result = asyncio.run(
+            query_openai_async(client, "gpt-5-mini", "msg", "sys", [], Answer)
+        )
+    assert result.content is parsed
+    assert result.cost == 0.5
+    assert result.new_msg_history[-1] == {"role": "assistant", "content": "answer:OK\n"}

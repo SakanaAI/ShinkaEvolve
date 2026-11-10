@@ -85,6 +85,18 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
 
+Billed OpenAI replies count toward `max_api_costs` even when they contain no
+usable text. A reply exhausted by `max_output_tokens` stops proposal retries;
+increase `llm_kwargs.max_tokens` or lower `reasoning_efforts` before retrying.
+Failed proposal, initialization, prompt, and meta-analysis charges are retained
+on resume. The budget stops new submissions; requests already running can
+complete and add costs.
+
+When calling the LLM clients directly, a billed failure can return a
+`QueryResult` with `content=None`, its cost and usage, and an
+`incomplete_reason`. Check `content` before using the answer. Batch clients
+also retain these billed results so callers can include their costs.
+
 W&B logging examples:
 
 ```bash
