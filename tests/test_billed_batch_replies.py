@@ -26,7 +26,9 @@ class InlinePool:
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
-@pytest.mark.parametrize("method", ["batch_query", "batch_kwargs_query"])
+@pytest.mark.parametrize(
+    "method", ["batch_query", "batch_kwargs_query", "batch_kwargs_query_indexed"]
+)
 @pytest.mark.parametrize("scenario", ["exhausted", "recovered", "all_empty"])
 def test_batch_retains_billed_failures(monkeypatch, mode, method, scenario):
     calls = []
@@ -72,6 +74,9 @@ def test_batch_retains_billed_failures(monkeypatch, mode, method, scenario):
         responses = asyncio.run(responses)
     assert len(responses) == 1
     result = responses[0]
+    if method == "batch_kwargs_query_indexed":
+        assert result[0] == 0
+        result = result[1]
     expected_calls = {
         "exhausted": 1,
         "recovered": 2,

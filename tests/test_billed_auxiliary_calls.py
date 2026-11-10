@@ -72,17 +72,19 @@ def test_meta_individual_summary_reports_empty_reply_cost(mode, billed_reply):
         correct=True,
         metadata={"patch_name": "patch"},
     )
-    sync_client = SimpleNamespace(batch_kwargs_query=lambda **kwargs: [billed_reply])
+    sync_client = SimpleNamespace(
+        batch_kwargs_query_indexed=lambda **kwargs: [(0, billed_reply)]
+    )
     if mode == "sync":
         summarizer = MetaSummarizer(meta_llm_client=sync_client)
         result = summarizer._step1_individual_summaries([program])
     else:
 
         async def batch(**kwargs):
-            return [billed_reply]
+            return [(0, billed_reply)]
 
         summarizer = AsyncMetaSummarizer(
-            MetaSummarizer(), SimpleNamespace(batch_kwargs_query=batch)
+            MetaSummarizer(), SimpleNamespace(batch_kwargs_query_indexed=batch)
         )
         result = asyncio.run(summarizer._step1_individual_summaries_async([program]))
     assert result == (None, 3.3)

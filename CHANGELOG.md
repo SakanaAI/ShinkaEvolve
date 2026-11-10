@@ -48,6 +48,8 @@ All notable changes to `shinka-evolve` are documented in this file.
   (issue #210). Output exhaustion stops proposal retries; failed charges survive
   resume, and recovered replies retain complete billed usage. Thanks @prath47.
 
+- Fixed sync and async meta-summary metadata alignment and generation ordering
+  after failed batch responses in PR #208. Thanks @lll-hhh.
 - Fixed duplicated API, embedding, novelty, and meta-analysis costs on initial
   and spawned island copies in PR #215, preserving original spend and cumulative
   cost plots. Thanks @guudewie.

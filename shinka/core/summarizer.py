@@ -256,7 +256,7 @@ class MetaSummarizer:
         # Use batch query to process all programs
         num_programs = len(programs_to_analyze)
         logger.info(f"==> Step 1 - Processing {num_programs} programs with batch query")
-        responses = self.meta_llm_client.batch_kwargs_query(
+        responses = self.meta_llm_client.batch_kwargs_query_indexed(
             num_samples=num_programs,
             msg=user_messages,
             system_msg=META_STEP1_SYSTEM_MSG,
@@ -266,28 +266,26 @@ class MetaSummarizer:
             logger.error("Step 1: Failed to get responses from meta LLM client")
             return None, 0.0
 
-        # Filter out None responses and combine summaries
-        valid_responses = [r for r in responses if r is not None]
-        if not valid_responses:
-            logger.error("Step 1: All batch responses were None")
-            return None, 0.0
-
         # Combine all individual summaries
-        combined_summaries = []
         total_cost = 0.0
-        for i, response in enumerate(valid_responses):
-            total_cost += response.cost or 0.0
+        summaries_with_gen = []
+        for original_index, response in responses:
+            if response is not None:
+                total_cost += response.cost or 0.0
             if response and response.content:
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
-                program_summary += f"Generation {generation_ids[i]} - Patch Name {patch_names[i]} - Correct Program: {correct_programs[i]}"
-                combined_summaries.append(program_summary)
+                program_summary += (
+                    f"Generation {generation_ids[original_index]} - "
+                    f"Patch Name {patch_names[original_index]} - "
+                    f"Correct Program: {correct_programs[original_index]}"
+                )
+                summaries_with_gen.append(
+                    (generation_ids[original_index], program_summary)
+                )
             else:
-                logger.warning(f"Step 1: Empty response for program {i}")
+                logger.warning(f"Step 1: Empty response for program {original_index}")
 
-        # Sort combined_summaries by generation (using generation_ids)
-        # Zip together summaries and their generation, sort, then extract summaries
-        summaries_with_gen = list(zip(generation_ids, combined_summaries))
         summaries_with_gen.sort(key=lambda x: x[0])
         combined_summaries = [summary for _, summary in summaries_with_gen]
 

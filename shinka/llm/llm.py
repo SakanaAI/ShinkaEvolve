@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import re
 import json
 import multiprocessing as mp
@@ -241,7 +241,29 @@ class LLMClient:
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
     ) -> List[QueryResult]:
-        """Batch query the LLM with the given message and system message.
+        """Return batch results in input order, including billed empty replies."""
+        results = self.batch_kwargs_query_indexed(
+            num_samples=num_samples,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+            model_sample_probs=model_sample_probs,
+        )
+        return [response for _, response in results]
+
+    def batch_kwargs_query_indexed(
+        self,
+        num_samples: int,
+        msg: Union[str, List[str]],
+        system_msg: Union[str, List[str]],
+        msg_history: Optional[Union[List[Dict], List[List[Dict]]]] = None,
+        model_sample_probs: Optional[List[float]] = None,
+    ) -> List[Tuple[int, QueryResult]]:
+        """Return results paired with their original request indices.
+
+        Billed empty replies are retained for cost accounting. Requests without
+        a result are omitted without renumbering later responses.
+        Non-retryable errors propagate as in :meth:`batch_kwargs_query`.
 
         Args:
             msg (str): The message to query the LLM with.
@@ -253,7 +275,7 @@ class LLMClient:
             msg = [msg] * num_samples
         if isinstance(system_msg, str):
             system_msg = [system_msg] * num_samples
-        if len(msg_history) == 0:
+        if not msg_history:
             msg_history = [[]] * num_samples
         elif isinstance(msg_history[0], dict):
             msg_history = [msg_history] * num_samples
@@ -313,12 +335,15 @@ class LLMClient:
                 except Exception as e:
                     logger.error(f"Error in batch query: {str(e)}")
 
-            # Sort by index and extract just the results
+            # Preserve request indices across failures for metadata-aware callers.
             results.sort(key=lambda x: x[0])
-            final_results = [r[1] for r in results if r[1] is not None]
+            indexed_results = [
+                (idx, result) for idx, result in results if result is not None
+            ]
 
             # Print batch total cost
             if self.verbose:
+                final_results = [result for _, result in indexed_results]
                 total_cost = sum(
                     r.cost
                     for r in final_results
@@ -331,7 +356,7 @@ class LLMClient:
                 ]
                 logger.info(f"==> SAMPLING: Individual API costs: {formatted_costs}")
                 logger.info(f"==> SAMPLING: Total API costs: ${total_cost:.4f}")
-            return final_results
+            return indexed_results
 
     def get_kwargs(self, model_sample_probs: Optional[List[float]] = None):
         """Get model kwargs for sampling.
@@ -570,7 +595,29 @@ class AsyncLLMClient:
         msg_history: Union[List[Dict], List[List[Dict]]] = [],
         model_sample_probs: Optional[List[float]] = None,
     ) -> List[QueryResult]:
-        """Batch query the LLM with the given message and system message asynchronously.
+        """Return batch results in input order, including billed empty replies."""
+        results = await self.batch_kwargs_query_indexed(
+            num_samples=num_samples,
+            msg=msg,
+            system_msg=system_msg,
+            msg_history=msg_history,
+            model_sample_probs=model_sample_probs,
+        )
+        return [response for _, response in results]
+
+    async def batch_kwargs_query_indexed(
+        self,
+        num_samples: int,
+        msg: Union[str, List[str]],
+        system_msg: Union[str, List[str]],
+        msg_history: Optional[Union[List[Dict], List[List[Dict]]]] = None,
+        model_sample_probs: Optional[List[float]] = None,
+    ) -> List[Tuple[int, QueryResult]]:
+        """Return results paired with their original request indices.
+
+        Billed empty replies are retained for cost accounting. Requests without
+        a result are omitted without renumbering later responses.
+        Non-retryable errors propagate as in :meth:`batch_kwargs_query`.
 
         Args:
             msg (str): The message to query the LLM with.
@@ -582,7 +629,7 @@ class AsyncLLMClient:
             msg = [msg] * num_samples
         if isinstance(system_msg, str):
             system_msg = [system_msg] * num_samples
-        if len(msg_history) == 0:
+        if not msg_history:
             msg_history = [[]] * num_samples
         elif isinstance(msg_history[0], dict):
             msg_history = [msg_history] * num_samples
@@ -623,17 +670,18 @@ class AsyncLLMClient:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Process results and filter out exceptions
-        final_results = []
+        indexed_results = []
         for i, result in enumerate(results):
             if isinstance(result, NonRetryableLLMError):
                 raise result
             if isinstance(result, Exception):
                 logger.info(f"Error in batch query task {i}: {str(result)}")
             elif result is not None and len(result) > 1 and result[1] is not None:
-                final_results.append(result[1])
+                indexed_results.append((result[0], result[1]))
 
         # Print batch total cost
         if self.verbose:
+            final_results = [response for _, response in indexed_results]
             total_cost = sum(
                 r.cost
                 for r in final_results
@@ -646,7 +694,7 @@ class AsyncLLMClient:
             ]
             logger.info(f"==> SAMPLING: Individual API costs: {formatted_costs}")
             logger.info(f"==> SAMPLING: Total API costs: ${total_cost:.4f}")
-        return final_results
+        return indexed_results
 
     def get_kwargs(self, model_sample_probs: Optional[List[float]] = None):
         """Get model kwargs for sampling.
