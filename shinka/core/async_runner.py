@@ -38,7 +38,7 @@ from shinka.llm import (
     AsymmetricUCB,
     ThompsonSampler,
 )
-from shinka.llm.providers.errors import LLMEndpointError
+from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
@@ -53,7 +53,11 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
-from shinka.core.billing import failed_attempt_costs
+from shinka.core.billing import (
+    cancellation_with_cost,
+    failed_attempt_costs,
+    finish_cost_recording,
+)
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
     with_pipeline_timing,
@@ -731,9 +735,13 @@ class ShinkaEvolveRunner:
         """Persist failed charges without manufacturing a program or prompt."""
         if cost <= 0.0:
             return
-        await self._record_attempt_event(
-            generation, stage, "failed",
-            {"node_kind": "unattached_cost", "api_costs": cost},
+        await finish_cost_recording(
+            self._record_attempt_event(
+                generation,
+                stage,
+                "failed",
+                {"node_kind": "unattached_cost", "api_costs": cost},
+            )
         )
 
     async def _record_meta_cost(self, program: Program, cost: float) -> None:
@@ -2085,15 +2093,22 @@ class ShinkaEvolveRunner:
                 "LLM failed to generate a valid initial program after "
                 f"{self.evo_config.max_patch_attempts} attempts."
             )
-        except (Exception, asyncio.CancelledError):
-            # Setup can commit a program before posting its cost in memory.
-            self.total_api_cost = max(self.total_api_cost, cost_before_setup + total_costs)
-            persisted_cost = await self._get_total_api_costs()
-            posted_cost = max(persisted_cost - cost_before_setup, 0.0)
-            pending_cost = max(total_costs - posted_cost, 0.0)
-            self.total_api_cost = max(self.total_api_cost, persisted_cost)
-            await self._record_unattached_cost(pending_cost, "initialization", 0)
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, BilledCancellationError):
+                total_costs += exc.cost
+            await finish_cost_recording(
+                self._reconcile_initial_costs(cost_before_setup, total_costs)
+            )
             raise
+
+    async def _reconcile_initial_costs(self, cost_before_setup: float, known_cost: float) -> None:
+        # Setup can commit a program before posting its cost in memory.
+        self.total_api_cost = max(self.total_api_cost, cost_before_setup + known_cost)
+        persisted_cost = await self._get_total_api_costs()
+        posted_cost = max(persisted_cost - cost_before_setup, 0.0)
+        pending_cost = max(known_cost - posted_cost, 0.0)
+        self.total_api_cost = max(self.total_api_cost, persisted_cost)
+        await self._record_unattached_cost(pending_cost, "initialization", 0)
 
     async def _job_monitor_task(self):
         """Monitor running jobs and process completed ones."""
@@ -2791,331 +2806,346 @@ class ShinkaEvolveRunner:
         meta_patch_data: Dict[str, Any] = {}
         code_embedding: Optional[List[float]] = None
 
-        # Select LLM once per program generation (before all loops)
-        model_sample_probs = None
-        model_posterior = None
-        if getattr(self, "llm_selection", None) is not None:
-            model_sample_probs, model_posterior = self.llm_selection.select_llm()
+        costs_transferred = False
+        try:
+            # Select LLM once per program generation (before all loops)
+            model_sample_probs = None
+            model_posterior = None
+            if getattr(self, "llm_selection", None) is not None:
+                model_sample_probs, model_posterior = self.llm_selection.select_llm()
 
-        for attempt in range(self.evo_config.max_novelty_attempts):
-            for resample in range(self.evo_config.max_patch_resamples):
-                try:
-                    # Sample parent and inspirations with fix mode detection
-                    (
-                        parent_program,
-                        archive_programs,
-                        top_k_programs,
-                        needs_fix,
-                    ) = await self.async_db.sample_with_fix_mode_async(
-                        target_generation=generation,
-                        novelty_attempt=attempt + 1,
-                        max_novelty_attempts=self.evo_config.max_novelty_attempts,
-                        resample_attempt=resample + 1,
-                        max_resample_attempts=self.evo_config.max_patch_resamples,
-                    )
-
-                    # Sync beam_search parent to main database if using beam_search strategy
-                    # (async sampling uses read-only thread-local DBs that can't persist state)
-                    if (
-                        getattr(self.db_config, "parent_selection_strategy", "")
-                        == "beam_search"
-                        and parent_program
-                    ):
-                        await self.async_db.update_beam_search_parent_async(
-                            parent_program.id
-                        )
-
-                    # Choose between fix mode and normal patch mode
-                    if needs_fix:
-                        # FIX MODE: No correct programs exist, try to fix
-                        # archive_programs contains ancestors in fix mode
-                        if self.verbose:
-                            logger.info(
-                                f"FIX MODE: Attempting to fix incorrect program "
-                                f"{parent_program.id} (Gen: {parent_program.generation})"
-                            )
-                        patch_result = await self._run_fix_patch_async(
-                            parent_program,
-                            archive_programs,  # ancestors in fix mode
-                            generation,
-                            novelty_attempt=attempt + 1,
-                            resample_attempt=resample + 1,
-                            model_sample_probs=model_sample_probs,
-                            model_posterior=model_posterior,
-                        )
-                    else:
-                        # NORMAL MODE: Generate patch
-                        patch_result = await self._run_patch_async(
+            for attempt in range(self.evo_config.max_novelty_attempts):
+                for resample in range(self.evo_config.max_patch_resamples):
+                    try:
+                        # Sample parent and inspirations with fix mode detection
+                        (
                             parent_program,
                             archive_programs,
                             top_k_programs,
-                            generation,
-                            meta_recs,
+                            needs_fix,
+                        ) = await self.async_db.sample_with_fix_mode_async(
+                            target_generation=generation,
                             novelty_attempt=attempt + 1,
+                            max_novelty_attempts=self.evo_config.max_novelty_attempts,
                             resample_attempt=resample + 1,
-                            model_sample_probs=model_sample_probs,
-                            model_posterior=model_posterior,
+                            max_resample_attempts=self.evo_config.max_patch_resamples,
                         )
 
-                    if not patch_result:
-                        last_failure_stage = "proposal"
-                        last_failure_reason = "Patch generation returned no result"
-                        continue
+                        # Sync beam_search parent to main database if using beam_search strategy
+                        # (async sampling uses read-only thread-local DBs that can't persist state)
+                        if (
+                            getattr(self.db_config, "parent_selection_strategy", "")
+                            == "beam_search"
+                            and parent_program
+                        ):
+                            await self.async_db.update_beam_search_parent_async(
+                                parent_program.id
+                            )
 
-                    code_diff, meta_patch_data, success = patch_result
-                    api_costs += meta_patch_data.get("api_costs", 0.0)
+                        # Choose between fix mode and normal patch mode
+                        if needs_fix:
+                            # FIX MODE: No correct programs exist, try to fix
+                            # archive_programs contains ancestors in fix mode
+                            if self.verbose:
+                                logger.info(
+                                    f"FIX MODE: Attempting to fix incorrect program "
+                                    f"{parent_program.id} (Gen: {parent_program.generation})"
+                                )
+                            patch_result = await self._run_fix_patch_async(
+                                parent_program,
+                                archive_programs,  # ancestors in fix mode
+                                generation,
+                                novelty_attempt=attempt + 1,
+                                resample_attempt=resample + 1,
+                                model_sample_probs=model_sample_probs,
+                                model_posterior=model_posterior,
+                            )
+                        else:
+                            # NORMAL MODE: Generate patch
+                            patch_result = await self._run_patch_async(
+                                parent_program,
+                                archive_programs,
+                                top_k_programs,
+                                generation,
+                                meta_recs,
+                                novelty_attempt=attempt + 1,
+                                resample_attempt=resample + 1,
+                                model_sample_probs=model_sample_probs,
+                                model_posterior=model_posterior,
+                            )
 
-                    if not success:
-                        last_failure_stage = "proposal"
-                        last_failure_reason = (
-                            meta_patch_data.get("last_error_msg")
-                            or meta_patch_data.get("error_attempt")
-                            or "Patch generation failed before evaluation"
-                        )
-                        if meta_patch_data.get("non_retryable"):
-                            break
-                        continue
+                        if not patch_result:
+                            last_failure_stage = "proposal"
+                            last_failure_reason = "Patch generation returned no result"
+                            continue
 
-                    # We have a successful patch, break from resample loop
-                    meta_patch_data["api_costs"] = api_costs
-                    break
-                except Exception as e:
-                    logger.warning(
-                        f"Error in patch generation attempt {resample + 1}: {e}"
-                    )
-                    last_failure_stage = "proposal"
-                    last_failure_reason = str(e)
-                    continue
-            else:
-                # No successful patch in all resamples, continue to next novelty attempt
-                continue
+                        code_diff, meta_patch_data, success = patch_result
+                        api_costs += meta_patch_data.get("api_costs", 0.0)
 
-            if meta_patch_data.get("non_retryable"):
-                break
+                        if not success:
+                            last_failure_stage = "proposal"
+                            last_failure_reason = (
+                                meta_patch_data.get("last_error_msg")
+                                or meta_patch_data.get("error_attempt")
+                                or "Patch generation failed before evaluation"
+                            )
+                            if meta_patch_data.get("non_retryable"):
+                                break
+                            continue
 
-            # Get code embedding (only once per successful patch)
-            if self.verbose:
-                logger.info(f"Getting code embedding for generation {generation}...")
-            code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
-            embed_cost += e_cost
-            if self.verbose:
-                logger.info(
-                    f"Code embedding completed for generation {generation} (cost: ${e_cost:.4f})"
-                )
-
-            if not code_embedding:
-                if self.novelty_judge:
-                    self.novelty_judge.log_novelty_skip_message("no embedding")
-                proposal_accepted = True  # Accept program even without embedding
-                break
-
-            # Novelty check (same logic as sync runner)
-            if self.novelty_judge:
-                should_check = await self.novelty_judge.should_check_novelty_async(
-                    code_embedding, generation, parent_program, self.db
-                )
-
-                if should_check:
-                    (
-                        should_accept,
-                        novelty_metadata,
-                    ) = await self.novelty_judge.assess_novelty_with_rejection_sampling_async(
-                        exec_fname, code_embedding, parent_program, self.db
-                    )
-
-                    # Update costs and metadata from novelty assessment (same as sync runner)
-                    novelty_cost_from_check = novelty_metadata.get(
-                        "novelty_total_cost", 0.0
-                    )
-                    novelty_total_cost += (
-                        novelty_cost_from_check  # Accumulate novelty cost separately
-                    )
-                    novelty_checks_performed = novelty_metadata.get(
-                        "novelty_checks_performed", 0
-                    )
-                    novelty_explanation = novelty_metadata.get(
-                        "novelty_explanation", ""
-                    )
-                    meta_patch_data["novelty_checks_performed"] = (
-                        novelty_checks_performed
-                    )
-                    meta_patch_data["novelty_cost"] = novelty_total_cost
-                    meta_patch_data["novelty_explanation"] = novelty_explanation
-                    meta_patch_data["max_similarity"] = novelty_metadata.get(
-                        "max_similarity"
-                    )
-                    meta_patch_data["similarity_scores"] = novelty_metadata.get(
-                        "similarity_scores", []
-                    )
-
-                    if should_accept:
-                        proposal_accepted = True
+                        # We have a successful patch, break from resample loop
+                        meta_patch_data["api_costs"] = api_costs
                         break
-                    # If not accepted, continue to next attempt (rejection sampling)
-                    last_failure_stage = "novelty"
-                    last_failure_reason = (
-                        novelty_explanation
-                        or "Proposal rejected by novelty check before downstream evaluation"
-                    )
-                else:
-                    proposal_accepted = True
-                    if not self.db.island_manager or not hasattr(
-                        self.db.island_manager, "are_all_islands_initialized"
-                    ):
-                        self.novelty_judge.log_novelty_skip_message("no island manager")
-                    elif not self.db.island_manager.are_all_islands_initialized():
-                        self.novelty_judge.log_novelty_skip_message(
-                            "not all islands initialized yet"
+                    except Exception as e:
+                        logger.warning(
+                            f"Error in patch generation attempt {resample + 1}: {e}"
                         )
+                        last_failure_stage = "proposal"
+                        last_failure_reason = str(e)
+                        continue
+                else:
+                    # No successful patch in all resamples, continue to next novelty attempt
+                    continue
+
+                if meta_patch_data.get("non_retryable"):
                     break
-            else:
-                # No novelty judge configured, accept the program
-                proposal_accepted = True
-                break
 
-            # If proposal was accepted, break from the outer novelty loop
-            if proposal_accepted:
-                break
-
-        # Add meta-recommendations/summary/scratchpad to meta_patch_data (same as sync runner)
-        if meta_recs is not None:
-            meta_patch_data["meta_recommendations"] = meta_recs
-            meta_patch_data["meta_summary"] = meta_summary
-            meta_patch_data["meta_scratch_pad"] = meta_scratch
-
-        # If we have an accepted proposal, submit it
-        if proposal_accepted:
-            # Add novelty check information to meta_patch_data if any checks were performed (same as sync runner)
-            if generation > 0 and novelty_checks_performed > 0:
-                meta_patch_data["novelty_checks_performed"] = novelty_checks_performed
-                meta_patch_data["novelty_cost"] = (
-                    novelty_total_cost  # Use "novelty_cost" key like sync
-                )
-                meta_patch_data["novelty_explanation"] = novelty_explanation
-
-            try:
-                (
-                    job_id,
-                    evaluation_worker_id,
-                    evaluation_submitted_at,
-                    evaluation_started_at,
-                    running_eval_jobs_at_submit,
-                ) = await self._submit_evaluation_job_with_slot(
-                    exec_fname=exec_fname,
-                    results_dir=results_dir,
-                    sampling_worker_id=sampling_worker_id,
-                )
-
-                # Create running job
-                running_job = AsyncRunningJob(
-                    job_id=job_id,
-                    exec_fname=exec_fname,
-                    results_dir=results_dir,
-                    start_time=evaluation_clock_start(
-                        proposal_started_at,
-                        evaluation_submitted_at,
-                        evaluation_started_at,
-                    ),
-                    proposal_started_at=proposal_started_at,
-                    evaluation_submitted_at=evaluation_submitted_at,
-                    generation=generation,
-                    evaluation_started_at=evaluation_started_at,
-                    sampling_worker_id=sampling_worker_id,
-                    evaluation_worker_id=evaluation_worker_id,
-                    active_proposals_at_start=active_proposals_at_start,
-                    running_eval_jobs_at_submit=running_eval_jobs_at_submit,
-                    parent_id=parent_program.id,
-                    archive_insp_ids=[p.id for p in archive_programs],
-                    top_k_insp_ids=[p.id for p in top_k_programs],
-                    code_diff=code_diff,
-                    meta_patch_data=meta_patch_data,
-                    code_embedding=code_embedding,
-                    embed_cost=embed_cost,
-                    novelty_cost=novelty_total_cost,  # Store novelty cost in running job
-                    proposal_task_id=task_id,
-                )
-
-                # Update costs
-                meta_patch_data["api_costs"] = api_costs
-                proposal_total_cost = api_costs + embed_cost + novelty_total_cost
-                self.total_api_cost += proposal_total_cost
-
-                # Update average proposal cost for in-flight estimation
-                self._update_avg_proposal_cost(proposal_total_cost)
-
-                # Track job in both running list and submitted registry
-                self.running_jobs.append(running_job)
-                self.submitted_jobs[str(job_id)] = running_job
-
-                # Trigger immediate job status check to catch fast-completing jobs
-                self.slot_available.set()
+                # Get code embedding (only once per successful patch)
                 if self.verbose:
-                    total_cost = api_costs + embed_cost + novelty_total_cost
+                    logger.info(f"Getting code embedding for generation {generation}...")
+                code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
+                embed_cost += e_cost
+                if self.verbose:
+                    logger.info(
+                        f"Code embedding completed for generation {generation} (cost: ${e_cost:.4f})"
+                    )
 
-                    # Format total API cost info
-                    if self.evo_config.max_api_costs is not None:
-                        cost_pct = (
-                            self.total_api_cost / self.evo_config.max_api_costs
-                        ) * 100
-                        total_cost_info = (
-                            f", total: ${self.total_api_cost:.4f} ({cost_pct:.1f}%)"
+                if not code_embedding:
+                    if self.novelty_judge:
+                        self.novelty_judge.log_novelty_skip_message("no embedding")
+                    proposal_accepted = True  # Accept program even without embedding
+                    break
+
+                # Novelty check (same logic as sync runner)
+                if self.novelty_judge:
+                    should_check = await self.novelty_judge.should_check_novelty_async(
+                        code_embedding, generation, parent_program, self.db
+                    )
+
+                    if should_check:
+                        (
+                            should_accept,
+                            novelty_metadata,
+                        ) = await self.novelty_judge.assess_novelty_with_rejection_sampling_async(
+                            exec_fname, code_embedding, parent_program, self.db
+                        )
+
+                        # Update costs and metadata from novelty assessment (same as sync runner)
+                        novelty_cost_from_check = novelty_metadata.get(
+                            "novelty_total_cost", 0.0
+                        )
+                        novelty_total_cost += (
+                            novelty_cost_from_check  # Accumulate novelty cost separately
+                        )
+                        novelty_checks_performed = novelty_metadata.get(
+                            "novelty_checks_performed", 0
+                        )
+                        novelty_explanation = novelty_metadata.get(
+                            "novelty_explanation", ""
+                        )
+                        meta_patch_data["novelty_checks_performed"] = (
+                            novelty_checks_performed
+                        )
+                        meta_patch_data["novelty_cost"] = novelty_total_cost
+                        meta_patch_data["novelty_explanation"] = novelty_explanation
+                        meta_patch_data["max_similarity"] = novelty_metadata.get(
+                            "max_similarity"
+                        )
+                        meta_patch_data["similarity_scores"] = novelty_metadata.get(
+                            "similarity_scores", []
+                        )
+
+                        if should_accept:
+                            proposal_accepted = True
+                            break
+                        # If not accepted, continue to next attempt (rejection sampling)
+                        last_failure_stage = "novelty"
+                        last_failure_reason = (
+                            novelty_explanation
+                            or "Proposal rejected by novelty check before downstream evaluation"
                         )
                     else:
-                        total_cost_info = f", total: ${self.total_api_cost:.4f}"
+                        proposal_accepted = True
+                        if not self.db.island_manager or not hasattr(
+                            self.db.island_manager, "are_all_islands_initialized"
+                        ):
+                            self.novelty_judge.log_novelty_skip_message("no island manager")
+                        elif not self.db.island_manager.are_all_islands_initialized():
+                            self.novelty_judge.log_novelty_skip_message(
+                                "not all islands initialized yet"
+                            )
+                        break
+                else:
+                    # No novelty judge configured, accept the program
+                    proposal_accepted = True
+                    break
 
-                    logger.info(
-                        f"Proposal → Eval: gen {generation} submitted for eval "
-                        f"(cost: ${total_cost:.4f}{total_cost_info}). "
-                        f"Running jobs: {len(self.running_jobs)}/{self.max_evaluation_jobs}, "
-                        f"Proposals: {len(self.active_proposal_tasks)}/{self.max_proposal_jobs}"
+                # If proposal was accepted, break from the outer novelty loop
+                if proposal_accepted:
+                    break
+
+            # Add meta-recommendations/summary/scratchpad to meta_patch_data (same as sync runner)
+            if meta_recs is not None:
+                meta_patch_data["meta_recommendations"] = meta_recs
+                meta_patch_data["meta_summary"] = meta_summary
+                meta_patch_data["meta_scratch_pad"] = meta_scratch
+
+            # If we have an accepted proposal, submit it
+            if proposal_accepted:
+                # Add novelty check information to meta_patch_data if any checks were performed (same as sync runner)
+                if generation > 0 and novelty_checks_performed > 0:
+                    meta_patch_data["novelty_checks_performed"] = novelty_checks_performed
+                    meta_patch_data["novelty_cost"] = (
+                        novelty_total_cost  # Use "novelty_cost" key like sync
+                    )
+                    meta_patch_data["novelty_explanation"] = novelty_explanation
+
+                try:
+                    (
+                        job_id,
+                        evaluation_worker_id,
+                        evaluation_submitted_at,
+                        evaluation_started_at,
+                        running_eval_jobs_at_submit,
+                    ) = await self._submit_evaluation_job_with_slot(
+                        exec_fname=exec_fname,
+                        results_dir=results_dir,
+                        sampling_worker_id=sampling_worker_id,
                     )
 
-                return running_job
+                    # Create running job
+                    running_job = AsyncRunningJob(
+                        job_id=job_id,
+                        exec_fname=exec_fname,
+                        results_dir=results_dir,
+                        start_time=evaluation_clock_start(
+                            proposal_started_at,
+                            evaluation_submitted_at,
+                            evaluation_started_at,
+                        ),
+                        proposal_started_at=proposal_started_at,
+                        evaluation_submitted_at=evaluation_submitted_at,
+                        generation=generation,
+                        evaluation_started_at=evaluation_started_at,
+                        sampling_worker_id=sampling_worker_id,
+                        evaluation_worker_id=evaluation_worker_id,
+                        active_proposals_at_start=active_proposals_at_start,
+                        running_eval_jobs_at_submit=running_eval_jobs_at_submit,
+                        parent_id=parent_program.id,
+                        archive_insp_ids=[p.id for p in archive_programs],
+                        top_k_insp_ids=[p.id for p in top_k_programs],
+                        code_diff=code_diff,
+                        meta_patch_data=meta_patch_data,
+                        code_embedding=code_embedding,
+                        embed_cost=embed_cost,
+                        novelty_cost=novelty_total_cost,  # Store novelty cost in running job
+                        proposal_task_id=task_id,
+                    )
 
-            except Exception as e:
-                logger.error(f"Error submitting job: {e}")
-                await self._record_terminal_failed_proposal(
-                    generation=generation,
-                    exec_fname=exec_fname,
-                    proposal_started_at=proposal_started_at,
-                    sampling_worker_id=sampling_worker_id,
-                    active_proposals_at_start=active_proposals_at_start,
-                    parent_program=parent_program,
-                    archive_programs=archive_programs,
-                    top_k_programs=top_k_programs,
-                    code_diff=code_diff,
-                    meta_patch_data=meta_patch_data,
-                    code_embedding=code_embedding,
-                    embed_cost=embed_cost,
-                    novelty_cost=novelty_total_cost,
-                    api_costs=api_costs,
-                    failure_stage="evaluation_submit",
-                    failure_reason=str(e),
+                    # Update costs
+                    meta_patch_data["api_costs"] = api_costs
+                    proposal_total_cost = api_costs + embed_cost + novelty_total_cost
+                    self.total_api_cost += proposal_total_cost
+                    costs_transferred = True
+
+                    # Update average proposal cost for in-flight estimation
+                    self._update_avg_proposal_cost(proposal_total_cost)
+
+                    # Track job in both running list and submitted registry
+                    self.running_jobs.append(running_job)
+                    self.submitted_jobs[str(job_id)] = running_job
+
+                    # Trigger immediate job status check to catch fast-completing jobs
+                    self.slot_available.set()
+                    if self.verbose:
+                        total_cost = api_costs + embed_cost + novelty_total_cost
+
+                        # Format total API cost info
+                        if self.evo_config.max_api_costs is not None:
+                            cost_pct = (
+                                self.total_api_cost / self.evo_config.max_api_costs
+                            ) * 100
+                            total_cost_info = (
+                                f", total: ${self.total_api_cost:.4f} ({cost_pct:.1f}%)"
+                            )
+                        else:
+                            total_cost_info = f", total: ${self.total_api_cost:.4f}"
+
+                        logger.info(
+                            f"Proposal → Eval: gen {generation} submitted for eval "
+                            f"(cost: ${total_cost:.4f}{total_cost_info}). "
+                            f"Running jobs: {len(self.running_jobs)}/{self.max_evaluation_jobs}, "
+                            f"Proposals: {len(self.active_proposal_tasks)}/{self.max_proposal_jobs}"
+                        )
+
+                    return running_job
+
+                except Exception as e:
+                    logger.error(f"Error submitting job: {e}")
+                    costs_transferred = True
+                    await self._record_terminal_failed_proposal(
+                        generation=generation,
+                        exec_fname=exec_fname,
+                        proposal_started_at=proposal_started_at,
+                        sampling_worker_id=sampling_worker_id,
+                        active_proposals_at_start=active_proposals_at_start,
+                        parent_program=parent_program,
+                        archive_programs=archive_programs,
+                        top_k_programs=top_k_programs,
+                        code_diff=code_diff,
+                        meta_patch_data=meta_patch_data,
+                        code_embedding=code_embedding,
+                        embed_cost=embed_cost,
+                        novelty_cost=novelty_total_cost,
+                        api_costs=api_costs,
+                        failure_stage="evaluation_submit",
+                        failure_reason=str(e),
+                    )
+                    return None
+
+            logger.warning(
+                f"Failed to generate proposal for generation {generation} after all attempts"
+            )
+            costs_transferred = True
+            await self._record_terminal_failed_proposal(
+                generation=generation,
+                exec_fname=exec_fname,
+                proposal_started_at=proposal_started_at,
+                sampling_worker_id=sampling_worker_id,
+                active_proposals_at_start=active_proposals_at_start,
+                parent_program=parent_program,
+                archive_programs=archive_programs,
+                top_k_programs=top_k_programs,
+                code_diff=code_diff,
+                meta_patch_data=meta_patch_data,
+                code_embedding=code_embedding,
+                embed_cost=embed_cost,
+                novelty_cost=novelty_total_cost,
+                api_costs=api_costs,
+                failure_stage=last_failure_stage,
+                failure_reason=last_failure_reason,
+            )
+            return None
+        except asyncio.CancelledError as exc:
+            if not costs_transferred:
+                pending_cost = api_costs + embed_cost + novelty_total_cost
+                if isinstance(exc, BilledCancellationError):
+                    pending_cost += exc.cost
+                self.total_api_cost += pending_cost
+                await self._record_unattached_cost(
+                    pending_cost, "cancelled_proposal", generation
                 )
-                return None
-
-        logger.warning(
-            f"Failed to generate proposal for generation {generation} after all attempts"
-        )
-        await self._record_terminal_failed_proposal(
-            generation=generation,
-            exec_fname=exec_fname,
-            proposal_started_at=proposal_started_at,
-            sampling_worker_id=sampling_worker_id,
-            active_proposals_at_start=active_proposals_at_start,
-            parent_program=parent_program,
-            archive_programs=archive_programs,
-            top_k_programs=top_k_programs,
-            code_diff=code_diff,
-            meta_patch_data=meta_patch_data,
-            code_embedding=code_embedding,
-            embed_cost=embed_cost,
-            novelty_cost=novelty_total_cost,
-            api_costs=api_costs,
-            failure_stage=last_failure_stage,
-            failure_reason=last_failure_reason,
-        )
-        return None
+            raise
 
     async def _save_patch_attempt_async(
         self,
@@ -3429,66 +3459,70 @@ class ShinkaEvolveRunner:
                 active_proposals_at_start=active_proposals_at_start,
             )
         except (Exception, asyncio.CancelledError):
-            await self._record_attempt_event(
-                generation, failure_stage, "failed",
-                {
-                    "node_kind": "failed_proposal",
-                    "api_costs": api_costs,
-                    "embed_cost": embed_cost,
-                    "novelty_cost": novelty_cost,
-                    "failure_reason": failure_reason,
-                },
+            await finish_cost_recording(
+                self._record_attempt_event(
+                    generation,
+                    failure_stage,
+                    "failed",
+                    {
+                        "node_kind": "failed_proposal",
+                        "api_costs": api_costs,
+                        "embed_cost": embed_cost,
+                        "novelty_cost": novelty_cost,
+                        "failure_reason": failure_reason,
+                    },
+                )
             )
             raise
         terminal_failure_at = time.time()
-        await self._record_attempt_event(
-            generation=generation,
-            stage=failure_stage,
-            status="failed",
-            details={
-                "node_kind": "failed_proposal",
-                "language": failure_payload.get("language"),
-                "failure_stage": failure_stage,
-                "failure_class": failure_class,
-                "failure_reason": failure_reason,
-                "parent_id": parent_program.id if parent_program else None,
-                "archive_inspiration_ids": [p.id for p in archive_programs],
-                "top_k_inspiration_ids": [p.id for p in top_k_programs],
-                "code_diff_available": bool(code_diff),
-                "patch_type": (meta_patch_data or {}).get("patch_type"),
-                "patch_name": (meta_patch_data or {}).get("patch_name"),
-                "patch_description": (meta_patch_data or {}).get(
-                    "patch_description"
-                ),
-                "system_prompt_id": (meta_patch_data or {}).get("system_prompt_id"),
-                "model_name": (meta_patch_data or {}).get("model_name"),
-                "api_costs": api_costs,
-                "embed_cost": embed_cost,
-                "novelty_cost": novelty_cost,
-                "novelty_attempt": (meta_patch_data or {}).get("novelty_attempt"),
-                "resample_attempt": (meta_patch_data or {}).get("resample_attempt"),
-                "patch_attempt": (meta_patch_data or {}).get("patch_attempt"),
-                "max_similarity": (meta_patch_data or {}).get("max_similarity"),
-                "failure_json_path": failure_json_path,
-                "pipeline_started_at": proposal_started_at,
-                "sampling_started_at": proposal_started_at,
-                "sampling_finished_at": terminal_failure_at,
-                "evaluation_started_at": terminal_failure_at,
-                "evaluation_finished_at": terminal_failure_at,
-                "postprocess_started_at": terminal_failure_at,
-                "postprocess_finished_at": terminal_failure_at,
-                "timeline_lane_mode": "pool_slots",
-                "sampling_worker_id": sampling_worker_id,
-                "evaluation_worker_id": None,
-                "postprocess_worker_id": None,
-                "sampling_worker_capacity": self.max_proposal_jobs,
-                "evaluation_worker_capacity": self.max_evaluation_jobs,
-                "postprocess_worker_capacity": self.max_db_workers,
-                "generated_code_available": failure_payload.get(
-                    "generated_code_available", False
-                ),
-                "downstream_eval_submitted": False,
-            },
+        await finish_cost_recording(
+            self._record_attempt_event(
+                generation=generation,
+                stage=failure_stage,
+                status="failed",
+                details={
+                    "node_kind": "failed_proposal",
+                    "language": failure_payload.get("language"),
+                    "failure_stage": failure_stage,
+                    "failure_class": failure_class,
+                    "failure_reason": failure_reason,
+                    "parent_id": parent_program.id if parent_program else None,
+                    "archive_inspiration_ids": [p.id for p in archive_programs],
+                    "top_k_inspiration_ids": [p.id for p in top_k_programs],
+                    "code_diff_available": bool(code_diff),
+                    "patch_type": (meta_patch_data or {}).get("patch_type"),
+                    "patch_name": (meta_patch_data or {}).get("patch_name"),
+                    "patch_description": (meta_patch_data or {}).get("patch_description"),
+                    "system_prompt_id": (meta_patch_data or {}).get("system_prompt_id"),
+                    "model_name": (meta_patch_data or {}).get("model_name"),
+                    "api_costs": api_costs,
+                    "embed_cost": embed_cost,
+                    "novelty_cost": novelty_cost,
+                    "novelty_attempt": (meta_patch_data or {}).get("novelty_attempt"),
+                    "resample_attempt": (meta_patch_data or {}).get("resample_attempt"),
+                    "patch_attempt": (meta_patch_data or {}).get("patch_attempt"),
+                    "max_similarity": (meta_patch_data or {}).get("max_similarity"),
+                    "failure_json_path": failure_json_path,
+                    "pipeline_started_at": proposal_started_at,
+                    "sampling_started_at": proposal_started_at,
+                    "sampling_finished_at": terminal_failure_at,
+                    "evaluation_started_at": terminal_failure_at,
+                    "evaluation_finished_at": terminal_failure_at,
+                    "postprocess_started_at": terminal_failure_at,
+                    "postprocess_finished_at": terminal_failure_at,
+                    "timeline_lane_mode": "pool_slots",
+                    "sampling_worker_id": sampling_worker_id,
+                    "evaluation_worker_id": None,
+                    "postprocess_worker_id": None,
+                    "sampling_worker_capacity": self.max_proposal_jobs,
+                    "evaluation_worker_capacity": self.max_evaluation_jobs,
+                    "postprocess_worker_capacity": self.max_db_workers,
+                    "generated_code_available": failure_payload.get(
+                        "generated_code_available", False
+                    ),
+                    "downstream_eval_submitted": False,
+                },
+            )
         )
 
     async def _run_fix_patch_async(
@@ -3517,6 +3551,7 @@ class ShinkaEvolveRunner:
             model_posterior: Model posterior probabilities
         """
         output_limit_error = None
+        total_costs = 0.0
         try:
             # Generate fix prompt with ancestor inspirations
             patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
@@ -3529,7 +3564,6 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Generated FIX patch type: {patch_type}")
 
-            total_costs = 0.0
             msg_history = []
             patch_name = None
             patch_description = None
@@ -3710,6 +3744,11 @@ class ShinkaEvolveRunner:
 
             return None, meta_patch_data, False
 
+        except asyncio.CancelledError as exc:
+            if total_costs > 0:
+                raise cancellation_with_cost(exc, total_costs) from exc
+            raise
+
         except LLMEndpointError as exc:
             return None, {
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
@@ -3744,6 +3783,7 @@ class ShinkaEvolveRunner:
         current_prompt_id: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
         output_limit_error = None
+        total_costs = 0.0
 
         try:
             # Get system prompt (potentially evolved)
@@ -3772,7 +3812,6 @@ class ShinkaEvolveRunner:
                 if current_prompt_id:
                     logger.info(f"Using evolved prompt: {current_prompt_id[:8]}...")
 
-            total_costs = 0.0
             msg_history = []
 
             # Use provided model_sample_probs (selected once before all loops)
@@ -3961,6 +4000,12 @@ class ShinkaEvolveRunner:
             }
 
             return None, meta_patch_data, False
+
+        except asyncio.CancelledError as exc:
+            self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            if total_costs > 0:
+                raise cancellation_with_cost(exc, total_costs) from exc
+            raise
 
         except LLMEndpointError as exc:
             self.prompt_sampler.task_sys_msg = original_task_sys_msg

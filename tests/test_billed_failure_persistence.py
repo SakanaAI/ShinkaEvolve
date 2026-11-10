@@ -9,6 +9,9 @@ from shinka.core import EvolutionConfig
 from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.llm.providers import QueryResult
+from shinka.llm.llm import AsyncLLMClient
+from shinka.llm.providers.errors import EmptyResponseError
+import shinka.llm.llm as llm_module
 
 
 @pytest.fixture
@@ -199,3 +202,68 @@ def test_proposal_cost_survives_failure_artifact_error(runner, error_type):
         )
     assert runner.total_api_cost == pytest.approx(3.3)
     assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(3.3)
+
+
+def test_initialization_retains_cost_carried_by_cancelled_query(runner, monkeypatch):
+    async def run():
+        billed = asyncio.Event()
+
+        async def provider(**kwargs):
+            billed.set()
+            raise EmptyResponseError("no text", None, {"cost": 3.3})
+
+        runner.llm = AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
+        monkeypatch.setattr(llm_module, "query_async", provider)
+        task = asyncio.create_task(runner._generate_initial_program())
+        await asyncio.wait_for(billed.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+        assert runner.total_api_cost == pytest.approx(3.3)
+        assert await runner._get_total_api_costs() == pytest.approx(3.3)
+
+    asyncio.run(run())
+
+
+def test_initialization_cancellation_finishes_cost_reconciliation(runner):
+    async def run():
+        reading = asyncio.Event()
+        release_read = asyncio.Event()
+        get_cost = runner._get_total_api_costs
+
+        async def query(**kwargs):
+            return QueryResult(
+                None,
+                "msg",
+                "sys",
+                [],
+                "gpt-5-mini",
+                {},
+                10,
+                0,
+                cost=3.3,
+                incomplete_reason="max_output_tokens",
+            )
+
+        async def read_cost():
+            reading.set()
+            await release_read.wait()
+            return await get_cost()
+
+        runner.llm = SimpleNamespace(
+            query=query, get_kwargs=lambda **kwargs: {"model_name": "gpt-5-mini"}
+        )
+        runner._get_total_api_costs = read_cost
+        task = asyncio.create_task(runner._generate_initial_program())
+        await asyncio.wait_for(reading.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release_read.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert runner.total_api_cost == pytest.approx(3.3)
+        assert await get_cost() == pytest.approx(3.3)
+
+    asyncio.run(run())
