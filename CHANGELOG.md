@@ -43,6 +43,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed duplicated API, embedding, novelty, and meta-analysis costs on initial
+  and spawned island copies in PR #215, preserving original spend and cumulative
+  cost plots. Thanks @guudewie.
 - Fixed population selection: archive inspirations stay unique across fallback
   selection (PR #202), multi-criteria ranking ties cannot let worse newcomers
   displace better programs (PR #199), and island migration selects all migrants
