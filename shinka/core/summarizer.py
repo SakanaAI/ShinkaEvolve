@@ -276,12 +276,12 @@ class MetaSummarizer:
         combined_summaries = []
         total_cost = 0.0
         for i, response in enumerate(valid_responses):
+            total_cost += response.cost or 0.0
             if response and response.content:
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
                 program_summary += f"Generation {generation_ids[i]} - Patch Name {patch_names[i]} - Correct Program: {correct_programs[i]}"
                 combined_summaries.append(program_summary)
-                total_cost += response.cost or 0.0
             else:
                 logger.warning(f"Step 1: Empty response for program {i}")
 

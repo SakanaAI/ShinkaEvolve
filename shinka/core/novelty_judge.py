@@ -204,7 +204,11 @@ class NoveltyJudge:
 
             if response is None or response.content is None:
                 logger.warning("Novelty LLM returned empty response")
-                return True, "LLM response was empty", 0.0
+                return (
+                    True,
+                    "LLM response was empty",
+                    (response.cost or 0.0) if response else 0.0,
+                )
 
             content = response.content.strip()
             api_cost = response.cost or 0.0
