@@ -43,6 +43,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed custom prompt-model sampler settings being forwarded as raw provider
+  arguments, allowing configured token limits and reasoning settings to work
+  for both diff and full prompt mutations.
 - Fixed billed empty OpenAI replies being omitted from budgets across single,
   batch, proposal, novelty, prompt, and meta-analysis calls in PR #211
   (issue #210). Output exhaustion stops proposal retries; failed charges survive

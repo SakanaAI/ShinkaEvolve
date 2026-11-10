@@ -1370,7 +1370,6 @@ class ShinkaEvolveRunner:
             llm_client=self.prompt_llm,
             patch_types=self.evo_config.prompt_patch_types,
             patch_type_probs=self.evo_config.prompt_patch_type_probs,
-            llm_kwargs=self.evo_config.prompt_llm_kwargs,
         )
 
         logger.info(
