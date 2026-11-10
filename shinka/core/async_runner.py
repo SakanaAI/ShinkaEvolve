@@ -88,6 +88,15 @@ _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
 _WANDB_CANDIDATE_STOP = object()
 
 
+def _output_limit_error(response) -> Optional[str]:
+    if getattr(response, "incomplete_reason", None) != "max_output_tokens":
+        return None
+    return (
+        "LLM exhausted max_output_tokens before producing text. "
+        "Raise max_tokens or lower the reasoning effort."
+    )
+
+
 def _print_gradient_logo_and_mirror(
     log_path: Optional[Path] = None,
     banner_style: BannerStyle = "full",
@@ -3460,6 +3469,7 @@ class ShinkaEvolveRunner:
             model_sample_probs: Model sampling probabilities
             model_posterior: Model posterior probabilities
         """
+        output_limit_error = None
         try:
             # Generate fix prompt with ancestor inspirations
             patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
@@ -3474,6 +3484,8 @@ class ShinkaEvolveRunner:
 
             total_costs = 0.0
             msg_history = []
+            patch_name = None
+            patch_description = None
 
             llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
 
@@ -3494,8 +3506,9 @@ class ShinkaEvolveRunner:
                 if response is not None:
                     total_costs += response.cost or 0.0
 
+                output_limit_error = _output_limit_error(response)
                 if not response or not response.content:
-                    error_str = "LLM response content was None."
+                    error_str = output_limit_error or "LLM response content was None."
 
                     await self._save_patch_attempt_async(
                         generation=generation,
@@ -3511,6 +3524,8 @@ class ShinkaEvolveRunner:
                         success=False,
                     )
 
+                    if output_limit_error:
+                        break
                     if patch_attempt < self.evo_config.max_patch_attempts - 1:
                         patch_msg = "The previous fix attempt failed. Try again."
                         continue
@@ -3640,9 +3655,10 @@ class ShinkaEvolveRunner:
                 "last_error_msg": error_str if "error_str" in locals() else None,
                 "novelty_attempt": novelty_attempt,
                 "resample_attempt": resample_attempt,
-                "patch_attempt": self.evo_config.max_patch_attempts,
+                "patch_attempt": patch_attempt + 1,
                 **llm_kwargs,  # Spread llm_kwargs like _run_patch_async
                 "llm_result": response.to_dict() if response else None,
+                "non_retryable": bool(output_limit_error),
             }
 
             return None, meta_patch_data, False
@@ -3657,7 +3673,12 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
-            return None, {"api_costs": 0.0, "error_attempt": str(e)}, False
+            return None, {
+                "api_costs": total_costs if "total_costs" in locals() else 0.0,
+                "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
+                "non_retryable": bool(output_limit_error),
+                "patch_attempt": patch_attempt + 1 if "patch_attempt" in locals() else 0,
+            }, False
 
     async def _run_patch_async(
         self,
@@ -3675,6 +3696,7 @@ class ShinkaEvolveRunner:
         # Initialize prompt-related variables outside try block for exception handling
         current_prompt_id: Optional[str] = None
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
+        output_limit_error = None
 
         try:
             # Get system prompt (potentially evolved)
@@ -3728,8 +3750,9 @@ class ShinkaEvolveRunner:
                 if response is not None:
                     total_costs += response.cost or 0.0
 
+                output_limit_error = _output_limit_error(response)
                 if not response or not response.content:
-                    error_str = "LLM response content was None."
+                    error_str = output_limit_error or "LLM response content was None."
 
                     # Save failed attempt data
                     await self._save_patch_attempt_async(
@@ -3746,6 +3769,8 @@ class ShinkaEvolveRunner:
                         success=False,
                     )
 
+                    if output_limit_error:
+                        break
                     if patch_attempt < self.evo_config.max_patch_attempts - 1:
                         patch_msg = "The previous attempt failed. Try again."
                         continue
@@ -3881,10 +3906,11 @@ class ShinkaEvolveRunner:
                 "last_error_msg": error_str if "error_str" in locals() else None,
                 "novelty_attempt": novelty_attempt,
                 "resample_attempt": resample_attempt,
-                "patch_attempt": self.evo_config.max_patch_attempts,
+                "patch_attempt": patch_attempt + 1,
                 "system_prompt_id": current_prompt_id,  # Track evolved prompt
                 **llm_kwargs,
                 "llm_result": response.to_dict() if "response" in locals() and response else None,
+                "non_retryable": bool(output_limit_error),
             }
 
             return None, meta_patch_data, False
@@ -3905,8 +3931,10 @@ class ShinkaEvolveRunner:
             return (
                 None,
                 {
-                    "api_costs": 0.0,
-                    "error_attempt": str(e),
+                    "api_costs": total_costs if "total_costs" in locals() else 0.0,
+                    "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
+                    "non_retryable": bool(output_limit_error),
+                    "patch_attempt": patch_attempt + 1 if "patch_attempt" in locals() else 0,
                     "system_prompt_id": current_prompt_id,
                 },
                 False,
