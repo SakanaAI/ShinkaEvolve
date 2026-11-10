@@ -53,6 +53,7 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
+from shinka.core.billing import failed_attempt_costs
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
     with_pipeline_timing,
@@ -726,6 +727,15 @@ class ShinkaEvolveRunner:
                 e,
             )
 
+    async def _record_unattached_cost(self, cost: float, stage: str, generation: int) -> None:
+        """Persist failed charges without manufacturing a program or prompt."""
+        if cost <= 0.0:
+            return
+        await self._record_attempt_event(
+            generation, stage, "failed",
+            {"node_kind": "unattached_cost", "api_costs": cost},
+        )
+
     def _validate_concurrency_settings(
         self,
         max_evaluation_jobs: int,
@@ -855,7 +865,7 @@ class ShinkaEvolveRunner:
                         except json.JSONDecodeError:
                             continue
 
-                return total_costs
+                return total_costs + failed_attempt_costs(conn)
             finally:
                 if conn:
                     conn.close()
@@ -1247,6 +1257,10 @@ class ShinkaEvolveRunner:
         # Check if we're resuming from an existing database
         resuming_run = db_path.exists() and self.db.last_iteration > 0
 
+        # Failed initialization can leave charges even without a program row.
+        self.total_api_cost = await self._get_total_api_costs()
+        logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
+
         # Load bandit state if resuming
         if resuming_run:
             logger.info("=" * 80)
@@ -1255,11 +1269,6 @@ class ShinkaEvolveRunner:
             logger.info(f"Resuming from generation {self.db.last_iteration}")
             program_count = await self.async_db.get_total_program_count_async()
             logger.info(f"Found {program_count} programs in database")
-
-            # Load existing API costs from database
-            existing_costs = await self._get_total_api_costs()
-            self.total_api_cost = existing_costs
-            logger.info(f"Loaded existing API costs: ${existing_costs:.4f}")
 
             logger.info("=" * 80)
             self._load_bandit_state()
@@ -1896,6 +1905,9 @@ class ShinkaEvolveRunner:
 
     async def _generate_initial_program(self):
         """Generate initial program using LLM, with retries."""
+        budget = getattr(self.evo_config, "max_api_costs", None)
+        if budget is not None and self.total_api_cost >= budget:
+            raise RuntimeError("API cost budget exhausted before initial generation")
         sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
 
         # Select LLM once per program generation (before all attempts)
@@ -1909,157 +1921,173 @@ class ShinkaEvolveRunner:
 
         total_costs = 0.0
 
-        for attempt in range(self.evo_config.max_patch_attempts):
-            response = await self.llm.query(
-                msg=user_msg,
-                system_msg=sys_msg,
-                llm_kwargs=llm_kwargs,
-                model_sample_probs=model_sample_probs,
-                model_posterior=model_posterior,
-            )
-            # A reply without content can still be billed.
-            if response is not None:
-                total_costs += response.cost or 0.0
-
-            if response is None or response.content is None:
-                error_msg = "LLM response content was None."
-                if self.verbose:
-                    logger.info(
-                        f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
-                        f"{self.evo_config.max_patch_attempts} "
-                        f"FAILURE. Error: {error_msg}"
-                    )
-                # Save failed attempt
-                await self._save_patch_attempt_async(
-                    generation=0,
-                    novelty_attempt=1,
-                    resample_attempt=1,
-                    patch_attempt=attempt + 1,
-                    response=response,
-                    error_msg=error_msg,
-                    patch_text=None,
-                    num_applied=0,
-                    patch_name=None,
-                    patch_description=None,
-                    success=False,
-                )
-                if attempt < self.evo_config.max_patch_attempts - 1:
-                    user_msg = (
-                        "The previous response was empty. Please try again "
-                        "and provide the full code."
-                    )
-                    continue
-                else:
+        cost_before_setup = self.total_api_cost
+        try:
+            for attempt in range(self.evo_config.max_patch_attempts):
+                if budget is not None and self.total_api_cost + total_costs >= budget:
                     break
+                response = await self.llm.query(
+                    msg=user_msg,
+                    system_msg=sys_msg,
+                    llm_kwargs=llm_kwargs,
+                    model_sample_probs=model_sample_probs,
+                    model_posterior=model_posterior,
+                )
+                # A reply without content can still be billed.
+                if response is not None:
+                    total_costs += response.cost or 0.0
 
-            # Extract code using language-specific markers
-            initial_code = extract_between(
-                response.content,
-                f"```{self.evo_config.language}",
-                "```",
-                False,
+                if response is None or response.content is None:
+                    output_limit_error = _output_limit_error(response)
+                    error_msg = output_limit_error or "LLM response content was None."
+                    if self.verbose:
+                        logger.info(
+                            f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
+                            f"{self.evo_config.max_patch_attempts} "
+                            f"FAILURE. Error: {error_msg}"
+                        )
+                    # Save failed attempt
+                    await self._save_patch_attempt_async(
+                        generation=0,
+                        novelty_attempt=1,
+                        resample_attempt=1,
+                        patch_attempt=attempt + 1,
+                        response=response,
+                        error_msg=error_msg,
+                        patch_text=None,
+                        num_applied=0,
+                        patch_name=None,
+                        patch_description=None,
+                        success=False,
+                    )
+                    if output_limit_error:
+                        break
+                    if attempt < self.evo_config.max_patch_attempts - 1:
+                        user_msg = (
+                            "The previous response was empty. Please try again "
+                            "and provide the full code."
+                        )
+                        continue
+                    else:
+                        break
+
+                # Extract code using language-specific markers
+                initial_code = extract_between(
+                    response.content,
+                    f"```{self.evo_config.language}",
+                    "```",
+                    False,
+                )
+
+                if initial_code:
+                    # Extract patch name and description
+                    patch_name = extract_between(
+                        response.content, "<NAME>", "</NAME>", False
+                    )
+                    patch_description = extract_between(
+                        response.content, "<DESCRIPTION>", "</DESCRIPTION>", False
+                    )
+
+                    # Add EVOLVE-BLOCK markers
+                    comment_char = get_evolve_comment_prefix(self.evo_config.language)
+
+                    initial_code = (
+                        f"{comment_char} EVOLVE-BLOCK-START\n"
+                        f"{initial_code}\n"
+                        f"{comment_char} EVOLVE-BLOCK-END\n"
+                    )
+
+                    if self.verbose:
+                        logger.info(
+                            f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
+                            f"{self.evo_config.max_patch_attempts} "
+                            "SUCCESS."
+                        )
+
+                    # Save successful attempt
+                    await self._save_patch_attempt_async(
+                        generation=0,
+                        novelty_attempt=1,
+                        resample_attempt=1,
+                        patch_attempt=attempt + 1,
+                        response=response,
+                        error_msg=None,
+                        patch_text=initial_code,
+                        num_applied=1,
+                        patch_name=patch_name,
+                        patch_description=patch_description,
+                        success=True,
+                    )
+
+                    # Include LLM metadata for storage (structured like meta_edit_data)
+                    llm_metadata = {
+                        "patch_type": "init",
+                        "api_costs": total_costs,
+                        "num_applied": 1,  # Initial program counts as 1 application
+                        "patch_name": patch_name,
+                        "patch_description": patch_description,
+                        "error_attempt": None,  # No error on success
+                        "novelty_attempt": 1,
+                        "resample_attempt": 1,
+                        "patch_attempt": attempt + 1,
+                        **llm_kwargs,
+                        "llm_result": response.to_dict() if response else None,
+                        "diff_summary": {},  # No diff for initial program
+                    }
+
+                    # Pass the metadata to setup method
+                    await self._setup_initial_program_with_metadata(
+                        initial_code,
+                        patch_name,
+                        patch_description,
+                        total_costs,
+                        llm_metadata,
+                    )
+                    return
+                else:  # code extraction failed
+                    error_msg = "Could not extract code from response."
+                    if self.verbose:
+                        logger.info(
+                            f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
+                            f"{self.evo_config.max_patch_attempts} "
+                            f"FAILURE. Error: {error_msg}"
+                        )
+                    # Save failed attempt
+                    await self._save_patch_attempt_async(
+                        generation=0,
+                        novelty_attempt=1,
+                        resample_attempt=1,
+                        patch_attempt=attempt + 1,
+                        response=response,
+                        error_msg=error_msg,
+                        patch_text=None,
+                        num_applied=0,
+                        patch_name=None,
+                        patch_description=None,
+                        success=False,
+                    )
+                    if attempt < self.evo_config.max_patch_attempts - 1:
+                        user_msg = (
+                            "Could not extract code from your last response. "
+                            "Please make sure to enclose the code in "
+                            f"```{self.evo_config.language}...``` tags."
+                        )
+                    else:  # last attempt
+                        break
+
+            raise RuntimeError(
+                "LLM failed to generate a valid initial program after "
+                f"{self.evo_config.max_patch_attempts} attempts."
             )
-
-            if initial_code:
-                # Extract patch name and description
-                patch_name = extract_between(
-                    response.content, "<NAME>", "</NAME>", False
-                )
-                patch_description = extract_between(
-                    response.content, "<DESCRIPTION>", "</DESCRIPTION>", False
-                )
-
-                # Add EVOLVE-BLOCK markers
-                comment_char = get_evolve_comment_prefix(self.evo_config.language)
-
-                initial_code = (
-                    f"{comment_char} EVOLVE-BLOCK-START\n"
-                    f"{initial_code}\n"
-                    f"{comment_char} EVOLVE-BLOCK-END\n"
-                )
-
-                if self.verbose:
-                    logger.info(
-                        f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
-                        f"{self.evo_config.max_patch_attempts} "
-                        "SUCCESS."
-                    )
-
-                # Save successful attempt
-                await self._save_patch_attempt_async(
-                    generation=0,
-                    novelty_attempt=1,
-                    resample_attempt=1,
-                    patch_attempt=attempt + 1,
-                    response=response,
-                    error_msg=None,
-                    patch_text=initial_code,
-                    num_applied=1,
-                    patch_name=patch_name,
-                    patch_description=patch_description,
-                    success=True,
-                )
-
-                # Include LLM metadata for storage (structured like meta_edit_data)
-                llm_metadata = {
-                    "patch_type": "init",
-                    "api_costs": total_costs,
-                    "num_applied": 1,  # Initial program counts as 1 application
-                    "patch_name": patch_name,
-                    "patch_description": patch_description,
-                    "error_attempt": None,  # No error on success
-                    "novelty_attempt": 1,
-                    "resample_attempt": 1,
-                    "patch_attempt": attempt + 1,
-                    **llm_kwargs,
-                    "llm_result": response.to_dict() if response else None,
-                    "diff_summary": {},  # No diff for initial program
-                }
-
-                # Pass the metadata to setup method
-                await self._setup_initial_program_with_metadata(
-                    initial_code,
-                    patch_name,
-                    patch_description,
-                    total_costs,
-                    llm_metadata,
-                )
-                return
-            else:  # code extraction failed
-                error_msg = "Could not extract code from response."
-                if self.verbose:
-                    logger.info(
-                        f"  INITIAL PROGRAM ATTEMPT {attempt + 1}/"
-                        f"{self.evo_config.max_patch_attempts} "
-                        f"FAILURE. Error: {error_msg}"
-                    )
-                # Save failed attempt
-                await self._save_patch_attempt_async(
-                    generation=0,
-                    novelty_attempt=1,
-                    resample_attempt=1,
-                    patch_attempt=attempt + 1,
-                    response=response,
-                    error_msg=error_msg,
-                    patch_text=None,
-                    num_applied=0,
-                    patch_name=None,
-                    patch_description=None,
-                    success=False,
-                )
-                if attempt < self.evo_config.max_patch_attempts - 1:
-                    user_msg = (
-                        "Could not extract code from your last response. "
-                        "Please make sure to enclose the code in "
-                        f"```{self.evo_config.language}...``` tags."
-                    )
-                else:  # last attempt
-                    break
-
-        raise RuntimeError(
-            "LLM failed to generate a valid initial program after "
-            f"{self.evo_config.max_patch_attempts} attempts."
-        )
+        except Exception:
+            # Setup can commit a program before posting its cost in memory.
+            self.total_api_cost = max(self.total_api_cost, cost_before_setup + total_costs)
+            persisted_cost = await self._get_total_api_costs()
+            posted_cost = max(persisted_cost - cost_before_setup, 0.0)
+            pending_cost = max(total_costs - posted_cost, 0.0)
+            self.total_api_cost = max(self.total_api_cost, persisted_cost)
+            await self._record_unattached_cost(pending_cost, "initialization", 0)
+            raise
 
     async def _job_monitor_task(self):
         """Monitor running jobs and process completed ones."""
@@ -3375,24 +3403,37 @@ class ShinkaEvolveRunner:
             failure_reason=failure_reason,
             meta_patch_data=meta_patch_data,
         )
-        failure_json_path, failure_payload = await self._write_failure_artifact_async(
-            generation=generation,
-            exec_fname=exec_fname,
-            parent_program=parent_program,
-            archive_programs=archive_programs,
-            top_k_programs=top_k_programs,
-            meta_patch_data=meta_patch_data,
-            embed_cost=embed_cost,
-            novelty_cost=novelty_cost,
-            api_costs=api_costs,
-            failure_stage=failure_stage,
-            failure_class=failure_class,
-            failure_reason=failure_reason,
-            code_embedding=code_embedding,
-            proposal_started_at=proposal_started_at,
-            sampling_worker_id=sampling_worker_id,
-            active_proposals_at_start=active_proposals_at_start,
-        )
+        try:
+            failure_json_path, failure_payload = await self._write_failure_artifact_async(
+                generation=generation,
+                exec_fname=exec_fname,
+                parent_program=parent_program,
+                archive_programs=archive_programs,
+                top_k_programs=top_k_programs,
+                meta_patch_data=meta_patch_data,
+                embed_cost=embed_cost,
+                novelty_cost=novelty_cost,
+                api_costs=api_costs,
+                failure_stage=failure_stage,
+                failure_class=failure_class,
+                failure_reason=failure_reason,
+                code_embedding=code_embedding,
+                proposal_started_at=proposal_started_at,
+                sampling_worker_id=sampling_worker_id,
+                active_proposals_at_start=active_proposals_at_start,
+            )
+        except Exception:
+            await self._record_attempt_event(
+                generation, failure_stage, "failed",
+                {
+                    "node_kind": "failed_proposal",
+                    "api_costs": api_costs,
+                    "embed_cost": embed_cost,
+                    "novelty_cost": novelty_cost,
+                    "failure_reason": failure_reason,
+                },
+            )
+            raise
         terminal_failure_at = time.time()
         await self._record_attempt_event(
             generation=generation,

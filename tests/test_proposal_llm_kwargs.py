@@ -57,6 +57,7 @@ def _build_runner(llm: _RecordingLLM) -> Any:
     runner.llm = llm
     runner.llm_selection = None
     runner.verbose = False
+    runner.total_api_cost = 0.0
     runner.results_dir = "results"
     runner.evo_config = SimpleNamespace(max_patch_attempts=1, language="python")
     runner.prompt_sampler = SimpleNamespace(
