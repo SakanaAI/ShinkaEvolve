@@ -256,7 +256,7 @@ class MetaSummarizer:
         # Use batch query to process all programs
         num_programs = len(programs_to_analyze)
         logger.info(f"==> Step 1 - Processing {num_programs} programs with batch query")
-        responses = self.meta_llm_client.batch_kwargs_query(
+        responses = self.meta_llm_client.batch_kwargs_query_indexed(
             num_samples=num_programs,
             msg=user_messages,
             system_msg=META_STEP1_SYSTEM_MSG,
@@ -266,20 +266,10 @@ class MetaSummarizer:
             logger.error("Step 1: Failed to get responses from meta LLM client")
             return None, 0.0
 
-        # Filter out None responses and combine summaries
-        valid_responses = [
-            (index, response)
-            for index, response in enumerate(responses)
-            if response is not None
-        ]
-        if not valid_responses:
-            logger.error("Step 1: All batch responses were None")
-            return None, 0.0
-
         # Combine all individual summaries
         total_cost = 0.0
         summaries_with_gen = []
-        for original_index, response in valid_responses:
+        for original_index, response in responses:
             if response and response.content:
                 program_summary = response.content.strip()
                 program_summary += "\n**Program Identifier:** "
@@ -295,8 +285,6 @@ class MetaSummarizer:
             else:
                 logger.warning(f"Step 1: Empty response for program {original_index}")
 
-        # Sort combined_summaries by generation (using generation_ids)
-        # Zip together summaries and their generation, sort, then extract summaries
         summaries_with_gen.sort(key=lambda x: x[0])
         combined_summaries = [summary for _, summary in summaries_with_gen]
 

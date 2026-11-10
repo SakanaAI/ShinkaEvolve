@@ -22,8 +22,12 @@ class DummyMetaLLM:
     def get_kwargs(self):
         return {"temperature": 0.0}
 
-    def batch_kwargs_query(self, num_samples, msg, system_msg):
-        return self.batch_responses
+    def batch_kwargs_query_indexed(self, num_samples, msg, system_msg):
+        return [
+            (i, response)
+            for i, response in enumerate(self.batch_responses)
+            if response is not None
+        ]
 
     def query(self, msg, system_msg, llm_kwargs):
         if not self.query_responses:
@@ -121,8 +125,8 @@ def test_step1_preserves_metadata_when_batch_response_is_missing():
 
 def test_async_step1_preserves_metadata_when_batch_response_is_missing():
     class AsyncBatchClient:
-        async def batch_kwargs_query(self, num_samples, msg, system_msg):
-            return [None, DummyResponse(content="Async summary for generation 2")]
+        async def batch_kwargs_query_indexed(self, num_samples, msg, system_msg):
+            return [(1, DummyResponse(content="Async summary for generation 2"))]
 
     summarizer = MetaSummarizer()
     async_summarizer = AsyncMetaSummarizer(summarizer, AsyncBatchClient())
