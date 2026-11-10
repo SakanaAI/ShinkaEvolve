@@ -43,6 +43,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed sync and async meta-summary metadata alignment and generation ordering
+  after failed batch responses in PR #208. Thanks @lll-hhh.
 - Fixed duplicated API, embedding, novelty, and meta-analysis costs on initial
   and spawned island copies in PR #215, preserving original spend and cumulative
   cost plots. Thanks @guudewie.

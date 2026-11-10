@@ -21,6 +21,11 @@ Azure embeddings continue to use the versioned Azure client and require
 
 Batch-oriented synchronous client for sampling candidate responses.
 
+`batch_kwargs_query` returns successful responses only. Use
+`batch_kwargs_query_indexed` to retain each response's original request index
+when associating responses with per-request metadata. Failed requests are
+omitted without renumbering successful responses.
+
 ::: shinka.llm.llm.LLMClient
     handler: python
     options:
@@ -29,6 +34,7 @@ Batch-oriented synchronous client for sampling candidate responses.
         - __init__
         - batch_query
         - batch_kwargs_query
+        - batch_kwargs_query_indexed
         - get_kwargs
 
 ---
@@ -36,6 +42,7 @@ Batch-oriented synchronous client for sampling candidate responses.
 ## `AsyncLLMClient`
 
 Async counterpart for the same provider abstraction.
+Its indexed batch method follows the same request-index contract.
 
 ::: shinka.llm.llm.AsyncLLMClient
     handler: python
@@ -45,6 +52,7 @@ Async counterpart for the same provider abstraction.
         - __init__
         - batch_query
         - batch_kwargs_query
+        - batch_kwargs_query_indexed
         - get_kwargs
 
 ---
