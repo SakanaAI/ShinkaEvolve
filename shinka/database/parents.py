@@ -774,7 +774,14 @@ class CombinedParentSelector:
         """Sample a parent using the configured sampling strategy."""
         strategy_name = self.config.parent_selection_strategy
 
-        if strategy_name == "power_law":
+        if strategy_name == "tournament":
+            from .tournament import TournamentSamplingStrategy
+
+            strategy = TournamentSamplingStrategy(
+                self.cursor, self.conn, self.config, self.get_program,
+                self.best_program_id, island_idx,
+            )
+        elif strategy_name == "power_law":
             strategy = PowerLawSamplingStrategy(
                 self.cursor,
                 self.conn,

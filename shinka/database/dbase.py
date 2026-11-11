@@ -95,6 +95,9 @@ class DatabaseConfig:
     # Beam search parent selection parameters
     num_beams: int = 5
 
+    tournament_top_k: int = 8
+    tournament_num_draws: int = 3
+
     # Archive selection parameters
     archive_selection_strategy: str = "fitness"  # "fitness" or "crowding"
     # Criteria weights for archive selection (sign indicates direction):
@@ -102,6 +105,16 @@ class DatabaseConfig:
     #   Negative weight = lower is better (e.g., loc, complexity)
     # Weights represent relative importance after rank normalization
     archive_criteria: Dict[str, float] = field(default_factory=default_archive_criteria)
+
+    def __post_init__(self):
+        if self.parent_selection_strategy != "tournament":
+            return
+        for name in ("tournament_top_k", "tournament_num_draws"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.tournament_num_draws > self.tournament_top_k:
+            raise ValueError("tournament_num_draws must not exceed tournament_top_k")
 
 
 def db_retry(max_retries=5, initial_delay=0.1, backoff_factor=2):
