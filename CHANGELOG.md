@@ -6,6 +6,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added configurable tournament parent selection: uniformly draw distinct
+  contestants from the archive's top K programs and mutate a highest scorer.
 - Expanded the bundled model catalog with OpenAI GPT-6, Claude 5.5/Fable 5.1,
   Gemini 4 Argon, Gemini 3.5 Flash-Lite and 3.6–3.8 Flash, and DeepSeek V4 Flash
   and V4 Pro. Added provider-specific reasoning and thinking controls, refreshed
