@@ -5,8 +5,10 @@ Optimizes a Verilog design for area / logic-depth / power under a FIXED function
 spec (the RTLLM design_description), using an all-open-source flow:
 
     correctness  : Icarus Verilog compile + RTLLM testbench
-    equivalence  : Yosys SAT formal combinational equivalence, so a candidate cannot
-                   win by overfitting the finite testbench
+    equivalence  : Yosys SAT on an output miter vs the reference, so a candidate cannot
+                   win by overfitting the finite testbench. By default this is a
+                   bounded check (16 cycles from reset); RTLLM_PROVE=1 adds an
+                   unbounded temporal-induction proof on top of it
     PPA          : Yosys synthesis to the Nangate45 standard cells (area um^2 + logic
                    depth) + OpenSTA power. Absolute numbers are tool-dependent, so the
                    evolved and reference designs are compared on the identical flow.
@@ -24,6 +26,8 @@ Environment variables:
     RTLLM_DESIGN        design_name, e.g. "adder_8bit" (default: first in file)
     RTLLM_TIMEOUT       per-tool timeout seconds (default: 60)
     RTLLM_POWER         set "0" to skip OpenSTA power (score falls back to area x depth)
+    RTLLM_PROVE         set "1" to run the unbounded induction proof (slower; meant for
+                        re-checking final designs, not for every evolution step)
     RTLLM_YOSYS_IMAGE   docker image for yosys (default: hdlc/yosys:latest)
 """
 
@@ -164,10 +168,10 @@ def _measure_power(workdir: Path, vfile: str, top: str, timeout: int) -> Optiona
         return None
 
 
-# Bounded I/O equivalence: build an output-comparing miter and SAT-check that the
-# outputs match for n cycles from reset. This compares behaviour, not state encoding,
-# so it accepts equivalent restructurings while still catching real behavioural change.
-_BOUNDED_FLOW = (
+# I/O equivalence: build an output-comparing miter of reference vs candidate. This
+# compares behaviour, not state encoding, so it accepts equivalent restructurings while
+# still catching real behavioural change.
+_MITER_FLOW = (
     "read_verilog -sv ref.v; hierarchy -top {ref}; proc; memory; flatten; "
     "rename {ref} gold; design -stash gold; "
     "read_verilog -sv cand.v; hierarchy -top {top}; proc; memory; flatten; "
@@ -175,8 +179,14 @@ _BOUNDED_FLOW = (
     "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
     "miter -equiv -flatten -make_assert gold gate miter; hierarchy -top miter; "
     "async2sync; dffunmap; "
-    "sat -seq {n} -prove-asserts -set-init-zero -verify miter"
 )
+# Bounded: outputs match for n cycles from reset. Cheap, but a design that only
+# diverges later (e.g. a counter that wraps at 256) still passes.
+_BOUNDED_FLOW = _MITER_FLOW + "sat -seq {n} -prove-asserts -set-init-zero -verify miter"
+# Unbounded: temporal induction. Proves the outputs match on every cycle, finds a
+# counterexample deeper than the bounded check, or gives up after k steps.
+_INDUCTION_FLOW = (_MITER_FLOW +
+                   "sat -tempinduct -prove-asserts -set-init-zero -maxsteps {k} miter")
 
 
 def _bounded_io_equiv(workdir: Path, top: str, ref: str, n: int, timeout: int) -> Tuple[str, str]:
@@ -190,6 +200,33 @@ def _bounded_io_equiv(workdir: Path, top: str, ref: str, n: int, timeout: int) -
     if "did fail" in out or "model found" in out:
         return "DIVERGES", out          # counterexample: outputs differ
     return "INCONCLUSIVE", out          # SAT-hard: didn't finish in budget
+
+
+def _induction_equiv(workdir: Path, top: str, ref: str, k: int,
+                     timeout: int) -> Tuple[str, str]:
+    """Return ('PROVEN' | 'DIVERGES' | 'UNKNOWN', yosys_output)."""
+    try:
+        _, out = _run_yosys(workdir, _INDUCTION_FLOW.format(ref=ref, top=top, k=k), timeout)
+    except Exception:
+        return "UNKNOWN", "timeout"
+    if "Induction step proven: SUCCESS!" in out:
+        return "PROVEN", out
+    if "model found for base case: FAIL" in out:
+        return "DIVERGES", out
+    return "UNKNOWN", out               # not inductive within k steps
+
+
+def _not_equivalent(verification: str, out: str) -> Dict[str, Any]:
+    return {
+        "combined_score": 0.0,
+        "public": {"stage": "equivalence", "tb_pass": True,
+                   "verification": verification, "equivalent": False},
+        "private": {"equiv_tail": out[-1500:]},
+        "text_feedback": "Passes the testbench but is not equivalent to the "
+                         "reference: it differs on some input sequence. Match the "
+                         "reference on every output, every cycle; do not change "
+                         "timing or remove registers.",
+    }
 
 
 def _classify_compile_error(stderr: str) -> str:
@@ -301,8 +338,9 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
 
         # Correctness: the testbench is the cheap first filter; every passing
         # candidate is then checked for cycle-accurate equivalence to the reference
-        # with a bounded I/O miter (DIVERGES -> reject, EQUIV_IO -> accept,
-        # timeout on a hard SAT -> fall back to the testbench verdict).
+        # with a bounded I/O miter (DIVERGES -> reject, EQUIV_IO -> accept as
+        # "bounded", timeout on a hard SAT -> fall back to the testbench verdict).
+        # Only an induction proof (RTLLM_PROVE=1) earns the "formal" label.
         if not tb_pass:
             return {
                 "combined_score": 0.0,
@@ -315,17 +353,14 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
         # Bounded I/O equivalence: compare outputs for 16 cycles from reset, 20s SAT budget.
         bnd, bnd_out = _bounded_io_equiv(wd, top, ref_mod, 16, 20)
         if bnd == "DIVERGES":
-            return {
-                "combined_score": 0.0,
-                "public": {"stage": "equivalence", "tb_pass": True,
-                           "verification": "formal", "equivalent": False},
-                "private": {"equiv_tail": bnd_out[-1500:]},
-                "text_feedback": "Passes the testbench but is not equivalent to the "
-                                 "reference: it differs on some input sequence. Match the "
-                                 "reference on every output, every cycle; do not change "
-                                 "timing or remove registers.",
-            }
-        verification = "formal" if bnd == "EQUIV_IO" else "testbench"
+            return _not_equivalent("bounded", bnd_out)
+        verification = "bounded" if bnd == "EQUIV_IO" else "testbench"
+        if verification == "bounded" and os.environ.get("RTLLM_PROVE", "0") == "1":
+            proof, proof_out = _induction_equiv(wd, top, ref_mod, 32, timeout)
+            if proof == "DIVERGES":
+                return _not_equivalent("formal", proof_out)
+            if proof == "PROVEN":
+                verification = "formal"
 
         # --- PPA: candidate vs reference on the identical AIG flow ---
         cand_ppa = _ppa(wd, "cand.v", top, timeout)
@@ -359,7 +394,9 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
         score = 100.0 * speedup
 
         verdict = "beats" if score > 100.0 else ("matches" if score == 100.0 else "below")
-        how = "formally equivalent" if verification == "formal" else "passes the testbench"
+        how = {"formal": "proven equivalent",
+               "bounded": "equivalent for 16 cycles from reset",
+               "testbench": "passes the testbench"}[verification]
         pwr_str = (f", power {p_c} vs {p_r} uW (x{power_ratio:.2f})"
                    if power_ratio else f", power {p_c} uW")
         feedback = (
