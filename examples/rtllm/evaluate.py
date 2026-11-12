@@ -170,11 +170,14 @@ def _measure_power(workdir: Path, vfile: str, top: str, timeout: int) -> Optiona
 
 # I/O equivalence: build an output-comparing miter of reference vs candidate. This
 # compares behaviour, not state encoding, so it accepts equivalent restructurings while
-# still catching real behavioural change.
+# still catching real behavioural change. -nodisplay keeps a design's $display
+# output out of the log, so it cannot print a fake solver verdict, and the leftover
+# $print cells are deleted because SAT has no model for them.
 _MITER_FLOW = (
-    "read_verilog -sv ref.v; hierarchy -top {ref}; proc; memory; flatten; "
-    "rename {ref} gold; design -stash gold; "
-    "read_verilog -sv cand.v; hierarchy -top {top}; proc; memory; flatten; "
+    "read_verilog -sv -nodisplay ref.v; hierarchy -top {ref}; proc; delete t:$print; "
+    "memory; flatten; rename {ref} gold; design -stash gold; "
+    "read_verilog -sv -nodisplay cand.v; hierarchy -top {top}; proc; delete t:$print; "
+    "memory; flatten; "
     "rename {top} gate; design -stash gate; "
     "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
     "miter -equiv -flatten -make_assert gold gate miter; hierarchy -top miter; "
@@ -184,8 +187,10 @@ _MITER_FLOW = (
 # diverges later (e.g. a counter that wraps at 256) still passes.
 _BOUNDED_FLOW = _MITER_FLOW + "sat -seq {n} -prove-asserts -set-init-zero -verify miter"
 # Unbounded: temporal induction. Proves the outputs match on every cycle, finds a
-# counterexample deeper than the bounded check, or gives up after k steps.
-_INDUCTION_FLOW = (_MITER_FLOW +
+# counterexample deeper than the bounded check, or gives up after k steps. The
+# verdict is read from the sat command's own log, not from the full yosys output.
+_INDUCTION_LOG = "induction.log"
+_INDUCTION_FLOW = (_MITER_FLOW + f"tee -o {_INDUCTION_LOG} "
                    "sat -tempinduct -prove-asserts -set-init-zero -maxsteps {k} miter")
 
 
@@ -205,14 +210,17 @@ def _bounded_io_equiv(workdir: Path, top: str, ref: str, n: int, timeout: int) -
 def _induction_equiv(workdir: Path, top: str, ref: str, k: int,
                      timeout: int) -> Tuple[str, str]:
     """Return ('PROVEN' | 'DIVERGES' | 'UNKNOWN', yosys_output)."""
+    log = workdir / _INDUCTION_LOG
+    log.unlink(missing_ok=True)
     try:
-        _, out = _run_yosys(workdir, _INDUCTION_FLOW.format(ref=ref, top=top, k=k), timeout)
+        _run_yosys(workdir, _INDUCTION_FLOW.format(ref=ref, top=top, k=k), timeout)
+        out = log.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return "UNKNOWN", "timeout"
-    if "Induction step proven: SUCCESS!" in out:
-        return "PROVEN", out
     if "model found for base case: FAIL" in out:
         return "DIVERGES", out
+    if "Induction step proven: SUCCESS!" in out:
+        return "PROVEN", out
     return "UNKNOWN", out               # not inductive within k steps
 
 
