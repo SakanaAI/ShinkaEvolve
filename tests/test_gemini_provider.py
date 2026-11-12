@@ -69,6 +69,8 @@ def test_build_gemini_afc_config_sets_max_remote_calls_none(monkeypatch):
 @pytest.mark.parametrize(
     ("level", "expected"),
     [
+        ("MINIMAL", types.ThinkingLevel.MINIMAL),
+        ("minimal", types.ThinkingLevel.MINIMAL),
         ("LOW", types.ThinkingLevel.LOW),
         ("low", types.ThinkingLevel.LOW),
         ("MEDIUM", types.ThinkingLevel.MEDIUM),
@@ -110,7 +112,16 @@ def test_build_gemini_thinking_level_config_rejects_unknown_level():
         gemini.build_gemini_thinking_level_config("NOT_A_LEVEL")
 
 
-@pytest.mark.parametrize("model_name", ["gemini-3.6-flash", "gemini-3.7-flash"])
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+    ],
+)
 def test_latest_gemini_generation_config_omits_unsupported_fields(
     monkeypatch,
     model_name: str,
@@ -198,7 +209,11 @@ def test_legacy_gemini_generation_config_keeps_sampling_and_budget(monkeypatch):
     }
 
 
-def test_sync_query_uses_shared_generation_config_builder(monkeypatch):
+@pytest.mark.parametrize(
+    "model_name",
+    ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-4-argon"],
+)
+def test_sync_query_uses_shared_generation_config_builder(monkeypatch, model_name):
     captured = {}
     response = SimpleNamespace(candidates=[], text="answer", usage_metadata=None)
 
@@ -212,10 +227,15 @@ def test_sync_query_uses_shared_generation_config_builder(monkeypatch):
         return "config"
 
     monkeypatch.setattr(gemini, "build_gemini_generation_config", build_config)
+    monkeypatch.setattr(
+        gemini,
+        "get_gemini_costs",
+        lambda response, model: {"input_tokens": 0, "output_tokens": 0},
+    )
 
     result = gemini.query_gemini(
         SimpleNamespace(models=Models()),
-        "gemini-3.6-flash",
+        model_name,
         "prompt",
         "system",
         [],
@@ -231,7 +251,7 @@ def test_sync_query_uses_shared_generation_config_builder(monkeypatch):
 
     assert result.content == "answer"
     assert captured["config_kwargs"] == {
-        "model": "gemini-3.6-flash",
+        "model": model_name,
         "temperature": 0.25,
         "top_p": 0.9,
         "max_tokens": 4096,
@@ -242,7 +262,11 @@ def test_sync_query_uses_shared_generation_config_builder(monkeypatch):
     assert captured["request"]["config"] == "config"
 
 
-def test_async_query_uses_shared_generation_config_builder(monkeypatch):
+@pytest.mark.parametrize(
+    "model_name",
+    ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-4-argon"],
+)
+def test_async_query_uses_shared_generation_config_builder(monkeypatch, model_name):
     captured = {}
     response = SimpleNamespace(candidates=[], text="answer", usage_metadata=None)
 
@@ -256,11 +280,16 @@ def test_async_query_uses_shared_generation_config_builder(monkeypatch):
         return "config"
 
     monkeypatch.setattr(gemini, "build_gemini_generation_config", build_config)
+    monkeypatch.setattr(
+        gemini,
+        "get_gemini_costs",
+        lambda response, model: {"input_tokens": 0, "output_tokens": 0},
+    )
 
     result = asyncio.run(
         gemini.query_gemini_async(
             SimpleNamespace(aio=SimpleNamespace(models=Models())),
-            "gemini-3.6-flash",
+            model_name,
             "prompt",
             "system",
             [],
@@ -272,7 +301,7 @@ def test_async_query_uses_shared_generation_config_builder(monkeypatch):
 
     assert result.content == "answer"
     assert captured["config_kwargs"] == {
-        "model": "gemini-3.6-flash",
+        "model": model_name,
         "temperature": 0.8,
         "top_p": 1.0,
         "max_tokens": 4096,
@@ -281,3 +310,51 @@ def test_async_query_uses_shared_generation_config_builder(monkeypatch):
         "thinking_level": "LOW",
     }
     assert captured["request"]["config"] == "config"
+
+
+@pytest.mark.parametrize(
+    "model_name", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"]
+)
+def test_generation_config_rejects_minimal_for_models_without_support(model_name):
+    with pytest.raises(gemini.NonRetryableLLMError, match="MINIMAL.*not supported"):
+        gemini.build_gemini_generation_config(
+            model=model_name,
+            temperature=0.25,
+            top_p=0.9,
+            max_tokens=4096,
+            system_instruction=None,
+            thinking_budget=0,
+            thinking_level="minimal",
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_name", "level"),
+    [
+        ("gemini-3.5-flash-lite", "MINIMAL"),
+        ("gemini-3.8-flash", None),
+        ("gemini-4-argon", None),
+    ],
+)
+def test_current_gemini_config_serializes_only_supported_thinking_controls(
+    model_name, level
+):
+    config = gemini.build_gemini_generation_config(
+        model=model_name,
+        temperature=0.25,
+        top_p=0.9,
+        max_tokens=4096,
+        system_instruction=None,
+        thinking_budget=0,
+        thinking_level=level,
+    )
+
+    payload = config.model_dump(exclude_none=True)
+
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert "thinking_budget" not in payload["thinking_config"]
+    if level is None:
+        assert payload["thinking_config"] == {"include_thoughts": True}
+    else:
+        assert payload["thinking_config"]["thinking_level"] == level

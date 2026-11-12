@@ -104,12 +104,14 @@ def aggregate_circle_packing_metrics(
 ) -> Dict[str, Any]:
     """
     Aggregates metrics for circle packing. Assumes num_runs=1.
+    Only valid packings receive a nonzero combined_score.
     Saves extra.npz with detailed packing information.
     """
     if not results:
         return {"combined_score": 0.0, "error": "No results to aggregate"}
 
     centers, radii, reported_sum = results[0]
+    is_valid, _ = adapted_validate_packing(results[0])
 
     public_metrics = {
         "centers_str": format_centers_string(centers),
@@ -119,7 +121,7 @@ def aggregate_circle_packing_metrics(
         "reported_sum_of_radii": float(reported_sum),
     }
     metrics = {
-        "combined_score": float(reported_sum),
+        "combined_score": float(reported_sum) if is_valid else 0.0,
         "public": public_metrics,
         "private": private_metrics,
     }

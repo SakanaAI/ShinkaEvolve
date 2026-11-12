@@ -49,6 +49,11 @@ Single-program evaluation (no evolution loop):
 python evaluate.py --program_path initial.py --results_dir results/manual_eval
 ```
 
+Only packings that pass validation receive their reported sum of radii as
+`combined_score`; invalid packings receive `0.0`. The original reported sum
+remains in `private.reported_sum_of_radii` and `extra.npz` for debugging, alongside
+the validation error in `correct.json`.
+
 Result inspection:
 
 - Open `load_results.ipynb` for summary plots.

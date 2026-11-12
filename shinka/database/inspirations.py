@@ -106,6 +106,8 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
                     prog = self.get_program(row["id"])
                     if prog:  # id is already not in insp_ids from query
                         inspirations.append(prog)
+                        # Record it so the global fallback below cannot pick it again
+                        insp_ids.add(prog.id)
 
         # 4. Fallback to global random sampling if not enough inspirations
         # found on island
@@ -125,6 +127,7 @@ class ArchiveInspirationSelector(ContextSelectorStrategy):
                     prog = self.get_program(row["id"])
                     if prog:
                         inspirations.append(prog)
+                        insp_ids.add(prog.id)
 
         if inspirations:
             inspiration_details = [

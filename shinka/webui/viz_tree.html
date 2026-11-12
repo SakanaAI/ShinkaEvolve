@@ -4173,9 +4173,9 @@ console.error("[DEBUG] Error in processData:", error);
             console.log("[DEBUG] Starting graph rendering with D3 tree layout");
 
             try {
-                // Skip render if data hasn't changed (unless forced)
+                // Skip render if data hasn't changed (unless forced or a node selection is pending)
                 const currentHash = computeDataHash(data);
-                if (!forceRender && currentHash === lastRenderedDataHash && document.querySelector("#tree svg")) {
+                if (!forceRender && !window.pendingNodeSelectionId && currentHash === lastRenderedDataHash && document.querySelector("#tree svg")) {
                     console.log("[DEBUG] Skipping render - data unchanged");
                     return;
                 }
@@ -6603,7 +6603,26 @@ console.error("[DEBUG] Error in processData:", error);
                 const validScoreData = (cumulativeMaxScores || [])
                     .filter(item => item.y !== null && item.y !== undefined && !isNaN(parseFloat(item.y)))
                     .map(item => ({x: item.x, y: parseFloat(item.y)}));
-                
+
+                // Cumulative max is a step function: only mark the points where it improves,
+                // so the markers don't hide the individual solutions underneath
+                const isCumulativeMaxImprovement = (ctx) => {
+                    const data = ctx.dataset.data;
+                    const i = ctx.dataIndex;
+                    return i === 0 || data[i].y !== data[i - 1].y;
+                };
+                const cumulativeMaxStepStyle = {
+                    borderColor: '#3498db',
+                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                    borderWidth: 2,
+                    stepped: 'before',
+                    pointBackgroundColor: '#3498db',
+                    pointRadius: ctx => isCumulativeMaxImprovement(ctx) ? 4 : 0,
+                    pointHitRadius: 4,
+                    pointHoverRadius: 6,
+                    fill: false
+                };
+
                 const validCumulativeMeanScoreData = (cumulativeMeanScores || [])
                     .filter(item => item.y !== null && item.y !== undefined && !isNaN(parseFloat(item.y)))
                     .map(item => ({x: item.x, y: parseFloat(item.y)}));
@@ -6727,14 +6746,9 @@ console.error("[DEBUG] Error in processData:", error);
                                 {
                                     label: 'Cumulative Max',
                                     data: validScoreData,
-                                    borderColor: '#3498db',
-                                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
-                                    borderWidth: 2,
+                                    ...cumulativeMaxStepStyle,
                                     pointBackgroundColor: validScoreData.map(p => p.x === currentGenId ? '#e74c3c' : '#3498db'),
-                                    pointRadius: validScoreData.map(p => p.x === currentGenId ? 6 : 4),
-                                    pointHoverRadius: 8,
-                                    fill: false,
-                                    tension: 0.2
+                                    pointRadius: ctx => validScoreData[ctx.dataIndex].x === currentGenId ? 6 : cumulativeMaxStepStyle.pointRadius(ctx)
                                 },
                                 {
                                     label: 'Best Path',
@@ -6777,7 +6791,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 const datasetIndex = firstPoint.datasetIndex;
                                 const index = firstPoint.index;
 
-                                if (datasetIndex === 2) { // Individual Solution Scores
+                                if (datasetIndex === 3) { // Individual Solution Scores
                                     const dataPoint = validIndividualScoreData[index];
                                     if (dataPoint && dataPoint.id) {
                                         selectNodeById(dataPoint.id);
@@ -6960,13 +6974,7 @@ console.error("[DEBUG] Error in processData:", error);
                                 {
                                     label: 'Cumulative Max',
                                     data: scoreBudgetMaxData,
-                                    borderColor: '#3498db',
-                                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
-                                    borderWidth: 2,
-                                    pointRadius: 4,
-                                    pointHoverRadius: 8,
-                                    fill: false,
-                                    tension: 0.2
+                                    ...cumulativeMaxStepStyle
                                 },
                                 {
                                     label: 'Best Path',
@@ -7236,13 +7244,7 @@ console.error("[DEBUG] Error in processData:", error);
                                     {
                                         label: 'Cumulative Max',
                                         data: scoreRuntimeMaxData,
-                                        borderColor: '#3498db',
-                                        backgroundColor: 'rgba(52, 152, 219, 0.1)',
-                                        borderWidth: 2,
-                                        pointRadius: 4,
-                                        pointHoverRadius: 8,
-                                        fill: false,
-                                        tension: 0.2
+                                        ...cumulativeMaxStepStyle
                                     },
                                     {
                                         label: 'Best Path',

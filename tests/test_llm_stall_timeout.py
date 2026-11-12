@@ -115,7 +115,8 @@ def test_stalled_local_openai_query_respects_configured_retry_bounds():
         check=True,
         capture_output=True,
         text=True,
-        timeout=5,
+        # Allow SDK imports and process teardown outside the request latency bound.
+        timeout=15,
     )
     payload = json.loads(result.stdout.splitlines()[-1])
 

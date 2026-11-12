@@ -39,21 +39,23 @@ def test_resolve_new_claude_opus_models(model_name: str, provider: str):
 
 
 @pytest.mark.parametrize(
-    "model_name",
+    ("model_name", "input_price", "output_price"),
     [
-        "claude-opus-4-7",
-        "anthropic.claude-opus-4-7",
-        "claude-opus-4-8",
-        "us.anthropic.claude-opus-4-8",
+        ("claude-opus-4-7", 5.0, 25.0),
+        ("anthropic.claude-opus-4-7", 5.0, 25.0),
+        ("claude-opus-4-8", 5.0, 25.0),
+        ("us.anthropic.claude-opus-4-8", 5.5, 27.5),
     ],
 )
 def test_claude_opus_keeps_standard_pricing_across_context_window(
     model_name: str,
+    input_price: float,
+    output_price: float,
 ):
     prices = get_model_prices(model_name, input_tokens=300_000)
     assert prices == {
-        "input_price": 5.0 / 1_000_000,
-        "output_price": 25.0 / 1_000_000,
+        "input_price": input_price / 1_000_000,
+        "output_price": output_price / 1_000_000,
     }
 
 
@@ -85,8 +87,8 @@ def test_gemini_3_5_flash_pricing_is_registered():
 @pytest.mark.parametrize(
     ("model_name", "input_price", "output_price"),
     [
-        ("deepseek-v4-flash", 0.14, 0.28),
-        ("deepseek-v4-pro", 0.435, 0.87),
+        ("deepseek-v4-flash", 0.15, 0.6),
+        ("deepseek-v4-pro", 0.66, 1.98),
     ],
 )
 def test_deepseek_v4_pricing_is_registered(

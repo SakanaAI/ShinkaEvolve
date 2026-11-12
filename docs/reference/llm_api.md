@@ -21,6 +21,13 @@ Azure embeddings continue to use the versioned Azure client and require
 
 Batch-oriented synchronous client for sampling candidate responses.
 
+`batch_kwargs_query` returns results in input order. Both batch methods retain
+billed empty replies as `QueryResult(content=None)` for cost accounting; check
+content before using an answer. Use `batch_kwargs_query_indexed` to retain each
+response's original request index when associating responses with per-request
+metadata. Requests without a result are omitted without renumbering later
+responses.
+
 ::: shinka.llm.llm.LLMClient
     handler: python
     options:
@@ -29,6 +36,7 @@ Batch-oriented synchronous client for sampling candidate responses.
         - __init__
         - batch_query
         - batch_kwargs_query
+        - batch_kwargs_query_indexed
         - get_kwargs
 
 ---
@@ -36,6 +44,13 @@ Batch-oriented synchronous client for sampling candidate responses.
 ## `AsyncLLMClient`
 
 Async counterpart for the same provider abstraction.
+Its indexed batch method follows the same request-index contract.
+
+Cancelling a single query after it received billed empty replies raises
+`BilledCancellationError`, a subclass of `asyncio.CancelledError`. Its
+`cost_results` contains the already-received costs, token totals, and query
+count. Direct callers can account for those charges before propagating
+cancellation. Charges for requests without a received usage report are unknown.
 
 ::: shinka.llm.llm.AsyncLLMClient
     handler: python
@@ -45,6 +60,7 @@ Async counterpart for the same provider abstraction.
         - __init__
         - batch_query
         - batch_kwargs_query
+        - batch_kwargs_query_indexed
         - get_kwargs
 
 ---

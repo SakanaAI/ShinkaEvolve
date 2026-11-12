@@ -79,11 +79,30 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `prompt_evolution_interval` | `Optional[int]` | `None` | Prompt-evolution interval in generations. |
 | `prompt_archive_size` | `int` | `10` | Prompt archive size. |
 | `prompt_llm_models` | `Optional[List[str]]` | `None` | Prompt-evolution model pool (falls back to `llm_models`). |
-| `prompt_llm_kwargs` | `dict` | `{}` | kwargs for prompt-evolution LLM calls. |
+| `prompt_llm_kwargs` | `dict` | `{}` | Prompt-client sampler settings, converted to provider arguments for each mutation. |
 | `prompt_ucb_exploration_constant` | `float` | `1.0` | UCB exploration constant for prompt sampler. |
 | `prompt_epsilon` | `float` | `0.1` | Epsilon-greedy exploration for prompt sampler. |
 | `prompt_evo_top_k_programs` | `int` | `3` | Number of top programs used during prompt evolution. |
 | `prompt_percentile_recompute_interval` | `int` | `20` | Generations between prompt percentile recomputations. |
+
+Resuming prompt evolution reuses stored prompts, including when only the
+initial generation-zero prompt exists. Existing IDs and fitness data are retained.
+
+Billed OpenAI replies count toward `max_api_costs` even when they contain no
+usable text. A reply exhausted by `max_output_tokens` stops proposal retries;
+increase `llm_kwargs.max_tokens` or lower `reasoning_efforts` before retrying.
+Failed proposal, initialization, prompt, and meta-analysis charges are retained
+on resume. The budget stops new submissions; requests already running can
+complete and add costs.
+
+Cancellation of initialization, proposal generation, or prompt evolution
+retains known charges on resume. Small accounting writes finish before
+cancellation propagates, including when cancellation interrupts an insert.
+
+When calling the LLM clients directly, a billed failure can return a
+`QueryResult` with `content=None`, its cost and usage, and an
+`incomplete_reason`. Check `content` before using the answer. Batch clients
+also retain these billed results so callers can include their costs.
 
 W&B logging examples:
 
@@ -145,13 +164,30 @@ with a rate-limited warning; population and final snapshots remain authoritative
 | `stagnation_threshold` | `int` | `100` | No-improvement generations before spawn. |
 | `island_spawn_strategy` | `str` | `'initial'` | Spawn seed: `initial`, `best`, `archive_random`. |
 | `island_spawn_subtree_size` | `int` | `1` | Number of copied programs when spawning. |
-| `parent_selection_strategy` | `str` | `'weighted'` | Parent selector: `weighted`, `power_law`, `beam_search`. |
+| `parent_selection_strategy` | `str` | `'weighted'` | Parent selector: `weighted`, `power_law`, `beam_search`, `tournament`. |
+| `tournament_top_k` | `int` | `8` | Highest-scoring eligible archive entries considered by tournament selection. |
+| `tournament_num_draws` | `int` | `3` | Distinct uniform contestants; mutate one with the highest score. Must not exceed `tournament_top_k`. |
 | `exploitation_alpha` | `float` | `1.0` | Power-law strength for parent selection. |
 | `exploitation_ratio` | `float` | `0.2` | Probability of selecting from archive. |
 | `parent_selection_lambda` | `float` | `10.0` | Sigmoid sharpness for weighted parent selection. |
 | `num_beams` | `int` | `5` | Beam count for beam-search parent selection. |
 | `archive_selection_strategy` | `str` | `'fitness'` | Archive replacement strategy: `fitness` or `crowding`. |
 | `archive_criteria` | `Dict[str, float]` | `{'combined_score': 1.0}` | Weighted criteria for fitness archive scoring. |
+
+Tournament selection chooses the mutation parent, leaving archive retention and
+inspiration selection unchanged. Set `parent_selection_strategy: tournament`,
+`tournament_top_k: 8`, and `tournament_num_draws: 3` for Tournament(8,3).
+Only correct, finite-scored programs are eligible. The pool is the selected
+island's top K archive entries by `combined_score`; an empty eligible archive
+falls back to correct programs in that island. Both pool and draw sizes shrink
+to available candidates during startup. Ties at the pool boundary use program
+ID order; tied tournament winners are selected uniformly.
+
+With distinct scores, rank r wins with probability
+`C(N-r, D-1) / C(N, D)`, where N and D are the effective pool and draw sizes.
+Tournament(8,3) gives ranks 1–8 shares of 37.5%, 26.8%, 17.9%, 10.7%, 5.4%,
+1.8%, 0%, and 0%. See `examples/circle_packing/shinka_tournament.yaml` for a
+complete CLI configuration.
 
 ### Job Configs (`shinka.launch.*JobConfig`)
 
