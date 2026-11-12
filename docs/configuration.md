@@ -164,13 +164,30 @@ with a rate-limited warning; population and final snapshots remain authoritative
 | `stagnation_threshold` | `int` | `100` | No-improvement generations before spawn. |
 | `island_spawn_strategy` | `str` | `'initial'` | Spawn seed: `initial`, `best`, `archive_random`. |
 | `island_spawn_subtree_size` | `int` | `1` | Number of copied programs when spawning. |
-| `parent_selection_strategy` | `str` | `'weighted'` | Parent selector: `weighted`, `power_law`, `beam_search`. |
+| `parent_selection_strategy` | `str` | `'weighted'` | Parent selector: `weighted`, `power_law`, `beam_search`, `tournament`. |
+| `tournament_top_k` | `int` | `8` | Highest-scoring eligible archive entries considered by tournament selection. |
+| `tournament_num_draws` | `int` | `3` | Distinct uniform contestants; mutate one with the highest score. Must not exceed `tournament_top_k`. |
 | `exploitation_alpha` | `float` | `1.0` | Power-law strength for parent selection. |
 | `exploitation_ratio` | `float` | `0.2` | Probability of selecting from archive. |
 | `parent_selection_lambda` | `float` | `10.0` | Sigmoid sharpness for weighted parent selection. |
 | `num_beams` | `int` | `5` | Beam count for beam-search parent selection. |
 | `archive_selection_strategy` | `str` | `'fitness'` | Archive replacement strategy: `fitness` or `crowding`. |
 | `archive_criteria` | `Dict[str, float]` | `{'combined_score': 1.0}` | Weighted criteria for fitness archive scoring. |
+
+Tournament selection chooses the mutation parent, leaving archive retention and
+inspiration selection unchanged. Set `parent_selection_strategy: tournament`,
+`tournament_top_k: 8`, and `tournament_num_draws: 3` for Tournament(8,3).
+Only correct, finite-scored programs are eligible. The pool is the selected
+island's top K archive entries by `combined_score`; an empty eligible archive
+falls back to correct programs in that island. Both pool and draw sizes shrink
+to available candidates during startup. Ties at the pool boundary use program
+ID order; tied tournament winners are selected uniformly.
+
+With distinct scores, rank r wins with probability
+`C(N-r, D-1) / C(N, D)`, where N and D are the effective pool and draw sizes.
+Tournament(8,3) gives ranks 1–8 shares of 37.5%, 26.8%, 17.9%, 10.7%, 5.4%,
+1.8%, 0%, and 0%. See `examples/circle_packing/shinka_tournament.yaml` for a
+complete CLI configuration.
 
 ### Job Configs (`shinka.launch.*JobConfig`)
 

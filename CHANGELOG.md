@@ -6,6 +6,13 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Added configurable tournament parent selection in PR #217, with
+  `tournament_top_k=8` and `tournament_num_draws=3` defaults. Draw distinct
+  contestants uniformly from the selected island's highest-scoring correct,
+  finite-scored archive entries and mutate a highest scorer, breaking winner
+  ties uniformly. Empty eligible archives fall back to the island's eligible
+  population; pool and draw sizes shrink to available candidates. The default
+  parent selection strategy remains `weighted`.
 - Expanded the bundled model catalog with OpenAI GPT-6, Claude 5.5/Fable 5.1,
   Gemini 4 Argon, Gemini 3.5 Flash-Lite and 3.6–3.8 Flash, and DeepSeek V4 Flash
   and V4 Pro. Added provider-specific reasoning and thinking controls, refreshed
