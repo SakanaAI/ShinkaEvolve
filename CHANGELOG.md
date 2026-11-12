@@ -50,6 +50,15 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed `AsymmetricUCB` and `ThompsonSampler` with `asymmetric_scaling=False`:
+  `exponential_base` defaults to `1.0`, which initialised the reward accumulator
+  in log-space while `update()` accumulated it linearly, so every arm stayed at
+  `-inf`. For `AsymmetricUCB` model selection collapsed to uniform; for
+  `ThompsonSampler` the posterior kept learning through `alpha`/`beta`, but the
+  adaptive reward range collapsed after the first decay. Exponential scaling now
+  only activates together with asymmetric scaling, and a `bandit_state.pkl`
+  saved by an affected run is reset to the prior with a warning on load, since
+  its reward history cannot be recovered. Thanks @yurekami.
 - Fixed prompt evolution resume inserting another seed when only generation-zero
   prompts exist, retaining stored prompt IDs, fitness history, and costs.
 - Fixed custom prompt-model sampler settings being forwarded as raw provider
