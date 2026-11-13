@@ -1,8 +1,46 @@
 import sqlite3
+from collections.abc import Iterator
 from types import SimpleNamespace
+
+import pytest
 
 from shinka.database.dbase import DatabaseConfig, Program, ProgramDatabase
 from shinka.database.parents import CombinedParentSelector
+
+
+@pytest.fixture
+def beam_db() -> Iterator[ProgramDatabase]:
+    config = DatabaseConfig(
+        num_islands=1,
+        archive_size=0,
+        parent_selection_strategy="beam_search",
+        num_beams=1,
+        num_archive_inspirations=0,
+        num_top_k_inspirations=0,
+    )
+    db = ProgramDatabase(config, embedding_model="")
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("sample_method", ["sample", "sample_with_fix_mode"])
+def test_beam_search_prefers_zero_score_to_negative_score(beam_db, sample_method):
+    for program_id, score in [("negative", -1.0), ("zero", 0.0)]:
+        beam_db.add(
+            Program(
+                id=program_id,
+                code="pass",
+                correct=True,
+                combined_score=score,
+                generation=0,
+            )
+        )
+
+    parent = getattr(beam_db, sample_method)()[0]
+
+    assert parent.id == "zero"
 
 
 def _make_db():
