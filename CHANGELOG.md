@@ -53,6 +53,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Fixed Gemini retry handling so unsupported structured-output requests fail
   immediately, synchronous retries are paced, and sync/async calls share the
   same default thinking budget.
+- Fixed beam-search parent sampling to stay within the selected island and
+  retain its active parent across samples in PR #194. Preserved zero-score
+  ranking, metric/timestamp tie-breaks, and stored program fields on beam
+  rollover. Thanks @tmkz4.
 - Fixed Rust candidate validation on stable toolchains by replacing the
   nightly-only parser flag with isolated, non-mutating `rustfmt` syntax checks
   in PR #179. Thanks @Atharva-Kanherkar.
