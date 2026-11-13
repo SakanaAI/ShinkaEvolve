@@ -36,7 +36,7 @@ The `verification` field in `metrics.json` says how strong that check was:
 | `verification` | meaning |
 |---|---|
 | `bounded` | outputs match the reference for 16 cycles from reset (the default check during evolution) |
-| `formal` | unbounded proof by temporal induction — only with `RTLLM_PROVE=1` |
+| `formal` | unbounded proof by temporal induction, once with all flip-flops on one shared clock and once with real clock edges (`clk2fflogic`) — only with `RTLLM_PROVE=1` |
 | `testbench` | the bounded SAT check timed out; only the RTLLM testbench passed |
 
 A bounded pass is not a proof: a design that only diverges later (say a counter that wraps
@@ -52,7 +52,7 @@ RTLLM_PROVE=1 python evaluate.py --program_path path/to/best.sv --results_dir /t
 ```bash
 # 1. tools
 sudo apt-get install iverilog                 # or: brew install icarus-verilog
-docker pull hdlc/yosys:latest                 # Yosys (or install natively)
+docker pull hdlc/yosys:latest                 # Yosys (or install natively; tested with 0.33 and 0.70)
 # OpenSTA: build the opensta:local image from https://github.com/parallaxsw/OpenSTA
 
 # 2. standard-cell PDK (proprietary Nangate liberty — NOT redistributed here)

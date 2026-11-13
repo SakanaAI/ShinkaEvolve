@@ -174,30 +174,54 @@ def _measure_power(workdir: Path, vfile: str, top: str, timeout: int) -> Optiona
 # output out of the log, so it cannot print a fake solver verdict, and the leftover
 # $print cells are deleted because SAT has no model for them.
 _MITER_FLOW = (
-    "read_verilog -sv -nodisplay ref.v; hierarchy -top {ref}; proc; delete t:$print; "
+    "read_verilog -sv {nodisplay}ref.v; hierarchy -top {ref}; proc; delete t:$print; "
     "memory; flatten; rename {ref} gold; design -stash gold; "
-    "read_verilog -sv -nodisplay cand.v; hierarchy -top {top}; proc; delete t:$print; "
+    "read_verilog -sv {nodisplay}cand.v; hierarchy -top {top}; proc; delete t:$print; "
     "memory; flatten; "
     "rename {top} gate; design -stash gate; "
     "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
     "miter -equiv -flatten -make_assert gold gate miter; hierarchy -top miter; "
-    "async2sync; dffunmap; "
 )
+# sat on its own steps every flip-flop once per time step, whatever its clock or edge.
+_SHARED_CLOCK = "async2sync; dffunmap; "
+# clk2fflogic turns clocks into ordinary inputs, so edges and polarity matter (a
+# posedge/negedge swap diverges). Each clock cycle then takes two or more steps.
+_REAL_CLOCKS = "clk2fflogic; "
 # Bounded: outputs match for n cycles from reset. Cheap, but a design that only
 # diverges later (e.g. a counter that wraps at 256) still passes.
-_BOUNDED_FLOW = _MITER_FLOW + "sat -seq {n} -prove-asserts -set-init-zero -verify miter"
+_BOUNDED_FLOW = (_MITER_FLOW + _SHARED_CLOCK +
+                 "sat -seq {n} -prove-asserts -set-init-zero -verify miter")
 # Unbounded: temporal induction. Proves the outputs match on every cycle, finds a
 # counterexample deeper than the bounded check, or gives up after k steps. The
 # verdict is read from the sat command's own log, not from the full yosys output.
 _INDUCTION_LOG = "induction.log"
-_INDUCTION_FLOW = (_MITER_FLOW + f"tee -o {_INDUCTION_LOG} "
-                   "sat -tempinduct -prove-asserts -set-init-zero -maxsteps {k} miter")
+_INDUCTION_SAT = (f"tee -o {_INDUCTION_LOG} "
+                  "sat -tempinduct -prove-asserts -set-init-zero -maxsteps {k} miter")
+
+
+class YosysScriptError(RuntimeError):
+    """Yosys rejected the script itself, so no equivalence verdict was produced."""
+
+
+def _run_miter(workdir: Path, flow: str, timeout: int, **fmt: Any) -> Tuple[int, str]:
+    # Yosys builds without `read_verilog -nodisplay` (e.g. 0.33) reject the whole
+    # script; retry without it rather than silently skipping the check. The verdicts
+    # don't depend on it: the induction verdict comes from its own log, and printed
+    # text can't turn a failing bounded check into a pass (that is decided by -verify).
+    rc, out = _run_yosys(workdir, flow.format(nodisplay="-nodisplay ", **fmt), timeout)
+    if "Command syntax error" in out:
+        rc, out = _run_yosys(workdir, flow.format(nodisplay="", **fmt), timeout)
+        if "Command syntax error" in out:
+            raise YosysScriptError("yosys rejected the equivalence script:\n" + out[-800:])
+    return rc, out
 
 
 def _bounded_io_equiv(workdir: Path, top: str, ref: str, n: int, timeout: int) -> Tuple[str, str]:
     """Return ('EQUIV_IO' | 'DIVERGES' | 'INCONCLUSIVE', yosys_output)."""
     try:
-        rc, out = _run_yosys(workdir, _BOUNDED_FLOW.format(ref=ref, top=top, n=n), timeout)
+        rc, out = _run_miter(workdir, _BOUNDED_FLOW, timeout, ref=ref, top=top, n=n)
+    except YosysScriptError:
+        raise
     except Exception:
         return "INCONCLUSIVE", "timeout"
     if rc == 0 and "did fail" not in out:
@@ -207,14 +231,17 @@ def _bounded_io_equiv(workdir: Path, top: str, ref: str, n: int, timeout: int) -
     return "INCONCLUSIVE", out          # SAT-hard: didn't finish in budget
 
 
-def _induction_equiv(workdir: Path, top: str, ref: str, k: int,
-                     timeout: int) -> Tuple[str, str]:
+def _induction_equiv(workdir: Path, top: str, ref: str, k: int, timeout: int,
+                     real_clocks: bool = False) -> Tuple[str, str]:
     """Return ('PROVEN' | 'DIVERGES' | 'UNKNOWN', yosys_output)."""
+    flow = _MITER_FLOW + (_REAL_CLOCKS if real_clocks else _SHARED_CLOCK) + _INDUCTION_SAT
     log = workdir / _INDUCTION_LOG
     log.unlink(missing_ok=True)
     try:
-        _run_yosys(workdir, _INDUCTION_FLOW.format(ref=ref, top=top, k=k), timeout)
+        _run_miter(workdir, flow, timeout, ref=ref, top=top, k=k)
         out = log.read_text(encoding="utf-8", errors="replace")
+    except YosysScriptError:
+        raise
     except Exception:
         return "UNKNOWN", "timeout"
     if "model found for base case: FAIL" in out:
@@ -365,6 +392,12 @@ def evaluate_rtllm(program_path: str, problem: Dict, timeout: int) -> Dict[str, 
         verification = "bounded" if bnd == "EQUIV_IO" else "testbench"
         if verification == "bounded" and os.environ.get("RTLLM_PROVE", "0") == "1":
             proof, proof_out = _induction_equiv(wd, top, ref_mod, 32, timeout)
+            if proof == "PROVEN":
+                # The first proof runs every flip-flop on one shared clock, which is
+                # fast and reaches deep counterexamples but can't tell clock edges
+                # apart. Re-prove with real clocks before granting "formal".
+                proof, proof_out = _induction_equiv(wd, top, ref_mod, 32, timeout,
+                                                    real_clocks=True)
             if proof == "DIVERGES":
                 return _not_equivalent("formal", proof_out)
             if proof == "PROVEN":

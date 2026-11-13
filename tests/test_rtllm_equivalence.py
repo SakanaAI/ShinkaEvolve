@@ -110,6 +110,53 @@ def test_induction_verdict_ignores_design_output(monkeypatch, tmp_path):
     assert verdict == "DIVERGES"
 
 
+def test_formal_needs_the_real_clock_proof_too(monkeypatch, tmp_path):
+    evaluator = _load_evaluator()
+
+    def run(wd, script):
+        if "-tempinduct" in script:
+            verdict = ("SAT temporal induction proof finished - model found for base "
+                       "case: FAIL!" if "clk2fflogic" in script
+                       else "Induction step proven: SUCCESS!")
+            (wd / "induction.log").write_text(verdict, encoding="utf-8")
+            return 0, ""
+        return 0, "SAT proof finished - no model found: SUCCESS!"
+
+    metrics = _evaluate(monkeypatch, tmp_path, evaluator, run, prove=True)
+
+    assert metrics["combined_score"] == 0.0
+    assert metrics["public"]["verification"] == "formal"
+    assert metrics["public"]["equivalent"] is False
+
+
+def test_retries_without_nodisplay_on_older_yosys(monkeypatch, tmp_path):
+    evaluator = _load_evaluator()
+    scripts = []
+
+    def run(wd, script, timeout):
+        scripts.append(script)
+        if "-nodisplay" in script:
+            return 1, "ERROR: Command syntax error: Unknown option or option in arguments."
+        return 1, "SAT proof finished - model found: FAIL!\nAssert ... did fail"
+
+    monkeypatch.setattr(evaluator, "_run_yosys", run)
+    verdict, _ = evaluator._bounded_io_equiv(tmp_path, "toy", "toy", 16, 5)
+
+    assert verdict == "DIVERGES"
+    assert len(scripts) == 2 and "-nodisplay" not in scripts[1]
+
+
+def test_rejected_script_fails_loudly(monkeypatch, tmp_path):
+    evaluator = _load_evaluator()
+    monkeypatch.setattr(evaluator, "_run_yosys", lambda wd, script, timeout: (
+        1, "ERROR: Command syntax error: Unknown option or option in arguments."))
+
+    with pytest.raises(evaluator.YosysScriptError):
+        evaluator._bounded_io_equiv(tmp_path, "toy", "toy", 16, 5)
+    with pytest.raises(evaluator.YosysScriptError):
+        evaluator._induction_equiv(tmp_path, "toy", "toy", 32, 5)
+
+
 # --- real Yosys runs (skipped when yosys is not installed) ------------------- #
 
 # square_wave from issue #206: with freq=0 the 32-bit reference never toggles, while
@@ -168,3 +215,51 @@ def test_late_divergence_passes_bounded_but_not_induction(tmp_path, ref, cand, t
 
     assert bounded == "EQUIV_IO"
     assert proof == expected
+
+
+CLK_REF = """module r(input clk, input d, output reg q);
+  always @(posedge clk) q <= d;
+endmodule
+"""
+CLK_NEG = CLK_REF.replace("posedge", "negedge")
+
+
+@needs_yosys
+@pytest.mark.parametrize(
+    "ref, cand, top, expected",
+    [
+        (CLK_REF, CLK_REF, "r", "PROVEN"),
+        (ACC_REF, ACC_CAND, "acc", "PROVEN"),
+        (CLK_REF, CLK_NEG, "r", "DIVERGES"),
+    ],
+    ids=["same-clock", "acc", "posedge-vs-negedge"],
+)
+def test_real_clock_proof_sees_clock_edges(tmp_path, ref, cand, top, expected):
+    evaluator = _load_evaluator()
+    (tmp_path / "ref.v").write_text(ref, encoding="utf-8")
+    (tmp_path / "cand.v").write_text(cand, encoding="utf-8")
+
+    shared, _ = evaluator._induction_equiv(tmp_path, top, top, 32, 300)
+    real, _ = evaluator._induction_equiv(tmp_path, top, top, 32, 300, real_clocks=True)
+
+    assert shared == "PROVEN"  # one shared clock can't tell posedge from negedge
+    assert real == expected
+
+
+BUF = """module m(input d, output q);
+  assign q = d;
+endmodule
+"""
+
+
+@needs_yosys
+def test_combinational_mismatch_is_caught(tmp_path):
+    # On Yosys 0.33 `-nodisplay` used to break the script, so this came back
+    # INCONCLUSIVE and the candidate was scored on the testbench alone.
+    evaluator = _load_evaluator()
+    (tmp_path / "ref.v").write_text(BUF, encoding="utf-8")
+    (tmp_path / "cand.v").write_text(BUF.replace("= d", "= ~d"), encoding="utf-8")
+
+    bounded, _ = evaluator._bounded_io_equiv(tmp_path, "m", "m", 16, 120)
+
+    assert bounded == "DIVERGES"
