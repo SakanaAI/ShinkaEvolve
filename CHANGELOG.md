@@ -2,7 +2,7 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
-## TBD
+## 0.0.8 - 2026-11-13
 
 ### Added
 
@@ -37,18 +37,31 @@ All notable changes to `shinka-evolve` are documented in this file.
   progress output, and `DatabaseConfig.max_stdout_log_chars` limits persisted
   `stdout_log` metadata to its tail while keeping full logs on disk. Quiet mode
   (`run_shinka_eval(..., verbose=False)`) also suppresses result-save framework
-  output. Thanks @marcopirazzini.
-- Added SLURM support for `numeric_threads_per_job`, applying numeric-library thread caps consistently across local and SLURM evaluation jobs. Thanks @marcopirazzini.
+  output in PR #140. Thanks @marcopirazzini.
+- Added SLURM support for `numeric_threads_per_job`, applying numeric-library
+  thread caps consistently across local and SLURM evaluation jobs in PR #140.
+  Thanks @marcopirazzini.
 
 ### Changed
 
 - Reused provider SDK clients and their HTTP connection pools across compatible
   requests, with explicit credential/configuration isolation, process-safe sync
-  caching, event-loop-scoped async caching, and cache shutdown helpers.
+  caching, event-loop-scoped async caching, and cache shutdown helpers in
+  PR #164.
+- Bounded stalled OpenAI-compatible endpoints in PR #144 (issue #143): request
+  timeout, retry count, and backoff budgets are configurable through
+  `SHINKA_LLM_TIMEOUT`, `SHINKA_LLM_MAX_RETRIES`, and `SHINKA_LLM_BACKOFF_*`
+  environment variables. OpenAI SDK retries now default to `0`
+  (`SHINKA_OPENAI_MAX_RETRIES`) so they no longer stack under ShinkaEvolve's own
+  retry layers. Thanks @dexhunter.
 - Reduced Python complexity-analysis overhead by parsing each candidate AST once
-  while preserving the existing metrics contract. Thanks @dexhunter.
+  while preserving the existing metrics contract in PR #175. Thanks @dexhunter.
 - Relaxed the exact HTTPX dependency pin to a `>=0.27` compatibility lower
-  bound in issue #180. Thanks @htmai-880.
+  bound in PR #181 (issue #180). Thanks @htmai-880.
+- Hardened the `@claude` agent workflow in PR #195: only owners, members, and
+  collaborators can trigger it, checkout credentials are not persisted, web
+  tools are denied, and actions are pinned to full commit SHAs.
+  Thanks @kazuki-hanai.
 - Removed the automatic Claude Code Review pull-request workflow.
 
 ### Fixed
@@ -65,17 +78,17 @@ All notable changes to `shinka-evolve` are documented in this file.
   adaptive reward range collapsed after the first decay. Exponential scaling now
   only activates together with asymmetric scaling, and a `bandit_state.pkl`
   saved by an affected run is reset to the prior with a warning on load, since
-  its reward history cannot be recovered. Thanks @yurekami.
+  its reward history cannot be recovered, in PR #191. Thanks @yurekami.
 - Fixed prompt evolution resume inserting another seed when only generation-zero
-  prompts exist, retaining stored prompt IDs, fitness history, and costs.
+  prompts exist, retaining stored prompt IDs, fitness history, and costs, in
+  PR #216.
 - Fixed custom prompt-model sampler settings being forwarded as raw provider
   arguments, allowing configured token limits and reasoning settings to work
-  for both diff and full prompt mutations.
+  for both diff and full prompt mutations, in PR #216.
 - Fixed billed empty OpenAI replies being omitted from budgets across single,
   batch, proposal, novelty, prompt, and meta-analysis calls in PR #211
   (issue #210). Output exhaustion stops proposal retries; failed charges survive
   resume, and recovered replies retain complete billed usage. Thanks @prath47.
-
 - Fixed sync and async meta-summary metadata alignment and generation ordering
   after failed batch responses in PR #208. Thanks @lll-hhh.
 - Fixed duplicated API, embedding, novelty, and meta-analysis costs on initial
@@ -113,21 +126,22 @@ All notable changes to `shinka-evolve` are documented in this file.
   or raising `re.error` on Python 3.10 (PR #193; thanks @MaxFreedomPollard), and
   empty SEARCH insertions preserve line boundaries and EVOLVE-BLOCK-END markers
   for consecutive patches and block-comment languages such as Wolfram
-  (issue #183; thanks @Atharva-Kanherkar).
+  (PR #185, issue #183; thanks @Atharva-Kanherkar).
 - Fixed `ThompsonSampler.decay()` to avoid invalid-value warnings while arms
   remain unsampled in PR #192. Thanks @yurekami.
 - Fixed provider response parsing: Anthropic dispatches by content-block type to
   avoid crashes and truncation for redacted, thinking-only, and multi-block
   responses (PR #188; thanks @Atharva-Kanherkar). OpenAI Responses finds assistant
-  text by content type without mistaking reasoning or tool text for an answer.
+  text by content type without mistaking reasoning or tool text for an answer
+  (PR #142).
 - Fixed pricing and usage accounting: Anthropic and DeepSeek sync/async queries
   agree on token costs, separate thinking tokens, and safely fall back to zero
   cost for models missing from the catalog. Runtime models.dev refreshes preserve
   pinned embedding-price overrides, and CSV reasoning flags handle whitespace
-  and mixed value types.
+  and mixed value types, in PR #166.
 - Fixed Gemini retry handling so unsupported structured-output requests fail
   immediately, synchronous retries are paced, and sync/async calls share the
-  same default thinking budget.
+  same default thinking budget, in PR #163.
 - Fixed beam-search parent sampling to stay within the selected island and
   retain its active parent across samples in PR #194. Preserved zero-score
   ranking, metric/timestamp tie-breaks, and stored program fields on beam
@@ -137,13 +151,17 @@ All notable changes to `shinka-evolve` are documented in this file.
   in PR #179. Thanks @Atharva-Kanherkar.
 - Fixed Azure OpenAI LLM client construction to use the v1 base URL contract,
   avoiding doubled `/openai/v1/openai` request paths and 404 responses reported
-  in issue #147.
-- Fixed OpenAI retry handling so ShinkaEvolve respects provider `retry_after` hints from transient Cloudflare/API 5xx responses.
+  in PR #148 (issue #147).
+- Fixed OpenAI retry handling so ShinkaEvolve respects provider `retry_after`
+  hints from transient Cloudflare/API 5xx responses in PR #142.
 - Fixed provider request compatibility: omitted unsupported `temperature` for
   DeepSeek V4 thinking calls, Claude Opus 4.8 on Anthropic and Bedrock, and GPT-5
   reasoning models on the Responses API. DeepSeek V4 receives thinking-mode
   controls and `reasoning_effort`, and its retry logs include model kwargs.
-- Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google API hosts and prefer IPv4 when needed.
+- Fixed Google GenAI client setup to detect broken IPv6 connectivity to Google
+  API hosts and prefer IPv4 when needed in PR #142.
+- Fixed spelling and grammar errors in the bundled prompts in PR #138.
+  Thanks @anantgar.
 
 ## 0.0.7 - 2026-06-02
 
