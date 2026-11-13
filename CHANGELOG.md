@@ -17,6 +17,9 @@ All notable changes to `shinka-evolve` are documented in this file.
   Gemini 4 Argon, Gemini 3.5 Flash-Lite and 3.6–3.8 Flash, and DeepSeek V4 Flash
   and V4 Pro. Added provider-specific reasoning and thinking controls, refreshed
   pricing, and historical-price overlays for upstream-removed IDs in PR #214.
+  Also added Claude Fable 5.2 ($8 input / $40 output per million tokens) and
+  Gemini 4 Hydrogen ($1.50 / $7.50), with adaptive Claude thinking and Gemini
+  thinking-level controls.
   Gemini 3.7 Flash and Gemini 4 Argon use introductory 2026 pricing. Existing
   default model pools remain unchanged. Thanks @anantgar for Gemini 3.6 support.
 - Added optional Weights & Biases logging with resumable run IDs, per-individual
