@@ -53,6 +53,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Fixed RTLLM equivalence labels in PR #218: the default 16-cycle SAT check
+  reports `bounded`; opt-in `RTLLM_PROVE=1` requires induction proofs with shared
+  and real clock semantics before reporting `formal`. Added solver-output
+  spoofing protection and compatibility with older Yosys versions. Thanks @prath47.
 - Fixed `AsymmetricUCB` and `ThompsonSampler` with `asymmetric_scaling=False`:
   `exponential_base` defaults to `1.0`, which initialised the reward accumulator
   in log-space while `update()` accumulated it linearly, so every arm stayed at
