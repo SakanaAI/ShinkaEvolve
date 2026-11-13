@@ -1564,21 +1564,9 @@ class ProgramDatabase:
 
         programs = []
         for row_data in all_rows:
-            p_dict = dict(row_data)
-            p_dict["public_metrics"] = (
-                json.loads(p_dict["public_metrics"])
-                if p_dict.get("public_metrics")
-                else {}
-            )
-            p_dict["private_metrics"] = (
-                json.loads(p_dict["private_metrics"])
-                if p_dict.get("private_metrics")
-                else {}
-            )
-            p_dict["metadata"] = (
-                json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
-            )
-            programs.append(Program.from_dict(p_dict))
+            program = self._program_from_row(row_data)
+            if program is not None:
+                programs.append(program)
 
         if not programs:
             return None

@@ -90,6 +90,41 @@ def test_completed_beam_uses_existing_tie_breaks(
     assert parent.id == expected_id
 
 
+@pytest.mark.parametrize("sample_method", ["sample", "sample_with_fix_mode"])
+def test_completed_beam_preserves_stored_program_fields(beam_db, sample_method):
+    beam_db.add(
+        Program(
+            id="parent",
+            code="pass",
+            correct=True,
+            combined_score=1.0,
+        )
+    )
+    assert getattr(beam_db, sample_method)()[0].id == "parent"
+
+    beam_db.add(
+        Program(
+            id="child",
+            code="pass",
+            parent_id="parent",
+            generation=1,
+            correct=True,
+            combined_score=2.0,
+            embedding=[1.0, 2.0],
+            embedding_pca_2d=[0.1, 0.2],
+            embedding_pca_3d=[0.1, 0.2, 0.3],
+            archive_inspiration_ids=["parent"],
+            top_k_inspiration_ids=["parent"],
+            migration_history=[{"from": 1, "to": 0}],
+        )
+    )
+
+    parent = getattr(beam_db, sample_method)()[0]
+
+    assert parent.id == "child"
+    assert parent == beam_db.get("child")
+
+
 def _make_db():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
