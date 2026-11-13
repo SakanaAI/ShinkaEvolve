@@ -43,6 +43,53 @@ def test_beam_search_prefers_zero_score_to_negative_score(beam_db, sample_method
     assert parent.id == "zero"
 
 
+@pytest.mark.parametrize("sample_method", ["sample", "sample_with_fix_mode"])
+@pytest.mark.parametrize(
+    "parent_metrics, child_metrics, child_timestamp, expected_id",
+    [
+        pytest.param({}, {}, 2.0, "child", id="newer-child"),
+        pytest.param(
+            {"quality": 1.0}, {"quality": 2.0}, 0.5, "child", id="better-metrics"
+        ),
+        pytest.param(
+            {"quality": 2.0}, {"quality": 1.0}, 2.0, "parent", id="worse-metrics"
+        ),
+    ],
+)
+def test_completed_beam_uses_existing_tie_breaks(
+    beam_db, sample_method, parent_metrics, child_metrics, child_timestamp, expected_id
+):
+    beam_db.add(
+        Program(
+            id="parent",
+            code="pass",
+            correct=True,
+            combined_score=1.0,
+            public_metrics=parent_metrics,
+            timestamp=1.0,
+            generation=0,
+        )
+    )
+    assert getattr(beam_db, sample_method)()[0].id == "parent"
+
+    beam_db.add(
+        Program(
+            id="child",
+            code="pass",
+            parent_id="parent",
+            correct=True,
+            combined_score=1.0,
+            public_metrics=child_metrics,
+            timestamp=child_timestamp,
+            generation=1,
+        )
+    )
+
+    parent = getattr(beam_db, sample_method)()[0]
+
+    assert parent.id == expected_id
+
+
 def _make_db():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

@@ -1596,6 +1596,13 @@ class ProgramDatabase:
                 reverse=True,
             )
             log_key = f"metric '{metric}'"
+        elif island_idx is not None:
+            best_program = programs[0]
+            for candidate in programs[1:]:
+                if self._is_better(candidate, best_program):
+                    best_program = candidate
+            sorted_p = [best_program]
+            log_key = "program ranking"
         elif any(p.combined_score is not None for p in programs):
             progs_with_cs = [p for p in programs if p.combined_score is not None]
             sorted_p = sorted(
