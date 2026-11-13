@@ -99,6 +99,11 @@
     },
     {
       "provider": "anthropic",
+      "model_name": "claude-fable-5-2",
+      "requires_reasoning": true
+    },
+    {
+      "provider": "anthropic",
       "model_name": "claude-opus-5-5",
       "requires_reasoning": true
     },

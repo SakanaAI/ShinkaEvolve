@@ -13,6 +13,7 @@ OPENAI_MODELS = (
 )
 CLAUDE_MODELS = (
     "claude-fable-5-1",
+    "claude-fable-5-2",
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "claude-haiku-5-5",
@@ -94,6 +95,7 @@ def test_current_claude_uses_adaptive_thinking_and_output_effort(model, effort):
     ("model", "thinking"),
     [
         ("claude-fable-5-1", {"type": "adaptive", "display": "summarized"}),
+        ("claude-fable-5-2", {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-5-5", {"type": "adaptive", "display": "summarized"}),
         ("claude-sonnet-5-5", {"type": "between_tools"}),
         ("claude-haiku-5-5", {"type": "disabled"}),
@@ -127,7 +129,13 @@ def test_current_models_reject_unknown_effort_before_request(model):
 
 
 @pytest.mark.parametrize(
-    "model", ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
+    "model",
+    [
+        "gemini-4-argon",
+        "gemini-4-hydrogen",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+    ],
 )
 @pytest.mark.parametrize("effort", ["min", "minimal", "medium", "max", "disabled"])
 def test_current_gemini_uses_levels_without_sampling_or_token_budgets(model, effort):

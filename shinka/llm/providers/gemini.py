@@ -94,7 +94,13 @@ def build_gemini_generation_config(
 ):
     """Build a model-compatible config for sync and async requests."""
     if (
-        model in {"gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"}
+        model
+        in {
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "gemini-4-argon",
+            "gemini-4-hydrogen",
+        }
         and thinking_level is not None
         and thinking_level.upper() == "MINIMAL"
     ):

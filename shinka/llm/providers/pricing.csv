@@ -1,4 +1,5 @@
 model_name,provider,input_price,output_price,input_price_tier2,output_price_tier2,tier_threshold,is_reasoning,think_temp_fixed,requires_reasoning
+claude-fable-5-2,anthropic,8.0,40.0,,,,True,1,1
 claude-fable-5-1,anthropic,10.0,50.0,,,,True,1,1
 claude-opus-5-5,anthropic,4.0,20.0,,,,True,1,1
 claude-sonnet-5-5,anthropic,2.0,10.0,,,,True,1,0
@@ -63,6 +64,7 @@ deepseek-reasoner,deepseek,0.14,0.28,,,,True,0,0
 deepseek-v4-flash,deepseek,0.15,0.6,,,,True,0,0
 deepseek-v4-pro,deepseek,0.66,1.9800000000000002,,,,True,0,0
 gemini-4-argon,google,2.0,10.0,,,,True,0,0
+gemini-4-hydrogen,google,1.5,7.5,,,,True,0,0
 gemini-3.8-flash,google,0.75,3.75,,,,True,0,0
 gemini-3.5-flash-lite,google,0.3,2.5,,,,True,0,0
 gemini-3.7-flash,google,0.75,3.75,,,,True,0,0

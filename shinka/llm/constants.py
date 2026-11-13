@@ -33,6 +33,7 @@ GEMINI_THINKING_LEVEL_MODELS = frozenset(
         "gemini-3.8-flash",
         "gemini-3.5-flash-lite",
         "gemini-4-argon",
+        "gemini-4-hydrogen",
     }
 )
 GEMINI_THINKING_LEVEL_BY_EFFORT = {
@@ -50,5 +51,11 @@ OPENAI_GPT6_MODELS = frozenset(
 )
 OPENAI_GPT6_REQUIRED_REASONING_MODELS = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
 CLAUDE_ADAPTIVE_MODELS = frozenset(
-    {"claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"}
+    {
+        "claude-fable-5-1",
+        "claude-fable-5-2",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+    }
 )

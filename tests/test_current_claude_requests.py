@@ -16,7 +16,13 @@ httpx = getattr(_base_client, "httpx", None) or getattr(_base_client, "httpx2")
 
 @pytest.mark.parametrize(
     "model",
-    ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+    [
+        "claude-fable-5-1",
+        "claude-fable-5-2",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+    ],
 )
 @pytest.mark.parametrize("effort", ["disabled", "max"])
 @pytest.mark.parametrize("mode", ["sync", "async"])

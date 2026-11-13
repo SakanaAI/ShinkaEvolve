@@ -19,10 +19,12 @@ CURRENT_MODELS = [
     ("openai", "gpt-6.1-terra", 1.0, 5.0, False),
     ("openai", "gpt-6-luna", 0.1, 0.5, False),
     ("anthropic", "claude-fable-5-1", 10.0, 50.0, True),
+    ("anthropic", "claude-fable-5-2", 8.0, 40.0, True),
     ("anthropic", "claude-opus-5-5", 4.0, 20.0, True),
     ("anthropic", "claude-sonnet-5-5", 2.0, 10.0, False),
     ("anthropic", "claude-haiku-5-5", 0.1, 0.5, False),
     ("google", "gemini-4-argon", 2.0, 10.0, False),
+    ("google", "gemini-4-hydrogen", 1.5, 7.5, False),
     ("google", "gemini-3.8-flash", 0.75, 3.75, False),
     ("google", "gemini-3.5-flash-lite", 0.3, 2.5, False),
 ]
@@ -95,6 +97,7 @@ def test_current_models_charge_context_tier_only_above_threshold(
         ("openai", "gpt-6-astra"),
         ("openai", "gpt-6.1-sol"),
         ("anthropic", "claude-fable-5-1"),
+        ("anthropic", "claude-fable-5-2"),
         ("anthropic", "claude-opus-5-5"),
     ],
 )

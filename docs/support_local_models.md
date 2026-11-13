@@ -33,8 +33,8 @@ The packaged offline catalog includes these current text models:
 | Provider | Model IDs | Reference |
 |----------|-----------|-----------|
 | OpenAI | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` | [OpenAI models](https://developers.openai.com/api/docs/models) |
-| Anthropic | `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | [Claude models](https://platform.claude.com/docs/en/models/overview) |
-| Google | `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash-lite` | [Gemini models](https://ai.google.dev/gemini-api/docs/models) |
+| Anthropic | `claude-fable-5-2`, `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | [Claude models](https://platform.claude.com/docs/en/models/overview) |
+| Google | `gemini-4-hydrogen`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash-lite` | [Gemini models](https://ai.google.dev/gemini-api/docs/models) |
 
 Live discovery can add models before the packaged snapshot is updated. Discovery
 provides pricing and routing metadata; model-specific request settings still
@@ -59,7 +59,7 @@ original model pool: the recorded catalog may not contain newly added IDs.
 Shinka translates `llm_kwargs.reasoning_efforts` into each model's supported
 reasoning or thinking controls. GPT-6 Astra and GPT-6.1 Sol require reasoning;
 Shinka uses low effort when reasoning is disabled for those models. Claude
-Fable 5.1 and Opus 5.5 use adaptive
+Fable 5.1, Fable 5.2, and Opus 5.5 use adaptive
 thinking that is always on; disabling reasoning in Shinka cannot turn it off
 for those models. Thinking tokens contribute to billed output, so use a suitable
 token limit and run budget when comparing models.
