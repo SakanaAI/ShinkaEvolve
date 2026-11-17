@@ -350,7 +350,7 @@ class ProgramDatabase:
                     raise FileNotFoundError(
                         f"Database file not found for read-only connection: {db_file}"
                     )
-                db_uri = f"file:{db_file}?mode=ro"
+                db_uri = f"{db_file.as_uri()}?mode=ro"
                 self.conn = sqlite3.connect(db_uri, uri=True, timeout=60.0)
                 logger.debug(
                     "Connected to SQLite database in read-only mode: %s",

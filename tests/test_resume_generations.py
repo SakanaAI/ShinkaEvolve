@@ -60,6 +60,7 @@ def test_resume_seed_only_database_does_not_generate_another_seed(
         runner.llm_selection = SimpleNamespace(set_baseline_score=Mock())
         try:
             await runner._setup_async()
+            await runner._verify_database_ready()
 
             runner._generate_initial_program.assert_not_awaited()
             runner.llm_selection.set_baseline_score.assert_called_once_with(
