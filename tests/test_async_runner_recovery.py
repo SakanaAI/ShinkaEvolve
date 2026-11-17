@@ -1107,7 +1107,7 @@ def test_get_terminal_proposal_failure_generations_uses_attempt_log():
         def __init__(self):
             self.executed = None
 
-        def execute(self, query, params):
+        def execute(self, query, params=()):
             self.executed = (query, params)
 
         def fetchall(self):

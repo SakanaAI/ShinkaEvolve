@@ -1275,17 +1275,18 @@ class ShinkaEvolveRunner:
                 results_dir=Path(self.results_dir),
             )
 
-        # Failed initialization can leave charges even without a program row.
-        self.total_api_cost = await self._get_total_api_costs()
-        logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
-
         generation_origins = (
             await self.async_db.get_persisted_generation_origins_async()
         )
         persisted_generations = {
             gen for gen, original in generation_origins.items() if original
         }
-        terminal_failures = self._get_terminal_proposal_failure_generations()
+        terminal_failures = self._recover_terminal_proposal_failures(
+            persisted_generations
+        )
+        # Count recovered failure charges before initialization or scheduling.
+        self.total_api_cost = await self._get_total_api_costs()
+        logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
         configured_seed = self.evo_config.init_program_path
         seed_path = (
             Path(configured_seed)
@@ -5224,7 +5225,7 @@ class ShinkaEvolveRunner:
         ]
 
     def _restore_resume_progress(
-        self, generation_origins: Dict[int, bool], terminal_failures: List[int]
+        self, generation_origins: Dict[int, bool], terminal_failures: set[int]
     ) -> None:
         """Restore completed work and reserve every previously settled slot."""
         budget = range(self.evo_config.num_generations)
@@ -5256,20 +5257,25 @@ class ShinkaEvolveRunner:
             self._settled_resume_generations.popleft()
             self.next_generation_to_submit += 1
 
-    def _archive_interrupted_generations(
-        self, settled_generations: set[int], seed_path: Optional[Path] = None
-    ) -> None:
-        """Move orphan artifacts aside before the seed or proposals are restarted."""
+    def _generation_artifact_paths(self) -> Iterable[Tuple[int, Path]]:
         prefix = f"{FOLDER_PREFIX}_"
-        budget = range(self.evo_config.num_generations)
         for path in Path(self.results_dir).glob(f"{prefix}*"):
             suffix = path.name.removeprefix(prefix)
             if not suffix.isdecimal():
                 continue
             generation = int(suffix)
-            if suffix != str(generation) or generation not in budget:
-                continue
-            if generation in settled_generations:
+            if suffix == str(generation) and generation < 2**63:
+                yield generation, path
+
+    def _archive_interrupted_generations(
+        self, settled_generations: set[int], seed_path: Optional[Path] = None
+    ) -> None:
+        """Move orphan artifacts aside before the seed or proposals are restarted."""
+        for generation, path in self._generation_artifact_paths():
+            if (
+                generation >= self.evo_config.num_generations
+                or generation in settled_generations
+            ):
                 continue
             if path.is_symlink() or not path.is_dir():
                 raise ValueError(f"Expected a generation directory at {path}")
@@ -6361,7 +6367,12 @@ class ShinkaEvolveRunner:
                 return []
             self.db.cursor.execute("SELECT DISTINCT generation FROM programs")
             persisted_generations = {row[0] for row in self.db.cursor.fetchall()}
-            return [gen for gen in terminal_failures if gen not in persisted_generations]
+            return [
+                gen
+                for gen in terminal_failures
+                if gen < self.evo_config.num_generations
+                and gen not in persisted_generations
+            ]
         except Exception as e:
             logger.warning(
                 "Failed to load proposal-failure generations without program rows: %s",
@@ -6370,7 +6381,7 @@ class ShinkaEvolveRunner:
             return []
 
     def _get_terminal_proposal_failure_generations(self) -> List[int]:
-        """Return budgeted generation IDs with exhausted proposal retries."""
+        """Return generation IDs with exhausted proposal retries."""
         if not self.db or not getattr(self.db, "cursor", None):
             return []
 
@@ -6378,10 +6389,8 @@ class ShinkaEvolveRunner:
             """
             SELECT generation, details
             FROM attempt_log
-            WHERE status = 'failed'
-              AND generation >= 0 AND generation < ?
-            """,
-            (self.evo_config.num_generations,),
+            WHERE status = 'failed' AND generation >= 0
+            """
         )
         terminal_generations = set()
         for generation, details_json in self.db.cursor.fetchall():
@@ -6395,6 +6404,64 @@ class ShinkaEvolveRunner:
             ):
                 terminal_generations.add(int(generation))
         return sorted(terminal_generations)
+
+    def _recover_terminal_proposal_failures(
+        self, persisted_generations: set[int]
+    ) -> set[int]:
+        terminal_generations = set(self._get_terminal_proposal_failure_generations())
+        settled_generations = persisted_generations | terminal_generations
+        for generation, path in self._generation_artifact_paths():
+            if generation == 0 or generation in settled_generations or path.is_symlink():
+                continue
+            failure_path = path / "failure.json"
+            details = self._load_terminal_failure_artifact(failure_path, generation)
+            if details is None:
+                continue
+            # The recovered file can contain paths from another results root.
+            # Journal its bill and diagnosis without publishing artifact links.
+            details = {
+                key: details[key]
+                for key in (
+                    "node_kind",
+                    "failure_stage",
+                    "failure_class",
+                    "failure_reason",
+                    "api_costs",
+                    "embed_cost",
+                    "novelty_cost",
+                )
+            }
+            details["recovered_failure_json_path"] = str(failure_path)
+            self.db.record_attempt_event(
+                generation, details["failure_stage"], "failed", details
+            )
+            terminal_generations.add(generation)
+        return terminal_generations
+
+    @staticmethod
+    def _load_terminal_failure_artifact(path: Path, generation: int) -> Optional[dict]:
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(data, dict)
+                or type(data.get("generation")) is not int
+                or data["generation"] != generation
+                or data.get("node_kind") != "failed_proposal"
+                or data.get("downstream_eval_submitted") is not False
+                or data.get("failure_stage")
+                not in ("proposal", "novelty", "evaluation_submit")
+                or not isinstance(data.get("failure_reason"), str)
+                or not isinstance(data.get("failure_class"), str)
+            ):
+                return None
+            costs = [data.get(key) for key in ("api_costs", "embed_cost", "novelty_cost")]
+            if any(type(cost) not in (int, float) or cost < 0 for cost in costs):
+                return None
+            return data if math.isfinite(sum(costs)) else None
+        except (OSError, ValueError, OverflowError):
+            return None
 
     def _print_metadata_table(self, meta_data: dict, generation: int = None):
         """Display metadata in a formatted rich table."""

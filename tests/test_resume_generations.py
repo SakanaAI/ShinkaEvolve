@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -294,5 +295,79 @@ def test_resume_does_not_reschedule_terminal_proposal_failures(tmp_path):
         finally:
             await runner.async_db.close_async()
             runner.db.close()
+
+    asyncio.run(run())
+
+
+def test_resume_journals_orphan_terminal_failure_once_before_budget_check(tmp_path):
+    async def run():
+        config = DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"))
+        writer = _resume_runner(tmp_path, config, budget=4)
+        failure_dir = tmp_path / "gen_1"
+        failure_dir.mkdir()
+        _, payload = await writer._write_failure_artifact_async(
+            generation=1,
+            exec_fname=str(failure_dir / "main.py"),
+            parent_program=None,
+            archive_programs=[],
+            top_k_programs=[],
+            meta_patch_data=None,
+            embed_cost=0.2,
+            novelty_cost=0.0,
+            api_costs=0.8,
+            failure_stage="proposal",
+            failure_class="proposal_generation_failed",
+            failure_reason="No applicable patch",
+            code_embedding=None,
+            proposal_started_at=0.0,
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+        )
+        invalid_dir = tmp_path / "gen_2"
+        invalid_dir.mkdir()
+        (invalid_dir / "failure.json").write_text(json.dumps(payload))
+        durable_dir = tmp_path / "gen_3"
+        durable_dir.mkdir()
+        durable_failure = durable_dir / "failure.json"
+        durable_failure.write_text(json.dumps({**payload, "generation": 3}))
+        historical_failure = tmp_path / "gen_9" / "failure.json"
+        historical_failure.parent.mkdir()
+        historical_failure.write_text(json.dumps({**payload, "generation": 9}))
+        db = ProgramDatabase(config)
+        db.add(Program(id="stored", code="pass", generation=3), defer_maintenance=True)
+        db.add(
+            Program(
+                id="copy", code="pass", generation=1, metadata={"_spawned_island": True}
+            ),
+            defer_maintenance=True,
+        )
+        db.close()
+
+        for _ in range(2):
+            runner = _resume_runner(tmp_path, config, budget=4)
+            runner.evo_config.max_api_costs = 1.0
+            runner.prompt_db = None
+            del runner._get_total_api_costs
+            del runner._generate_initial_program
+            try:
+                with pytest.raises(RuntimeError, match="API cost budget exhausted"):
+                    await runner._setup_async()
+
+                assert runner.total_api_cost == pytest.approx(2.0)
+                event, historical = runner.db.conn.execute(
+                    "SELECT generation, stage, details FROM attempt_log ORDER BY generation"
+                ).fetchall()
+                assert (event["generation"], event["stage"]) == (1, "proposal")
+                assert historical["generation"] == 9
+                details = json.loads(event["details"])
+                assert details["recovered_failure_json_path"] == str(
+                    failure_dir / "failure.json"
+                )
+                assert (failure_dir / "failure.json").is_file()
+                assert durable_failure.is_file()
+                assert not invalid_dir.exists()
+            finally:
+                await runner.async_db.close_async()
+                runner.db.close()
 
     asyncio.run(run())
