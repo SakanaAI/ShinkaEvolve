@@ -5,7 +5,7 @@ import math
 import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Awaitable, Callable, TypeVar
+from typing import Awaitable, Callable, Literal, TypeVar
 
 from shinka.local_openai_config import parse_local_openai_model
 from shinka.pricing.catalog import ModelKind, get_catalog
@@ -89,6 +89,8 @@ async def run_request(
     get_cost: Callable[[_T], float],
     model: str,
     kind: ModelKind = "llm",
+    *,
+    cancellation: Literal["propagate", "drain"] = "propagate",
 ) -> _T:
     scope = cost_scope.get()
     if scope is None:
@@ -105,18 +107,23 @@ async def run_request(
         return result
 
     exhausted = scope.exhausted
-    if exhausted is None and not scope.admission_closed():
-        return await receive()
-    if not may_charge(model, kind):
-        return await receive()
-    if scope.admission_closed() or (exhausted is not None and exhausted()):
-        raise APIBudgetExceeded()
+    if (exhausted is not None or scope.admission_closed()) and may_charge(model, kind):
+        if scope.admission_closed() or (exhausted is not None and exhausted()):
+            raise APIBudgetExceeded()
+        assert exhausted is not None
+        request = _PaidRequest(lambda: scope.admission_closed() or exhausted())
+        return await _receive_shielded(receive, request)
+    if cancellation == "drain":
+        return await _receive_shielded(receive, None)
+    return await receive()
 
-    assert exhausted is not None
-    request = _PaidRequest(lambda: scope.admission_closed() or exhausted())
+
+async def _receive_shielded(
+    receive: Callable[[], Awaitable[_T]], request: _PaidRequest | None
+) -> _T:
     token = _paid_request.set(request)
     try:
-        task = asyncio.create_task(receive())
+        task = asyncio.ensure_future(receive())
     finally:
         _paid_request.reset(token)
     try:
@@ -124,7 +131,8 @@ async def run_request(
     except asyncio.CancelledError:
         # Keep the started request alive to receive its bill. Provider retry
         # admission closes as soon as its caller cancels.
-        request.cancelled = True
+        if request is not None:
+            request.cancelled = True
         while not task.done():
             try:
                 await asyncio.shield(task)

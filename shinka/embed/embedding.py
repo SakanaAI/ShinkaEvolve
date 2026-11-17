@@ -442,6 +442,7 @@ class AsyncEmbeddingClient:
                         lambda reply: reply[1],
                         self.model_name,
                         "embedding",
+                        cancellation="drain",
                     )
                     embeddings.extend(vectors)
                     cost += charge
