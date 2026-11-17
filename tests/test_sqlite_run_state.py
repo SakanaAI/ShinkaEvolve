@@ -149,6 +149,37 @@ def test_save_commits_pending_changes_on_its_own_connection(config):
             assert reopened.last_iteration == 3
 
 
+@pytest.mark.parametrize("explicit_transaction", [False, True])
+def test_save_refreshes_with_an_open_read_cursor(config, explicit_transaction):
+    async def run():
+        with closing(_open_db(config)) as sync_db, closing(_open_db(config)) as worker:
+            first, best = _program(8, 1.0), _program(7, 10.0)
+            sync_db.add(first)
+            db = AsyncProgramDatabase(sync_db)
+            try:
+                if explicit_transaction:
+                    sync_db.conn.execute("BEGIN")
+                snapshot = sync_db.conn.execute(
+                    "SELECT key, value FROM metadata_store ORDER BY key"
+                )
+                assert snapshot.fetchone() is not None
+                assert sync_db._read_run_state().best_program_id == first.id
+                worker.add(best)
+                db._refresh_run_state_from_worker(worker)
+                assert sync_db.best_program_id == best.id
+
+                sync_db.save()
+
+                assert not sync_db.conn.in_transaction
+                assert (sync_db.last_iteration, sync_db.best_program_id) == (8, best.id)
+                assert snapshot.fetchone() is not None
+                snapshot.close()
+            finally:
+                await db.close_async()
+
+    asyncio.run(run())
+
+
 def test_best_lookup_before_deferred_maintenance_still_records_improvement(config):
     with closing(_open_db(config)) as writer, closing(_open_db(config)) as reader:
         best = _program(2, 10.0)

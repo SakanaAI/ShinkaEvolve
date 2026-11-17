@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
@@ -629,12 +629,13 @@ class ProgramDatabase:
         value = row["value"] if row else None
         self.beam_search_parent_id = value if value != "None" else None
 
-    def _read_run_state(self) -> _RunState:
-        if not self.cursor:
+    def _read_run_state(self, cursor: Optional[sqlite3.Cursor] = None) -> _RunState:
+        cursor = cursor or self.cursor
+        if not cursor:
             raise ConnectionError("DB cursor not available.")
 
         values = dict(
-            self.cursor.execute("""
+            cursor.execute("""
                 SELECT key, value FROM metadata_store
                 WHERE key IN ('last_iteration', 'best_program_id',
                               'best_score_generation', 'best_score_ever')
@@ -2033,17 +2034,38 @@ class ProgramDatabase:
                 "in-memory instance."
             )
 
-        with self._run_state_lock:
-            if not self.conn.in_transaction and not self.read_only:
-                self.conn.execute("BEGIN IMMEDIATE")
-            with self.conn:
-                state = self._read_run_state()
-                self._advance_last_iteration(state, self.last_iteration)
-            self._cache_run_state(state)
+        with self._run_state_lock, self._committed_run_state_cursor() as reader:
+            committed = self._read_run_state(reader)
+            if self.last_iteration > committed.last_iteration:
+                if not self.conn.in_transaction and not self.read_only:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                with self.conn:
+                    state = self._read_run_state()
+                    self._advance_last_iteration(state, self.last_iteration)
+            else:
+                self.conn.commit()
+            self._cache_run_state(self._read_run_state(reader))
         logger.info(
             f"Database state committed. Last iteration: "
             f"{self.last_iteration}. Best: {self.best_program_id}"
         )
+
+    @contextmanager
+    def _committed_run_state_cursor(self) -> Iterator[sqlite3.Cursor]:
+        # Caller cursors can keep the connection on an older WAL snapshot even
+        # after commit. Read the active file through an independent connection.
+        main_file = self.conn.execute(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'"
+        ).fetchone()["file"]
+        if not main_file:
+            yield self.cursor
+            return
+        with closing(
+            sqlite3.connect(
+                f"{Path(main_file).as_uri()}?mode=ro", uri=True, timeout=60.0
+            )
+        ) as reader:
+            yield reader.cursor()
 
     def load(self, path: str) -> None:
         logger.info(f"Loading database from '{path}'...")
