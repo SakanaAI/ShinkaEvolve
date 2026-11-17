@@ -1443,6 +1443,7 @@ class ShinkaEvolveRunner:
             max_workers=self.max_db_workers,
             enable_deadlock_debugging=self.enable_deadlock_debugging,
         )
+        await self._flush_unwritten_charges()
 
         # Initialize prompt evolution database if enabled
         if self.evo_config.evolve_prompts:
@@ -1461,7 +1462,6 @@ class ShinkaEvolveRunner:
         resuming_run = db_path.exists() and self.db.last_iteration > 0
 
         # Failed initialization can leave charges even without a program row.
-        await self._flush_unwritten_charges()
         self.total_api_cost = await self._get_total_api_costs()
         logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
 
