@@ -14,6 +14,7 @@ from shinka.database import (
     ProgramDatabase,
 )
 from shinka.launch import JobScheduler, LocalJobConfig, local
+from shinka.utils import load_results
 
 
 SEED = "def approximate(x):\n    return x\n"
@@ -139,6 +140,9 @@ def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:
         pytest.param("{", "{}", 0, "JSONDecodeError", id="malformed-correctness"),
         pytest.param("{}", "{}", 0, "boolean", id="missing-correctness-field"),
         pytest.param(None, "{}", 0, "correct.json", id="missing-correctness-file"),
+        pytest.param(
+            '{"correct": true}', None, 0, "Metrics file not found", id="missing-metrics"
+        ),
         pytest.param('{"correct": true}', "[]", 0, "metrics.json", id="list-metrics"),
         pytest.param(
             '{"correct": true}', "{", 0, "metrics.json", id="malformed-metrics"
@@ -154,9 +158,15 @@ def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:
     ],
 )
 def test_seed_invalid_result_is_saved_for_fix_mode(
-    tmp_path: Path, correct: str | None, metrics: str, exit_code: int, diagnostic: str
+    tmp_path: Path,
+    correct: str | None,
+    metrics: str | None,
+    exit_code: int,
+    diagnostic: str,
 ) -> None:
-    body = f"(results / 'metrics.json').write_text({metrics!r})\n"
+    body = ""
+    if metrics is not None:
+        body += f"(results / 'metrics.json').write_text({metrics!r})\n"
     if correct is not None:
         body += f"(results / 'correct.json').write_text({correct!r})\n"
     evaluator = _write_evaluator(tmp_path, body + f"sys.exit({exit_code})\n")
@@ -170,6 +180,17 @@ def test_seed_invalid_result_is_saved_for_fix_mode(
     assert diagnostic in seed.metadata["stderr_log"]
     assert "evaluator stdout" in seed.metadata["stdout_log"]
     assert "evaluator stderr" in seed.metadata["stderr_log"]
+
+
+def test_result_loader_supplies_empty_metrics_if_the_file_is_missing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "correct.json").write_text('{"correct": true}')
+
+    results = load_results(str(tmp_path))
+
+    assert results["metrics"] == {}
+    assert results["correct"] == {"correct": True}
 
 
 @pytest.mark.parametrize("correct", [True, False])

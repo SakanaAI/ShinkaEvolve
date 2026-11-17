@@ -88,10 +88,9 @@ def load_results(results_dir: str) -> dict[str, Any]:
                 logger.warning(warning_msg)
                 loaded_results["evaluation_error"] = warning_msg
     else:
-        file_path_str = str(metrics_file_path)
-        warning_msg = f"Metrics file not found at {file_path_str}"
+        warning_msg = f"Metrics file not found at {metrics_file_path}"
         logger.warning(warning_msg)
-        loaded_results["metrics"] = {}
+        loaded_results["evaluation_error"] = warning_msg
 
     correct_file_path = results_dir_path / "correct.json"
     if correct_file_path.exists():
