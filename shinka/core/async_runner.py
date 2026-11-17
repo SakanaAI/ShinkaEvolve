@@ -83,6 +83,7 @@ from shinka.utils import (
     parse_time_to_seconds,
     truncate_log_tail,
 )
+from shinka.utils.general import load_result_logs
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
@@ -1668,167 +1669,121 @@ class ShinkaEvolveRunner:
         exec_fname = f"{gen_dir}/main.{self.lang_ext}"
         await write_file_async(exec_fname, code)
 
-        # Run initial evaluation to get proper metrics
+        evaluation_started_at = time.time()
+        evaluation_error = None
         try:
             if self.verbose:
                 logger.info(f"Starting initial program evaluation: {exec_fname}")
 
             # Run the evaluation synchronously for generation 0
-            loop = asyncio.get_event_loop()
-            evaluation_started_at = time.time()
-            results, rtime = await loop.run_in_executor(
+            results, rtime = await asyncio.get_running_loop().run_in_executor(
                 None, self.scheduler.run, exec_fname, results_dir
             )
-            evaluation_finished_at = time.time()
-            postprocess_started_at = evaluation_finished_at
 
             if self.verbose:
                 logger.info(f"Initial program evaluation completed in {rtime:.2f}s")
 
-            # Get code embedding for initial program
+            if results.get("evaluation_error"):
+                raise ValueError(results["evaluation_error"])
+            correctness = results.get("correct")
+            if not isinstance(correctness, dict) or not isinstance(
+                correctness.get("correct"), bool
+            ):
+                raise ValueError("correct.json must contain a boolean 'correct' field")
+            correct_val = correctness["correct"]
+            metrics = results.get("metrics", {})
+            if not isinstance(metrics, dict):
+                raise ValueError("metrics.json must contain a JSON object")
+            combined_score = metrics.get("combined_score", 0.0)
+            if type(combined_score) not in (int, float):
+                raise ValueError("metrics.json 'combined_score' must be numeric")
+            combined_score = float(combined_score)
+            if correct_val and not math.isfinite(combined_score):
+                raise ValueError(
+                    "metrics.json 'combined_score' must be finite for a correct program"
+                )
+
+            text_feedback = metrics.get("text_feedback", "")
+            if not correct_val and not text_feedback:
+                text_feedback = correctness.get("error") or ""
+        except Exception as exc:
+            evaluation_error = (
+                f"Initial program evaluation failed ({type(exc).__name__}): {exc}"
+            )
+            logger.warning("%s", evaluation_error)
+            results = load_result_logs(results_dir)
+            results["stderr_log"] = "\n".join(
+                filter(None, (results["stderr_log"].rstrip(), evaluation_error))
+            )
+            correct_val = False
+            combined_score = 0.0
+            metrics = {}
+            text_feedback = evaluation_error
+
+        evaluation_finished_at = time.time()
+        postprocess_started_at = evaluation_finished_at
+
+        try:
             code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
-            if self.verbose and code_embedding:
-                logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
+        except Exception as exc:
+            logger.warning("Initial program embedding failed: %s", exc)
+            code_embedding, e_cost = None, 0.0
+        if self.verbose and code_embedding:
+            logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
 
-            # Extract metrics properly like the sync version
-            correct_val = results.get("correct", {}).get("correct", False)
-            metrics_val = results.get("metrics", {})
-            combined_score = metrics_val.get("combined_score", 0.0)
-            public_metrics = metrics_val.get("public", {})
-            private_metrics = metrics_val.get("private", {})
-            text_feedback = metrics_val.get("text_feedback", "")
-            stdout_log = truncate_log_tail(
-                results.get("stdout_log", ""),
-                self.db_config.max_stdout_log_chars,
-            )
-            stderr_log = results.get("stderr_log", "")
-
-            # Build base metadata
-            base_metadata = {
-                "embed_cost": e_cost,
-                "novelty_cost": 0.0,  # No novelty cost for generation 0
-                "stdout_log": stdout_log,
-                "stderr_log": stderr_log,
-                "timeline_lane_mode": "pool_slots",
-                "sampling_worker_capacity": self.max_proposal_jobs,
-                "evaluation_worker_capacity": self.max_evaluation_jobs,
-                "postprocess_worker_capacity": self.max_db_workers,
+        base_metadata = {
+            "embed_cost": e_cost,
+            "novelty_cost": 0.0,
+            "stdout_log": truncate_log_tail(
+                results.get("stdout_log", ""), self.db_config.max_stdout_log_chars
+            ),
+            "stderr_log": results.get("stderr_log", ""),
+            "timeline_lane_mode": "pool_slots",
+            "sampling_worker_capacity": self.max_proposal_jobs,
+            "evaluation_worker_capacity": self.max_evaluation_jobs,
+            "postprocess_worker_capacity": self.max_db_workers,
+        }
+        base_metadata.update(
+            llm_metadata
+            or {
+                "api_costs": api_cost,
+                "patch_type": "init",
+                "patch_name": patch_name or "initial_program",
+                "patch_description": patch_description or "Initial program setup",
             }
+        )
+        if evaluation_error is not None:
+            base_metadata["evaluation_failed"] = True
 
-            # For file-based initial programs, add default metadata
-            if not llm_metadata:
-                base_metadata.update(
-                    {
-                        "api_costs": api_cost,
-                        "patch_type": "init",
-                        "patch_name": patch_name or "initial_program",
-                        "patch_description": patch_description
-                        or "Initial program setup",
-                    }
-                )
-            else:
-                # LLM-generated: llm_metadata already contains structured data
-                base_metadata.update(llm_metadata)
+        base_metadata = with_pipeline_timing(
+            base_metadata,
+            pipeline_started_at=pipeline_started_at,
+            sampling_started_at=pipeline_started_at,
+            sampling_finished_at=pipeline_started_at,
+            evaluation_started_at=evaluation_started_at,
+            evaluation_finished_at=evaluation_finished_at,
+            postprocess_started_at=postprocess_started_at,
+            postprocess_finished_at=postprocess_started_at,
+        )
 
-            base_metadata = with_pipeline_timing(
-                base_metadata,
-                pipeline_started_at=pipeline_started_at,
-                sampling_started_at=pipeline_started_at,
-                sampling_finished_at=pipeline_started_at,
-                evaluation_started_at=evaluation_started_at,
-                evaluation_finished_at=evaluation_finished_at,
-                postprocess_started_at=postprocess_started_at,
-                postprocess_finished_at=postprocess_started_at,
-            )
+        initial_program = Program(
+            id=str(uuid.uuid4()),
+            code=code,
+            generation=0,
+            correct=correct_val,
+            combined_score=combined_score,
+            public_metrics=metrics.get("public", {}),
+            private_metrics=metrics.get("private", {}),
+            text_feedback=text_feedback,
+            timestamp=datetime.now().timestamp(),
+            embedding=code_embedding,
+            metadata=base_metadata,
+        )
 
-            # Create program with actual evaluation results
-            initial_program = Program(
-                id=str(uuid.uuid4()),
-                code=code,
-                generation=0,
-                correct=correct_val,
-                combined_score=combined_score,
-                public_metrics=public_metrics,
-                private_metrics=private_metrics,
-                text_feedback=text_feedback,
-                timestamp=datetime.now().timestamp(),
-                embedding=code_embedding,
-                metadata=base_metadata,
-            )
-
-            if self.verbose:
-                logger.info(
-                    f"Initial program evaluated - correct: {initial_program.correct}, "
-                    f"combined_score: {initial_program.combined_score}"
-                )
-
-        except Exception as e:
-            logger.warning(f"Initial program evaluation failed: {e}")
-            evaluation_finished_at = time.time()
-            postprocess_started_at = evaluation_finished_at
-
-            # Still try to compute embedding even if evaluation failed
-            try:
-                evaluation_started_at
-            except UnboundLocalError:
-                evaluation_started_at = pipeline_started_at
-
-            try:
-                code_embedding, e_cost = await self._get_code_embedding_async(
-                    exec_fname
-                )
-            except Exception:
-                code_embedding, e_cost = None, 0.0
-
-            # Build base metadata for fallback
-            base_metadata = {
-                "embed_cost": e_cost,
-                "novelty_cost": 0.0,  # No novelty cost for generation 0 fallback
-                "evaluation_failed": True,
-                "stdout_log": "",
-                "stderr_log": "",
-                "timeline_lane_mode": "pool_slots",
-                "sampling_worker_capacity": self.max_proposal_jobs,
-                "evaluation_worker_capacity": self.max_evaluation_jobs,
-                "postprocess_worker_capacity": self.max_db_workers,
-            }
-
-            # For file-based initial programs, add default metadata
-            if not llm_metadata:
-                base_metadata.update(
-                    {
-                        "api_costs": api_cost,
-                        "patch_type": "init",
-                        "patch_name": patch_name or "initial_program",
-                        "patch_description": patch_description
-                        or "Initial program setup (fallback)",
-                    }
-                )
-            else:
-                # LLM-generated: llm_metadata already contains structured data
-                base_metadata.update(llm_metadata)
-
-            base_metadata = with_pipeline_timing(
-                base_metadata,
-                pipeline_started_at=pipeline_started_at,
-                sampling_started_at=pipeline_started_at,
-                sampling_finished_at=pipeline_started_at,
-                evaluation_started_at=evaluation_started_at,
-                evaluation_finished_at=evaluation_finished_at,
-                postprocess_started_at=postprocess_started_at,
-                postprocess_finished_at=postprocess_started_at,
-            )
-
-            # Fall back to assuming it's correct
-            initial_program = Program(
-                id=str(uuid.uuid4()),
-                code=code,
-                generation=0,
-                public_metrics={"score": 0.0},
-                correct=True,
-                timestamp=datetime.now().timestamp(),
-                embedding=code_embedding,
-                metadata=base_metadata,
+        if self.verbose:
+            logger.info(
+                f"Initial program evaluated - correct: {initial_program.correct}, "
+                f"combined_score: {initial_program.combined_score}"
             )
 
         # Add to database

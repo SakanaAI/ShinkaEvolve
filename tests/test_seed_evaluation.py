@@ -1,0 +1,206 @@
+import asyncio
+import time
+from pathlib import Path
+from textwrap import dedent
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from shinka.core.async_runner import ShinkaEvolveRunner
+from shinka.database import (
+    AsyncProgramDatabase,
+    DatabaseConfig,
+    Program,
+    ProgramDatabase,
+)
+from shinka.launch import JobScheduler, LocalJobConfig, local
+
+
+SEED = "def approximate(x):\n    return x\n"
+
+
+def _run_seed(
+    tmp_path: Path, config: LocalJobConfig, code: str = SEED
+) -> tuple[Program, bool, Mock]:
+    db_config = DatabaseConfig(db_path=str(tmp_path / "programs.db"), num_islands=1)
+    db = ProgramDatabase(db_config)
+    runner = ShinkaEvolveRunner.__new__(ShinkaEvolveRunner)
+    runner.db_config = db_config
+    runner.results_dir = str(tmp_path)
+    runner.lang_ext = "py"
+    runner.verbose = False
+    runner.embedding_client = None
+    runner.max_proposal_jobs = 1
+    runner.max_evaluation_jobs = 1
+    runner.max_db_workers = 1
+    runner.total_api_cost = 0.0
+    runner.meta_summarizer = None
+    runner.llm_selection = Mock()
+    runner.stuck_detection_count = 0
+    runner.wandb_logger = None
+    runner.scheduler = JobScheduler("local", config)
+    runner.async_db = AsyncProgramDatabase(db)
+
+    async def setup() -> None:
+        try:
+            await runner._setup_initial_program(code)
+        finally:
+            await runner.async_db.close_async()
+
+    try:
+        asyncio.run(setup())
+        (seed,) = db.get_all_programs()
+        parent, _, _, needs_fix = db.sample_with_fix_mode()
+        assert parent.id == seed.id
+        best = db.get_best_program()
+        assert (best.id if best else None) == (seed.id if seed.correct else None)
+        assert (tmp_path / "gen_0" / "main.py").read_text() == code
+        assert (tmp_path / "gen_0" / "results").is_dir()
+        assert seed.generation == 0
+        assert seed.metadata["patch_type"] == "init"
+        return seed, needs_fix, runner.llm_selection.set_baseline_score
+    finally:
+        runner.scheduler.shutdown()
+        db.close()
+
+
+def _write_evaluator(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "evaluate.py"
+    path.write_text(
+        "import sys\nimport time\nfrom pathlib import Path\n"
+        "results = Path(sys.argv[sys.argv.index('--results_dir') + 1])\n"
+        "print('evaluator stdout')\nprint('evaluator stderr', file=sys.stderr)\n"
+        + dedent(body)
+    )
+    return path
+
+
+def test_seed_timeout_kills_local_evaluator_with_partial_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluator = _write_evaluator(
+        tmp_path,
+        """
+        (results / 'correct.json').write_text('{"correct": true}')
+        (results / 'metrics.json').write_text('{"combined_score": 42}')
+        (results / 'ready').touch()
+        for _ in range(500):
+            if (results / 'release').exists():
+                break
+            time.sleep(0.01)
+        else:
+            raise RuntimeError('test never released evaluator')
+        (results / 'finished').touch()
+        """,
+    )
+    results_dir = tmp_path / "gen_0" / "results"
+    elapsed = 0.0
+
+    def advance_clock(_interval: float) -> None:
+        nonlocal elapsed
+        if elapsed == 0.0:
+            deadline = time.monotonic() + 5.0
+            while not (results_dir / "ready").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+        else:
+            (results_dir / "release").touch()
+            time.sleep(0.01)
+        elapsed += 2.0
+
+    monkeypatch.setattr(
+        local, "time", SimpleNamespace(time=lambda: elapsed, sleep=advance_clock)
+    )
+    seed, needs_fix, baseline = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator), time="00:00:01")
+    )
+
+    assert (results_dir / "ready").exists()
+    assert not (results_dir / "finished").exists()
+    assert seed.correct == 0
+    assert needs_fix
+    assert seed.combined_score == 0.0
+    assert seed.metadata["evaluation_failed"] is True
+    assert "00:00:01" in seed.metadata["stderr_log"]
+    assert "evaluator stdout" in seed.metadata["stdout_log"]
+    assert "evaluator stderr" in seed.metadata["stderr_log"]
+    baseline.assert_called_once_with(0.0)
+
+
+def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(python_executable=str(tmp_path / "missing-python"))
+    )
+
+    assert seed.correct == 0
+    assert needs_fix
+    assert seed.metadata["evaluation_failed"] is True
+    assert "FileNotFoundError" in seed.metadata["stderr_log"]
+    assert "missing-python" in seed.metadata["stderr_log"]
+
+
+@pytest.mark.parametrize(
+    ("correct", "metrics", "exit_code", "diagnostic"),
+    [
+        pytest.param("null", "{}", 0, "correct.json", id="null-correctness"),
+        pytest.param(
+            '{"correct": "false"}', "{}", 0, "boolean", id="string-correctness"
+        ),
+        pytest.param("{", "{}", 0, "JSONDecodeError", id="malformed-correctness"),
+        pytest.param("{}", "{}", 0, "boolean", id="missing-correctness-field"),
+        pytest.param(None, "{}", 0, "correct.json", id="missing-correctness-file"),
+        pytest.param('{"correct": true}', "[]", 0, "metrics.json", id="list-metrics"),
+        pytest.param(
+            '{"correct": true}', "{", 0, "metrics.json", id="malformed-metrics"
+        ),
+        pytest.param(
+            '{"correct": true}',
+            '{"combined_score": []}',
+            0,
+            "combined_score",
+            id="invalid-score",
+        ),
+        pytest.param('{"correct": true}', "{}", 4, "status 4", id="nonzero-exit"),
+    ],
+)
+def test_seed_invalid_result_is_saved_for_fix_mode(
+    tmp_path: Path, correct: str | None, metrics: str, exit_code: int, diagnostic: str
+) -> None:
+    body = f"(results / 'metrics.json').write_text({metrics!r})\n"
+    if correct is not None:
+        body += f"(results / 'correct.json').write_text({correct!r})\n"
+    evaluator = _write_evaluator(tmp_path, body + f"sys.exit({exit_code})\n")
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator))
+    )
+
+    assert seed.correct == 0
+    assert needs_fix
+    assert seed.metadata["evaluation_failed"] is True
+    assert diagnostic in seed.metadata["stderr_log"]
+    assert "evaluator stdout" in seed.metadata["stdout_log"]
+    assert "evaluator stderr" in seed.metadata["stderr_log"]
+
+
+@pytest.mark.parametrize("correct", [True, False])
+def test_seed_preserves_reported_correctness_and_zero_score(
+    tmp_path: Path, correct: bool
+) -> None:
+    correctness = '{"correct": true}' if correct else '{"correct": false}'
+    metrics = '{"combined_score": 0.0, "public": {"measured": 0}, "text_feedback": "feedback"}'
+    evaluator = _write_evaluator(
+        tmp_path,
+        f"(results / 'correct.json').write_text({correctness!r})\n"
+        f"(results / 'metrics.json').write_text({metrics!r})\n",
+    )
+    seed, needs_fix, baseline = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator))
+    )
+
+    assert seed.correct == correct
+    assert needs_fix is not correct
+    assert seed.combined_score == 0.0
+    assert seed.public_metrics == {"measured": 0}
+    assert seed.text_feedback == "feedback"
+    assert "evaluation_failed" not in seed.metadata
+    baseline.assert_called_once_with(0.0)

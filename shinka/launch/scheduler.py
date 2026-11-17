@@ -227,9 +227,14 @@ class JobScheduler:
         job_id: Union[str, ProcessWithLogging]
         cmd = self._build_command(exec_fname_t, results_dir_t)
         start_time = time.time()
+        timeout = None
 
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
+            timeout = self.config.time or None
+            if timeout is not None:
+                # Reject an invalid timeout before starting the subprocess.
+                parse_time_to_seconds(timeout)
             job_id = submit_local(
                 results_dir_t,
                 cmd,
@@ -274,7 +279,11 @@ class JobScheduler:
         if isinstance(job_id, str):
             results = monitor_slurm(job_id, results_dir_t)
         else:
-            results = monitor_local(job_id, results_dir_t)
+            results = monitor_local(job_id, results_dir_t, timeout=timeout)
+            if job_id.returncode:
+                raise RuntimeError(
+                    f"Local evaluator exited with status {job_id.returncode}"
+                )
 
         end_time = time.time()
         rtime = end_time - start_time

@@ -161,6 +161,9 @@ def monitor(
 
     Returns:
         dict: Dictionary containing job results.
+
+    Raises:
+        TimeoutError: The process was killed after exceeding the timeout.
     """
     if verbose:
         logger.info(f"Monitoring local process with PID: {process.pid}...")
@@ -168,21 +171,21 @@ def monitor(
     start_time = time.time()
     timeout_seconds = parse_time_to_seconds(timeout) if timeout is not None else None
 
-    while process.poll() is None:
-        if timeout_seconds and (time.time() - start_time) > timeout_seconds:
+    try:
+        while process.poll() is None:
+            if (
+                timeout_seconds is not None
+                and time.time() - start_time >= timeout_seconds
+            ):
+                process.kill()
+                process.wait()
+                raise TimeoutError(f"Local evaluator exceeded timeout of {timeout}")
+
             if verbose:
-                logger.info(
-                    f"Process {process.pid} exceeded timeout of {timeout}. Killing."
-                )
-            process.kill()
-            break
-
-        if verbose:
-            logger.info(f"Process {process.pid} is still running...")
-        time.sleep(poll_interval)
-
-    # Clean up logging resources
-    process.cleanup_logging()
+                logger.info(f"Process {process.pid} is still running...")
+            time.sleep(poll_interval)
+    finally:
+        process.cleanup_logging()
 
     return_code = process.returncode
     if verbose:
