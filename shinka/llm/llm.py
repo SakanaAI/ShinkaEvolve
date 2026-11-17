@@ -117,9 +117,9 @@ async def _collect_async_batch(
                 for task in tasks:
                     task.cancel()
 
-    for task, query in zip(tasks, queries):
+    for task, coroutine in zip(tasks, queries):
         if task.cancelled():
-            query.close()  # The wrapper was cancelled before it entered the query.
+            coroutine.close()  # The wrapper was cancelled before it entered the query.
 
     results = []
     permanent_error = None
