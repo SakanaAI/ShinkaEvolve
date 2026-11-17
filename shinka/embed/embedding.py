@@ -3,6 +3,7 @@ import logging
 from typing import Union, List, Optional, Tuple
 
 import numpy as np
+import openai
 import pandas as pd
 
 from shinka.google_genai import google_genai_auth_mode
@@ -72,6 +73,33 @@ def _get_embedding_cost(response, model_name: str) -> float:
         )
         return 0.0
     return response.usage.total_tokens * get_model_price(model_name)
+
+
+def _retryable_embedding_error(exc: openai.APIError) -> bool:
+    if isinstance(exc, openai.APIConnectionError):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        directive = exc.response.headers.get("x-should-retry")
+        if directive in {"true", "false"}:
+            return directive == "true"
+        return exc.status_code in {408, 409, 429} or exc.status_code >= 500
+    return False
+
+
+async def _create_openai_embedding(client, model: str, code: list[str]):
+    request = {"model": model, "input": code, "encoding_format": "float"}
+    if not check_provider_attempt():
+        return await client.embeddings.create(**request)
+    max_retries = max(client.max_retries, 0)
+    client = client.with_options(max_retries=0)
+    for attempt in range(max_retries + 1):
+        check_provider_attempt()
+        try:
+            return await client.embeddings.create(**request)
+        except openai.APIError as exc:
+            if attempt == max_retries or not _retryable_embedding_error(exc):
+                raise
+            await asyncio.sleep(0.5 * 2 ** min(attempt, 4))
 
 
 def count_tokens(
@@ -458,11 +486,8 @@ class AsyncEmbeddingClient:
 
         # Handle OpenAI and Azure models (true async)
         async def embed():
-            client = self.async_client
-            if check_provider_attempt():
-                client = client.with_options(max_retries=0)
-            response = await client.embeddings.create(
-                model=self.model, input=code, encoding_format="float"
+            response = await _create_openai_embedding(
+                self.async_client, self.model, code
             )
             return response, _get_embedding_cost(response, self.model_name)
 
