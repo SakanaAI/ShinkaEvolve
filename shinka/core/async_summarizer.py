@@ -74,6 +74,7 @@ class AsyncMetaSummarizer:
             (
                 individual_summaries,
                 step1_cost,
+                summarized_indices,
             ) = await self._step1_individual_summaries_async(programs_to_analyze)
             total_meta_cost += step1_cost
             if not individual_summaries:
@@ -134,12 +135,14 @@ class AsyncMetaSummarizer:
                 total_meta_cost += e.cost
             return None, total_meta_cost
 
-        # Clear the evaluated programs list immediately after processing
-        # This ensures that only programs added AFTER this meta update
-        # will be saved as "unprocessed" programs
-        num_processed = len(self.sync_summarizer.evaluated_since_last_meta)
+        # Keep skipped inputs and programs added while the batch was running.
+        num_processed = len(summarized_indices)
         self.sync_summarizer.total_programs_processed += num_processed
-        self.sync_summarizer.evaluated_since_last_meta = []
+        self.sync_summarizer.evaluated_since_last_meta = [
+            program
+            for index, program in enumerate(self.sync_summarizer.evaluated_since_last_meta)
+            if index not in summarized_indices
+        ]
         logger.info(
             f"Processed and cleared {num_processed} programs from meta memory "
             f"(total processed: {self.sync_summarizer.total_programs_processed})"
@@ -156,11 +159,11 @@ class AsyncMetaSummarizer:
 
     async def _step1_individual_summaries_async(
         self, programs_to_analyze: List[Program]
-    ) -> Tuple[Optional[str], float]:
+    ) -> Tuple[Optional[str], float, set[int]]:
         """Async version of Step 1: Create individual summaries for each program using batch queries."""
         if not programs_to_analyze:
             logger.warning("No programs to analyze in Step 1")
-            return None, 0.0
+            return None, 0.0, set()
 
         # Create individual program messages for batch processing
         user_messages, generation_ids, patch_names, correct_programs = [], [], [], []
@@ -191,16 +194,18 @@ class AsyncMetaSummarizer:
 
         if not responses:
             logger.error("Step 1: Failed to get responses from async meta LLM client")
-            return None, 0.0
+            return None, 0.0, set()
 
         # Combine all individual summaries
         total_cost = 0.0
         summaries_with_gen = []
+        summarized_indices = set()
         for original_index, response in responses:
             if response is not None:
                 total_cost += response.cost or 0.0
-            if response and response.content:
-                program_summary = response.content.strip()
+            program_summary = response.content.strip() if response and response.content else ""
+            if program_summary:
+                summarized_indices.add(original_index)
                 program_summary += "\n**Program Identifier:** "
                 program_summary += (
                     f"Generation {generation_ids[original_index]} - "
@@ -218,7 +223,7 @@ class AsyncMetaSummarizer:
 
         if not combined_summaries:
             logger.error("Step 1: No valid summaries generated")
-            return None, total_cost
+            return None, total_cost, summarized_indices
 
         # Join all summaries with double newlines
         final_summary = "\n\n".join(combined_summaries)
@@ -226,7 +231,7 @@ class AsyncMetaSummarizer:
             f"==> Step 1 - {len(combined_summaries)}/{num_programs} "
             f"individual summaries generated (cost: ${total_cost:.4f})"
         )
-        return final_summary, total_cost
+        return final_summary, total_cost, summarized_indices
 
     async def _step2_global_insights_async(
         self, individual_summaries: str, best_program: Optional[Program] = None

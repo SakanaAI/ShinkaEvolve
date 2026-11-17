@@ -131,7 +131,7 @@ def test_async_step1_preserves_metadata_when_batch_response_is_missing():
     summarizer = MetaSummarizer()
     async_summarizer = AsyncMetaSummarizer(summarizer, AsyncBatchClient())
 
-    summary, cost = asyncio.run(
+    summary, cost, indices = asyncio.run(
         async_summarizer._step1_individual_summaries_async(
             [
                 make_program("prog-1", generation=1, patch_name="p1"),
@@ -140,6 +140,7 @@ def test_async_step1_preserves_metadata_when_batch_response_is_missing():
         )
     )
 
+    assert indices == {1}
     assert cost == 0.0
     assert summary is not None
     assert "Async summary for generation 2" in summary

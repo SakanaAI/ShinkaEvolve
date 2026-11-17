@@ -86,5 +86,9 @@ def test_meta_individual_summary_reports_empty_reply_cost(mode, billed_reply):
         summarizer = AsyncMetaSummarizer(
             MetaSummarizer(), SimpleNamespace(batch_kwargs_query_indexed=batch)
         )
-        result = asyncio.run(summarizer._step1_individual_summaries_async([program]))
+        summary, cost, indices = asyncio.run(
+            summarizer._step1_individual_summaries_async([program])
+        )
+        assert indices == set()
+        result = (summary, cost)
     assert result == (None, 3.3)

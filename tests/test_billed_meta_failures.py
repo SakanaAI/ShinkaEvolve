@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import shinka.llm.llm as llm_module
+from shinka.api_budget import ApiCostScope, cost_scope
 from shinka.core import EvolutionConfig
 from shinka.core.async_runner import (
     AsyncRunningJob,
@@ -48,6 +49,45 @@ def test_meta_batch_keeps_billed_sibling_when_request_fails(monkeypatch):
     )
 
     assert asyncio.run(summarizer.update_meta_memory_async()) == (None, 0.8)
+
+
+def test_meta_keeps_budget_skipped_inputs_pending(tmp_path, monkeypatch):
+    local = "local/test@http://127.0.0.1:1234/v1"
+    choices = iter(["gpt-5-mini", local, local, local])
+    monkeypatch.setattr(
+        llm_module, "sample_model_kwargs", lambda **kw: {"model_name": next(choices)}
+    )
+    sync = MetaSummarizer()
+    for index, name in enumerate(["skipped", "summarized", "arrived"], start=1):
+        program = Program(
+            id=name, code="pass", generation=index, metadata={"patch_name": name}
+        )
+        if name == "arrived":
+            new_program = program
+        else:
+            sync.add_evaluated_program(program)
+
+    async def provider(msg, system_msg, model_name, **kwargs):
+        assert model_name == local
+        if "summarized" in msg:
+            sync.add_evaluated_program(new_program)
+        return QueryResult("summary", msg, system_msg, [], model_name, {}, 1, 1)
+
+    monkeypatch.setattr(llm_module, "query_async", provider)
+    summarizer = AsyncMetaSummarizer(
+        sync, AsyncLLMClient(model_names=[local, "gpt-5-mini"], verbose=False)
+    )
+    token = cost_scope.set(ApiCostScope(lambda: True))
+    try:
+        assert asyncio.run(summarizer.perform_final_summary_async(str(tmp_path))) == (
+            True, 0.0
+        )
+    finally:
+        cost_scope.reset(token)
+    assert sync.total_programs_processed == 1
+    assert [program.id for program in sync.evaluated_since_last_meta] == [
+        "skipped", "arrived"
+    ]
 
 
 def test_final_meta_persists_billed_sibling_on_batch_cancellation(
