@@ -775,11 +775,17 @@ class ShinkaEvolveRunner:
 
     def _begin_api_cost_scope(self) -> tuple[ApiCostScope, Token[ApiCostScope | None]]:
         budget = getattr(self.evo_config, "max_api_costs", None)
-        scope = ApiCostScope(self._api_budget_exhausted if budget is not None else None)
+        scope = ApiCostScope(
+            self._api_budget_exhausted if budget is not None else None,
+            admission_closed=self._paid_admission_closed,
+        )
         if not hasattr(self, "_api_cost_scopes"):
             self._api_cost_scopes: set[ApiCostScope] = set()
         self._api_cost_scopes.add(scope)
         return scope, cost_scope.set(scope)
+
+    def _paid_admission_closed(self) -> bool:
+        return getattr(self, "_closing_run", False)
 
     def _post_api_cost(self, cost: float) -> None:
         scope = cost_scope.get()
@@ -1330,13 +1336,15 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
-            await self._cancel_completed_job_batches()
-            await self._cancel_background_side_effect_worker()
-            # Ensure all tasks are cancelled on exit
-            for task in tasks:
+            # Stop producers before waiting on any shielded provider calls.
+            self._closing_run = True
+            self.should_stop.set()
+            for task in (*tasks, *self.active_proposal_tasks.values()):
                 task.cancel()
             if tasks:  # Only gather if there are tasks
                 await asyncio.gather(*tasks, return_exceptions=True)
+            await self._cancel_completed_job_batches()
+            await self._cancel_background_side_effect_worker()
             await self._cleanup_async()
 
         # Print final summary

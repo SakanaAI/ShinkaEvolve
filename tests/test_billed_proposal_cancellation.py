@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import openai
@@ -17,6 +18,7 @@ from shinka.llm.llm import AsyncLLMClient
 from shinka.llm.providers import QueryResult
 from shinka.llm.providers.errors import EmptyResponseError
 from shinka.llm.providers.openai import query_openai_async
+from shinka.pricing.catalog import get_catalog
 
 
 @pytest.fixture
@@ -78,6 +80,49 @@ def start_proposal(runner, fix_mode, generation=1):
 def assert_recorded_once(runner, expected):
     assert runner.total_api_cost == pytest.approx(expected)
     assert runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[0] == 1
+
+
+def test_run_cancellation_closes_paid_admission_before_draining(runner, monkeypatch):
+    async def run():
+        producer_started = asyncio.Event()
+        draining = asyncio.Event()
+        release = asyncio.Event()
+        runner.pricing_snapshot = get_catalog()
+        runner.finalization_complete = asyncio.Event()
+        runner.should_stop = asyncio.Event()
+        runner.meta_summarizer = None
+        runner._setup_async = AsyncMock()
+        runner._verify_database_ready = AsyncMock()
+        runner._cleanup_async = AsyncMock()
+
+        async def produce():
+            producer_started.set()
+            await asyncio.Event().wait()
+
+        async def drain():
+            draining.set()
+            await release.wait()
+
+        runner._proposal_coordinator_task = produce
+        runner._job_monitor_task = asyncio.Event().wait
+        runner._cancel_completed_job_batches = drain
+        provider = AsyncMock()
+        monkeypatch.setattr(llm_module, "query_async", provider)
+
+        task = asyncio.create_task(runner._run_async())
+        await asyncio.wait_for(producer_started.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(draining.wait(), 2)
+        try:
+            assert runner.should_stop.is_set()
+            assert await start_proposal(runner, False) is None
+            provider.assert_not_awaited()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("fix_mode", [False, True])

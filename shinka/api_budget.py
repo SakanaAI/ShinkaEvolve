@@ -22,6 +22,7 @@ class ApiCostScope:
 
     exhausted: Callable[[], bool] | None
     pending: float = 0.0
+    admission_closed: Callable[[], bool] = lambda: False
 
     def acknowledge(self, cost: float) -> None:
         if math.isclose(self.pending, cost, rel_tol=1e-12):
@@ -91,12 +92,15 @@ async def run_request(
         return result
 
     exhausted = scope.exhausted
-    if exhausted is None or not may_charge(model, kind):
+    if exhausted is None and not scope.admission_closed():
         return await receive()
-    if exhausted():
+    if not may_charge(model, kind):
+        return await receive()
+    if scope.admission_closed() or (exhausted is not None and exhausted()):
         raise APIBudgetExceeded()
 
-    request = _PaidRequest(exhausted)
+    assert exhausted is not None
+    request = _PaidRequest(lambda: scope.admission_closed() or exhausted())
     token = _paid_request.set(request)
     try:
         task = asyncio.create_task(receive())
