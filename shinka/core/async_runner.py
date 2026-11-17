@@ -1862,6 +1862,8 @@ class ShinkaEvolveRunner:
     ):
         """Setup initial program in database with metadata."""
         pipeline_started_at = time.time()
+        scope = cost_scope.get()
+        cost_before_evaluation = scope.pending if scope is not None else 0.0
         # Create generation 0 directory structure first
         gen_dir = f"{self.results_dir}/{FOLDER_PREFIX}_0"
         results_dir = f"{gen_dir}/results"
@@ -1891,6 +1893,11 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Initial program evaluation completed in {rtime:.2f}s")
 
+            # Get code embedding for initial program
+            code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
+            if self.verbose and code_embedding:
+                logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
+
             # Extract metrics properly like the sync version
             correct_val = results.get("correct", {}).get("correct", False)
             metrics_val = results.get("metrics", {})
@@ -1906,6 +1913,7 @@ class ShinkaEvolveRunner:
 
             # Build base metadata
             base_metadata = {
+                "embed_cost": e_cost,
                 "novelty_cost": 0.0,  # No novelty cost for generation 0
                 "stdout_log": stdout_log,
                 "stderr_log": stderr_log,
@@ -1952,6 +1960,7 @@ class ShinkaEvolveRunner:
                 private_metrics=private_metrics,
                 text_feedback=text_feedback,
                 timestamp=datetime.now().timestamp(),
+                embedding=code_embedding,
                 metadata=base_metadata,
             )
 
@@ -1966,13 +1975,22 @@ class ShinkaEvolveRunner:
             evaluation_finished_at = time.time()
             postprocess_started_at = evaluation_finished_at
 
+            # Still try to compute embedding even if evaluation failed
             try:
                 evaluation_started_at
             except UnboundLocalError:
                 evaluation_started_at = pipeline_started_at
 
+            try:
+                code_embedding, e_cost = await self._get_code_embedding_async(
+                    exec_fname
+                )
+            except Exception:
+                code_embedding, e_cost = None, 0.0
+
             # Build base metadata for fallback
             base_metadata = {
+                "embed_cost": e_cost,
                 "novelty_cost": 0.0,  # No novelty cost for generation 0 fallback
                 "evaluation_failed": True,
                 "stdout_log": "",
@@ -2017,21 +2035,18 @@ class ShinkaEvolveRunner:
                 public_metrics={"score": 0.0},
                 correct=True,
                 timestamp=datetime.now().timestamp(),
+                embedding=code_embedding,
                 metadata=base_metadata,
             )
 
-        # Embed once after the evaluation and its fallback have selected the row.
-        try:
-            code_embedding, e_cost = await self._get_code_embedding_async(exec_fname)
-        except Exception as exc:
-            logger.warning("Initial program embedding failed: %s", exc)
-            code_embedding, e_cost = None, 0.0
-        initial_program.embedding = code_embedding
-        initial_program.metadata["embed_cost"] = e_cost
-        if self.verbose and code_embedding:
-            logger.info(f"Initial program embedding computed (cost: ${e_cost:.4f})")
-
         # Add to database
+        if scope is not None:
+            # Fallback evaluation can replace the embedding result after its
+            # first request was billed. Store every observed embedding charge.
+            initial_program.metadata["embed_cost"] = max(
+                initial_program.metadata.get("embed_cost") or 0.0,
+                scope.pending - cost_before_evaluation,
+            )
         await finish_cost_recording(
             self.async_db.add_program_async(initial_program, verbose=self.verbose)
         )
