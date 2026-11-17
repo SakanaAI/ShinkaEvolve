@@ -4,13 +4,13 @@ Provides non-blocking database access for high-throughput proposal generation.
 """
 
 import asyncio
+import contextlib
 import logging
+import pathlib
 import sqlite3
 import time
 import threading
 import traceback
-from contextlib import closing
-from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
@@ -1207,10 +1207,12 @@ class AsyncProgramDatabase:
         try:
             db_path = self.sync_db.config.db_path
             if db_path:
-                uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+                uri = f"{pathlib.Path(db_path).resolve().as_uri()}?mode=ro"
 
                 def query_read_only():
-                    with closing(sqlite3.connect(uri, uri=True, timeout=60.0)) as conn:
+                    with contextlib.closing(
+                        sqlite3.connect(uri, uri=True, timeout=60.0)
+                    ) as conn:
                         return conn.execute(query, params).fetchall()
 
                 result = await asyncio.get_running_loop().run_in_executor(
