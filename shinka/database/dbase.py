@@ -20,6 +20,7 @@ from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
 
 logger = logging.getLogger(__name__)
+_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v1"
 
 
 def clean_nan_values(obj: Any) -> Any:
@@ -537,6 +538,7 @@ class ProgramDatabase:
 
         # Run any necessary migrations
         self._run_migrations()
+        self._repair_legacy_run_state()
 
         logger.debug("Database tables and indices ensured to exist.")
 
@@ -677,6 +679,84 @@ class ProgramDatabase:
         if generation > state.last_iteration:
             self._write_metadata("last_iteration", str(generation))
             state.last_iteration = generation
+
+    def _advance_best_score(self, state: _RunState, program: Program) -> None:
+        score = program.combined_score or 0.0
+        if state.best_score_ever is None or score > state.best_score_ever:
+            state.best_score_ever = score
+            # An improvement can arrive after a later generation was processed.
+            self._advance_best_score_generation(state, program.generation)
+            self._write_metadata("best_score_ever", str(score))
+
+    def _advance_best_score_generation(self, state: _RunState, generation: int) -> None:
+        state.best_score_generation = max(state.best_score_generation, generation)
+        self._write_metadata("best_score_generation", str(state.best_score_generation))
+
+    def _run_state_repaired(self) -> bool:
+        row = self.cursor.execute(
+            "SELECT 1 FROM metadata_store WHERE key = ?", (_RUN_STATE_REPAIR_KEY,)
+        ).fetchone()
+        return row is not None
+
+    @db_retry()
+    def _repair_legacy_run_state(self) -> None:
+        if self._run_state_repaired():
+            return
+        with self._run_state_transaction() as state:
+            # A different connection may have repaired the database while we waited.
+            if self._run_state_repaired():
+                return
+            last_generation, best = self._scan_original_run_programs(
+                state.best_program_id
+            )
+            self._advance_last_iteration(state, last_generation)
+            if best is not None:
+                self._repair_legacy_best_score(state, best)
+            best_id = best.id if best else None
+            if best_id != state.best_program_id:
+                self._write_metadata("best_program_id", best_id)
+                state.best_program_id = best_id
+            self._write_metadata(_RUN_STATE_REPAIR_KEY, "1")
+
+    def _repair_legacy_best_score(self, state: _RunState, best: Program) -> None:
+        score = best.combined_score or 0.0
+        if score == state.best_score_ever and best.id != state.best_program_id:
+            # Legacy writers could commit the best score after losing its generation.
+            previous = self._get_tracked_best(state)
+            if (
+                previous is not None
+                and state.best_score_generation == previous.generation
+                and score > (previous.combined_score or 0.0)
+            ):
+                self._advance_best_score_generation(state, best.generation)
+        self._advance_best_score(state, best)
+
+    def _scan_original_run_programs(
+        self, tracked_best_id: Optional[str]
+    ) -> tuple[int, Optional[Program]]:
+        last_generation = 0
+        best = None
+        # Only load ranking fields and the metadata that identifies island copies.
+        for row in self.cursor.execute("""
+            SELECT id, '' AS code, generation, timestamp, combined_score,
+                   public_metrics, correct, metadata
+            FROM programs ORDER BY rowid
+            """):
+            program = self._program_from_row(row)
+            if program is None or (
+                program.metadata.get("_is_island_copy")
+                or program.metadata.get("_spawned_island")
+            ):
+                continue
+            last_generation = max(last_generation, program.generation)
+            if not program.correct:
+                continue
+            if best is None or self._is_better(program, best):
+                best = program
+            elif program.id == tracked_best_id and not self._is_better(best, program):
+                # Keep the incumbent if the original ranking cannot break the tie.
+                best = program
+        return last_generation, best
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
@@ -2508,20 +2588,7 @@ class ProgramDatabase:
 
             # A lookup may already have recovered this ID before maintenance ran.
             if state.best_program_id == program.id:
-                program_score = program.combined_score or 0.0
-                if (
-                    state.best_score_ever is None
-                    or program_score > state.best_score_ever
-                ):
-                    state.best_score_ever = program_score
-                    # An improvement can arrive after a later generation was processed.
-                    state.best_score_generation = max(
-                        state.best_score_generation, program.generation
-                    )
-                    self._write_metadata(
-                        "best_score_generation", str(state.best_score_generation)
-                    )
-                    self._write_metadata("best_score_ever", str(program_score))
+                self._advance_best_score(state, program)
 
         if improved:
             logger.info(
