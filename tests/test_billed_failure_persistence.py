@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shinka.api_budget import run_request
 from shinka.core import EvolutionConfig
 from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
@@ -168,6 +169,47 @@ def test_initialization_checks_known_cost_before_another_attempt(runner):
         asyncio.run(runner._generate_initial_program())
     assert len(calls) == 1
     assert runner.total_api_cost == pytest.approx(7.3)
+
+
+def test_malformed_seed_result_embeds_once_when_cancelled_after_insert(runner, tmp_path):
+    async def run():
+        committed = asyncio.Event()
+        release = asyncio.Event()
+        requests = []
+
+        async def embed():
+            requests.append(True)
+            return [0.1], 0.6
+
+        async def embedding(path):
+            return await run_request(
+                embed, lambda reply: reply[1], "text-embedding-3-small", "embedding"
+            )
+
+        async def insert(program, **kwargs):
+            runner.db.add(program)
+            committed.set()
+            await release.wait()
+
+        runner.results_dir = tmp_path
+        runner.db_config = runner.db.config
+        runner.lang_ext = "py"
+        runner.max_proposal_jobs = runner.max_evaluation_jobs = runner.max_db_workers = 1
+        runner.scheduler = SimpleNamespace(run=lambda *args: (None, 0.0))
+        runner._get_code_embedding_async = embedding
+        runner.async_db.add_program_async = insert
+        task = asyncio.create_task(runner._setup_initial_program("pass\n"))
+        await asyncio.wait_for(committed.wait(), 2)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert len(requests) == 1
+        assert runner.total_api_cost == pytest.approx(0.6)
+        assert await runner._get_total_api_costs() == pytest.approx(0.6)
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])
