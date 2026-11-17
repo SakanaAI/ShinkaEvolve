@@ -5,6 +5,7 @@ Provides fully asynchronous evolution pipeline with concurrent LLM sampling.
 
 import json
 import asyncio
+import hashlib
 import logging
 import shutil
 import time
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from tempfile import mkdtemp
+from tempfile import NamedTemporaryFile, mkdtemp
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
 from dataclasses import dataclass, field
 from rich.console import Console
@@ -1285,19 +1286,16 @@ class ShinkaEvolveRunner:
             gen for gen, original in generation_origins.items() if original
         }
         terminal_failures = self._get_terminal_proposal_failure_generations()
-        initial_program_path = self.evo_config.init_program_path
-        initial_code = None
-        if (
-            0 not in persisted_generations
-            and initial_program_path
-            and Path(initial_program_path).exists()
-        ):
-            initial_code = await self._read_file_async(initial_program_path)
-        else:
-            initial_program_path = None
+        configured_seed = self.evo_config.init_program_path
+        seed_path = (
+            Path(configured_seed)
+            if configured_seed and 0 not in persisted_generations
+            else None
+        )
         await asyncio.to_thread(
             self._archive_interrupted_generations,
             persisted_generations.union(terminal_failures),
+            seed_path,
         )
 
         if persisted_generations:
@@ -1319,10 +1317,12 @@ class ShinkaEvolveRunner:
             self._load_bandit_state()
 
         if 0 not in persisted_generations:
-            if initial_program_path:
+            initial_program_path = self._find_saved_seed(seed_path)
+            if initial_program_path is not None:
                 # Copy existing initial program
                 if self.verbose:
                     logger.info("Copying initial program from %s", initial_program_path)
+                initial_code = await self._read_file_async(str(initial_program_path))
                 if initial_code:
                     await self._setup_initial_program(initial_code)
             else:
@@ -5256,7 +5256,9 @@ class ShinkaEvolveRunner:
             self._settled_resume_generations.popleft()
             self.next_generation_to_submit += 1
 
-    def _archive_interrupted_generations(self, settled_generations: set[int]) -> None:
+    def _archive_interrupted_generations(
+        self, settled_generations: set[int], seed_path: Optional[Path] = None
+    ) -> None:
         """Move orphan artifacts aside before the seed or proposals are restarted."""
         prefix = f"{FOLDER_PREFIX}_"
         budget = range(self.evo_config.num_generations)
@@ -5271,12 +5273,52 @@ class ShinkaEvolveRunner:
                 continue
             if path.is_symlink() or not path.is_dir():
                 raise ValueError(f"Expected a generation directory at {path}")
+            if seed_path is not None and seed_path.is_file() and (
+                Path(os.path.abspath(seed_path)).is_relative_to(os.path.abspath(path))
+                or seed_path.resolve().is_relative_to(path.resolve())
+            ):
+                self._save_seed_source(seed_path)
 
             archive = Path(mkdtemp(prefix=f".interrupted-{path.name}-", dir=path.parent))
             destination = path.rename(archive / path.name)
             logger.info(
                 "Preserved interrupted generation %d at %s", generation, destination
             )
+
+    def _saved_seed_path(self, seed_path: Path) -> Path:
+        key = hashlib.sha256(os.fsencode(os.path.abspath(seed_path))).hexdigest()
+        return Path(self.results_dir) / f".resume-seed-{key}"
+
+    def _find_saved_seed(self, seed_path: Optional[Path]) -> Optional[Path]:
+        if seed_path is None:
+            return None
+        saved_path = self._saved_seed_path(seed_path)
+        if saved_path.is_file():
+            return saved_path
+        return seed_path if seed_path.exists() else None
+
+    def _save_seed_source(self, seed_path: Path) -> None:
+        saved_path = self._saved_seed_path(seed_path)
+        if saved_path.is_file():
+            return
+        temporary_path = None
+        try:
+            with NamedTemporaryFile(dir=saved_path.parent, delete=False) as staged:
+                temporary_path = Path(staged.name)
+                with seed_path.open("rb") as source:
+                    shutil.copyfileobj(source, staged)
+                staged.flush()
+                os.fsync(staged.fileno())
+            temporary_path.replace(saved_path)
+            if os.name != "nt":
+                directory_fd = os.open(saved_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _get_in_flight_work_count(self) -> int:
         """Return work that is expected to complete without new proposals."""

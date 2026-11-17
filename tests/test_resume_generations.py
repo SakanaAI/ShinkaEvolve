@@ -127,12 +127,25 @@ def test_resume_finishes_seed_islands_before_sampling(
     asyncio.run(run())
 
 
-def test_resume_reads_configured_seed_before_archiving_its_directory(tmp_path):
+def test_resume_preserves_configured_seed_across_interruption_after_archive(tmp_path):
     async def run():
         source = tmp_path / "gen_0" / "main.py"
         source.parent.mkdir()
         source.write_text("pass\n")
         config = DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"))
+        interrupted = _resume_runner(tmp_path, config, budget=1)
+        interrupted.evo_config.init_program_path = str(source)
+        interrupted._setup_initial_program = AsyncMock(
+            side_effect=RuntimeError("interrupted")
+        )
+        try:
+            with pytest.raises(RuntimeError, match="interrupted"):
+                await interrupted._setup_async()
+        finally:
+            await interrupted.async_db.close_async()
+            interrupted.db.close()
+        assert not source.exists()
+
         runner = _resume_runner(tmp_path, config, budget=1)
         runner.evo_config.init_program_path = str(source)
         runner._setup_initial_program = AsyncMock()
