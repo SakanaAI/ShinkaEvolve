@@ -262,6 +262,87 @@ def test_resume_counts_only_distinct_budgeted_originals_with_dynamic_islands(tmp
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("retry_code", ["x = 1\n", "x = 10\n"])
+def test_best_export_uses_selected_copy_code_after_its_generation_is_retried(
+    tmp_path, monkeypatch, retry_code
+):
+    async def run():
+        config = DatabaseConfig(
+            db_path=str(tmp_path / "programs.sqlite"),
+            num_islands=1,
+            island_spawn_strategy="best",
+        )
+        db = ProgramDatabase(config)
+        db.add(
+            Program(
+                id="seed",
+                code="x = 0\n",
+                generation=0,
+                correct=True,
+                combined_score=0.0,
+            )
+        )
+        db.add(
+            Program(
+                id="source",
+                code="x = 10\n",
+                generation=2,
+                correct=True,
+                combined_score=10.0,
+            )
+        )
+        assert db.island_manager.spawn_new_island()
+        db.conn.execute("DELETE FROM programs WHERE id = 'source'")
+        db.conn.commit()
+        (selected,) = db.get_programs_by_generation(2)
+        db.close()
+
+        best = tmp_path / "best"
+        best.mkdir()
+        (best / "main.py").write_text("old best")
+        runner = _resume_runner(tmp_path, config, budget=3)
+        runner.best_program_id = "seed"
+        try:
+            await runner._setup_async()
+            retry_dir = tmp_path / "gen_2"
+            retry_dir.mkdir()
+            (retry_dir / "main.py").write_text(retry_code)
+            (retry_dir / "retry-only.txt").touch()
+            await runner.async_db.add_program_async(
+                Program(
+                    id="retry",
+                    code=retry_code,
+                    generation=2,
+                    correct=True,
+                    combined_score=1.0,
+                )
+            )
+            write_text = Path.write_text
+
+            def fail_replacement(path, data, **kwargs):
+                if data == selected.code:
+                    raise OSError("could not stage selected code")
+                return write_text(path, data, **kwargs)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(Path, "write_text", fail_replacement)
+                with pytest.raises(OSError, match="could not stage selected code"):
+                    await runner._update_best_solution_async()
+            assert runner.best_program_id == "seed"
+            assert (best / "main.py").read_text() == "old best"
+
+            await runner._update_best_solution_async()
+
+            assert runner.best_program_id == selected.id
+            assert (best / "main.py").read_text() == selected.code
+            assert not (best / "retry-only.txt").exists()
+        finally:
+            await runner.async_db.close_async()
+            runner.db.close()
+
+    asyncio.run(run())
+
+
 def test_resume_does_not_reschedule_terminal_proposal_failures(tmp_path):
     async def run():
         config = DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"))

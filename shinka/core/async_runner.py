@@ -6590,20 +6590,14 @@ class ShinkaEvolveRunner:
             if best_program.id == self.best_program_id:
                 return  # No change
 
-            self.best_program_id = best_program.id
-
-            source_dir = f"{self.results_dir}/{FOLDER_PREFIX}_{best_program.generation}"
             best_dir = Path(self.results_dir) / "best"
-
-            loop = asyncio.get_event_loop()
-
-            def sync_file_operations():
-                """Synchronous file operations to run in executor."""
-                if best_dir.exists():
-                    shutil.rmtree(best_dir)
-                shutil.copytree(source_dir, best_dir)
-
-            await loop.run_in_executor(None, sync_file_operations)
+            generation_programs = await self.async_db.get_programs_by_generation_async(
+                best_program.generation
+            )
+            await asyncio.to_thread(
+                self._export_best_solution, best_program, generation_programs, best_dir
+            )
+            self.best_program_id = best_program.id
 
             if self.verbose:
                 logger.info(
@@ -6611,6 +6605,61 @@ class ShinkaEvolveRunner:
                     f"id {best_program.id[:6]}... "
                     f"Copied to {best_dir}"
                 )
+
+    def _export_best_solution(
+        self, program: Program, generation_programs: List[Program], best_dir: Path
+    ) -> None:
+        source_dir = best_dir.parent / f"{FOLDER_PREFIX}_{program.generation}"
+        source_file = source_dir / f"main.{self.lang_ext}"
+        has_matching_artifacts = (
+            self._uses_generation_artifacts(program, generation_programs)
+            and source_file.is_file()
+            and source_file.read_text(encoding="utf-8", errors="replace") == program.code
+        )
+
+        staging_dir = Path(mkdtemp(prefix=".best-", dir=best_dir.parent))
+        replacement = staging_dir / "replacement"
+        previous = staging_dir / "previous"
+        try:
+            if has_matching_artifacts:
+                shutil.copytree(source_dir, replacement)
+            else:
+                replacement.mkdir()
+                (replacement / source_file.name).write_text(program.code, encoding="utf-8")
+
+            if best_dir.exists() or best_dir.is_symlink():
+                best_dir.rename(previous)
+            try:
+                replacement.rename(best_dir)
+            except OSError:
+                if previous.exists() or previous.is_symlink():
+                    previous.rename(best_dir)
+                raise
+        except BaseException:
+            if not previous.exists() and not previous.is_symlink():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+    @staticmethod
+    def _uses_generation_artifacts(
+        program: Program, generation_programs: List[Program]
+    ) -> bool:
+        originals = [p.id for p in generation_programs if not is_island_copy(p)]
+        if len(originals) != 1:
+            return False
+        candidates = {p.id: p for p in generation_programs}
+        source_id = program.id
+        while source_id in candidates:
+            if source_id == originals[0]:
+                return True
+            metadata = candidates.pop(source_id).metadata or {}
+            source_id = metadata.get("_spawned_from_program_id") or metadata.get(
+                "_original_program_id"
+            )
+            if not isinstance(source_id, str):
+                break
+        return False
 
     def _extract_code_from_response(self, response_content: str) -> Optional[str]:
         """Extract code from LLM response."""
