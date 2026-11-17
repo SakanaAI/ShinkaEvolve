@@ -1,3 +1,4 @@
+import asyncio
 import backoff
 import openai
 import time
@@ -101,19 +102,29 @@ def _extract_reasoning_summary(response) -> str:
     return "\n".join(summaries)
 
 
-def backoff_handler(details):
+def _extra_backoff_delay(details) -> float:
     exc = details.get("exception")
-    if exc:
-        retry_after = _retry_after_seconds(exc)
-        if retry_after is not None and retry_after > details["wait"]:
-            logger.warning(
-                "OpenAI - server requested retry_after=%ss; sleeping before retry.",
-                retry_after,
-            )
-            time.sleep(retry_after - details["wait"])
-        logger.warning(
-            f"OpenAI - Retry {details['tries']} due to error: {exc}. Waiting {details['wait']:0.1f}s..."
-        )
+    if not exc:
+        return 0.0
+    retry_after = _retry_after_seconds(exc) or 0.0
+    delay = max(details["wait"], retry_after)
+    logger.warning(
+        "OpenAI - Retry %s due to error: %s. Waiting %.1fs...",
+        details["tries"], exc, delay,
+    )
+    return delay - details["wait"]
+
+
+def backoff_handler(details):
+    extra = _extra_backoff_delay(details)
+    if extra:
+        time.sleep(extra)
+
+
+async def async_backoff_handler(details):
+    extra = _extra_backoff_delay(details)
+    if extra:
+        await asyncio.sleep(extra)
 
 
 def _retry_after_seconds(exc) -> int | None:
@@ -258,7 +269,7 @@ def query_openai(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
-    on_backoff=backoff_handler,
+    on_backoff=async_backoff_handler,
 )
 async def query_openai_async(
     client,

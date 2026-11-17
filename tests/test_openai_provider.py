@@ -1,8 +1,11 @@
 import asyncio
 from types import SimpleNamespace
 
+import httpx
+import openai
 import pytest
 
+from shinka.llm.providers import openai as openai_provider
 from shinka.llm.providers.errors import EmptyResponseError
 from shinka.llm.providers.openai import (
     _retry_after_seconds,
@@ -82,6 +85,35 @@ def test_retry_after_seconds_prefers_response_header():
     )
 
     assert _retry_after_seconds(exc) == 30
+
+
+def test_async_openai_retry_after_uses_nonblocking_sleep(monkeypatch):
+    waits = []
+    attempts = []
+    request = httpx.Request("POST", "https://example.test")
+
+    async def create(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise openai.RateLimitError(
+                "mock rate limit",
+                response=httpx.Response(429, request=request, headers={"retry-after": "60"}),
+                body=None,
+            )
+        return _response(output_text="ok")
+
+    async def async_sleep(delay):
+        waits.append(delay)
+
+    def sync_sleep(delay):
+        pytest.fail("async OpenAI retry blocked the event loop")
+
+    monkeypatch.setattr(openai_provider.time, "sleep", sync_sleep)
+    monkeypatch.setattr(openai_provider.asyncio, "sleep", async_sleep)
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    result = asyncio.run(query_openai_async(client, "gpt-5-mini", "msg", "sys", [], None))
+    assert result.content == "ok"
+    assert sum(waits) == pytest.approx(60)
 
 
 class _FakeOpenAIClient:
