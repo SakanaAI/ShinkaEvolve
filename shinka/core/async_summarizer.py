@@ -9,6 +9,8 @@ from typing import List, Optional, Tuple
 from pathlib import Path
 from .summarizer import MetaSummarizer
 from ..llm import AsyncLLMClient
+from ..llm.providers.errors import BilledCancellationError, NonRetryableLLMError
+from .billing import cancellation_with_cost, finish_cost_recording
 from ..database import Program
 from ..prompts import (
     construct_individual_program_msg,
@@ -122,8 +124,14 @@ class AsyncMetaSummarizer:
             logger.info(
                 f"==> Meta-analysis completed successfully with 3-step process (total cost: ${total_meta_cost:.4f})"
             )
+        except asyncio.CancelledError as exc:
+            if total_meta_cost > 0:
+                raise cancellation_with_cost(exc, total_meta_cost) from exc
+            raise
         except Exception as e:
             logger.error(f"Failed to complete 3-step meta-analysis: {e}")
+            if isinstance(e, NonRetryableLLMError):
+                total_meta_cost += e.cost
             return None, total_meta_cost
 
         # Clear the evaluated programs list immediately after processing
@@ -323,8 +331,16 @@ class AsyncMetaSummarizer:
             f"remaining programs..."
         )
 
-        updated_recs, meta_cost = await self.update_meta_memory_async(best_program)
-        await self._persist_final_meta_cost(meta_cost, best_program, db_config)
+        try:
+            updated_recs, meta_cost = await self.update_meta_memory_async(best_program)
+        except BilledCancellationError as exc:
+            await finish_cost_recording(
+                self._persist_final_meta_cost(exc.cost, best_program, db_config)
+            )
+            raise
+        await finish_cost_recording(
+            self._persist_final_meta_cost(meta_cost, best_program, db_config)
+        )
         if not updated_recs:
             logger.warning("Final meta summary failed to generate recommendations")
             return False, meta_cost

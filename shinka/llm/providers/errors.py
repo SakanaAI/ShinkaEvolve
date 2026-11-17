@@ -17,6 +17,8 @@ class BilledCancellationError(asyncio.CancelledError):
 class NonRetryableLLMError(ValueError):
     """A deterministic request failure that cannot succeed when retried."""
 
+    cost: float = 0.0
+
 
 class LLMEndpointError(NonRetryableLLMError):
     """A permanent endpoint/authentication failure, safe to persist in run artifacts."""

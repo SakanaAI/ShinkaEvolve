@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import shinka.llm.llm as llm_module
 from shinka.core import EvolutionConfig
 from shinka.core.async_runner import (
     AsyncRunningJob,
@@ -20,6 +21,85 @@ from shinka.database.prompt_dbase import (
     SystemPromptDatabase,
     create_system_prompt,
 )
+from shinka.llm import AsyncLLMClient
+from shinka.llm.providers import QueryResult
+from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
+
+
+def test_meta_batch_keeps_billed_sibling_when_request_fails(monkeypatch):
+    async def provider(msg, **kwargs):
+        if "first" in msg:
+            raise LLMEndpointError(401, "unauthorized")
+        return QueryResult("summary", msg, "sys", [], "gpt-5-mini", {}, 1, 1, cost=0.8)
+
+    monkeypatch.setattr(llm_module, "query_async", provider)
+    sync = MetaSummarizer()
+    for generation, label in enumerate(["first", "second"]):
+        sync.add_evaluated_program(
+            Program(
+                id=label,
+                code=label,
+                generation=generation,
+                metadata={"patch_name": label},
+            )
+        )
+    summarizer = AsyncMetaSummarizer(
+        sync, AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
+    )
+
+    assert asyncio.run(summarizer.update_meta_memory_async()) == (None, 0.8)
+
+
+def test_final_meta_persists_billed_sibling_on_batch_cancellation(
+    tmp_path, monkeypatch
+):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1)
+    )
+
+    async def run():
+        started = asyncio.Event()
+
+        async def provider(msg, system_msg, model_name, **kwargs):
+            if "second" in msg:
+                started.set()
+                await asyncio.Event().wait()
+            return QueryResult(
+                "summary", msg, system_msg, [], model_name, {}, 1, 1, cost=0.8
+            )
+
+        monkeypatch.setattr(llm_module, "query_async", provider)
+        sync = MetaSummarizer()
+        best = Program(
+            id="first", generation=1, code="first", metadata={"patch_name": "first"}
+        )
+        db.add(best)
+        sync.add_evaluated_program(best)
+        sync.add_evaluated_program(
+            Program(
+                id="second",
+                generation=2,
+                code="second",
+                metadata={"patch_name": "second"},
+            )
+        )
+        summarizer = AsyncMetaSummarizer(
+            sync, AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
+        )
+        task = asyncio.create_task(
+            summarizer.perform_final_summary_async(str(tmp_path), best, db.config)
+        )
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(BilledCancellationError) as cancelled:
+            await task
+        assert cancelled.value.cost == pytest.approx(0.8)
+        assert db.get(best.id).metadata["meta_cost"] == pytest.approx(0.8)
+
+    try:
+        asyncio.run(run())
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize("recommendations", [None, "recommendation"])
