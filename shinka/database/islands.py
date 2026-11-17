@@ -961,7 +961,14 @@ class CombinedIslandManager:
         return collected
 
     def spawn_new_island(self) -> bool:
+        """Spawn a new island and commit its program copies."""
+        with self.conn:
+            return self.insert_spawned_island()
+
+    def insert_spawned_island(self) -> bool:
         """Spawn a new island by copying a program (or subtree) based on config.
+
+        The caller owns the transaction.
 
         The strategy is determined by config.island_spawn_strategy:
         - "initial": Copy the initial program (generation 0) for a fresh start
@@ -1014,8 +1021,6 @@ class CombinedIslandManager:
                 prog, new_island_idx, new_parent_id, strategy, is_root=is_root
             )
             old_to_new_id[prog["id"]] = new_id
-
-        self.conn.commit()
 
         strategy_desc = {
             "initial": "initial program",

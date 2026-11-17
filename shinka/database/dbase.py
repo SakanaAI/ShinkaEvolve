@@ -279,6 +279,14 @@ class Program:
         return cls(**filtered_data)
 
 
+@dataclass
+class _RunState:
+    last_iteration: int
+    best_program_id: Optional[str]
+    best_score_generation: int
+    best_score_ever: Optional[float]
+
+
 class ProgramDatabase:
     """
     SQLite-backed database for storing and managing programs during an
@@ -610,74 +618,62 @@ class ProgramDatabase:
 
     @db_retry()
     def _load_metadata_from_db(self):
-        if not self.cursor:
-            raise ConnectionError("DB cursor not available.")
-
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'last_iteration'"
-        )
-        row = self.cursor.fetchone()
-        self.last_iteration = (
-            int(row["value"]) if row and row["value"] is not None else 0
-        )
-        if not row or row["value"] is not None:  # Initialize in DB if first time
-            if not self.read_only:
-                self._update_metadata_in_db("last_iteration", str(self.last_iteration))
-
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_program_id'"
-        )
-        row = self.cursor.fetchone()
-        self.best_program_id = (
-            str(row["value"])
-            if row and row["value"] is not None and row["value"] != "None"
-            else None
-        )
-        if (
-            not row or row["value"] is None or row["value"] == "None"
-        ):  # Initialize or clear if stored as 'None' string
-            if not self.read_only:
-                self._update_metadata_in_db("best_program_id", None)
-
+        self._cache_run_state(self._read_run_state())
         self.cursor.execute(
             "SELECT value FROM metadata_store WHERE key = 'beam_search_parent_id'"
         )
         row = self.cursor.fetchone()
-        self.beam_search_parent_id = (
-            str(row["value"])
-            if row and row["value"] is not None and row["value"] != "None"
-            else None
-        )
-        if not row or row["value"] is None or row["value"] == "None":
-            if not self.read_only:
-                self._update_metadata_in_db("beam_search_parent_id", None)
+        value = row["value"] if row else None
+        self.beam_search_parent_id = value if value != "None" else None
 
-        # Load stagnation tracking for dynamic island spawning
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_score_generation'"
+    def _read_run_state(self) -> _RunState:
+        if not self.cursor:
+            raise ConnectionError("DB cursor not available.")
+
+        values = dict(
+            self.cursor.execute("""
+                SELECT key, value FROM metadata_store
+                WHERE key IN ('last_iteration', 'best_program_id',
+                              'best_score_generation', 'best_score_ever')
+                """).fetchall()
         )
-        row = self.cursor.fetchone()
-        self.best_score_generation = (
-            int(row["value"]) if row and row["value"] is not None else 0
+        best_id = values.get("best_program_id")
+        best_score = values.get("best_score_ever")
+        return _RunState(
+            last_iteration=int(values.get("last_iteration") or 0),
+            best_program_id=best_id if best_id != "None" else None,
+            best_score_generation=int(values.get("best_score_generation") or 0),
+            best_score_ever=float(best_score) if best_score is not None else None,
         )
 
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_score_ever'"
-        )
-        row = self.cursor.fetchone()
-        self.best_score_ever = (
-            float(row["value"]) if row and row["value"] is not None else None
-        )
+    def _cache_run_state(self, state: _RunState) -> None:
+        self.last_iteration = state.last_iteration
+        self.best_program_id = state.best_program_id
+        self.best_score_generation = state.best_score_generation
+        self.best_score_ever = state.best_score_ever
+
+    def _advance_last_iteration(self, generation: int) -> _RunState:
+        """Advance the latest iteration inside the caller's write transaction."""
+        state = self._read_run_state()
+        if generation > state.last_iteration:
+            self._write_metadata("last_iteration", str(generation))
+            state.last_iteration = generation
+        return state
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
-        if not self.cursor or not self.conn:
+        if not self.conn:
             raise ConnectionError("DB not connected.")
+        with self.conn:
+            self._write_metadata(key, value)
+
+    def _write_metadata(self, key: str, value: Optional[str]) -> None:
+        if not self.cursor:
+            raise ConnectionError("DB cursor not available.")
         self.cursor.execute(
             "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
-            (key, value),  # SQLite handles None as NULL
+            (key, value),
         )
-        self.conn.commit()
 
     @db_retry()
     def record_generation_event(
@@ -771,7 +767,6 @@ class ProgramDatabase:
         row = self.cursor.fetchone()
         return self._program_from_row(row) if row else None
 
-    @db_retry()
     def add(
         self,
         program: Program,
@@ -785,6 +780,9 @@ class ProgramDatabase:
         to improve performance with large databases. After adding a program,
         you should call check_scheduled_operations() to run any deferred
         operations like migrations.
+
+        The insert commits before maintenance. If maintenance fails, use
+        run_post_add_maintenance() to retry it for the inserted program.
 
         Example:
             db.add(program)  # Fast add
@@ -830,6 +828,20 @@ class ProgramDatabase:
             )
             program.embedding = []
 
+        self._insert_program(program)
+        if not defer_maintenance:
+            self.run_post_add_maintenance(
+                program,
+                verbose=verbose,
+                recompute_embeddings=True,
+            )
+        return program.id
+
+    @db_retry()
+    def _insert_program(self, program: Program) -> None:
+        if not self.conn or not self.cursor:
+            raise ConnectionError("DB not connected.")
+
         # Pre-serialize all JSON data once
         public_metrics_json = json.dumps(program.public_metrics or {})
         private_metrics_json = json.dumps(program.private_metrics or {})
@@ -851,10 +863,8 @@ class ProgramDatabase:
         else:
             text_feedback_str = str(text_feedback_str)
 
-        # Begin transaction - this improves performance by batching operations
         self.conn.execute("BEGIN TRANSACTION")
-
-        try:
+        with self.conn:
             # Insert the program in a single operation
             self.cursor.execute(
                 """
@@ -905,37 +915,15 @@ class ProgramDatabase:
                     (program.parent_id,),
                 )
 
-            # Commit the main program insertion and related operations
-            self.conn.commit()
-            logger.info(
-                "Program %s added to DB - score: %s.",
-                program.id,
-                program.combined_score,
-            )
+            # The insert already holds SQLite's write lock.
+            state = self._advance_last_iteration(program.generation)
 
-        except sqlite3.IntegrityError as e:
-            self.conn.rollback()
-            logger.error(f"IntegrityError for program {program.id}: {e}")
-            raise
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Error adding program {program.id}: {e}")
-            raise
-
-        # Update generation tracking
-        if program.generation > self.last_iteration:
-            self.last_iteration = program.generation
-            self._update_metadata_in_db("last_iteration", str(self.last_iteration))
-
-        if defer_maintenance:
-            return program.id
-
-        self.run_post_add_maintenance(
-            program,
-            verbose=verbose,
-            recompute_embeddings=True,
+        self._cache_run_state(state)
+        logger.info(
+            "Program %s added to DB - score: %s.",
+            program.id,
+            program.combined_score,
         )
-        return program.id
 
     def run_post_add_maintenance(
         self,
@@ -975,12 +963,7 @@ class ProgramDatabase:
                 self.island_manager.copy_program_to_islands(program)
                 if program.metadata:
                     program.metadata.pop("_needs_island_copies", None)
-                    metadata_json = json.dumps(program.metadata)
-                    self.cursor.execute(
-                        "UPDATE programs SET metadata = ? WHERE id = ?",
-                        (metadata_json, program.id),
-                    )
-                    self.conn.commit()
+                    self._persist_program_metadata(program)
 
             if self.island_manager.should_schedule_migration(program):
                 self._schedule_migration = True
@@ -999,17 +982,19 @@ class ProgramDatabase:
             program.metadata["postprocess_db_maintenance_seconds"] = max(
                 0.0, maintenance_finished_at - maintenance_started_at
             )
-            metadata_json = json.dumps(program.metadata)
-            self.cursor.execute(
-                "UPDATE programs SET metadata = ? WHERE id = ?",
-                (metadata_json, program.id),
-            )
-            self.conn.commit()
+            self._persist_program_metadata(program)
 
         if recompute_embeddings:
             self._recompute_embeddings_and_clusters()
 
         self.check_scheduled_operations()
+
+    def _persist_program_metadata(self, program: Program) -> None:
+        with self.conn:
+            self.cursor.execute(
+                "UPDATE programs SET metadata = ? WHERE id = ?",
+                (json.dumps(program.metadata), program.id),
+            )
 
     def _program_from_row(self, row: sqlite3.Row) -> Optional[Program]:
         """Helper to create a Program object from a database row."""
@@ -1545,22 +1530,46 @@ class ProgramDatabase:
         metric: Optional[str] = None,
         island_idx: Optional[int] = None,
     ) -> Optional[Program]:
+        if metric is not None or island_idx is not None:
+            return self._find_best_program(metric, island_idx)
+
+        program = self._get_tracked_best(self._read_run_state())
+        if program is not None:
+            return program
+        if not self.read_only:
+            return self._repair_tracked_best()
+        program = self._find_best_program()
+        self.best_program_id = program.id if program else None
+        return program
+
+    def _get_tracked_best(self, state: _RunState) -> Optional[Program]:
+        program = self.get(state.best_program_id) if state.best_program_id else None
+        return program if program and program.correct else None
+
+    def _repair_tracked_best(self) -> Optional[Program]:
+        if not self.conn:
+            raise ConnectionError("DB not connected.")
+        self.conn.execute("BEGIN IMMEDIATE")
+        with self.conn:
+            # Another worker may have published a best while we waited to write.
+            state = self._read_run_state()
+            program = self._get_tracked_best(state)
+            if program is None:
+                program = self._find_best_program()
+                best_id = program.id if program else None
+                if best_id != state.best_program_id:
+                    self._write_metadata("best_program_id", best_id)
+                    state.best_program_id = best_id
+        self._cache_run_state(state)
+        return program
+
+    def _find_best_program(
+        self,
+        metric: Optional[str] = None,
+        island_idx: Optional[int] = None,
+    ) -> Optional[Program]:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
-
-        # Attempt to use tracked best_program_id first if no specific metric
-        if metric is None and island_idx is None and self.best_program_id:
-            program = self.get(self.best_program_id)
-            if program and program.correct:  # Ensure best program is correct
-                return program
-            else:  # Stale ID or incorrect program
-                logger.warning(
-                    f"Tracked best_program_id '{self.best_program_id}' "
-                    "not found or incorrect. Re-evaluating."
-                )
-                if not self.read_only:
-                    self._update_metadata_in_db("best_program_id", None)
-                self.best_program_id = None
 
         # Fetch only correct programs and sort in Python.
         if island_idx is not None:
@@ -1630,17 +1639,6 @@ class ProgramDatabase:
 
         best_overall = sorted_p[0]
         logger.debug(f"Best correct program by {log_key}: {best_overall.id}")
-
-        if (
-            island_idx is None and self.best_program_id != best_overall.id
-        ):  # Update ID if different
-            logger.info(
-                "Updating tracked best program from "
-                f"'{self.best_program_id}' to '{best_overall.id}'."
-            )
-            self.best_program_id = best_overall.id
-            if not self.read_only:
-                self._update_metadata_in_db("best_program_id", self.best_program_id)
         return best_overall
 
     @db_retry()
@@ -2003,6 +2001,7 @@ class ProgramDatabase:
 
         return []
 
+    @db_retry()
     def save(self, path: Optional[str] = None) -> None:
         if not self.conn or not self.cursor:
             logger.warning("No DB connection, skipping save.")
@@ -2024,9 +2023,11 @@ class ProgramDatabase:
                 "in-memory instance."
             )
 
-        self._update_metadata_in_db("last_iteration", str(self.last_iteration))
-
-        self.conn.commit()  # Commit any pending transactions
+        if not self.conn.in_transaction and not self.read_only:
+            self.conn.execute("BEGIN IMMEDIATE")
+        with self.conn:
+            state = self._advance_last_iteration(self.last_iteration)
+        self._cache_run_state(state)
         logger.info(
             f"Database state committed. Last iteration: "
             f"{self.last_iteration}. Best: {self.best_program_id}"
@@ -2336,26 +2337,32 @@ class ProgramDatabase:
             logger.debug(f"Program {program.id} not added to archive (not correct).")
             return
 
-        self.cursor.execute("SELECT COUNT(*) FROM archive")
-        count = (self.cursor.fetchone() or [0])[0]
-
-        if count < self.config.archive_size:
-            # Archive not full - add directly
+        self.conn.execute("BEGIN IMMEDIATE")
+        with self.conn:
+            # Maintenance can be replayed after the archive update committed.
             self.cursor.execute(
-                "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
+                "SELECT 1 FROM archive WHERE program_id = ?",
                 (program.id,),
             )
-            self.conn.commit()
-            logger.debug(f"Program {program.id} added to archive (space available).")
-            return
+            if self.cursor.fetchone():
+                return
 
-        # Archive is full - use strategy to decide replacement
-        strategy = getattr(self.config, "archive_selection_strategy", "fitness")
+            self.cursor.execute("SELECT COUNT(*) FROM archive")
+            count = (self.cursor.fetchone() or [0])[0]
+            if count < self.config.archive_size:
+                self.cursor.execute(
+                    "INSERT INTO archive (program_id) VALUES (?)", (program.id,)
+                )
+                logger.debug(
+                    f"Program {program.id} added to archive (space available)."
+                )
+                return
 
-        if strategy == "crowding":
-            self._update_archive_crowding(program)
-        else:  # "fitness" - default behavior
-            self._update_archive_fitness(program)
+            strategy = getattr(self.config, "archive_selection_strategy", "fitness")
+            if strategy == "crowding":
+                self._update_archive_crowding(program)
+            else:
+                self._update_archive_fitness(program)
 
     def _update_archive_fitness(self, program: Program) -> None:
         """
@@ -2371,7 +2378,6 @@ class ProgramDatabase:
                 "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                 (program.id,),
             )
-            self.conn.commit()
             return
 
         # Find the worst program using ranked scoring
@@ -2408,8 +2414,6 @@ class ProgramDatabase:
                 f"Program {program.id} (score={p_score:.4f}) replaced "
                 f"{worst_in_archive.id} (score={w_score:.4f}) in archive [fitness]."
             )
-
-        self.conn.commit()
 
     def _update_archive_crowding(self, program: Program) -> None:
         """
@@ -2455,51 +2459,49 @@ class ProgramDatabase:
                 f"{most_similar.id} (score={s_score:.4f}) in archive [crowding]."
             )
 
-        self.conn.commit()
-
     @db_retry()
     def _update_best_program(self, program: Program) -> None:
-        # Only consider correct programs for best program tracking
         if not program.correct:
-            logger.debug(f"Program {program.id} not considered for best (not correct).")
+            self._cache_run_state(self._read_run_state())
             return
+        if not self.conn:
+            raise ConnectionError("DB not connected.")
 
-        current_best_p = None
-        if self.best_program_id:
-            current_best_p = self.get(self.best_program_id)
+        self.conn.execute("BEGIN IMMEDIATE")
+        with self.conn:
+            state = self._read_run_state()
+            current_best = self._get_tracked_best(state)
+            improved = current_best is None or self._is_better(program, current_best)
+            if improved:
+                self._write_metadata("best_program_id", program.id)
+                state.best_program_id = program.id
 
-        if current_best_p is None or self._is_better(program, current_best_p):
-            self.best_program_id = program.id
-            self._update_metadata_in_db("best_program_id", self.best_program_id)
+            # A lookup may already have recovered this ID before maintenance ran.
+            if state.best_program_id == program.id:
+                program_score = program.combined_score or 0.0
+                if (
+                    state.best_score_ever is None
+                    or program_score > state.best_score_ever
+                ):
+                    state.best_score_ever = program_score
+                    # An improvement can arrive after a later generation was processed.
+                    state.best_score_generation = max(
+                        state.best_score_generation, program.generation
+                    )
+                    self._write_metadata(
+                        "best_score_generation", str(state.best_score_generation)
+                    )
+                    self._write_metadata("best_score_ever", str(program_score))
 
-            # Update stagnation tracking - new best found
-            program_score = program.combined_score or 0.0
-            if self.best_score_ever is None or program_score > self.best_score_ever:
-                self.best_score_ever = program_score
-                self.best_score_generation = program.generation
-                self._update_metadata_in_db(
-                    "best_score_generation", str(self.best_score_generation)
-                )
-                self._update_metadata_in_db(
-                    "best_score_ever", str(self.best_score_ever)
-                )
-
-            log_msg = f"New best program: {program.id}"
-            if current_best_p:
-                p1_score = program.combined_score or 0.0
-                p2_score = current_best_p.combined_score or 0.0
-                log_msg += (
-                    f" (gen: {current_best_p.generation} → {program.generation}, "
-                    f"score: {p2_score:.4f} → {p1_score:.4f}, "
-                    f"island: {current_best_p.island_idx} → {program.island_idx})"
-                )
-            else:
-                score = program.combined_score or 0.0
-                log_msg += (
-                    f" (gen: {program.generation}, score: {score:.4f}, initialized "
-                    f"island: {program.island_idx})."
-                )
-            logger.info(log_msg)
+        self._cache_run_state(state)
+        if improved:
+            logger.info(
+                "New best program: %s (gen: %s, score: %s, island: %s)",
+                program.id,
+                program.generation,
+                program.combined_score,
+                program.island_idx,
+            )
 
     def print_summary(
         self, console=None, total_program_target: Optional[int] = None
@@ -2558,6 +2560,7 @@ class ProgramDatabase:
             self.island_manager.perform_migration(self.last_iteration)
             self._schedule_migration = False
 
+    @db_retry()
     def is_stagnant(self, current_generation: int) -> bool:
         """Check if evolution is stagnant based on generations without improvement.
 
@@ -2571,7 +2574,9 @@ class ProgramDatabase:
             return False
 
         threshold = getattr(self.config, "stagnation_threshold", 100)
-        gens_since_improvement = current_generation - self.best_score_generation
+        gens_since_improvement = (
+            current_generation - self._read_run_state().best_score_generation
+        )
 
         return gens_since_improvement >= threshold
 
@@ -2589,6 +2594,7 @@ class ProgramDatabase:
         if not self.read_only:
             self._update_metadata_in_db(key, value)
 
+    @db_retry()
     def check_and_spawn_island_if_stagnant(self, current_generation: int) -> bool:
         """Check for stagnation and spawn a new island if needed.
 
@@ -2598,23 +2604,34 @@ class ProgramDatabase:
         Returns:
             True if a new island was spawned, False otherwise
         """
-        if not self.is_stagnant(current_generation):
+        if not getattr(self.config, "enable_dynamic_islands", False):
             return False
 
         if not self.island_manager:
             logger.warning("Cannot spawn island: no island manager configured")
             return False
 
-        # Spawn new island
-        spawned = self.island_manager.spawn_new_island()
-
-        if spawned:
-            # Reset stagnation tracking
-            self.best_score_generation = current_generation
-            self._update_metadata_in_db(
-                "best_score_generation", str(self.best_score_generation)
+        if not self.conn:
+            raise ConnectionError("DB not connected.")
+        self.conn.execute("BEGIN IMMEDIATE")
+        with self.conn:
+            state = self._read_run_state()
+            threshold = getattr(self.config, "stagnation_threshold", 100)
+            gens_stagnant = current_generation - state.best_score_generation
+            spawned = (
+                gens_stagnant >= threshold
+                and self.island_manager.insert_spawned_island()
             )
-            gens_stagnant = current_generation - self.best_score_generation
+            if spawned:
+                state.best_score_generation = max(
+                    state.best_score_generation, current_generation
+                )
+                self._write_metadata(
+                    "best_score_generation", str(state.best_score_generation)
+                )
+
+        self._cache_run_state(state)
+        if spawned:
             logger.info(
                 f"🏝️ Spawned new island due to stagnation "
                 f"(no improvement for {gens_stagnant} generations)"
