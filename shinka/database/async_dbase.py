@@ -101,7 +101,6 @@ class AsyncProgramDatabase:
         self.write_executor = ThreadPoolExecutor(max_workers=max_workers)
         self._lock = asyncio.Lock()
         self._source_job_id_lock = threading.Lock()
-        self._run_state_lock = threading.Lock()
         self._in_flight_source_job_ids: set[str] = set()
         # Semaphore to limit concurrent database operations and prevent deadlocks
         # With WAL mode enabled, we can handle more concurrent operations safely
@@ -131,10 +130,7 @@ class AsyncProgramDatabase:
 
     @db_retry()
     def _refresh_run_state_from_worker(self, worker_db: ProgramDatabase) -> None:
-        # Keep the read and cache update ordered across worker completions. Each
-        # worker reads through its own SQLite connection.
-        with self._run_state_lock:
-            self.sync_db._cache_run_state(worker_db._read_run_state())
+        self.sync_db._refresh_run_state(worker_db)
 
     @contextmanager
     def _refresh_run_state_after_write(

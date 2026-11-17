@@ -1,12 +1,14 @@
 import json
 import logging
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
 import numpy as np
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import math
 from .complexity import analyze_code_metrics
 from .parents import CombinedParentSelector
@@ -315,6 +317,7 @@ class ProgramDatabase:
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
+        self._run_state_lock = threading.Lock()
         self.beam_search_parent_id: Optional[str] = None
         # For deferring expensive operations
         self._schedule_migration: bool = False
@@ -618,7 +621,7 @@ class ProgramDatabase:
 
     @db_retry()
     def _load_metadata_from_db(self):
-        self._cache_run_state(self._read_run_state())
+        self._refresh_run_state()
         self.cursor.execute(
             "SELECT value FROM metadata_store WHERE key = 'beam_search_parent_id'"
         )
@@ -652,13 +655,27 @@ class ProgramDatabase:
         self.best_score_generation = state.best_score_generation
         self.best_score_ever = state.best_score_ever
 
-    def _advance_last_iteration(self, generation: int) -> _RunState:
+    def _refresh_run_state(self, reader: Optional["ProgramDatabase"] = None) -> None:
+        with self._run_state_lock:
+            self._cache_run_state((reader or self)._read_run_state())
+
+    @contextmanager
+    def _run_state_transaction(self) -> Iterator[_RunState]:
+        if not self.conn:
+            raise ConnectionError("DB not connected.")
+        # Publish the committed snapshot before another thread refreshes this cache.
+        with self._run_state_lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            with self.conn:
+                state = self._read_run_state()
+                yield state
+            self._cache_run_state(state)
+
+    def _advance_last_iteration(self, state: _RunState, generation: int) -> None:
         """Advance the latest iteration inside the caller's write transaction."""
-        state = self._read_run_state()
         if generation > state.last_iteration:
             self._write_metadata("last_iteration", str(generation))
             state.last_iteration = generation
-        return state
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
@@ -863,8 +880,7 @@ class ProgramDatabase:
         else:
             text_feedback_str = str(text_feedback_str)
 
-        self.conn.execute("BEGIN TRANSACTION")
-        with self.conn:
+        with self._run_state_transaction() as state:
             # Insert the program in a single operation
             self.cursor.execute(
                 """
@@ -915,10 +931,8 @@ class ProgramDatabase:
                     (program.parent_id,),
                 )
 
-            # The insert already holds SQLite's write lock.
-            state = self._advance_last_iteration(program.generation)
+            self._advance_last_iteration(state, program.generation)
 
-        self._cache_run_state(state)
         logger.info(
             "Program %s added to DB - score: %s.",
             program.id,
@@ -1533,26 +1547,23 @@ class ProgramDatabase:
         if metric is not None or island_idx is not None:
             return self._find_best_program(metric, island_idx)
 
-        program = self._get_tracked_best(self._read_run_state())
-        if program is not None:
-            return program
-        if not self.read_only:
-            return self._repair_tracked_best()
-        program = self._find_best_program()
-        self.best_program_id = program.id if program else None
-        return program
+        with self._run_state_lock:
+            program = self._get_tracked_best(self._read_run_state())
+            if program is not None:
+                return program
+            if self.read_only:
+                program = self._find_best_program()
+                self.best_program_id = program.id if program else None
+                return program
+        return self._repair_tracked_best()
 
     def _get_tracked_best(self, state: _RunState) -> Optional[Program]:
         program = self.get(state.best_program_id) if state.best_program_id else None
         return program if program and program.correct else None
 
     def _repair_tracked_best(self) -> Optional[Program]:
-        if not self.conn:
-            raise ConnectionError("DB not connected.")
-        self.conn.execute("BEGIN IMMEDIATE")
-        with self.conn:
+        with self._run_state_transaction() as state:
             # Another worker may have published a best while we waited to write.
-            state = self._read_run_state()
             program = self._get_tracked_best(state)
             if program is None:
                 program = self._find_best_program()
@@ -1560,7 +1571,6 @@ class ProgramDatabase:
                 if best_id != state.best_program_id:
                     self._write_metadata("best_program_id", best_id)
                     state.best_program_id = best_id
-        self._cache_run_state(state)
         return program
 
     def _find_best_program(
@@ -2023,11 +2033,13 @@ class ProgramDatabase:
                 "in-memory instance."
             )
 
-        if not self.conn.in_transaction and not self.read_only:
-            self.conn.execute("BEGIN IMMEDIATE")
-        with self.conn:
-            state = self._advance_last_iteration(self.last_iteration)
-        self._cache_run_state(state)
+        with self._run_state_lock:
+            if not self.conn.in_transaction and not self.read_only:
+                self.conn.execute("BEGIN IMMEDIATE")
+            with self.conn:
+                state = self._read_run_state()
+                self._advance_last_iteration(state, self.last_iteration)
+            self._cache_run_state(state)
         logger.info(
             f"Database state committed. Last iteration: "
             f"{self.last_iteration}. Best: {self.best_program_id}"
@@ -2462,14 +2474,10 @@ class ProgramDatabase:
     @db_retry()
     def _update_best_program(self, program: Program) -> None:
         if not program.correct:
-            self._cache_run_state(self._read_run_state())
+            self._refresh_run_state()
             return
-        if not self.conn:
-            raise ConnectionError("DB not connected.")
 
-        self.conn.execute("BEGIN IMMEDIATE")
-        with self.conn:
-            state = self._read_run_state()
+        with self._run_state_transaction() as state:
             current_best = self._get_tracked_best(state)
             improved = current_best is None or self._is_better(program, current_best)
             if improved:
@@ -2493,7 +2501,6 @@ class ProgramDatabase:
                     )
                     self._write_metadata("best_score_ever", str(program_score))
 
-        self._cache_run_state(state)
         if improved:
             logger.info(
                 "New best program: %s (gen: %s, score: %s, island: %s)",
@@ -2611,11 +2618,7 @@ class ProgramDatabase:
             logger.warning("Cannot spawn island: no island manager configured")
             return False
 
-        if not self.conn:
-            raise ConnectionError("DB not connected.")
-        self.conn.execute("BEGIN IMMEDIATE")
-        with self.conn:
-            state = self._read_run_state()
+        with self._run_state_transaction() as state:
             threshold = getattr(self.config, "stagnation_threshold", 100)
             gens_stagnant = current_generation - state.best_score_generation
             spawned = (
@@ -2630,7 +2633,6 @@ class ProgramDatabase:
                     "best_score_generation", str(state.best_score_generation)
                 )
 
-        self._cache_run_state(state)
         if spawned:
             logger.info(
                 f"🏝️ Spawned new island due to stagnation "

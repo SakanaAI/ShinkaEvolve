@@ -77,6 +77,78 @@ def test_stale_save_and_best_lookup_follow_committed_state(config):
                 assert reopened.last_iteration == 3
 
 
+def test_save_cannot_publish_an_older_snapshot_than_a_worker(config, monkeypatch):
+    save_committed = threading.Event()
+    worker_published_or_waiting = threading.Event()
+
+    class PublicationLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if not self.lock.acquire(blocking=False):
+                worker_published_or_waiting.set()
+                self.lock.acquire()
+
+        def __exit__(self, *exc):
+            self.lock.release()
+
+    async def run():
+        with closing(_open_db(config)) as sync_db:
+            first, second = _program(1, 1.0), _program(2, 10.0)
+            sync_db.add(first)
+            db = AsyncProgramDatabase(sync_db)
+            publish = sync_db._cache_run_state
+
+            def pause_save_publication(state):
+                if state.last_iteration == first.generation:
+                    save_committed.set()
+                    assert worker_published_or_waiting.wait(5)
+                publish(state)
+
+            def add_from_worker():
+                assert save_committed.wait(5)
+                with closing(_open_db(config)) as worker_db:
+                    worker_db.add(second)
+                    db._refresh_run_state_from_worker(worker_db)
+                worker_published_or_waiting.set()
+
+            monkeypatch.setattr(
+                sync_db, "_run_state_lock", PublicationLock(), raising=False
+            )
+            monkeypatch.setattr(sync_db, "_cache_run_state", pause_save_publication)
+            worker = db.write_executor.submit(add_from_worker)
+            try:
+                sync_db.save()
+                await asyncio.wait_for(asyncio.wrap_future(worker), 5)
+                with closing(ProgramDatabase(config, read_only=True)) as observer:
+                    assert (observer.last_iteration, observer.best_program_id) == (
+                        2,
+                        second.id,
+                    )
+                assert (sync_db.last_iteration, sync_db.best_program_id) == (
+                    2,
+                    second.id,
+                )
+            finally:
+                await db.close_async()
+
+    asyncio.run(run())
+
+
+def test_save_commits_pending_changes_on_its_own_connection(config):
+    with closing(_open_db(config)) as writer:
+        writer.conn.execute(
+            "INSERT INTO metadata_store (key, value) VALUES ('beam_search_parent_id', 'parent')"
+        )
+        writer.last_iteration = 3
+        writer.save()
+
+        with closing(_open_db(config)) as reopened:
+            assert reopened.beam_search_parent_id == "parent"
+            assert reopened.last_iteration == 3
+
+
 def test_best_lookup_before_deferred_maintenance_still_records_improvement(config):
     with closing(_open_db(config)) as writer, closing(_open_db(config)) as reader:
         best = _program(2, 10.0)
