@@ -1670,7 +1670,8 @@ class ShinkaEvolveRunner:
         await write_file_async(exec_fname, code)
 
         evaluation_started_at = time.time()
-        evaluation_error = None
+        evaluation_diagnostic = None
+        evaluation_failed = False
         try:
             if self.verbose:
                 logger.info(f"Starting initial program evaluation: {exec_fname}")
@@ -1698,27 +1699,37 @@ class ShinkaEvolveRunner:
             if type(combined_score) not in (int, float):
                 raise ValueError("metrics.json 'combined_score' must be numeric")
             combined_score = float(combined_score)
-            if correct_val and not math.isfinite(combined_score):
-                raise ValueError(
-                    "metrics.json 'combined_score' must be finite for a correct program"
+            if not math.isfinite(combined_score):
+                if correct_val:
+                    raise ValueError(
+                        "metrics.json 'combined_score' must be finite for a correct program"
+                    )
+                evaluation_diagnostic = (
+                    f"Incorrect seed reported a non-finite combined_score ({combined_score}). "
+                    "Using 0.0."
                 )
+                combined_score = 0.0
 
             text_feedback = metrics.get("text_feedback", "")
             if not correct_val and not text_feedback:
                 text_feedback = correctness.get("error") or ""
         except Exception as exc:
-            evaluation_error = (
+            evaluation_failed = True
+            evaluation_diagnostic = (
                 f"Initial program evaluation failed ({type(exc).__name__}): {exc}"
             )
-            logger.warning("%s", evaluation_error)
             results = load_result_logs(results_dir)
-            results["stderr_log"] = "\n".join(
-                filter(None, (results["stderr_log"].rstrip(), evaluation_error))
-            )
             correct_val = False
             combined_score = 0.0
             metrics = {}
-            text_feedback = evaluation_error
+            text_feedback = evaluation_diagnostic
+
+        stderr_log = results.get("stderr_log", "")
+        if evaluation_diagnostic is not None:
+            logger.warning("%s", evaluation_diagnostic)
+            stderr_log = "\n".join(
+                filter(None, (stderr_log.rstrip(), evaluation_diagnostic))
+            )
 
         evaluation_finished_at = time.time()
         postprocess_started_at = evaluation_finished_at
@@ -1737,7 +1748,7 @@ class ShinkaEvolveRunner:
             "stdout_log": truncate_log_tail(
                 results.get("stdout_log", ""), self.db_config.max_stdout_log_chars
             ),
-            "stderr_log": results.get("stderr_log", ""),
+            "stderr_log": stderr_log,
             "timeline_lane_mode": "pool_slots",
             "sampling_worker_capacity": self.max_proposal_jobs,
             "evaluation_worker_capacity": self.max_evaluation_jobs,
@@ -1752,7 +1763,7 @@ class ShinkaEvolveRunner:
                 "patch_description": patch_description or "Initial program setup",
             }
         )
-        if evaluation_error is not None:
+        if evaluation_failed:
             base_metadata["evaluation_failed"] = True
 
         base_metadata = with_pipeline_timing(

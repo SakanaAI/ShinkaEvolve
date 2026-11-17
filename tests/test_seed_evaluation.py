@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -14,6 +15,7 @@ from shinka.database import (
     ProgramDatabase,
 )
 from shinka.launch import JobScheduler, LocalJobConfig, local
+from shinka.prompts.prompts_base import construct_individual_program_msg
 from shinka.utils import load_results
 
 
@@ -194,11 +196,18 @@ def test_result_loader_supplies_empty_metrics_if_the_file_is_missing(
 
 
 @pytest.mark.parametrize("correct", [True, False])
-def test_seed_preserves_reported_correctness_and_zero_score(
-    tmp_path: Path, correct: bool
+@pytest.mark.parametrize("score", [0.0, -2.5])
+def test_seed_preserves_reported_correctness_and_finite_score(
+    tmp_path: Path, correct: bool, score: float
 ) -> None:
     correctness = '{"correct": true}' if correct else '{"correct": false}'
-    metrics = '{"combined_score": 0.0, "public": {"measured": 0}, "text_feedback": "feedback"}'
+    metrics = json.dumps(
+        {
+            "combined_score": score,
+            "public": {"measured": 0},
+            "text_feedback": "feedback",
+        }
+    )
     evaluator = _write_evaluator(
         tmp_path,
         f"(results / 'correct.json').write_text({correctness!r})\n"
@@ -210,8 +219,37 @@ def test_seed_preserves_reported_correctness_and_zero_score(
 
     assert seed.correct == correct
     assert needs_fix is not correct
-    assert seed.combined_score == 0.0
+    assert seed.combined_score == score
     assert seed.public_metrics == {"measured": 0}
     assert seed.text_feedback == "feedback"
     assert "evaluation_failed" not in seed.metadata
-    baseline.assert_called_once_with(0.0)
+    baseline.assert_called_once_with(score if correct else 0.0)
+
+
+@pytest.mark.parametrize(
+    "score",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "inf", "negative-inf"],
+)
+def test_incorrect_seed_with_nonfinite_score_can_be_formatted(
+    tmp_path: Path, score: float
+) -> None:
+    correctness = json.dumps({"correct": False, "error": "invalid output"})
+    metrics = json.dumps({"combined_score": score, "public": {"measured": 0}})
+    evaluator = _write_evaluator(
+        tmp_path,
+        f"(results / 'correct.json').write_text({correctness!r})\n"
+        f"(results / 'metrics.json').write_text({metrics!r})\n",
+    )
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator))
+    )
+
+    prompt = construct_individual_program_msg(seed, include_text_feedback=True)
+    assert "Combined score to maximize: 0.00" in prompt
+    assert "invalid output" in prompt
+    assert needs_fix
+    assert seed.combined_score == 0.0
+    assert seed.public_metrics == {"measured": 0}
+    assert "non-finite" in seed.metadata["stderr_log"]
+    assert "evaluator stderr" in seed.metadata["stderr_log"]
