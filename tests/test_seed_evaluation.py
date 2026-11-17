@@ -2,7 +2,6 @@ import asyncio
 import time
 from pathlib import Path
 from textwrap import dedent
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -85,31 +84,22 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
         (results / 'correct.json').write_text('{"correct": true}')
         (results / 'metrics.json').write_text('{"combined_score": 42}')
         (results / 'ready').touch()
-        for _ in range(500):
-            if (results / 'release').exists():
-                break
-            time.sleep(0.01)
-        else:
-            raise RuntimeError('test never released evaluator')
+        time.sleep(5)
         (results / 'finished').touch()
         """,
     )
     results_dir = tmp_path / "gen_0" / "results"
-    elapsed = 0.0
 
-    def advance_clock(_interval: float) -> None:
-        nonlocal elapsed
-        if elapsed == 0.0:
-            deadline = time.monotonic() + 5.0
-            while not (results_dir / "ready").exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-        else:
-            (results_dir / "release").touch()
+    def monitor_after_partial_results(process, directory, **kwargs):
+        ready_deadline = time.monotonic() + 5.0
+        while (
+            not (results_dir / "ready").exists() and time.monotonic() < ready_deadline
+        ):
             time.sleep(0.01)
-        elapsed += 2.0
+        return local.monitor(process, directory, **kwargs)
 
     monkeypatch.setattr(
-        local, "time", SimpleNamespace(time=lambda: elapsed, sleep=advance_clock)
+        "shinka.launch.scheduler.monitor_local", monitor_after_partial_results
     )
     seed, needs_fix, baseline = _run_seed(
         tmp_path, LocalJobConfig(eval_program_path=str(evaluator), time="00:00:01")

@@ -4,7 +4,9 @@ import sys
 import time
 from pathlib import Path
 from textwrap import dedent
+from types import SimpleNamespace
 from typing import Callable
+from unittest.mock import Mock
 
 import psutil
 import pytest
@@ -88,3 +90,46 @@ def test_local_timeout_kills_evaluator_descendants_and_reaps_root(
                 except psutil.NoSuchProcess:
                     pass
         root.cleanup_logging()
+
+
+@pytest.mark.parametrize("finished_at", [0.99, 1.01], ids=["before", "after"])
+def test_local_monitor_accepts_only_completion_observed_by_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finished_at: float
+) -> None:
+    elapsed = 0.0
+
+    def advance_clock(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    def wait(*, timeout: float) -> int:
+        nonlocal elapsed
+        assert timeout == pytest.approx(1.0)
+        # Simulate a wait that observes an exit despite waking after its deadline.
+        elapsed = finished_at
+        return 0
+
+    monkeypatch.setattr(
+        local,
+        "time",
+        SimpleNamespace(
+            time=lambda: elapsed, monotonic=lambda: elapsed, sleep=advance_clock
+        ),
+    )
+    (tmp_path / "correct.json").write_text('{"correct": true}')
+    (tmp_path / "metrics.json").write_text('{"combined_score": 42}')
+    process = Mock(returncode=None)
+    process.poll.side_effect = lambda: 0 if elapsed >= finished_at else None
+    process.wait.side_effect = wait
+
+    if finished_at <= 1.0:
+        result = local.monitor(
+            process, str(tmp_path), poll_interval=2.0, timeout="00:00:01"
+        )
+        assert result["metrics"]["combined_score"] == 42
+        process.kill_for_timeout.assert_not_called()
+    else:
+        with pytest.raises(TimeoutError, match="00:00:01"):
+            local.monitor(process, str(tmp_path), poll_interval=2.0, timeout="00:00:01")
+        process.kill_for_timeout.assert_called_once_with()
+    process.cleanup_logging.assert_called_once_with()

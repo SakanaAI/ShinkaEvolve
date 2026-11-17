@@ -178,7 +178,7 @@ def monitor(
     Args:
         process: The ProcessWithLogging object to monitor.
         results_dir: The directory where results will be stored.
-        poll_interval: Time in seconds between status checks.
+        poll_interval: Time in seconds between status checks for untimed jobs.
         verbose: Whether to enable verbose logging.
         timeout: Optional timeout in `hh:mm:ss` format.
 
@@ -191,21 +191,26 @@ def monitor(
     if verbose:
         logger.info(f"Monitoring local process with PID: {process.pid}...")
 
-    start_time = time.time()
     timeout_seconds = parse_time_to_seconds(timeout) if timeout is not None else None
 
     try:
-        while process.poll() is None:
-            if (
-                timeout_seconds is not None
-                and time.time() - start_time >= timeout_seconds
-            ):
+        if timeout_seconds is None:
+            while process.poll() is None:
+                if verbose:
+                    logger.info(f"Process {process.pid} is still running...")
+                time.sleep(poll_interval)
+        elif process.returncode is None:
+            deadline = time.monotonic() + timeout_seconds
+            try:
+                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                expired = True
+            else:
+                # A wait can observe an exit after its timeout if it wakes late.
+                expired = time.monotonic() > deadline
+            if expired:
                 process.kill_for_timeout()
                 raise TimeoutError(f"Local evaluator exceeded timeout of {timeout}")
-
-            if verbose:
-                logger.info(f"Process {process.pid} is still running...")
-            time.sleep(poll_interval)
     finally:
         process.cleanup_logging()
 
