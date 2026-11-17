@@ -3689,6 +3689,24 @@ class ShinkaEvolveRunner:
             failure_reason=failure_reason,
             meta_patch_data=meta_patch_data,
         )
+        failure_details = {
+            "node_kind": "failed_proposal",
+            "api_charge_id": charge_id,
+            "api_costs": api_costs,
+            "embed_cost": embed_cost,
+            "novelty_cost": novelty_cost,
+            "failure_reason": failure_reason,
+            "failure_stage": failure_stage,
+            "failure_class": failure_class,
+        }
+        if charge_id is not None:
+            # Settle the handoff receipt before an artifact can be recovered
+            # on resume as a separate charge.
+            await finish_cost_recording(
+                self._record_attempt_event(
+                    generation, failure_stage, "failed", failure_details
+                )
+            )
         try:
             failure_json_path, failure_payload = await self._write_failure_artifact_async(
                 generation=generation,
@@ -3714,14 +3732,7 @@ class ShinkaEvolveRunner:
                     generation,
                     failure_stage,
                     "failed",
-                    {
-                        "node_kind": "failed_proposal",
-                        "api_charge_id": charge_id,
-                        "api_costs": api_costs,
-                        "embed_cost": embed_cost,
-                        "novelty_cost": novelty_cost,
-                        "failure_reason": failure_reason,
-                    },
+                    failure_details,
                 )
             )
             raise
@@ -3732,12 +3743,8 @@ class ShinkaEvolveRunner:
                 stage=failure_stage,
                 status="failed",
                 details={
-                    "node_kind": "failed_proposal",
-                    "api_charge_id": charge_id,
+                    **failure_details,
                     "language": failure_payload.get("language"),
-                    "failure_stage": failure_stage,
-                    "failure_class": failure_class,
-                    "failure_reason": failure_reason,
                     "parent_id": parent_program.id if parent_program else None,
                     "archive_inspiration_ids": [p.id for p in archive_programs],
                     "top_k_inspiration_ids": [p.id for p in top_k_programs],
@@ -3747,9 +3754,6 @@ class ShinkaEvolveRunner:
                     "patch_description": (meta_patch_data or {}).get("patch_description"),
                     "system_prompt_id": (meta_patch_data or {}).get("system_prompt_id"),
                     "model_name": (meta_patch_data or {}).get("model_name"),
-                    "api_costs": api_costs,
-                    "embed_cost": embed_cost,
-                    "novelty_cost": novelty_cost,
                     "novelty_attempt": (meta_patch_data or {}).get("novelty_attempt"),
                     "resample_attempt": (meta_patch_data or {}).get("resample_attempt"),
                     "patch_attempt": (meta_patch_data or {}).get("patch_attempt"),

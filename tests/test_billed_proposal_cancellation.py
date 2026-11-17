@@ -284,6 +284,14 @@ def test_successful_proposal_can_submit_at_cap_without_paid_embedding(
                 raise OSError("scheduler rejected job")
             return "job", 1, 0.0, 0.0, 1
 
+        async def failure_artifact(**kwargs):
+            # Resume can recover an artifact without a journal entry. The
+            # already billed launch failure must be terminal before that point.
+            row = runner.db.conn.execute("SELECT status FROM attempt_log").fetchone()
+            assert row["status"] == "failed"
+            assert await runner._get_total_api_costs() == pytest.approx(1.0)
+            return "unused", {}
+
         def unexpected_embedding(**kwargs):
             pytest.fail("paid embedding admitted")
 
@@ -301,6 +309,7 @@ def test_successful_proposal_can_submit_at_cap_without_paid_embedding(
         monkeypatch.setattr(runner_module, "apply_patch_async", apply_patch)
         runner._submit_evaluation_job_with_slot = submit
         runner._save_patch_attempt_async = noop
+        runner._write_failure_artifact_async = failure_artifact
 
         parent = Program(id="parent", code="pass", generation=0, correct=True)
 
@@ -331,7 +340,7 @@ def test_successful_proposal_can_submit_at_cap_without_paid_embedding(
         assert await runner._get_total_api_costs() == pytest.approx(1.0)
         assert runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[
             0
-        ] == (2 if outcome == "submit_failed" else 1)
+        ] == 1
 
     asyncio.run(run())
 
