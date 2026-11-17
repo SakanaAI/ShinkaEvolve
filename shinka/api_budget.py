@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Awaitable, Callable, TypeVar
 
+from shinka.local_openai_config import parse_local_openai_model
 from shinka.pricing.catalog import ModelKind, get_catalog
 
 _T = TypeVar("_T")
@@ -35,17 +36,23 @@ cost_scope: ContextVar[ApiCostScope | None] = ContextVar("api_cost_scope", defau
 
 
 def may_charge(model: str, kind: ModelKind = "llm") -> bool:
-    if model.startswith("local/") or (
-        model.startswith("openrouter/") and model.endswith(":free")
-    ):
+    if model.startswith("openrouter/") and model.endswith(":free"):
         return False
+    local_model = parse_local_openai_model(model) if model.startswith("local/") else None
+    if local_model is not None and kind == "llm":
+        model = local_model.api_model_name
     catalog = get_catalog().catalog
     try:
         price = catalog.get_by_name(model, kind=kind)
     except KeyError:
-        return True
+        try:
+            price = catalog.find_by_api_name(model, kind=kind)
+        except KeyError:
+            return local_model is None
     if kind == "embedding":
         return price.input_price != 0.0
+    if local_model is not None and (price.input_price is None or price.output_price is None):
+        return False
     rates = (*price.rates(), *price.rates(math.inf))
     return any(rate != 0.0 for rate in rates)
 

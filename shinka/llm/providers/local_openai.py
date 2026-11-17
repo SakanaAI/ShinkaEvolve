@@ -1,6 +1,7 @@
 import backoff
 import logging
 import openai
+from shinka.api_budget import check_provider_attempt
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 
 from .pricing import calculate_cost, model_exists
@@ -142,6 +143,8 @@ async def query_local_openai_async(
             "Structured output is not supported for local OpenAI-compatible backends."
         )
 
+    if check_provider_attempt():
+        client = client.with_options(max_retries=0)
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
     try:
         response = await client.chat.completions.create(

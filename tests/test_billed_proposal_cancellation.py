@@ -17,6 +17,8 @@ from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.llm.llm import AsyncLLMClient
 from shinka.llm.providers import QueryResult
 from shinka.llm.providers.errors import EmptyResponseError
+from shinka.llm.providers.local_openai import query_local_openai_async
+from shinka.llm.providers.model_resolver import resolve_model_backend
 from shinka.llm.providers.openai import query_openai_async
 from shinka.pricing.catalog import get_catalog
 
@@ -204,9 +206,19 @@ def test_running_requests_drain_while_fresh_requests_see_pending_cost(
     asyncio.run(run())
 
 
-def test_transport_retry_rechecks_cost_after_backoff(runner, monkeypatch):
+@pytest.mark.parametrize(
+    ("model", "query_provider"),
+    [
+        ("gpt-5-mini", query_openai_async),
+        ("local/gpt-5-mini@http://127.0.0.1:1234/v1", query_local_openai_async),
+    ],
+)
+def test_transport_retry_rechecks_cost_after_backoff(
+    runner, monkeypatch, model, query_provider
+):
     async def run():
         runner.evo_config.max_api_costs = 1.0
+        runner.llm = AsyncLLMClient(model_names=model, verbose=False)
         waiting_to_retry = asyncio.Event()
         resume_retry = asyncio.Event()
         requests = []
@@ -226,9 +238,8 @@ def test_transport_retry_rechecks_cost_after_backoff(runner, monkeypatch):
         ) as client:
 
             async def provider(**kwargs):
-                return await query_openai_async(
-                    client, kwargs.pop("model_name"), **kwargs
-                )
+                resolved = resolve_model_backend(kwargs.pop("model_name"))
+                return await query_provider(client, resolved.api_model_name, **kwargs)
 
             monkeypatch.setattr(llm_module.asyncio, "sleep", backoff_sleep)
             monkeypatch.setattr(llm_module, "query_async", provider)
@@ -238,6 +249,7 @@ def test_transport_retry_rechecks_cost_after_backoff(runner, monkeypatch):
             runner.total_api_cost = 1.0
             resume_retry.set()
             assert await task is None
+            assert await start_proposal(runner, False, generation=2) is None
             assert len(requests) == 1
 
     asyncio.run(run())
