@@ -57,8 +57,8 @@ from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.billing import (
     cancellation_with_cost,
-    failed_attempt_costs,
     finish_cost_recording,
+    journaled_api_costs,
 )
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
@@ -746,6 +746,22 @@ class ShinkaEvolveRunner:
             )
         )
 
+    async def _record_evaluation_charge(
+        self, generation: int, charge_id: str, cost: float
+    ) -> None:
+        await finish_cost_recording(
+            self.async_db.record_attempt_event_async(
+                generation=generation,
+                stage="evaluation",
+                status="charged",
+                details={
+                    "node_kind": "evaluation_cost",
+                    "api_charge_id": charge_id,
+                    "api_costs": cost,
+                },
+            )
+        )
+
     def _known_api_cost(self) -> float:
         scopes = tuple(getattr(self, "_api_cost_scopes", ()))
         return math.fsum([self.total_api_cost, *(scope.pending for scope in scopes)])
@@ -959,11 +975,17 @@ class ShinkaEvolveRunner:
                 rows = cursor.fetchall()
 
                 total_costs = 0.0
+                attached_charge_ids: set[str] = set()
                 for row in rows:
                     metadata_str = row[0]
                     if metadata_str:
                         try:
                             metadata = json.loads(metadata_str)
+                            charge_id = metadata.get("api_charge_id")
+                            if isinstance(charge_id, str) and not (
+                                metadata.get("_is_island_copy") or metadata.get("_spawned_island")
+                            ):
+                                attached_charge_ids.add(charge_id)
                             # Sum up all cost-related fields (handle None values)
                             api_cost = metadata.get("api_costs")
                             total_costs += api_cost if api_cost is not None else 0.0
@@ -978,7 +1000,7 @@ class ShinkaEvolveRunner:
                         except json.JSONDecodeError:
                             continue
 
-                return total_costs + failed_attempt_costs(conn)
+                return total_costs + journaled_api_costs(conn, attached_charge_ids)
             finally:
                 if conn:
                     conn.close()
@@ -3127,6 +3149,17 @@ class ShinkaEvolveRunner:
                     )
                     meta_patch_data["novelty_explanation"] = novelty_explanation
 
+                api_costs = max(api_costs, scope.pending - embed_cost - novelty_total_cost)
+                meta_patch_data["api_costs"] = api_costs
+                proposal_total_cost = api_costs + embed_cost + novelty_total_cost
+                self._post_api_cost(proposal_total_cost)
+                costs_transferred = True
+                if proposal_total_cost > 0.0:
+                    await self._record_evaluation_charge(
+                        generation, task_id, proposal_total_cost
+                    )
+                    meta_patch_data["api_charge_id"] = task_id
+
                 try:
                     (
                         job_id,
@@ -3169,25 +3202,12 @@ class ShinkaEvolveRunner:
                         proposal_task_id=task_id,
                     )
 
-                    # Update costs
-                    meta_patch_data["api_costs"] = api_costs
-                    proposal_total_cost = api_costs + embed_cost + novelty_total_cost
-                    self._post_api_cost(proposal_total_cost)
-                    costs_transferred = True
-
                     # Update average proposal cost for in-flight estimation
                     self._update_avg_proposal_cost(proposal_total_cost)
 
                     # Track job in both running list and submitted registry
                     self.running_jobs.append(running_job)
                     self.submitted_jobs[str(job_id)] = running_job
-                    if proposal_total_cost > 0.0:
-                        if not hasattr(self, "_evaluation_api_costs"):
-                            self._evaluation_api_costs: dict[str, tuple[int, float]] = {}
-                        self._evaluation_api_costs[str(job_id)] = (
-                            generation,
-                            proposal_total_cost,
-                        )
 
                     # Trigger immediate job status check to catch fast-completing jobs
                     self.slot_available.set()
@@ -3558,7 +3578,9 @@ class ShinkaEvolveRunner:
         terminal_failure_cost = float(api_costs) + float(embed_cost) + float(
             novelty_cost
         )
-        self._post_api_cost(terminal_failure_cost)
+        charge_id = (meta_patch_data or {}).get("api_charge_id")
+        if charge_id is None:
+            self._post_api_cost(terminal_failure_cost)
         if terminal_failure_cost > 0.0:
             self._update_avg_proposal_cost(terminal_failure_cost)
         failure_class = self._classify_failed_proposal(
@@ -3593,6 +3615,7 @@ class ShinkaEvolveRunner:
                     "failed",
                     {
                         "node_kind": "failed_proposal",
+                        "api_charge_id": charge_id,
                         "api_costs": api_costs,
                         "embed_cost": embed_cost,
                         "novelty_cost": novelty_cost,
@@ -3609,6 +3632,7 @@ class ShinkaEvolveRunner:
                 status="failed",
                 details={
                     "node_kind": "failed_proposal",
+                    "api_charge_id": charge_id,
                     "language": failure_payload.get("language"),
                     "failure_stage": failure_stage,
                     "failure_class": failure_class,
@@ -4536,7 +4560,6 @@ class ShinkaEvolveRunner:
                     timeout=90.0,  # 90 second timeout for DB operations
                 )
                 if added:
-                    getattr(self, "_evaluation_api_costs", {}).pop(source_job_id, None)
                     logger.info(
                         f"✅ DB SUCCESS: Program {program.id} successfully added to database for {job.job_id} (gen {job.generation})"
                     )
@@ -4560,7 +4583,6 @@ class ShinkaEvolveRunner:
                         )
                         return CompletedJobPersistResult(job=job, success=False)
 
-                    getattr(self, "_evaluation_api_costs", {}).pop(source_job_id, None)
                     postprocess_finished_at = time.time()
                     existing_metadata = existing_program.metadata or {}
                     existing_program.metadata = with_pipeline_timing(
@@ -5856,27 +5878,12 @@ class ShinkaEvolveRunner:
             # Cleanup database
             await self._finish_wandb_logging()
             await self.async_db.close_async()
-            self._record_unpersisted_evaluation_costs()
 
             # Cleanup scheduler
             self.scheduler.shutdown()
 
         except Exception as e:
             logger.error(f"Error in async cleanup: {e}")
-
-    def _record_unpersisted_evaluation_costs(self) -> None:
-        # At shutdown the database write executor has drained. A late insert
-        # may already have stored a job's costs even if its await was cancelled.
-        charges = getattr(self, "_evaluation_api_costs", {})
-        for job_id, (generation, cost) in list(charges.items()):
-            if not self.db.has_program_with_source_job_id(job_id):
-                self.db.record_attempt_event(
-                    generation,
-                    "evaluation",
-                    "failed",
-                    {"node_kind": "unattached_cost", "api_costs": cost},
-                )
-            del charges[job_id]
 
     def _log_program_to_wandb(self, program: Program) -> None:
         wandb_logger = getattr(self, "wandb_logger", None)

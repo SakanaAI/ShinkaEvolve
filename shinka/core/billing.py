@@ -32,17 +32,27 @@ async def finish_cost_recording(operation: Awaitable[object]) -> None:
         raise
 
 
-def failed_attempt_costs(connection: sqlite3.Connection) -> float:
+def journaled_api_costs(
+    connection: sqlite3.Connection, attached_charge_ids: set[str]
+) -> float:
     total = 0.0
+    counted = set(attached_charge_ids)
     for (raw_details,) in connection.execute(
-        "SELECT details FROM attempt_log WHERE status = 'failed'"
+        "SELECT details FROM attempt_log WHERE status IN ('failed', 'charged') ORDER BY id"
     ):
         try:
             details = json.loads(raw_details or "{}")
         except json.JSONDecodeError:
             continue
-        if details.get("node_kind") not in {"failed_proposal", "unattached_cost"}:
+        if not isinstance(details, dict) or details.get("node_kind") not in {
+            "failed_proposal", "unattached_cost", "evaluation_cost"
+        }:
             continue
+        charge_id = details.get("api_charge_id")
+        if isinstance(charge_id, str):
+            if charge_id in counted:
+                continue
+            counted.add(charge_id)
         total += sum(
             details.get(field, 0.0) or 0.0
             for field in ("api_costs", "embed_cost", "novelty_cost", "meta_cost")

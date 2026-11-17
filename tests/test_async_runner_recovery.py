@@ -825,6 +825,7 @@ def test_generate_evolved_proposal_returns_none_when_submit_fails(tmp_path):
 
         runner = _build_runner(
             async_db=SimpleNamespace(
+                record_attempt_event_async=lambda **kwargs: asyncio.sleep(0),
                 sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
                     0,
                     result=(
@@ -881,6 +882,7 @@ def test_generate_evolved_proposal_assigns_worker_ids_on_submit(tmp_path):
         events = []
         runner = _build_runner(
             async_db=SimpleNamespace(
+                record_attempt_event_async=lambda **kwargs: asyncio.sleep(0),
                 sample_with_fix_mode_async=lambda **kwargs: asyncio.sleep(
                     0,
                     result=(

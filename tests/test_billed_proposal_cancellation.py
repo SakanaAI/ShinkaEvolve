@@ -198,9 +198,9 @@ def test_transport_retry_rechecks_cost_after_backoff(runner, monkeypatch):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.parametrize("outcome", ["pending", "persisted", "submit_failed"])
 def test_successful_proposal_can_submit_at_cap_without_paid_embedding(
-    tmp_path, runner, monkeypatch, persisted
+    tmp_path, runner, monkeypatch, outcome
 ):
     async def run():
         runner.evo_config.max_api_costs = 1.0
@@ -222,6 +222,9 @@ def test_successful_proposal_can_submit_at_cap_without_paid_embedding(
             pass
 
         async def submit(**kwargs):
+            assert await runner._get_total_api_costs() == pytest.approx(1.0)
+            if outcome == "submit_failed":
+                raise OSError("scheduler rejected job")
             return "job", 1, 0.0, 0.0, 1
 
         def unexpected_embedding(**kwargs):
@@ -251,25 +254,27 @@ def test_successful_proposal_can_submit_at_cap_without_paid_embedding(
         job = await runner._generate_evolved_proposal(
             1, "task", str(candidate), str(tmp_path), None, None, None, 0, None, 1
         )
-        assert job is not None
-        assert job.meta_patch_data["api_costs"] == 1.0
-        assert job.embed_cost == 0.0
+        if outcome == "submit_failed":
+            assert job is None
+        else:
+            assert job is not None
+            assert job.meta_patch_data["api_costs"] == 1.0
+            assert job.embed_cost == 0.0
         assert runner.total_api_cost == 1.0
-        if persisted:
+        if outcome == "persisted":
+            assert job is not None
             runner.db.add(
                 Program(
                     id="candidate",
                     generation=1,
                     code="pass",
-                    metadata={"api_costs": 1.0, "source_job_id": "job"},
+                    metadata={**job.meta_patch_data, "source_job_id": "job"},
                 )
             )
-        runner._record_unpersisted_evaluation_costs()
-        runner._record_unpersisted_evaluation_costs()
         assert await runner._get_total_api_costs() == pytest.approx(1.0)
         assert runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[
             0
-        ] == int(not persisted)
+        ] == (2 if outcome == "submit_failed" else 1)
 
     asyncio.run(run())
 
