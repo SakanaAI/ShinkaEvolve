@@ -228,10 +228,9 @@ def query_openai(
             **kwargs,
         )
         content, cost_results = _extract_billed_parsed(response, model)
-        new_content = ""
-        for i in content:
-            new_content += i[0] + ":" + i[1] + "\n"
-        new_msg_history.append({"role": "assistant", "content": new_content})
+        new_msg_history.append(
+            {"role": "assistant", "content": content.model_dump_json()}
+        )
 
     # Collect all results
     result = QueryResult(
@@ -299,10 +298,9 @@ async def query_openai_async(
             **kwargs,
         )
         content, cost_results = _extract_billed_parsed(response, model)
-        new_content = ""
-        for i in content:
-            new_content += i[0] + ":" + i[1] + "\n"
-        new_msg_history.append({"role": "assistant", "content": new_content})
+        new_msg_history.append(
+            {"role": "assistant", "content": content.model_dump_json()}
+        )
     result = QueryResult(
         content=content,
         msg=msg,
