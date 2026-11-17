@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Awaitable, Callable, TypeVar
@@ -10,6 +11,7 @@ from shinka.local_openai_config import parse_local_openai_model
 from shinka.pricing.catalog import ModelKind, get_catalog
 
 _T = TypeVar("_T")
+api_cost_lock = threading.Lock()
 
 
 class APIBudgetExceeded(RuntimeError):
@@ -30,6 +32,10 @@ class ApiCostScope:
             self.pending = 0.0
         else:
             self.pending = max(0.0, self.pending - cost)
+
+    def record(self, cost: float) -> None:
+        with api_cost_lock:
+            self.pending += cost
 
 
 cost_scope: ContextVar[ApiCostScope | None] = ContextVar("api_cost_scope", default=None)
@@ -93,9 +99,9 @@ async def run_request(
         try:
             result = await operation()
         except (Exception, asyncio.CancelledError) as exc:
-            scope.pending += getattr(exc, "cost", 0.0)
+            scope.record(getattr(exc, "cost", 0.0))
             raise
-        scope.pending += get_cost(result)
+        scope.record(get_cost(result))
         return result
 
     exhausted = scope.exhausted

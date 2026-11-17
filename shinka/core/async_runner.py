@@ -24,7 +24,13 @@ from rich.console import Console
 from rich.table import Table
 import rich.box
 
-from shinka.api_budget import APIBudgetExceeded, ApiCostScope, cost_scope, may_charge
+from shinka.api_budget import (
+    APIBudgetExceeded,
+    ApiCostScope,
+    api_cost_lock,
+    cost_scope,
+    may_charge,
+)
 from shinka.database import ProgramDatabase, DatabaseConfig, Program
 from shinka.database.async_dbase import AsyncProgramDatabase
 from shinka.database.prompt_dbase import (
@@ -763,8 +769,9 @@ class ShinkaEvolveRunner:
         )
 
     def _known_api_cost(self) -> float:
-        scopes = tuple(getattr(self, "_api_cost_scopes", ()))
-        return math.fsum([self.total_api_cost, *(scope.pending for scope in scopes)])
+        with api_cost_lock:
+            scopes = getattr(self, "_api_cost_scopes", ())
+            return math.fsum([self.total_api_cost, *(scope.pending for scope in scopes)])
 
     def _api_budget_exhausted(self) -> bool:
         budget = getattr(self.evo_config, "max_api_costs", None)
@@ -779,9 +786,10 @@ class ShinkaEvolveRunner:
             self._api_budget_exhausted if budget is not None else None,
             admission_closed=self._paid_admission_closed,
         )
-        if not hasattr(self, "_api_cost_scopes"):
-            self._api_cost_scopes: set[ApiCostScope] = set()
-        self._api_cost_scopes.add(scope)
+        with api_cost_lock:
+            if not hasattr(self, "_api_cost_scopes"):
+                self._api_cost_scopes: set[ApiCostScope] = set()
+            self._api_cost_scopes.add(scope)
         return scope, cost_scope.set(scope)
 
     def _paid_admission_closed(self) -> bool:
@@ -789,9 +797,10 @@ class ShinkaEvolveRunner:
 
     def _post_api_cost(self, cost: float) -> None:
         scope = cost_scope.get()
-        if scope is not None:
-            scope.acknowledge(cost)
-        self.total_api_cost += cost
+        with api_cost_lock:
+            if scope is not None:
+                scope.acknowledge(cost)
+            self.total_api_cost += cost
 
     async def _finish_api_cost_scope(
         self,
@@ -803,9 +812,10 @@ class ShinkaEvolveRunner:
         # Most charges are carried by program, prompt or failure records. A
         # reply can still arrive after cancellation or be lost to processing.
         cost_scope.reset(token)
-        self._api_cost_scopes.remove(scope)
-        if scope.pending > 0.0:
+        with api_cost_lock:
+            self._api_cost_scopes.remove(scope)
             self.total_api_cost += scope.pending
+        if scope.pending > 0.0:
             if stage == "prompt_evolution":
                 self.prompt_api_cost += scope.pending
             await self._record_unattached_cost(scope.pending, stage, generation)
@@ -2243,14 +2253,15 @@ class ShinkaEvolveRunner:
     async def _settle_initial_costs(
         self, scope: ApiCostScope, cost_before_setup: float, known_cost: float
     ) -> None:
-        scope.acknowledge(known_cost)
+        with api_cost_lock:
+            scope.acknowledge(known_cost)
+            self.total_api_cost = max(self.total_api_cost, cost_before_setup + known_cost)
         await finish_cost_recording(
             self._reconcile_initial_costs(cost_before_setup, known_cost)
         )
 
     async def _reconcile_initial_costs(self, cost_before_setup: float, known_cost: float) -> None:
         # Setup can commit a program before posting its cost in memory.
-        self.total_api_cost = max(self.total_api_cost, cost_before_setup + known_cost)
         persisted_cost = await self._get_total_api_costs()
         posted_cost = max(persisted_cost - cost_before_setup, 0.0)
         pending_cost = max(known_cost - posted_cost, 0.0)
