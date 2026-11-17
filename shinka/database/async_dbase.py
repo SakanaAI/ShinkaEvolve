@@ -13,8 +13,9 @@ from typing import List, Optional, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from .attempt_log import insert_attempt_event
+from .dbase import clean_nan_values
 from .complexity import analyze_code_metrics
-from .dbase import Program, ProgramDatabase, clean_nan_values
+from .dbase import Program, ProgramDatabase
 
 logger = logging.getLogger(__name__)
 
