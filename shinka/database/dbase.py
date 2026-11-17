@@ -962,13 +962,19 @@ class ProgramDatabase:
 
         for program in sorted(programs, key=lambda item: item.generation):
             maintenance_started_at = time.time()
-            self._update_archive(program)
+            needs_island_copies = self.island_manager.needs_island_copies(program)
+            # A resumed seed may have reached the archive before its copies.
+            already_archived = needs_island_copies and self.cursor.execute(
+                "SELECT 1 FROM archive WHERE program_id = ?", (program.id,)
+            ).fetchone()
+            if not already_archived:
+                self._update_archive(program)
             self._update_best_program(program)
 
             if verbose:
                 self._print_program_summary(program)
 
-            if self.island_manager.needs_island_copies(program):
+            if needs_island_copies:
                 logger.info(
                     f"Creating copies of initial program {program.id} for all islands"
                 )

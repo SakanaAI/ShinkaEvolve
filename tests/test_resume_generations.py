@@ -72,6 +72,61 @@ def test_resume_seed_only_database_does_not_generate_another_seed(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("existing_copy", [False, True])
+def test_resume_finishes_seed_islands_before_sampling(
+    tmp_path, monkeypatch, existing_copy
+):
+    async def run():
+        config = DatabaseConfig(
+            db_path=str(tmp_path / "programs.sqlite"), archive_size=2
+        )
+        db = ProgramDatabase(config)
+        seed = Program(
+            id="seed", code="pass", generation=0, correct=True, combined_score=1.0
+        )
+        db.add(seed, defer_maintenance=True)
+        if existing_copy:
+            db._update_archive(seed)
+            db.add(
+                Program(
+                    id="later",
+                    code="pass",
+                    generation=1,
+                    correct=True,
+                    combined_score=0.5,
+                )
+            )
+        copy_ids = (
+            db.island_manager.copy_program_to_islands(seed) if existing_copy else []
+        )
+        db.close()
+
+        for _ in range(2):
+            runner = _resume_runner(tmp_path, config, budget=3)
+            try:
+                await runner._setup_async()
+                sampled_islands = []
+                for island in (0, 1):
+                    monkeypatch.setattr(
+                        "shinka.database.island_sampler.UniformIslandSampler.sample_island",
+                        lambda sampler, initialized: sorted(initialized)[island],
+                    )
+                    parent, *_ = await runner.async_db.sample_with_fix_mode_async()
+                    sampled_islands.append(parent.island_idx)
+                assert sampled_islands == [0, 1]
+                programs = runner.db.get_programs_by_generation(0)
+                assert len(programs) == 2
+                assert "_needs_island_copies" not in runner.db.get("seed").metadata
+                recovered_ids = [p.id for p in programs if p.island_idx == 1]
+                assert not copy_ids or copy_ids == recovered_ids
+                copy_ids = recovered_ids
+            finally:
+                await runner.async_db.close_async()
+                runner.db.close()
+
+    asyncio.run(run())
+
+
 def test_resume_reads_configured_seed_before_archiving_its_directory(tmp_path):
     async def run():
         source = tmp_path / "gen_0" / "main.py"

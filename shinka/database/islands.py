@@ -618,17 +618,35 @@ class CombinedIslandManager:
 
     def copy_program_to_islands(self, program: Any) -> List[str]:
         """
-        Copy a program to all other islands.
+        Copy a program to configured islands that do not already have its copy.
         Returns a list of new program IDs that were created.
         """
         num_islands = getattr(self.config, "num_islands", 0)
         if num_islands <= 1:
             return []
 
+        self.cursor.execute(
+            "SELECT island_idx, metadata FROM programs WHERE generation = ?",
+            (program.generation,),
+        )
+        existing_islands = set()
+        for island, raw_metadata in self.cursor.fetchall():
+            try:
+                metadata = json.loads(raw_metadata or "{}")
+            except ValueError:
+                continue
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("_original_program_id") == program.id
+            ):
+                existing_islands.add(island)
+
         created_ids = []
         # Create copies for islands 1 through num_islands-1
         # (original program is already on island 0)
         for island_idx in range(1, num_islands):
+            if island_idx in existing_islands:
+                continue
             # Create a new program ID
             new_id = str(uuid.uuid4())
             # Copy all program data but change the ID and island_idx

@@ -1306,20 +1306,16 @@ class ShinkaEvolveRunner:
             logger.info("=" * 80)
             logger.info("Found %d persisted generations", len(persisted_generations))
             logger.info("=" * 80)
-            if persisted_generations == {0} and self.llm_selection is not None:
-                seed = next(
-                    (
-                        program
-                        for program in self.db.get_programs_by_generation(0)
-                        if not is_island_copy(program)
-                    ),
-                    None,
+            seed = (
+                await self._resume_seed_maintenance()
+                if 0 in persisted_generations
+                else None
+            )
+            if persisted_generations == {0} and self.llm_selection is not None and seed:
+                score = seed.combined_score if seed.correct else None
+                self.llm_selection.set_baseline_score(
+                    score if score is not None and math.isfinite(score) else 0.0
                 )
-                if seed is not None:
-                    score = seed.combined_score if seed.correct else None
-                    self.llm_selection.set_baseline_score(
-                        score if score is not None and math.isfinite(score) else 0.0
-                    )
             self._load_bandit_state()
 
         if 0 not in persisted_generations:
@@ -1343,6 +1339,17 @@ class ShinkaEvolveRunner:
 
         self._restore_resume_progress(generation_origins, terminal_failures)
         self._log_wandb_population_progress()
+
+    async def _resume_seed_maintenance(self) -> Optional[Program]:
+        originals = [
+            program
+            for program in self.db.get_programs_by_generation(0)
+            if not is_island_copy(program)
+        ]
+        for program in originals:
+            if self.db.island_manager.needs_island_copies(program):
+                await self.async_db.run_program_maintenance_async(program)
+        return originals[0] if originals else None
 
     async def _setup_prompt_evolution(self):
         """Setup prompt evolution database and components."""
