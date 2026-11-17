@@ -97,34 +97,47 @@ def _stop_after_empty_reply(exc: Exception, unanswered: _UnansweredReplies) -> b
 async def _collect_async_batch(
     queries: List[Coroutine[None, None, Tuple[int, Optional[QueryResult]]]],
 ) -> List[Tuple[int, QueryResult]]:
-    tasks = [asyncio.create_task(query) for query in queries]
+    async def capture(query):
+        try:
+            return await query
+        except (Exception, asyncio.CancelledError) as error:
+            # A task's cancelled state can consume the original exception.
+            return error
+
+    tasks = [asyncio.create_task(capture(query)) for query in queries]
+    batch = asyncio.gather(*tasks, return_exceptions=True)
     cancellation = None
-    try:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    except asyncio.CancelledError as exc:
-        # Gather finishes draining its children before propagating cancellation.
-        cancellation = exc
+    while True:
+        try:
+            outcomes = await asyncio.shield(batch)
+            break
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+                for task in tasks:
+                    task.cancel()
+
+    for task, query in zip(tasks, queries):
+        if task.cancelled():
+            query.close()  # The wrapper was cancelled before it entered the query.
 
     results = []
     permanent_error = None
     total_cost = 0.0
-    for index, task in enumerate(tasks):
-        # Reading the task also preserves a child's BilledCancellationError,
-        # which gather converts to a plain CancelledError in its result list.
-        try:
-            request_index, response = task.result()
-        except asyncio.CancelledError as exc:
-            cancellation = cancellation or exc
-            if isinstance(exc, BilledCancellationError):
-                total_cost += exc.cost
-        except NonRetryableLLMError as exc:
-            permanent_error = permanent_error or exc
-            total_cost += exc.cost
-        except APIBudgetExceeded:
+    for index, outcome in enumerate(outcomes):
+        if isinstance(outcome, asyncio.CancelledError):
+            cancellation = cancellation or outcome
+            if isinstance(outcome, BilledCancellationError):
+                total_cost += outcome.cost
+        elif isinstance(outcome, NonRetryableLLMError):
+            permanent_error = permanent_error or outcome
+            total_cost += outcome.cost
+        elif isinstance(outcome, APIBudgetExceeded):
             continue
-        except Exception as exc:
-            logger.info("Error in batch query task %s: %s", index, exc)
+        elif isinstance(outcome, Exception):
+            logger.info("Error in batch query task %s: %s", index, outcome)
         else:
+            request_index, response = outcome
             if response is not None:
                 results.append((request_index, response))
                 total_cost += response.cost or 0.0
