@@ -13,10 +13,12 @@ import os
 import math
 import psutil
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
 from dataclasses import dataclass, field
 from rich.console import Console
@@ -565,6 +567,8 @@ class ShinkaEvolveRunner:
         self.next_generation_to_submit = (
             1  # Start from generation 1 since 0 is handled in setup
         )
+        self._settled_resume_generations: deque[int] = deque()
+        self._copy_only_generations: set[int] = set()
         self.assigned_generations: Set[int] = set()  # Track assigned gens
         self.best_program_id: Optional[str] = None
         self.lang_ext = get_language_extension(evo_config.language)
@@ -1270,41 +1274,59 @@ class ShinkaEvolveRunner:
                 results_dir=Path(self.results_dir),
             )
 
-        # Check if we're resuming from an existing database
-        resuming_run = db_path.exists() and self.db.last_iteration > 0
-
         # Failed initialization can leave charges even without a program row.
         self.total_api_cost = await self._get_total_api_costs()
         logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
 
-        # Load bandit state if resuming
-        if resuming_run:
+        generation_origins = (
+            await self.async_db.get_persisted_generation_origins_async()
+        )
+        persisted_generations = {
+            gen for gen, original in generation_origins.items() if original
+        }
+        terminal_failures = self._get_terminal_proposal_failure_generations()
+        initial_program_path = self.evo_config.init_program_path
+        initial_code = None
+        if (
+            0 not in persisted_generations
+            and initial_program_path
+            and Path(initial_program_path).exists()
+        ):
+            initial_code = await self._read_file_async(initial_program_path)
+        else:
+            initial_program_path = None
+        await asyncio.to_thread(
+            self._archive_interrupted_generations,
+            persisted_generations.union(terminal_failures),
+        )
+
+        if persisted_generations:
             logger.info("=" * 80)
             logger.info("RESUMING PREVIOUS ASYNC EVOLUTION RUN")
             logger.info("=" * 80)
-            logger.info(f"Resuming from generation {self.db.last_iteration}")
-            program_count = await self.async_db.get_total_program_count_async()
-            logger.info(f"Found {program_count} programs in database")
-
+            logger.info("Found %d persisted generations", len(persisted_generations))
             logger.info("=" * 80)
+            if persisted_generations == {0} and self.llm_selection is not None:
+                seed = next(
+                    (
+                        program
+                        for program in self.db.get_programs_by_generation(0)
+                        if not is_island_copy(program)
+                    ),
+                    None,
+                )
+                if seed is not None:
+                    score = seed.combined_score if seed.correct else None
+                    self.llm_selection.set_baseline_score(
+                        score if score is not None and math.isfinite(score) else 0.0
+                    )
             self._load_bandit_state()
 
-            # Update state for resuming
-            await self._restore_resume_progress()
-        else:
-            # Generate or copy initial program only if NOT resuming
-            if (
-                self.evo_config.init_program_path
-                and Path(self.evo_config.init_program_path).exists()
-            ):
+        if 0 not in persisted_generations:
+            if initial_program_path:
                 # Copy existing initial program
                 if self.verbose:
-                    logger.info(
-                        f"Copying initial program from {self.evo_config.init_program_path}"
-                    )
-                initial_code = await self._read_file_async(
-                    self.evo_config.init_program_path
-                )
+                    logger.info("Copying initial program from %s", initial_program_path)
                 if initial_code:
                     await self._setup_initial_program(initial_code)
             else:
@@ -1315,7 +1337,11 @@ class ShinkaEvolveRunner:
                         "generating initial program with LLM..."
                     )
                 await self._generate_initial_program()
+            generation_origins = (
+                await self.async_db.get_persisted_generation_origins_async()
+            )
 
+        self._restore_resume_progress(generation_origins, terminal_failures)
         self._log_wandb_population_progress()
 
     async def _setup_prompt_evolution(self):
@@ -2647,6 +2673,7 @@ class ShinkaEvolveRunner:
             # Mark generation as assigned and increment counter
             self.assigned_generations.add(generation)
             self.next_generation_to_submit += 1
+            self._skip_settled_resume_generations()
 
             # Create proposal task
             task_id = str(uuid.uuid4())
@@ -5171,21 +5198,78 @@ class ShinkaEvolveRunner:
 
     async def _count_completed_generations_from_db(self) -> int:
         """Count persisted completed generations, excluding island copies."""
-        total_programs = await self.async_db.get_total_program_count_async()
-        island_copies = max(0, getattr(self.db_config, "num_islands", 1) - 1)
-        completed_generations = max(0, total_programs - island_copies)
-        return min(completed_generations, self.evo_config.num_generations)
+        return await self.async_db.count_completed_generations_async(
+            self.evo_config.num_generations, self._copy_only_generations
+        )
 
     async def _get_missing_persisted_generations(self) -> List[int]:
-        """Return budgeted generations that do not yet have persisted rows."""
-        persisted_generations = await self.async_db.get_persisted_generation_ids_async()
-        budgeted_generations = set(range(self.evo_config.num_generations))
-        return sorted(budgeted_generations - set(persisted_generations))
+        """Return budgeted generations without an original program row."""
+        try:
+            generation_origins = (
+                await self.async_db.get_persisted_generation_origins_async()
+            )
+        except Exception:
+            return []  # Diagnostic only. The budget stop must still proceed.
+        return [
+            gen
+            for gen in range(self.evo_config.num_generations)
+            if not generation_origins.get(gen)
+        ]
 
-    async def _restore_resume_progress(self) -> None:
-        """Restore progress counters from persisted database state."""
-        self.completed_generations = await self._count_completed_generations_from_db()
-        self.next_generation_to_submit = max(self.db.last_iteration + 1, 1)
+    def _restore_resume_progress(
+        self, generation_origins: Dict[int, bool], terminal_failures: List[int]
+    ) -> None:
+        """Restore completed work and reserve every previously settled slot."""
+        budget = range(self.evo_config.num_generations)
+        persisted_generations = {
+            gen
+            for gen, original in generation_origins.items()
+            if original and gen in budget
+        }
+        self.completed_generations = len(persisted_generations)
+        # Only legacy copy-only IDs need rechecking. New copies retain an ID
+        # that already has an original, and the runner never deletes originals.
+        self._copy_only_generations = {
+            gen
+            for gen, original in generation_origins.items()
+            if not original and gen in budget
+        }
+        settled_generations = persisted_generations.union(terminal_failures)
+        self._settled_resume_generations = deque(
+            sorted(gen for gen in settled_generations if gen > 0 and gen in budget)
+        )
+        self.next_generation_to_submit = 1
+        self._skip_settled_resume_generations()
+
+    def _skip_settled_resume_generations(self) -> None:
+        while (
+            self._settled_resume_generations
+            and self._settled_resume_generations[0] == self.next_generation_to_submit
+        ):
+            self._settled_resume_generations.popleft()
+            self.next_generation_to_submit += 1
+
+    def _archive_interrupted_generations(self, settled_generations: set[int]) -> None:
+        """Move orphan artifacts aside before the seed or proposals are restarted."""
+        prefix = f"{FOLDER_PREFIX}_"
+        budget = range(self.evo_config.num_generations)
+        for path in Path(self.results_dir).glob(f"{prefix}*"):
+            suffix = path.name.removeprefix(prefix)
+            if not suffix.isdecimal():
+                continue
+            generation = int(suffix)
+            if suffix != str(generation) or generation not in budget:
+                continue
+            if generation in settled_generations:
+                continue
+            if path.is_symlink() or not path.is_dir():
+                raise ValueError(f"Expected a generation directory at {path}")
+
+            archive = Path(mkdtemp(prefix=f".interrupted-{path.name}-", dir=path.parent))
+            destination = path.rename(archive / path.name)
+            logger.info(
+                "Preserved interrupted generation %d at %s", generation, destination
+            )
 
     def _get_in_flight_work_count(self) -> int:
         """Return work that is expected to complete without new proposals."""
@@ -5215,7 +5299,12 @@ class ShinkaEvolveRunner:
 
     def _get_remaining_generation_slots(self) -> int:
         """Return how many proposal generations can still be assigned."""
-        return max(0, self.evo_config.num_generations - self.next_generation_to_submit)
+        return max(
+            0,
+            self.evo_config.num_generations
+            - self.next_generation_to_submit
+            - len(self._settled_resume_generations),
+        )
 
     def _mark_surplus_completed_jobs_for_discard(
         self, completed_jobs: List[AsyncRunningJob]
@@ -5325,17 +5414,9 @@ class ShinkaEvolveRunner:
     async def _update_completed_generations(self):
         """Update completed generations count for async evolution.
 
-        In async evolution, generations can complete out of order. For termination
-        and progress tracking, what matters is the total count of completed work,
-        not whether it's contiguous. This counts all generations that have:
-        1. No running jobs AND
-        2. Programs in the database (successful or persisted-failed generations)
+        Successful and persisted-failed generations both count as completed work,
+        including generations that complete out of order.
         """
-        # Get all generations that have running jobs
-        running_generations = {job.generation for job in self.running_jobs}
-
-        # More efficient approach: get total program count and subtract running jobs
-        # This avoids expensive per-generation database queries
         try:
             calculated_completed = await self._count_completed_generations_from_db()
 
@@ -5359,36 +5440,31 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.warning(f"Error in optimized completion counting: {e}")
             # Fallback to old method but with timeout protection
-            await self._update_completed_generations_fallback(running_generations)
+            await self._update_completed_generations_fallback()
 
-    async def _update_completed_generations_fallback(self, running_generations):
+    async def _update_completed_generations_fallback(self):
         """Fallback method for completion counting with timeout protection."""
         total_completed = 0
 
         # Limit the check to reasonable range to avoid infinite database queries
         target_gens = self.evo_config.num_generations
         next_gen = self.next_generation_to_submit
+        if self._settled_resume_generations:
+            next_gen = self._settled_resume_generations[-1]
         max_check_gen = min(target_gens, next_gen + 10)
 
         for gen in range(max_check_gen):
-            if gen not in running_generations:
-                try:
-                    # Add timeout to prevent hanging on individual queries
-                    get_programs_coro = self.async_db.get_programs_by_generation_async(
-                        gen
-                    )
-                    programs_in_gen = await asyncio.wait_for(
-                        get_programs_coro,
-                        timeout=5.0,  # 5 second timeout per generation
-                    )
-                    if programs_in_gen:
-                        total_completed += 1
-                except asyncio.TimeoutError:
-                    logger.warning(f"Timeout checking programs for generation {gen}")
-                    break  # Stop checking if we hit timeouts
-                except Exception as e:
-                    logger.warning(f"Error checking generation {gen}: {e}")
-                    continue
+            try:
+                programs_in_gen = await asyncio.wait_for(
+                    self.async_db.get_programs_by_generation_async(gen), timeout=5.0
+                )
+                if any(not is_island_copy(program) for program in programs_in_gen):
+                    total_completed += 1
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout checking programs for generation {gen}")
+                break
+            except Exception as e:
+                logger.warning(f"Error checking generation {gen}: {e}")
 
         self.completed_generations = total_completed
 
@@ -6229,33 +6305,47 @@ class ShinkaEvolveRunner:
             logger.warning(f"Failed to compute timing bottleneck summary: {e}")
 
     def _get_generations_without_program_due_to_proposal_failure(self) -> List[int]:
-        """Return target-range generation IDs that exhausted proposal retries and produced no program row."""
-        if not self.db or not getattr(self.db, "cursor", None):
-            return []
-
+        """Return terminal proposal failures that produced no program row."""
         try:
-            self.db.cursor.execute(
-                """
-                SELECT DISTINCT attempt_log.generation
-                FROM attempt_log
-                WHERE attempt_log.status = 'failed'
-                  AND json_valid(attempt_log.details)
-                  AND json_extract(attempt_log.details, '$.node_kind') = 'failed_proposal'
-                  AND attempt_log.generation < ?
-                  AND attempt_log.generation NOT IN (
-                      SELECT DISTINCT generation FROM programs
-                  )
-                ORDER BY attempt_log.generation
-                """,
-                (self.evo_config.num_generations,),
-            )
-            return [int(row[0]) for row in self.db.cursor.fetchall()]
+            terminal_failures = self._get_terminal_proposal_failure_generations()
+            if not terminal_failures:
+                return []
+            self.db.cursor.execute("SELECT DISTINCT generation FROM programs")
+            persisted_generations = {row[0] for row in self.db.cursor.fetchall()}
+            return [gen for gen in terminal_failures if gen not in persisted_generations]
         except Exception as e:
             logger.warning(
                 "Failed to load proposal-failure generations without program rows: %s",
                 e,
             )
             return []
+
+    def _get_terminal_proposal_failure_generations(self) -> List[int]:
+        """Return budgeted generation IDs with exhausted proposal retries."""
+        if not self.db or not getattr(self.db, "cursor", None):
+            return []
+
+        self.db.cursor.execute(
+            """
+            SELECT generation, details
+            FROM attempt_log
+            WHERE status = 'failed'
+              AND generation >= 0 AND generation < ?
+            """,
+            (self.evo_config.num_generations,),
+        )
+        terminal_generations = set()
+        for generation, details_json in self.db.cursor.fetchall():
+            try:
+                details = json.loads(details_json or "{}")
+            except (ValueError, TypeError):
+                continue
+            if (
+                isinstance(details, dict)
+                and details.get("node_kind") == "failed_proposal"
+            ):
+                terminal_generations.add(int(generation))
+        return sorted(terminal_generations)
 
     def _print_metadata_table(self, meta_data: dict, generation: int = None):
         """Display metadata in a formatted rich table."""

@@ -368,8 +368,12 @@ internal analysis and debugging only.
 ### Resuming experiments
 
 When you specify an existing `results_dir` containing a database, Shinka will
-detect the previous run, restore the population and history, and resume from the
-last completed generation.
+restore the population and history and schedule unfinished generations within the
+configured total. Generations that exhausted proposal retries keep their slots.
+If an unfinished generation has files from an interrupted attempt, Shinka saves
+them in a hidden `.interrupted-gen_*` directory inside `results_dir` before
+starting the generation again. Stop the previous runner and its evaluation jobs
+before resuming in the same directory.
 
 #### CLI (Hydra)
 

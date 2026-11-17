@@ -4,11 +4,14 @@ Provides non-blocking database access for high-throughput proposal generation.
 """
 
 import asyncio
+import json
 import logging
 import sqlite3
 import time
 import threading
 import traceback
+from contextlib import closing
+from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,6 +19,22 @@ from .complexity import analyze_code_metrics
 from .dbase import Program, ProgramDatabase
 
 logger = logging.getLogger(__name__)
+
+# SQLite's JSON validator can reject non-finite floats written by json.dumps.
+_FINITE_METADATA_SQL = (
+    "REPLACE(REPLACE(REPLACE(metadata, '-Infinity', 'null'), 'Infinity', 'null'), "
+    "'NaN', 'null')"
+)
+_IS_ORIGINAL_PROGRAM_SQL = f"""
+    NOT EXISTS (
+        SELECT 1 FROM json_each(CASE
+            WHEN json_valid(metadata) THEN metadata
+            WHEN json_valid({_FINITE_METADATA_SQL}) THEN {_FINITE_METADATA_SQL}
+            ELSE '{{}}'
+        END)
+        WHERE key IN ('_is_island_copy', '_spawned_island') AND value = 1
+    )
+"""
 
 
 # Debugging utilities
@@ -1150,35 +1169,71 @@ class AsyncProgramDatabase:
 
     async def get_persisted_generation_ids_async(self) -> List[int]:
         """Return distinct persisted generations from the programs table."""
-        op_id = self._debug_track_start("get_persisted_generation_ids_async")
+        try:
+            rows = await self._query_generation_rows_async(
+                "SELECT DISTINCT generation FROM programs ORDER BY generation"
+            )
+            return [int(row[0]) for row in rows]
+        except Exception:
+            return []
+
+    async def get_persisted_generation_origins_async(self) -> Dict[int, bool]:
+        """Map each persisted generation ID to whether it has an original row."""
+        rows = await self._query_generation_rows_async(
+            f"""
+            SELECT generation, MAX({_IS_ORIGINAL_PROGRAM_SQL})
+            FROM programs GROUP BY generation
+            """
+        )
+        return {
+            int(generation): bool(has_original) for generation, has_original in rows
+        }
+
+    async def count_completed_generations_async(
+        self, budget: int, copy_only_generations: set[int]
+    ) -> int:
+        """Count budgeted IDs, checking metadata only for known copy-only IDs."""
+        query = """
+            SELECT COUNT(DISTINCT generation) FROM programs
+            WHERE generation >= 0 AND generation < ?
+        """
+        params: tuple = (budget,)
+        if copy_only_generations:
+            query += f"""
+                AND CASE WHEN generation IN (SELECT value FROM json_each(?))
+                    THEN {_IS_ORIGINAL_PROGRAM_SQL}
+                    ELSE 1
+                END
+            """
+            params = (budget, json.dumps(sorted(copy_only_generations)))
+        rows = await self._query_generation_rows_async(query, params)
+        return int(rows[0][0])
+
+    async def _query_generation_rows_async(
+        self, query: str, params: tuple = ()
+    ) -> List[tuple]:
+        op_id = self._debug_track_start("query_generation_rows_async")
 
         try:
-            loop = asyncio.get_event_loop()
+            db_path = self.sync_db.config.db_path
+            if db_path:
+                uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
 
-            def load_generation_ids_thread_safe():
-                thread_db = None
-                try:
-                    thread_db = ProgramDatabase(self.sync_db.config, read_only=True)
-                    thread_db.cursor.execute(
-                        "SELECT DISTINCT generation FROM programs ORDER BY generation"
-                    )
-                    return [int(row[0]) for row in thread_db.cursor.fetchall()]
-                finally:
-                    if thread_db:
-                        try:
-                            thread_db.close()
-                        except Exception as close_e:
-                            logger.warning(f"Error closing thread database: {close_e}")
+                def query_read_only():
+                    with closing(sqlite3.connect(uri, uri=True, timeout=60.0)) as conn:
+                        return conn.execute(query, params).fetchall()
 
-            result = await loop.run_in_executor(
-                self.executor, load_generation_ids_thread_safe
-            )
+                result = await asyncio.get_running_loop().run_in_executor(
+                    self.executor, query_read_only
+                )
+            else:
+                result = self.sync_db.conn.execute(query, params).fetchall()
             self._debug_track_end(op_id, success=True)
             return result
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error in get_persisted_generation_ids_async: {e}")
-            return []
+            logger.error(f"Error loading generation IDs: {e}")
+            raise
 
     async def get_top_programs_async(
         self, n: int = 10, correct_only: bool = True
