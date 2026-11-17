@@ -1541,9 +1541,11 @@ def test_job_monitor_preserves_evaluation_registered_during_hung_job_cancellatio
         cancellation_started = asyncio.Event()
         allow_cancellation = asyncio.Event()
         cancellation_requests = []
+        status_polls = []
 
         async def check_status(jobs):
-            return [job.generation != 3 for job in jobs]
+            status_polls.append(jobs)
+            return [job.generation == 1 for job in jobs]
 
         async def cancel_job(job_id):
             cancellation_requests.append(job_id)
@@ -1590,6 +1592,8 @@ def test_job_monitor_preserves_evaluation_registered_during_hung_job_cancellatio
         async def process_job(job):
             processed_jobs.append(job)
             await runner._release_evaluation_slot_once(job)
+            if job.generation == 2:
+                runner.should_stop.set()
             return True
 
         runner._process_single_job_safely = process_job
@@ -1623,14 +1627,20 @@ def test_job_monitor_preserves_evaluation_registered_during_hung_job_cancellatio
             new_job = await asyncio.wait_for(submit_proposal(2), timeout=2)
             assert runner.running_jobs == [hung_job, new_job]
             assert runner.evaluation_slot_pool.in_use == 2
-        finally:
-            runner.should_stop.set()
             allow_cancellation.set()
             await asyncio.wait_for(monitor_task, timeout=2)
+        finally:
+            if not monitor_task.done():
+                runner.should_stop.set()
+                allow_cancellation.set()
+                await asyncio.wait_for(monitor_task, timeout=2)
 
-        expected_running_jobs = [new_job] if cancelled else [hung_job, new_job]
-        assert cancellation_requests == [hung_job.job_id]
-        assert processed_jobs == ([hung_job] if cancelled else [])
+        expected_running_jobs = [] if cancelled else [hung_job]
+        assert len(status_polls) == 2
+        assert status_polls[1] == [*expected_running_jobs, new_job]
+        assert cancellation_requests == [hung_job.job_id] * (1 if cancelled else 2)
+        assert processed_jobs == ([hung_job, new_job] if cancelled else [new_job])
+        assert new_job.evaluation_slot_released
         assert runner.evaluation_slot_pool.in_use == len(expected_running_jobs)
         assert runner.submitted_jobs == {
             str(job.job_id): job for job in expected_running_jobs
