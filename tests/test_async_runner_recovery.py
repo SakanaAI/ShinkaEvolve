@@ -23,8 +23,8 @@ class _FakeAsyncDB:
     async def get_total_program_count_async(self):
         return 0
 
-    async def count_completed_generations_async(self, budget, copy_only_generations):
-        return 0
+    async def get_generation_updates_async(self, after_rowid):
+        return after_rowid, {}
 
 
 class _RecordingAsyncDB(_FakeAsyncDB):
@@ -39,8 +39,10 @@ class _RecordingAsyncDB(_FakeAsyncDB):
     async def get_total_program_count_async(self):
         return len(self.programs)
 
-    async def count_completed_generations_async(self, budget, copy_only_generations):
-        return len({p.generation for p, _ in self.programs if p.generation in range(budget)})
+    async def get_generation_updates_async(self, after_rowid):
+        return len(self.programs), {
+            p.generation: True for p, _ in self.programs[after_rowid:]
+        }
 
     async def run_program_maintenance_async(self, program, verbose=False):
         self.maintenance_calls += 1
@@ -165,7 +167,8 @@ def _build_runner(**overrides):
     runner.completed_generations = overrides.get("completed_generations", 0)
     runner.next_generation_to_submit = overrides.get("next_generation_to_submit", 1)
     runner._settled_resume_generations = deque()
-    runner._copy_only_generations = set()
+    runner._confirmed_program_rowid = 0
+    runner._confirmed_generation_ids = set()
     runner.running_jobs = overrides.get("running_jobs", [])
     runner.active_proposal_tasks = overrides.get("active_proposal_tasks", {})
     runner.failed_jobs_for_retry = overrides.get("failed_jobs_for_retry", {})

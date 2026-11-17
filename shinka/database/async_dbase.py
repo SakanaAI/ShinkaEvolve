@@ -4,7 +4,6 @@ Provides non-blocking database access for high-throughput proposal generation.
 """
 
 import asyncio
-import json
 import logging
 import sqlite3
 import time
@@ -1179,35 +1178,26 @@ class AsyncProgramDatabase:
 
     async def get_persisted_generation_origins_async(self) -> Dict[int, bool]:
         """Map each persisted generation ID to whether it has an original row."""
+        _, origins = await self.get_generation_updates_async(0)
+        return origins
+
+    async def get_generation_updates_async(
+        self, after_rowid: int
+    ) -> Tuple[int, Dict[int, bool]]:
+        """Read the append-only programs table after the last confirmed row."""
         rows = await self._query_generation_rows_async(
             f"""
-            SELECT generation, MAX({_IS_ORIGINAL_PROGRAM_SQL})
-            FROM programs GROUP BY generation
-            """
+            SELECT generation, MAX({_IS_ORIGINAL_PROGRAM_SQL}), MAX(rowid)
+            FROM programs NOT INDEXED WHERE rowid > ?
+            GROUP BY generation
+            """,
+            (after_rowid,),
         )
-        return {
-            int(generation): bool(has_original) for generation, has_original in rows
+        last_rowid = max((row[2] for row in rows), default=after_rowid)
+        origins = {
+            int(generation): bool(has_original) for generation, has_original, _ in rows
         }
-
-    async def count_completed_generations_async(
-        self, budget: int, copy_only_generations: set[int]
-    ) -> int:
-        """Count budgeted IDs, checking metadata only for known copy-only IDs."""
-        query = """
-            SELECT COUNT(DISTINCT generation) FROM programs
-            WHERE generation >= 0 AND generation < ?
-        """
-        params: tuple = (budget,)
-        if copy_only_generations:
-            query += f"""
-                AND CASE WHEN generation IN (SELECT value FROM json_each(?))
-                    THEN {_IS_ORIGINAL_PROGRAM_SQL}
-                    ELSE 1
-                END
-            """
-            params = (budget, json.dumps(sorted(copy_only_generations)))
-        rows = await self._query_generation_rows_async(query, params)
-        return int(rows[0][0])
+        return last_rowid, origins
 
     async def _query_generation_rows_async(
         self, query: str, params: tuple = ()

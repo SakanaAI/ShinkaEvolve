@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -211,7 +212,9 @@ def test_resume_retries_gap_and_preserves_interrupted_artifacts(tmp_path):
     asyncio.run(run())
 
 
-def test_resume_counts_only_distinct_budgeted_originals_with_dynamic_islands(tmp_path):
+def test_resume_counts_only_distinct_budgeted_originals_with_dynamic_islands(
+    tmp_path, monkeypatch
+):
     async def run():
         config = DatabaseConfig(
             db_path=str(tmp_path / "programs.sqlite"),
@@ -243,18 +246,54 @@ def test_resume_counts_only_distinct_budgeted_originals_with_dynamic_islands(tmp
         assert copy.metadata["_spawned_island"] is True
         db.close()
 
-        runner = _resume_runner(tmp_path, config, budget=3)
+        runner = _resume_runner(tmp_path, config, budget=4)
         try:
             await runner._setup_async()
 
             assert runner.completed_generations == 1
-            assert await runner._count_completed_generations_from_db() == 1
-            assert await runner._get_missing_persisted_generations() == [1, 2]
-            assert runner._get_remaining_generation_slots() == 2
-            await runner.async_db.add_program_async(
-                Program(id="recovered", code="pass", generation=2)
+            assert await runner._get_missing_persisted_generations() == [1, 2, 3]
+            assert runner._get_remaining_generation_slots() == 3
+
+            query_rows = runner.async_db._query_generation_rows_async
+            fail_next_read = False
+
+            async def check_incremental_query(query, params=()):
+                nonlocal fail_next_read
+                if fail_next_read:
+                    fail_next_read = False
+                    raise sqlite3.OperationalError("transient read failure")
+                plan = await query_rows("EXPLAIN QUERY PLAN " + query, params)
+                assert any("rowid>?" in row[3] for row in plan), plan
+                return await query_rows(query, params)
+
+            monkeypatch.setattr(
+                runner.async_db, "_query_generation_rows_async", check_incremental_query
             )
+            with pytest.raises(sqlite3.IntegrityError):
+                await runner.async_db.add_program_async(
+                    Program(id="seed", code="pass", generation=1),
+                    defer_maintenance=True,
+                )
+            assert await runner._count_completed_generations_from_db() == 1
+
+            await runner.async_db.add_program_async(
+                Program(id="failed-eval", code="pass", generation=3, correct=False),
+                defer_maintenance=True,
+            )
+            fail_next_read = True
             assert await runner._count_completed_generations_from_db() == 2
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    ProgramDatabase,
+                    "run_post_add_maintenance",
+                    Mock(side_effect=RuntimeError("maintenance interrupted")),
+                )
+                with pytest.raises(RuntimeError, match="maintenance interrupted"):
+                    await runner.async_db.add_program_async(
+                        Program(id="recovered", code="pass", generation=2)
+                    )
+            assert await runner._count_completed_generations_from_db() == 3
+            assert await runner._count_completed_generations_from_db() == 3
         finally:
             await runner.async_db.close_async()
             runner.db.close()

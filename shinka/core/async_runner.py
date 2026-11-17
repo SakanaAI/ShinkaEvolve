@@ -569,7 +569,8 @@ class ShinkaEvolveRunner:
             1  # Start from generation 1 since 0 is handled in setup
         )
         self._settled_resume_generations: deque[int] = deque()
-        self._copy_only_generations: set[int] = set()
+        self._confirmed_program_rowid = 0
+        self._confirmed_generation_ids: set[int] = set()
         self.assigned_generations: Set[int] = set()  # Track assigned gens
         self.best_program_id: Optional[str] = None
         self.lang_ext = get_language_extension(evo_config.language)
@@ -1275,8 +1276,8 @@ class ShinkaEvolveRunner:
                 results_dir=Path(self.results_dir),
             )
 
-        generation_origins = (
-            await self.async_db.get_persisted_generation_origins_async()
+        self._confirmed_program_rowid, generation_origins = (
+            await self.async_db.get_generation_updates_async(0)
         )
         persisted_generations = {
             gen for gen, original in generation_origins.items() if original
@@ -1284,6 +1285,7 @@ class ShinkaEvolveRunner:
         terminal_failures = self._recover_terminal_proposal_failures(
             persisted_generations
         )
+        self._restore_resume_progress(persisted_generations, terminal_failures)
         # Count recovered failure charges before initialization or scheduling.
         self.total_api_cost = await self._get_total_api_costs()
         logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
@@ -1334,11 +1336,10 @@ class ShinkaEvolveRunner:
                         "generating initial program with LLM..."
                     )
                 await self._generate_initial_program()
-            generation_origins = (
-                await self.async_db.get_persisted_generation_origins_async()
+            self.completed_generations = (
+                await self._count_completed_generations_from_db()
             )
 
-        self._restore_resume_progress(generation_origins, terminal_failures)
         self._log_wandb_population_progress()
 
     async def _resume_seed_maintenance(self) -> Optional[Program]:
@@ -5206,9 +5207,21 @@ class ShinkaEvolveRunner:
 
     async def _count_completed_generations_from_db(self) -> int:
         """Count persisted completed generations, excluding island copies."""
-        return await self.async_db.count_completed_generations_async(
-            self.evo_config.num_generations, self._copy_only_generations
+        read_updates = self.async_db.get_generation_updates_async
+        try:
+            rowid, generation_origins = await read_updates(self._confirmed_program_rowid)
+        except Exception:
+            # A transient read must not leave the final completion count stale.
+            logger.warning("Retrying generation progress read", exc_info=True)
+            rowid, generation_origins = await read_updates(self._confirmed_program_rowid)
+        budget = range(self.evo_config.num_generations)
+        self._confirmed_generation_ids.update(
+            gen
+            for gen, original in generation_origins.items()
+            if original and gen in budget
         )
+        self._confirmed_program_rowid = max(self._confirmed_program_rowid, rowid)
+        return len(self._confirmed_generation_ids)
 
     async def _get_missing_persisted_generations(self) -> List[int]:
         """Return budgeted generations without an original program row."""
@@ -5225,23 +5238,14 @@ class ShinkaEvolveRunner:
         ]
 
     def _restore_resume_progress(
-        self, generation_origins: Dict[int, bool], terminal_failures: set[int]
+        self, persisted_generations: set[int], terminal_failures: set[int]
     ) -> None:
         """Restore completed work and reserve every previously settled slot."""
         budget = range(self.evo_config.num_generations)
-        persisted_generations = {
-            gen
-            for gen, original in generation_origins.items()
-            if original and gen in budget
+        self._confirmed_generation_ids = {
+            gen for gen in persisted_generations if gen in budget
         }
-        self.completed_generations = len(persisted_generations)
-        # Only legacy copy-only IDs need rechecking. New copies retain an ID
-        # that already has an original, and the runner never deletes originals.
-        self._copy_only_generations = {
-            gen
-            for gen, original in generation_origins.items()
-            if not original and gen in budget
-        }
+        self.completed_generations = len(self._confirmed_generation_ids)
         settled_generations = persisted_generations.union(terminal_failures)
         self._settled_resume_generations = deque(
             sorted(gen for gen in settled_generations if gen > 0 and gen in budget)
@@ -5493,35 +5497,7 @@ class ShinkaEvolveRunner:
                 self._save_bandit_state()
 
         except Exception as e:
-            logger.warning(f"Error in optimized completion counting: {e}")
-            # Fallback to old method but with timeout protection
-            await self._update_completed_generations_fallback()
-
-    async def _update_completed_generations_fallback(self):
-        """Fallback method for completion counting with timeout protection."""
-        total_completed = 0
-
-        # Limit the check to reasonable range to avoid infinite database queries
-        target_gens = self.evo_config.num_generations
-        next_gen = self.next_generation_to_submit
-        if self._settled_resume_generations:
-            next_gen = self._settled_resume_generations[-1]
-        max_check_gen = min(target_gens, next_gen + 10)
-
-        for gen in range(max_check_gen):
-            try:
-                programs_in_gen = await asyncio.wait_for(
-                    self.async_db.get_programs_by_generation_async(gen), timeout=5.0
-                )
-                if any(not is_island_copy(program) for program in programs_in_gen):
-                    total_completed += 1
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout checking programs for generation {gen}")
-                break
-            except Exception as e:
-                logger.warning(f"Error checking generation {gen}: {e}")
-
-        self.completed_generations = total_completed
+            logger.warning("Could not refresh confirmed generation count: %s", e)
 
     async def _cleanup_completed_proposal_tasks(self):
         """Clean up completed proposal tasks."""
