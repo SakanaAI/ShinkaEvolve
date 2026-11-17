@@ -2,13 +2,21 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from shinka.api_budget import run_request
+from shinka.api_budget import APIBudgetExceeded, run_request
 from shinka.core import EvolutionConfig
 from shinka.core.async_runner import ShinkaEvolveRunner
+from shinka.core.billing import BillingPersistenceError
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database.async_dbase import AsyncProgramDatabase
+from shinka.database.prompt_dbase import (
+    SystemPromptConfig,
+    SystemPromptDatabase,
+    create_system_prompt,
+)
 from shinka.llm.providers import QueryResult
 from shinka.llm.llm import AsyncLLMClient
 from shinka.llm.providers.errors import EmptyResponseError
@@ -95,6 +103,130 @@ def test_resume_includes_terminal_failure_costs_without_counting_attempt_details
     )
     runner.db.record_attempt_event(1, "patch", "failed", {"api_costs": 100.0})
     assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(3.3)
+
+
+@pytest.mark.parametrize("commit_before_error", [False, True])
+def test_transient_charge_write_retries_same_identity(runner, commit_before_error):
+    async def run():
+        runner.evo_config.max_api_costs = None
+        runner.async_db = AsyncProgramDatabase(runner.db, max_workers=1)
+        write_actual = runner.async_db.record_attempt_event_async
+        provider = AsyncMock()
+        identities = []
+
+        async def write(**kwargs):
+            identities.append(kwargs["details"]["api_charge_id"])
+            if len(identities) == 1:
+                if commit_before_error:
+                    await write_actual(**kwargs)
+                raise OSError("journal acknowledgement lost")
+
+            scope, token = runner._begin_api_cost_scope()
+            try:
+                with pytest.raises(APIBudgetExceeded):
+                    await run_request(provider, lambda _: 0.0, "gpt-5-mini")
+            finally:
+                await runner._finish_api_cost_scope(scope, token, "initialization", 0)
+            await write_actual(**kwargs)
+
+        runner.async_db.record_attempt_event_async = write
+        try:
+            await runner._record_unattached_cost(1.0, "initialization", 0)
+            assert len(identities) == 2 and len(set(identities)) == 1
+            provider.assert_not_awaited()
+            assert not runner._paid_admission_closed()
+            assert await runner._get_total_api_costs() == pytest.approx(1.0)
+            assert runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[0] == 1
+        finally:
+            await runner.async_db.close_async()
+
+    asyncio.run(run())
+
+
+def test_unwritable_charge_is_retained_for_shutdown_and_closes_admission(runner):
+    async def run():
+        runner.should_stop = asyncio.Event()
+        runner.finalization_complete = asyncio.Event()
+        record = runner.async_db.record_attempt_event_async
+        runner.async_db.record_attempt_event_async = AsyncMock(
+            side_effect=OSError("disk unavailable")
+        )
+        with pytest.raises(BillingPersistenceError, match="generation 1"):
+            await runner._record_evaluation_charge(1, "stable-id", 1.0)
+
+        assert runner.should_stop.is_set()
+        assert runner.finalization_complete.is_set()
+        assert runner._paid_admission_closed()
+        assert await runner._get_total_api_costs() == 0.0
+        runner.async_db.record_attempt_event_async = record
+        await runner._flush_unwritten_charges()
+        await runner._flush_unwritten_charges()
+        assert await runner._get_total_api_costs() == pytest.approx(1.0)
+
+    asyncio.run(run())
+
+
+def test_setup_restores_handoff_charge_before_seed_requests(runner, tmp_path):
+    async def run():
+        await runner._record_evaluation_charge(1, "already-billed", 1.0)
+        runner.evo_config.max_api_costs = 1.0
+        runner.results_dir = tmp_path
+        runner.db_config = runner.db.config
+        runner.console = None
+        runner.max_db_workers = 1
+        runner.enable_deadlock_debugging = False
+        runner.wandb_logger = SimpleNamespace(enabled=False)
+        runner.llm = SimpleNamespace(
+            query=AsyncMock(), get_kwargs=lambda **kwargs: {"model_name": "gpt-5-mini"}
+        )
+        runner.db.close()
+        try:
+            with pytest.raises(APIBudgetExceeded):
+                await runner._setup_async()
+            assert runner.total_api_cost == pytest.approx(1.0)
+            runner.llm.query.assert_not_awaited()
+        finally:
+            await runner.async_db.close_async()
+
+    asyncio.run(run())
+
+
+def test_persisted_prompt_cost_read_errors_are_reported(runner):
+    def unavailable():
+        raise OSError("prompt database unavailable")
+
+    runner.prompt_db = SimpleNamespace(get_total_evolution_costs=unavailable)
+    with pytest.raises(OSError, match="prompt database unavailable"):
+        asyncio.run(runner._get_total_api_costs())
+
+
+def test_prompt_charges_are_restored_with_prompt_evolution_disabled(runner, tmp_path):
+    db = SystemPromptDatabase(
+        SystemPromptConfig(db_path=str(tmp_path / "prompts.sqlite"))
+    )
+    try:
+        db.add(create_system_prompt(
+            prompt_text="prompt", generation=0, patch_type="init",
+            metadata={"llm": {"cost": 1.25}},
+        ))
+    finally:
+        db.close()
+    assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(1.25)
+
+
+def test_unreadable_meta_charge_closes_admission(runner, monkeypatch):
+    async def write(program):
+        raise OSError("write unavailable")
+
+    def read(program_id):
+        raise OSError("read unavailable")
+
+    runner._persist_program_metadata_async = write
+    monkeypatch.setattr(runner.db, "get", read)
+    program = Program(id="seed", code="pass", generation=0)
+    with pytest.raises(BillingPersistenceError, match="reconcile meta charge"):
+        asyncio.run(runner._record_meta_cost(program, 1.0))
+    assert runner._paid_admission_closed()
 
 
 def test_exhausted_budget_does_not_send_another_initial_request(runner):

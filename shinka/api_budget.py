@@ -107,15 +107,22 @@ async def run_request(
         return result
 
     exhausted = scope.exhausted
-    if (exhausted is not None or scope.admission_closed()) and may_charge(model, kind):
-        if scope.admission_closed() or (exhausted is not None and exhausted()):
+    request = None
+    if may_charge(model, kind):
+        def blocked():
+            return scope.admission_closed() or (exhausted is not None and exhausted())
+
+        if blocked():
             raise APIBudgetExceeded()
-        assert exhausted is not None
-        request = _PaidRequest(lambda: scope.admission_closed() or exhausted())
+        request = _PaidRequest(blocked)
+
+    if cancellation == "drain" or (request is not None and exhausted is not None):
         return await _receive_shielded(receive, request)
-    if cancellation == "drain":
-        return await _receive_shielded(receive, None)
-    return await receive()
+    token = _paid_request.set(request)
+    try:
+        return await receive()
+    finally:
+        _paid_request.reset(token)
 
 
 async def _receive_shielded(

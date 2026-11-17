@@ -93,10 +93,11 @@ usable text. A reply exhausted by `max_output_tokens` stops proposal retries;
 increase `llm_kwargs.max_tokens` or lower `reasoning_efforts` before retrying.
 The async runner checks known charges before paid requests and retries,
 including embeddings, novelty checks, prompt evolution, and final meta-analysis.
-Requests already running can complete and add costs above the limit. Local and
-known zero-price requests can finish their stages without a paid request.
-Failed proposal, initialization, prompt, and meta-analysis charges are retained
-on resume.
+Requests already running can complete and add costs above the limit. Zero-price
+requests can finish their stages after the limit, including unpriced local
+routes. The runner restores persisted charges before starting new work and
+pauses paid requests while retrying a failed charge write. If it still cannot
+save the charge, it stops the run and retries the pending write during shutdown.
 
 Cancellation of initialization, proposal generation, prompt evolution, or
 meta-analysis retains known charges on resume. Small accounting writes finish before

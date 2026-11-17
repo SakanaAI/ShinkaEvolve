@@ -7,7 +7,12 @@ import openai
 import pytest
 
 import shinka.embed.embedding as embedding_module
-from shinka.api_budget import cost_scope
+from shinka.api_budget import (
+    APIBudgetExceeded,
+    check_provider_attempt,
+    cost_scope,
+    run_request,
+)
 from shinka.core.async_runner import ShinkaEvolveRunner
 
 
@@ -130,5 +135,26 @@ def test_uncapped_gemini_embedding_records_charge_when_cancelled(monkeypatch):
                 await task
             cost_scope.reset(token)
         assert scope.pending == pytest.approx(0.6)
+
+    asyncio.run(run())
+
+
+def test_uncapped_transport_rechecks_admission_after_a_journal_error():
+    async def run():
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.evo_config = SimpleNamespace(max_api_costs=None)
+        runner.total_api_cost = 0.0
+        scope, token = runner._begin_api_cost_scope()
+
+        async def provider():
+            check_provider_attempt()
+            runner._billing_writes_blocked = True
+            check_provider_attempt()
+
+        try:
+            with pytest.raises(APIBudgetExceeded):
+                await run_request(provider, lambda _: 0.0, "gpt-5-mini")
+        finally:
+            await runner._finish_api_cost_scope(scope, token, "proposal", 1)
 
     asyncio.run(run())

@@ -3,9 +3,20 @@
 import asyncio
 import json
 import sqlite3
-from typing import Awaitable
+from typing import Any, Awaitable
 
 from shinka.llm.providers.errors import BilledCancellationError
+
+
+class BillingPersistenceError(RuntimeError):
+    """Known charges could not be saved to the attempt journal."""
+
+
+def api_cost_in_metadata(metadata: dict[str, Any]) -> float:
+    return sum(
+        metadata.get(field, 0.0) or 0.0
+        for field in ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
+    )
 
 
 def cancellation_with_cost(
@@ -53,8 +64,5 @@ def journaled_api_costs(
             if charge_id in counted:
                 continue
             counted.add(charge_id)
-        total += sum(
-            details.get(field, 0.0) or 0.0
-            for field in ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
-        )
+        total += api_cost_in_metadata(details)
     return total
