@@ -176,6 +176,7 @@ def test_setup_restores_handoff_charge_before_seed_requests(runner, tmp_path):
         runner.max_db_workers = 1
         runner.enable_deadlock_debugging = False
         runner.wandb_logger = SimpleNamespace(enabled=False)
+        del runner.prompt_sampler
         runner.llm = SimpleNamespace(
             query=AsyncMock(), get_kwargs=lambda **kwargs: {"model_name": "gpt-5-mini"}
         )
@@ -240,6 +241,28 @@ def test_exhausted_budget_does_not_send_another_initial_request(runner):
     )
     with pytest.raises(RuntimeError, match="budget"):
         asyncio.run(runner._generate_initial_program())
+
+
+def test_initialization_can_use_an_unpriced_model_at_the_cap(runner):
+    model = "local/test@http://127.0.0.1:1234/v1"
+    runner.evo_config.llm_models = [model]
+    runner.total_api_cost = 5.0
+    query = AsyncMock(return_value=QueryResult(
+        " ```python\npass\n```", "msg", "sys", [], model, {}, 1, 1
+    ))
+    runner.llm = SimpleNamespace(
+        query=query, get_kwargs=lambda **kwargs: {"model_name": model}
+    )
+    runner._setup_initial_program_with_metadata = AsyncMock()
+    asyncio.run(runner._generate_initial_program())
+    query.assert_awaited_once()
+
+
+def test_file_seed_can_start_with_no_budget_configuration(runner):
+    del runner.evo_config
+    runner._setup_initial_program_with_metadata = AsyncMock()
+    asyncio.run(runner._setup_initial_program("pass"))
+    runner._setup_initial_program_with_metadata.assert_awaited_once()
 
 
 @pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])

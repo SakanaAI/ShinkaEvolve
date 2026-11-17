@@ -843,7 +843,7 @@ class ShinkaEvolveRunner:
         return cost >= budget or math.isclose(cost, budget, rel_tol=1e-12)
 
     def _begin_api_cost_scope(self) -> tuple[ApiCostScope, Token[ApiCostScope | None]]:
-        budget = getattr(self.evo_config, "max_api_costs", None)
+        budget = getattr(getattr(self, "evo_config", None), "max_api_costs", None)
         scope = ApiCostScope(
             self._api_budget_exhausted if budget is not None else None,
             admission_closed=self._paid_admission_closed,
@@ -2141,7 +2141,10 @@ class ShinkaEvolveRunner:
     async def _generate_initial_program(self):
         """Generate initial program using LLM, with retries."""
         budget = getattr(self.evo_config, "max_api_costs", None)
-        sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
+        if self._api_budget_exhausted():
+            models = self.evo_config.llm_models
+            if all(may_charge(model) for model in models):
+                raise APIBudgetExceeded()
 
         # Select LLM once per program generation (before all attempts)
         model_sample_probs = None
@@ -2155,6 +2158,7 @@ class ShinkaEvolveRunner:
         if paid and self._api_budget_exhausted():
             raise APIBudgetExceeded()
 
+        sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
         total_costs = 0.0
 
         cost_before_setup = self.total_api_cost
