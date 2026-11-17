@@ -194,22 +194,17 @@ def gemini_extract_thoughts_and_content(response):
     content_parts = []
 
     # Access the first candidate's content parts
-    if hasattr(response, "candidates") and response.candidates:
-        candidate = response.candidates[0]
-        has_content = hasattr(candidate, "content")
-        has_parts = has_content and hasattr(candidate.content, "parts")
-        if has_parts:
-            for part in candidate.content.parts:
-                # Check if part has text
-                part_text = getattr(part, "text", "")
-                if not part_text:
-                    continue
-
-                # Check if this part is a thought
-                if getattr(part, "thought", False):
-                    thoughts.append(part_text)
-                else:
-                    content_parts.append(part_text)
+    candidates = getattr(response, "candidates", None)
+    if candidates:
+        parts = getattr(getattr(candidates[0], "content", None), "parts", None)
+        for part in parts or ():
+            part_text = getattr(part, "text", "")
+            if not part_text:
+                continue
+            if getattr(part, "thought", False):
+                thoughts.append(part_text)
+            else:
+                content_parts.append(part_text)
 
     # Combine thoughts and content
     thought = "\n".join(thoughts) if thoughts else ""
