@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Union, List, Optional, Tuple
 
@@ -5,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from shinka.google_genai import google_genai_auth_mode
+from shinka.api_budget import APIBudgetExceeded, check_provider_attempt, run_request
 from .client import (
     get_async_client_embed,
     get_client_embed,
@@ -44,7 +46,14 @@ def _get_google_embeddings_and_cost(
                 exc,
             )
 
-        result = client.models.embed_content(model=model, contents=text)
+        request_options = {}
+        if check_provider_attempt():
+            request_options["config"] = {
+                "http_options": {"retry_options": {"attempts": 1}}
+            }
+        result = client.models.embed_content(
+            model=model, contents=text, **request_options
+        )
         embeddings.append(result.embeddings[0].values)
 
         if token_count is None:
@@ -419,42 +428,57 @@ class AsyncEmbeddingClient:
 
         # Handle Gemini models (no async API yet, use thread pool)
         if self.provider == "google":
-            import asyncio
-
+            cost = 0.0
             try:
-                embeddings, cost = await asyncio.to_thread(
-                    _get_google_embeddings_and_cost,
-                    client=self.async_client,
-                    model_name=self.model,
-                    texts=code,
-                )
+                embeddings = []
+                for text in code:
+                    vectors, charge = await run_request(
+                        lambda: asyncio.to_thread(
+                            _get_google_embeddings_and_cost,
+                            client=self.async_client,
+                            model_name=self.model,
+                            texts=[text],
+                        ),
+                        lambda reply: reply[1],
+                        self.model_name,
+                        "embedding",
+                    )
+                    embeddings.extend(vectors)
+                    cost += charge
                 if single_code:
                     return embeddings[0] if embeddings else [], cost
                 else:
                     return embeddings, cost
+            except APIBudgetExceeded:
+                return ([] if single_code else [[]]), cost
             except Exception as e:
                 logger.error(f"Error getting Gemini embedding: {e}")
-                if single_code:
-                    return [], 0.0
-                else:
-                    return [[]], 0.0
+                return ([] if single_code else [[]]), cost
 
         # Handle OpenAI and Azure models (true async)
-        try:
-            response = await self.async_client.embeddings.create(
+        async def embed():
+            client = self.async_client
+            if check_provider_attempt():
+                client = client.with_options(max_retries=0)
+            response = await client.embeddings.create(
                 model=self.model, input=code, encoding_format="float"
             )
-            cost = _get_embedding_cost(response, self.model_name)
+            return response, _get_embedding_cost(response, self.model_name)
+
+        cost = 0.0
+        try:
+            response, cost = await run_request(
+                embed, lambda reply: reply[1], self.model_name, "embedding"
+            )
             if single_code:
                 return response.data[0].embedding, cost
             else:
                 return [d.embedding for d in response.data], cost
+        except APIBudgetExceeded:
+            return ([] if single_code else [[]]), cost
         except Exception as e:
             logger.error(f"Error getting embedding: {e}")
-            if single_code:
-                return [], 0.0
-            else:
-                return [[]], 0.0
+            return ([] if single_code else [[]]), cost
 
     def get_embedding(
         self, code: Union[str, List[str]]

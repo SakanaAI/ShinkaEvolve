@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel
 
+from shinka.api_budget import check_provider_attempt
 from shinka.llm.constants import TIMEOUT
 
 from .result import QueryResult
@@ -243,6 +244,7 @@ async def _run_headless_command_async(
 ):
     attempts = _CLAUDE_TRANSIENT_RETRIES + 1
     for attempt in range(attempts):
+        check_provider_attempt()
         if _uses_shell_invocation(model):
             process = await asyncio.create_subprocess_shell(
                 shlex.join(command),

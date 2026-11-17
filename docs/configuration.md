@@ -64,7 +64,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `novelty_llm_models` | `Optional[List[str]]` | `None` | Optional novelty-judge model pool. |
 | `novelty_llm_kwargs` | `dict` | `{}` | kwargs for novelty-judge LLM calls. |
 | `use_text_feedback` | `bool` | `False` | Include text feedback in mutation prompts. |
-| `max_api_costs` | `Optional[float]` | `None` | API budget cap in USD; stops new submissions at cap. |
+| `max_api_costs` | `Optional[float]` | `None` | Stops new paid API requests once known charges reach this amount in USD. |
 | `enable_controlled_oversubscription` | `bool` | `False` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `str` | `'adaptive'` | Proposal target controller mode: `adaptive` or `fixed`. |
 | `proposal_target_min_samples` | `int` | `5` | Minimum completed timing samples required before adaptive targeting activates. |
@@ -91,12 +91,15 @@ initial generation-zero prompt exists. Existing IDs and fitness data are retaine
 Billed OpenAI replies count toward `max_api_costs` even when they contain no
 usable text. A reply exhausted by `max_output_tokens` stops proposal retries;
 increase `llm_kwargs.max_tokens` or lower `reasoning_efforts` before retrying.
+The async runner checks known charges before paid requests and retries,
+including embeddings, novelty checks, prompt evolution, and final meta-analysis.
+Requests already running can complete and add costs above the limit. Local and
+known zero-price requests can finish their stages without a paid request.
 Failed proposal, initialization, prompt, and meta-analysis charges are retained
-on resume. The budget stops new submissions; requests already running can
-complete and add costs.
+on resume.
 
-Cancellation of initialization, proposal generation, or prompt evolution
-retains known charges on resume. Small accounting writes finish before
+Cancellation of initialization, proposal generation, prompt evolution, or
+meta-analysis retains known charges on resume. Small accounting writes finish before
 cancellation propagates, including when cancellation interrupts an insert.
 
 When calling the LLM clients directly, a billed failure can return a

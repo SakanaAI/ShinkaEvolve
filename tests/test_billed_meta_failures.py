@@ -102,6 +102,104 @@ def test_final_meta_persists_billed_sibling_on_batch_cancellation(
         db.close()
 
 
+@pytest.mark.parametrize(
+    ("initial_spend", "model", "calls", "new_cost"),
+    [
+        (0.0, "gpt-5-mini", 1, 1.0),
+        (1.0, "gpt-5-mini", 0, 0.0),
+        (1.0, "local/test@http://127.0.0.1:1234/v1", 3, 0.0),
+    ],
+)
+def test_final_meta_admits_each_paid_stage(
+    tmp_path, monkeypatch, initial_spend, model, calls, new_cost
+):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1)
+    )
+    requests = []
+
+    async def provider(msg, system_msg, model_name, **kwargs):
+        requests.append(msg)
+        cost = 0.0 if model_name.startswith("local/") else 1.0
+        return QueryResult(
+            "summary", msg, system_msg, [], model_name, {}, 1, 1, cost=cost
+        )
+
+    monkeypatch.setattr(llm_module, "query_async", provider)
+    try:
+        program = Program(
+            id="best",
+            code="pass",
+            generation=1,
+            metadata={"patch_name": "best", "api_costs": initial_spend},
+        )
+        db.add(program)
+        sync = MetaSummarizer()
+        sync.add_evaluated_program(program)
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.db = db
+        runner.prompt_db = None
+        runner.evo_config = EvolutionConfig(max_api_costs=1.0)
+        runner.total_api_cost = initial_spend
+        runner.results_dir = tmp_path
+        runner.async_db = SimpleNamespace()
+        runner.meta_summarizer = AsyncMetaSummarizer(
+            sync, AsyncLLMClient(model_names=model, verbose=False)
+        )
+
+        assert asyncio.run(runner._perform_final_meta_summary(program)) == (
+            calls == 3,
+            new_cost,
+        )
+        assert len(requests) == calls
+        assert runner.total_api_cost == pytest.approx(initial_spend + new_cost)
+        assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(
+            initial_spend + new_cost
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("commit_before_error", [False, True])
+def test_meta_metadata_write_failure_keeps_bill_once(tmp_path, commit_before_error):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1)
+    )
+    try:
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.db = db
+        runner.prompt_db = None
+        runner.total_api_cost = 0.0
+        program = Program(id="best", code="pass", generation=1)
+        db.add(program)
+
+        async def update(program_id, metadata):
+            if commit_before_error:
+                db.conn.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata), program_id),
+                )
+                db.conn.commit()
+            raise OSError("metadata write failed")
+
+        async def record(**kwargs):
+            db.record_attempt_event(**kwargs)
+
+        runner.async_db = SimpleNamespace(
+            update_program_metadata_async=update, record_attempt_event_async=record
+        )
+        with pytest.raises(OSError, match="metadata write failed"):
+            asyncio.run(runner._record_meta_cost(program, 0.80))
+
+        assert runner.total_api_cost == pytest.approx(0.80)
+        assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(0.80)
+        assert (program.metadata or {}).get("meta_cost", 0.0) == (
+            0.80 if commit_before_error else 0.0
+        )
+    finally:
+        db.close()
+
+
 @pytest.mark.parametrize("recommendations", [None, "recommendation"])
 def test_post_evaluation_meta_cost_survives_missing_output_or_write_error(
     tmp_path, recommendations

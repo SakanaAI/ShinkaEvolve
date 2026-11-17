@@ -17,7 +17,7 @@ def cancellation_with_cost(
     return BilledCancellationError(usage)
 
 
-async def finish_cost_recording(operation: Awaitable[None]) -> None:
+async def finish_cost_recording(operation: Awaitable[object]) -> None:
     """Finish the same journal write before propagating cancellation."""
     task = asyncio.ensure_future(operation)
     try:

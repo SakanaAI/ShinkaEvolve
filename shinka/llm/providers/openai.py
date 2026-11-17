@@ -1,6 +1,7 @@
 import backoff
 import openai
 import time
+from shinka.api_budget import check_provider_attempt
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .errors import EmptyResponseError
 from .pricing import calculate_cost, model_exists
@@ -271,6 +272,8 @@ async def query_openai_async(
     **kwargs,
 ) -> QueryResult:
     """Query OpenAI model asynchronously."""
+    if check_provider_attempt():
+        client = client.with_options(max_retries=0)
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
     thought = ""
     if output_model is None:

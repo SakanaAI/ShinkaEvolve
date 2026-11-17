@@ -6,6 +6,7 @@ import multiprocessing as mp
 import asyncio
 from pydantic import BaseModel
 import time
+from shinka.api_budget import APIBudgetExceeded, run_request
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
@@ -119,6 +120,8 @@ async def _collect_async_batch(
         except NonRetryableLLMError as exc:
             permanent_error = permanent_error or exc
             total_cost += exc.cost
+        except APIBudgetExceeded:
+            continue
         except Exception as exc:
             logger.info("Error in batch query task %s: %s", index, exc)
         else:
@@ -813,13 +816,17 @@ class AsyncLLMClient:
         try:
             while try_count < MAX_RETRIES:
                 try:
-                    result = await query_async(
-                        msg=msg,
-                        system_msg=system_msg,
-                        msg_history=msg_history,
-                        output_model=self.output_model,
-                        model_posteriors=model_posteriors,
-                        **llm_kwargs,
+                    result = await run_request(
+                        lambda: query_async(
+                            msg=msg,
+                            system_msg=system_msg,
+                            msg_history=msg_history,
+                            output_model=self.output_model,
+                            model_posteriors=model_posteriors,
+                            **llm_kwargs,
+                        ),
+                        lambda reply: (reply.cost or 0.0) if reply is not None else 0.0,
+                        llm_kwargs["model_name"],
                     )
                     unanswered.add_costs_to(result)
                     if self.verbose and hasattr(result, "cost") and result.cost is not None:
@@ -828,6 +835,10 @@ class AsyncLLMClient:
                 except NonRetryableLLMError as exc:
                     exc.cost += unanswered.totals["cost"]
                     raise
+                except APIBudgetExceeded:
+                    if not unanswered.count:
+                        raise
+                    break
                 except Exception as e:
                     logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                     if _stop_after_empty_reply(e, unanswered):

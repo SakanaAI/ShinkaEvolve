@@ -2,6 +2,7 @@ import backoff
 import logging
 from typing import Any, cast
 from google.genai import types
+from shinka.api_budget import APIBudgetExceeded, check_provider_attempt
 from shinka.llm.constants import (
     BACKOFF_MAX_TIME,
     BACKOFF_MAX_TRIES,
@@ -25,7 +26,7 @@ GeminiStructuredOutputError = StructuredOutputNotSupportedError
 
 
 def _giveup_gemini(exc: Exception) -> bool:
-    return isinstance(exc, NonRetryableLLMError)
+    return isinstance(exc, (NonRetryableLLMError, APIBudgetExceeded))
 
 
 def build_gemini_thinking_config(thinking_budget: int):
@@ -344,6 +345,10 @@ async def query_gemini_async(
         thinking_level=kwargs.get("thinking_level"),
     )
 
+    if check_provider_attempt():
+        generation_config.http_options = types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=1)
+        )
     response = await client.aio.models.generate_content(
         model=model,
         contents=contents,
