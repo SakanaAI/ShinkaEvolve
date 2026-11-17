@@ -2,6 +2,7 @@ import subprocess
 import time
 import threading
 import os
+import signal
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
 from shinka.utils import load_results, parse_time_to_seconds
@@ -18,10 +19,13 @@ class ProcessWithLogging:
         process: subprocess.Popen,
         log_files: Tuple[TextIO, TextIO],
         log_threads: Tuple[threading.Thread, threading.Thread],
+        *,
+        process_group_id: Optional[int] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
+        self._process_group_id = process_group_id
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -34,6 +38,17 @@ class ProcessWithLogging:
     def __repr__(self):
         """Return a detailed string representation."""
         return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.process.returncode})"
+
+    def kill_for_timeout(self) -> None:
+        """Kill the evaluator's isolated group when available and reap the root."""
+        if self._process_group_id is None:
+            self.process.kill()
+        else:
+            try:
+                os.killpg(self._process_group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        self.process.wait()
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
@@ -76,6 +91,8 @@ def submit(
     cmd: list[str],
     verbose: bool = False,
     env_overrides: Optional[Dict[str, str]] = None,
+    *,
+    timeout: Optional[str] = None,
 ):
     """
     Submits a command for local execution with real-time logging.
@@ -84,6 +101,7 @@ def submit(
         log_dir: The directory to store logs.
         cmd: The command and its arguments as a list of strings.
         verbose: Whether to enable verbose logging.
+        timeout: Set for evaluations that will be monitored with a timeout.
 
     Returns:
         ProcessWithLogging: Wrapper containing the Popen object and logging.
@@ -101,6 +119,7 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
+    start_new_session = os.name == "posix" and timeout is not None
     # Use PIPE to capture output and redirect to files in real-time
     process = subprocess.Popen(
         cmd,
@@ -110,6 +129,7 @@ def submit(
         bufsize=1,  # Line buffered
         universal_newlines=True,
         env=env,
+        start_new_session=start_new_session,
     )
 
     # Open log files for writing with line buffering
@@ -133,7 +153,10 @@ def submit(
 
     # Create wrapper with logging capabilities
     wrapped_process = ProcessWithLogging(
-        process, (stdout_file, stderr_file), (stdout_thread, stderr_thread)
+        process,
+        (stdout_file, stderr_file),
+        (stdout_thread, stderr_thread),
+        process_group_id=process.pid if start_new_session else None,
     )
 
     if verbose:
@@ -177,8 +200,7 @@ def monitor(
                 timeout_seconds is not None
                 and time.time() - start_time >= timeout_seconds
             ):
-                process.kill()
-                process.wait()
+                process.kill_for_timeout()
                 raise TimeoutError(f"Local evaluator exceeded timeout of {timeout}")
 
             if verbose:

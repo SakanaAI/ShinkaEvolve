@@ -240,6 +240,7 @@ class JobScheduler:
                 cmd,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
+                timeout=timeout,
             )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
