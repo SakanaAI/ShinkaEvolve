@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # until their exit is seen: a launched evaluator nobody kept a handle on is
 # exactly the one that needs killing.
 _LIVE_PROCESSES: "set[ProcessWithLogging]" = set()
+if hasattr(os, "register_at_fork"):
+    # A forked child inherits this set, the exit hook and the signal hook, but
+    # the evaluators belong to its parent.
+    os.register_at_fork(after_in_child=_LIVE_PROCESSES.clear)
 
 
 class ProcessWithLogging:

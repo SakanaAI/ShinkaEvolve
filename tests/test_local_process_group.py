@@ -140,7 +140,9 @@ def _orchestrator(
     runner_script = tmp_path / "runner.py"
     runner_script.write_text(
         dedent(f"""
+            import os
             import sys
+            import threading
             import time
             from shinka.launch import local
 
@@ -151,8 +153,8 @@ def _orchestrator(
                 [sys.executable, {str(evaluator)!r}, "--results_dir", results_dir],
             )
             print(process.pid, flush=True)
-            {then}
             """)
+        + dedent(then)
     )
     runner = subprocess.Popen(
         [sys.executable, str(runner_script)],
@@ -203,6 +205,36 @@ def test_second_fatal_signal_does_not_interrupt_the_first(tmp_path: Path) -> Non
         assert runner.wait(timeout=10.0) in (-signal.SIGHUP, -signal.SIGTERM)
         assert wait_until(lambda: not is_alive(evaluator))
         assert wait_until(lambda: not is_alive(worker))
+
+
+@pytest.mark.parametrize(
+    "child_ends", ["sys.exit(0)", "os.kill(os.getpid(), signal.SIGTERM)"]
+)
+def test_forked_child_leaves_its_parents_evaluators_alone(
+    tmp_path: Path, child_ends: str
+) -> None:
+    # The child inherits the exit hook, the signal hook and, here, a wait lock
+    # that a thread of the parent held at the moment of the fork.
+    fork_a_child = f"""
+        import signal
+
+        threading.Thread(target=process.wait, daemon=True).start()
+        time.sleep(0.2)
+        child = os.fork()
+        if child == 0:
+            {child_ends}
+        print(child, flush=True)
+        time.sleep(30)
+        """
+    with _orchestrator(tmp_path, then=fork_a_child) as (runner, evaluator, worker):
+        assert runner.stdout is not None
+        child = int(runner.stdout.readline())
+        try:
+            assert wait_until(lambda: not is_alive(child))
+            assert is_alive(evaluator)
+            assert is_alive(worker)
+        finally:
+            kill_leftovers(child)
 
 
 def test_fatal_signal_handler_cannot_be_reentered_and_never_waits(
