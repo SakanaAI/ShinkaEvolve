@@ -49,7 +49,11 @@ ssh -L 8888:localhost:8888 username@remote-host
 ```
 
 The server listens on `127.0.0.1` by default, so an SSH tunnel is the way in
-from another machine. See [Remote Access](#remote-access) for compute nodes.
+from another machine. The tunnel has to end on the machine that runs the
+server: `localhost` in `-L 8888:localhost:8888` is that machine's own
+localhost. A tunnel that reaches the server over the network, such as
+`-L 8888:compute-node:8888` through a login node, is refused unless the server
+was started with `--host`. See [Remote Access](#remote-access).
 
 ### Async runner support
 
@@ -74,7 +78,7 @@ shinka_visualize --db results_20241201_120000/programs.sqlite --open
 | `root_directory` | Current dir | Root directory to search for database files |
 | `-p, --port` | `8000` | Port for the web server |
 | `--host` | `127.0.0.1` | Address to listen on. `0.0.0.0` accepts connections from other machines |
-| `--allowed-host` | None | Extra hostname browsers may use to reach the server (repeatable) |
+| `--allowed-host` | None | Extra hostname browsers may use to reach the server (repeatable). See [Opening the UI by hostname](#opening-the-ui-by-hostname) |
 | `--db` | Auto-detect | Path to specific SQLite database file |
 | `--open` | `False` | Auto-open browser |
 
@@ -170,6 +174,29 @@ on that port can read the run data under the root directory. Stop the server
 when you are done, or pass the node's cluster-internal address to `--host`
 instead of `0.0.0.0` to narrow who can connect.
 
+Versions before the server listened on localhost only needed no `--host` for
+this second form. If a tunnel that used to work now reports "connection
+refused", this is why.
+
+### Opening the UI by hostname
+
+Through a tunnel you open `http://localhost:8888`, which always works. Opening
+`http://<name>:8888` directly needs two things: the server must listen beyond
+localhost (`--host`), and it must know `<name>` as its own. It refuses any
+other name with `403 Host not allowed`, which keeps a website in your browser
+from reaching it under a name of its choosing.
+
+A server started with `--host` accepts `localhost`, any IP address, the
+machine's hostname, its short name, `<name>.local` and the full name its
+resolver reports. Start-up prints the list:
+
+```
+[*] Answering requests addressed to: localhost, node17, node17.cluster.example.org, node17.local, or any IP address. Add a name with --allowed-host.
+```
+
+For anything else, such as a DNS alias or a reverse proxy's name, add
+`--allowed-host <name>`.
+
 ### Multiple experiments
 
 ```bash
@@ -184,8 +211,8 @@ shinka_visualize exp2/ --port 8889
 | Issue | Solution |
 |-------|---------|
 | Database not found | Specify path: `shinka_visualize --db /full/path/to/programs.sqlite` |
-| `403 Host not allowed` | You opened the UI under a name the server does not know (DNS alias, reverse proxy). Restart with `--allowed-host <name>` |
-| Connection refused from another machine | The server listens on localhost only. Use an SSH tunnel, or `--host` (see [Remote Access](#remote-access)) |
+| `403 Host not allowed` | You opened the UI under a name the server does not know (DNS alias, reverse proxy). Start-up prints the names it accepts; restart with `--allowed-host <name>` to add one |
+| Connection refused from another machine, or through a tunnel to `compute-node:8888` | The server listens on localhost only. Tunnel to the server's own localhost, or start it with `--host` (see [Remote Access](#remote-access)) |
 | Port in use | Use different port: `--port 9000` |
 | No data displayed | Check experiment has started, verify path, check permissions |
 | SSH tunnel issues | Test with `curl http://localhost:8888`; debug with `ssh -v ...` |
@@ -233,8 +260,9 @@ The WebUI has no login. It is built for one person looking at their own runs:
   and plot images (`.png`, `.jpg`, `.jpeg`, `.gif`) inside the root directory,
   and follows no symlink out of it.
 - It answers only requests addressed to `localhost`, an IP address, this
-  machine's hostname or an `--allowed-host` name, and sends no CORS headers, so
-  another website open in your browser cannot read your runs.
+  machine's hostname or an `--allowed-host` name (with `--host`, also the
+  machine's full and `.local` names), and sends no CORS headers, so another
+  website open in your browser cannot read your runs.
 - Program names, descriptions and meta notes are written by the model. The UI
   shows them as text and never runs markup they contain.
 - Third-party scripts load from public CDNs pinned to exact versions with
