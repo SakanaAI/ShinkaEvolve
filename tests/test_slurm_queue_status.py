@@ -168,6 +168,24 @@ def test_jobs_are_collected_once_the_lookup_recovers(
     assert "recovered after 720 failure(s)" in caplog.text
 
 
+def test_unexpected_lookup_error_does_not_report_a_job_as_finished(
+    monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    replies = iter([["101"], UnicodeDecodeError("utf-8", b"\xff", 0, 1, "banner")])
+    fake_squeue(monkeypatch, lambda job_ids: next(replies, ["101", "102"]))
+    poller = SlurmQueuePoller(poll_interval=5.0)
+    assert poller.active_jobs(["101"]) == {"101"}
+
+    clock.now += 5.0
+    with pytest.raises(UnicodeDecodeError):
+        poller.active_jobs(["101", "102"])
+
+    # No lookup has answered for job 102 yet.
+    assert poller.active_jobs(["101", "102"]) == {"101", "102"}
+    clock.now += 5.0
+    assert poller.active_jobs(["101", "102"]) == {"101", "102"}
+
+
 def test_verbose_monitor_survives_a_job_that_is_still_listed(
     monkeypatch: pytest.MonkeyPatch,
     clock: FakeClock,

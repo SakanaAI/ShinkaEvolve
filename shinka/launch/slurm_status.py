@@ -143,24 +143,25 @@ class SlurmQueuePoller:
 
     def _poll(self, job_ids: set[str], now: float) -> None:
         self._polled_at = now
+        active = self._query(job_ids, now) if job_ids else set()
+        # Recorded only now: a lookup that raised has answered for no job.
         self._polled = job_ids
+        self._active = active
         self._unpolled = set()
-        if not job_ids:
-            self._active = set()
-            return
+
+    def _query(self, job_ids: set[str], now: float) -> set[str]:
         try:
             queue = query_active_jobs(sorted(job_ids))
         except (OSError, subprocess.SubprocessError) as error:
             self._report_failure(len(job_ids), now, error)
-            self._active = set(job_ids)
-            return
-        self._active = set(queue)
-        self._stalled_jobs.observe(job_ids, queue, now)
+            return set(job_ids)
         if self._failures:
             logger.info("Slurm status lookup recovered after %s failure(s)", self._failures)
         self._failures = 0
         self._failing_since = None
         self._failure_reported_at = None
+        self._stalled_jobs.observe(job_ids, queue, now)
+        return set(queue)
 
     def _report_failure(self, job_count: int, now: float, error: Exception) -> None:
         self._failures += 1
