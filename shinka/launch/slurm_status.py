@@ -4,7 +4,7 @@ import logging
 import subprocess
 import threading
 import time
-from typing import Iterable, Optional
+from typing import Iterable, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,10 @@ STATUS_POLL_SECONDS = 5.0
 # for as long as it lasts. The run stalls and resumes when the controller
 # answers; until then the outage is reported this often.
 STATUS_OUTAGE_LOG_SECONDS = 300.0
+# The runner puts no clock on a Slurm job, so one that Slurm never starts or
+# never clears holds its evaluation slot for good. Say so once a job has not
+# been running for this long, and again this often.
+STALLED_JOB_SECONDS = 1800.0
 
 
 def is_unknown_job_error(stderr: Optional[str]) -> bool:
@@ -23,11 +27,26 @@ def is_unknown_job_error(stderr: Optional[str]) -> bool:
     return (stderr or "").strip().endswith("Invalid job id specified")
 
 
-def query_active_jobs(job_ids: list[str]) -> set[str]:
+class QueuedJob(NamedTuple):
+    """State and pending reason of a job, as ``squeue`` reports them."""
+
+    state: str
+    reason: str
+
+    @property
+    def is_waiting(self) -> bool:
+        return self.state not in ("", "RUNNING")
+
+    @property
+    def is_held(self) -> bool:
+        return "held" in self.reason.lower()
+
+
+def query_active_jobs(job_ids: list[str]) -> dict[str, QueuedJob]:
     """Return the given jobs that are still pending, running or completing."""
     try:
         result = subprocess.run(
-            ["squeue", "--noheader", "--format=%i", "--jobs", ",".join(job_ids)],
+            ["squeue", "--noheader", "--format=%i|%T|%r", "--jobs", ",".join(job_ids)],
             capture_output=True,
             text=True,
             check=True,
@@ -39,9 +58,56 @@ def query_active_jobs(job_ids: list[str]) -> set[str]:
         # The controller purges a finished job after MinJobAge. It reports that
         # for a single id; ask one by one if it ever does so for a whole list.
         if len(job_ids) == 1:
-            return set()
-        return {job for job_id in job_ids for job in query_active_jobs([job_id])}
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+            return {}
+        still_known: dict[str, QueuedJob] = {}
+        for job_id in job_ids:
+            still_known.update(query_active_jobs([job_id]))
+        return still_known
+    active = {}
+    for line in result.stdout.splitlines():
+        id_column, _, status = line.partition("|")
+        state, _, reason = status.partition("|")
+        # Only the id decides whether a job is tracked: take it also from a
+        # line that lacks the requested columns.
+        id_tokens = id_column.split()
+        if id_tokens:
+            active[id_tokens[0]] = QueuedJob(state.strip(), reason.strip())
+    return active
+
+
+class StalledJobReporter:
+    """Warns about jobs that stay in the queue without running."""
+
+    def __init__(self) -> None:
+        self._waiting_since: dict[str, float] = {}
+        self._reported_at: dict[str, float] = {}
+
+    def observe(self, polled: set[str], queue: dict[str, QueuedJob], now: float) -> None:
+        """Take in one answer of the queue about the ``polled`` jobs."""
+        waiting = {job_id: job for job_id, job in queue.items() if job.is_waiting}
+        for job_id in polled - waiting.keys():
+            self._waiting_since.pop(job_id, None)
+            self._reported_at.pop(job_id, None)
+
+        stalled = []
+        for job_id, job in sorted(waiting.items()):
+            waited = now - self._waiting_since.setdefault(job_id, now)
+            reported_at = self._reported_at.get(job_id)
+            if reported_at is None:
+                due = job.is_held or waited >= STALLED_JOB_SECONDS
+            else:
+                due = now - reported_at >= STALLED_JOB_SECONDS
+            if due:
+                self._reported_at[job_id] = now
+                stalled.append(
+                    f"{job_id} {job.state} ({job.reason}) for {waited / 60:.0f} min"
+                )
+        if stalled:
+            logger.warning(
+                "Slurm job(s) not running; each holds an evaluation slot until Slurm "
+                "starts or clears it, or it is cancelled with scancel: %s",
+                "; ".join(stalled),
+            )
 
 
 class SlurmQueuePoller:
@@ -58,6 +124,7 @@ class SlurmQueuePoller:
         self._failures = 0
         self._failing_since: Optional[float] = None
         self._failure_reported_at: Optional[float] = None
+        self._stalled_jobs = StalledJobReporter()
 
     def active_jobs(self, job_ids: Iterable[str]) -> set[str]:
         """Return the subset of ``job_ids`` that has not left the queue."""
@@ -82,11 +149,13 @@ class SlurmQueuePoller:
             self._active = set()
             return
         try:
-            self._active = query_active_jobs(sorted(job_ids))
+            queue = query_active_jobs(sorted(job_ids))
         except (OSError, subprocess.SubprocessError) as error:
             self._report_failure(len(job_ids), now, error)
             self._active = set(job_ids)
             return
+        self._active = set(queue)
+        self._stalled_jobs.observe(job_ids, queue, now)
         if self._failures:
             logger.info("Slurm status lookup recovered after %s failure(s)", self._failures)
         self._failures = 0

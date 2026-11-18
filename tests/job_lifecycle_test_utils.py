@@ -46,7 +46,9 @@ def fake_squeue(
         assert cmd[0] == "squeue"
         flag = "--jobs" if "--jobs" in cmd else "-j"
         job_ids = cmd[cmd.index(flag) + 1].split(",")
-        calls.append({"job_ids": job_ids, "timeout": kwargs.get("timeout")})
+        calls.append(
+            {"cmd": cmd, "job_ids": job_ids, "timeout": kwargs.get("timeout")}
+        )
         outcome = reply(job_ids)
         if isinstance(outcome, BaseException):
             raise outcome
