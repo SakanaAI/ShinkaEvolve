@@ -60,6 +60,15 @@ def load_result_logs(results_dir: str) -> dict[str, str]:
     return logs
 
 
+def _load_json(path: Path) -> Any:
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def _unreadable_json(path: Path, exc: Exception) -> str:
+    return f"Could not decode JSON from {path} ({type(exc).__name__}: {exc})"
+
+
 def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str, Any]:
     """
     Loads results from the specified directory.
@@ -80,14 +89,12 @@ def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str
 
     metrics_file_path = results_dir_path / "metrics.json"
     if metrics_file_path.exists():
-        with open(metrics_file_path, "r") as f:
-            try:
-                loaded_results["metrics"] = json.load(f)
-            except json.JSONDecodeError:
-                file_path_str = str(metrics_file_path)
-                warning_msg = f"Could not decode JSON from {file_path_str}"
-                logger.warning(warning_msg)
-                loaded_results["evaluation_error"] = warning_msg
+        try:
+            loaded_results["metrics"] = _load_json(metrics_file_path)
+        except (OSError, ValueError) as exc:
+            warning_msg = _unreadable_json(metrics_file_path, exc)
+            logger.warning(warning_msg)
+            loaded_results["evaluation_error"] = warning_msg
     else:
         warning_msg = f"Metrics file not found at {metrics_file_path}"
         logger.warning(warning_msg)
@@ -95,8 +102,14 @@ def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str
 
     correct_file_path = results_dir_path / "correct.json"
     if correct_file_path.exists():
-        with open(correct_file_path, "r") as f:
-            loaded_results["correct"] = json.load(f)
+        try:
+            loaded_results["correct"] = _load_json(correct_file_path)
+        except (OSError, ValueError) as exc:
+            # A truncated file is a failed evaluation, not a reason to lose the
+            # job: keep the default verdict and report why.
+            warning_msg = _unreadable_json(correct_file_path, exc)
+            logger.warning(warning_msg)
+            loaded_results["evaluation_error"] = warning_msg
     else:
         loaded_results["evaluation_error"] = (
             f"Correctness file not found at {correct_file_path}"
