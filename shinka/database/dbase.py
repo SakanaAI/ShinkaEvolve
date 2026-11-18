@@ -1897,6 +1897,82 @@ class ProgramDatabase:
         return [p for p in programs if p is not None]
 
     @db_retry()
+    def repair_legacy_failed_seeds(self) -> None:
+        """Repair generation-zero rows promoted by the old evaluation fallback."""
+        seeds = self.get_programs_by_generation(0)
+        failed_ids = {
+            seed.id
+            for seed in seeds
+            if (seed.metadata or {}).get("evaluation_failed") is True
+        }
+        if not failed_ids:
+            return
+        while True:
+            copies = {
+                seed.id
+                for seed in seeds
+                if any(
+                    (seed.metadata or {}).get(key) in failed_ids
+                    for key in ("_original_program_id", "_spawned_from_program_id")
+                    if isinstance((seed.metadata or {}).get(key), str)
+                )
+            }
+            if copies <= failed_ids:
+                break
+            failed_ids.update(copies)
+
+        invalid_seeds = [seed for seed in seeds if seed.correct and seed.id in failed_ids]
+        if not invalid_seeds:
+            return
+        with self.conn:
+            rows = [(seed.id,) for seed in invalid_seeds]
+            self.cursor.executemany("UPDATE programs SET correct = 0 WHERE id = ?", rows)
+            self.cursor.executemany("DELETE FROM archive WHERE program_id = ?", rows)
+            self._repair_legacy_seed_tracking(invalid_seeds)
+        self._load_metadata_from_db()
+
+    def _repair_legacy_seed_tracking(self, invalid_seeds: List[Program]) -> None:
+        invalid_ids = {seed.id for seed in invalid_seeds}
+        repaired_metadata: dict[str, Optional[str]] = {}
+        if self.beam_search_parent_id in invalid_ids:
+            repaired_metadata["beam_search_parent_id"] = None
+        repair_best = self.best_program_id in invalid_ids
+        repair_stagnation = (repair_best or self.best_score_generation == 0) and any(
+            (seed.combined_score or 0.0) == self.best_score_ever for seed in invalid_seeds
+        )
+        if repair_best or repair_stagnation:
+            self.cursor.execute("SELECT * FROM programs WHERE correct = 1")
+            best = None
+            highest_score = None
+            for row in self.cursor:
+                candidate = self._program_from_row(row)
+                if candidate is None:
+                    continue
+                metadata = candidate.metadata or {}
+                if metadata.get("_is_island_copy") or metadata.get("_spawned_island"):
+                    continue
+                if best is None or self._is_better(candidate, best):
+                    best = candidate
+                if highest_score is None or (candidate.combined_score or 0.0) > (
+                    highest_score.combined_score or 0.0
+                ):
+                    highest_score = candidate
+            if repair_best:
+                repaired_metadata["best_program_id"] = best.id if best else None
+            if repair_stagnation:
+                repaired_metadata["best_score_generation"] = str(
+                    max(self.best_score_generation, highest_score.generation)
+                    if highest_score else self.best_score_generation
+                )
+                repaired_metadata["best_score_ever"] = (
+                    str(highest_score.combined_score or 0.0) if highest_score else None
+                )
+        self.cursor.executemany(
+            "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
+            repaired_metadata.items(),
+        )
+
+    @db_retry()
     def get_top_programs(
         self,
         n: int = 10,

@@ -1279,6 +1279,8 @@ class ShinkaEvolveRunner:
         self._confirmed_program_rowid, generation_origins = (
             await self.async_db.get_generation_updates_async(0)
         )
+        if 0 in generation_origins:
+            self.db.repair_legacy_failed_seeds()
         persisted_generations = {
             gen for gen, original in generation_origins.items() if original
         }

@@ -75,6 +75,62 @@ def test_resume_seed_only_database_does_not_generate_another_seed(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("with_child", [False, True])
+def test_resume_repairs_legacy_failed_seed_and_copies_before_sampling(
+    tmp_path, with_child
+):
+    async def run():
+        config = DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"))
+        db = ProgramDatabase(config)
+        db.add(
+            Program(
+                id="legacy-seed",
+                code="pass",
+                generation=0,
+                correct=True,
+                metadata={"evaluation_failed": True, "api_costs": 0.25},
+            )
+        )
+        seed_ids = {row.id for row in db.get_programs_by_generation(0)}
+        db._set_beam_search_parent_id("beam_search_parent_id", "legacy-seed")
+        if with_child:
+            db.add(
+                Program(
+                    id="child", code="pass", generation=1, correct=True, combined_score=-1.0
+                )
+            )
+            db._update_metadata_in_db("best_score_generation", "1")
+            assert db.best_score_ever == 0.0
+        db.close()
+
+        for _ in range(2):
+            runner = _resume_runner(tmp_path, config, budget=2)
+            try:
+                await runner._setup_async()
+                if not with_child:
+                    parent, _, _, needs_fix = (
+                        await runner.async_db.sample_with_fix_mode_async()
+                    )
+                    assert needs_fix and parent is not None and not parent.correct
+                seeds = runner.db.get_programs_by_generation(0)
+                assert {seed.id for seed in seeds} == seed_ids
+                assert all(
+                    not seed.correct and seed.metadata["evaluation_failed"] for seed in seeds
+                )
+                assert runner.db.get("legacy-seed").metadata["api_costs"] == 0.25
+                archive = runner.db.conn.execute("SELECT program_id FROM archive").fetchall()
+                assert [row[0] for row in archive] == (["child"] if with_child else [])
+                assert runner.db.best_program_id == ("child" if with_child else None)
+                assert runner.db.best_score_ever == (-1.0 if with_child else None)
+                assert runner.db.beam_search_parent_id is None
+                runner._generate_initial_program.assert_not_awaited()
+            finally:
+                await runner.async_db.close_async()
+                runner.db.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("existing_copy", [False, True])
 def test_resume_finishes_seed_islands_before_sampling(
     tmp_path, monkeypatch, existing_copy
