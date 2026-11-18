@@ -1,3 +1,4 @@
+import atexit
 from contextlib import ExitStack
 import subprocess
 import time
@@ -10,6 +11,13 @@ from shinka.utils import load_results, parse_time_to_seconds
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Evaluators lead their own process group, so signals sent to this process's
+# group (Ctrl-C, a terminal hangup) no longer reach them. Whatever is still
+# running when this process ends is killed from here instead. Entries are held
+# until their exit is seen: a launched evaluator nobody kept a handle on is
+# exactly the one that needs killing.
+_LIVE_PROCESSES: "set[ProcessWithLogging]" = set()
 
 
 class ProcessWithLogging:
@@ -29,6 +37,8 @@ class ProcessWithLogging:
         self.log_threads = log_threads
         self._process_group_id = process_group_id
         self.launched_at = time.monotonic() if launched_at is None else launched_at
+        self._exit_observed_at: Optional[float] = None
+        self.was_killed = False
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -44,10 +54,41 @@ class ProcessWithLogging:
 
     def kill_for_timeout(self) -> None:
         """Kill the evaluator's isolated group when available and reap the root."""
+        self.was_killed = True
         _kill_and_reap(self.process, self._process_group_id)
+        _LIVE_PROCESSES.discard(self)
+
+    def kill_group(self) -> bool:
+        """Kill a running evaluator together with its descendants.
+
+        Returns False when the evaluator had already exited. Its group id is
+        then free for reuse, so nothing is signalled.
+        """
+        if self.has_exited():
+            return False
+        self.was_killed = True
+        _kill_and_reap(self.process, self._process_group_id)
+        _LIVE_PROCESSES.discard(self)
+        return True
+
+    def has_exited(self) -> bool:
+        """Poll the evaluator and remember when its exit was first seen."""
+        if self.process.poll() is None:
+            return False
+        if self._exit_observed_at is None:
+            self._exit_observed_at = time.monotonic()
+        _LIVE_PROCESSES.discard(self)
+        return True
+
+    def runtime_seconds(self) -> float:
+        """Seconds from launch until the exit was observed, or until now."""
+        end = self._exit_observed_at
+        return (time.monotonic() if end is None else end) - self.launched_at
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
+        if self.process.returncode is not None:
+            _LIVE_PROCESSES.discard(self)
         # Wait for logging threads to finish
         for thread in self.log_threads:
             thread.join(timeout=1.0)
@@ -68,7 +109,40 @@ def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
             os.killpg(group_id, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # macOS reports a group whose members have all exited this way.
+        process.kill()
     process.wait()
+
+
+@atexit.register
+def _kill_live_evaluators() -> None:
+    for process in list(_LIVE_PROCESSES):
+        try:
+            process.kill_group()
+        except Exception as e:
+            logger.warning(f"Could not kill evaluator {process}: {e}")
+
+
+def kill_evaluators_on_fatal_signals() -> None:
+    """Take running evaluators along when SIGTERM or SIGHUP ends this process.
+
+    Neither signal runs exit handlers, and evaluators in their own process
+    group would otherwise outlive the run. Only default dispositions are
+    replaced: a handler the application installed, or ``nohup``, stays in charge.
+    """
+    if os.name != "posix" or threading.current_thread() is not threading.main_thread():
+        return
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(signum) is signal.SIG_DFL:
+            signal.signal(signum, _die_with_evaluators)
+
+
+def _die_with_evaluators(signum, frame) -> None:
+    _kill_live_evaluators()
+    # Then end the way the signal would have ended this process.
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
 
 
 def _stream_output(pipe, file_handle, verbose_prefix=None):
@@ -137,7 +211,9 @@ def submit(
         log_dir: The directory to store logs.
         cmd: The command and its arguments as a list of strings.
         verbose: Whether to enable verbose logging.
-        timeout: Set for evaluations that will be monitored with a timeout.
+        timeout: Accepted for callers that monitor with a timeout. Every
+            evaluator leads its own process group, with or without one, so a
+            timeout or cancellation can take its descendants down with it.
 
     Returns:
         ProcessWithLogging: Wrapper containing the Popen object and logging.
@@ -155,7 +231,7 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    start_new_session = os.name == "posix" and timeout is not None
+    start_new_session = os.name == "posix"
     with ExitStack() as cleanup:
         files = (
             cleanup.enter_context(open(stdout_path, "w", buffering=1)),
@@ -177,6 +253,7 @@ def submit(
             process, files, threads, process_group_id=group_id, launched_at=launched_at
         )
         cleanup.pop_all()
+    _LIVE_PROCESSES.add(wrapped_process)
 
     if verbose:
         logger.info(f"Submitted local process with PID: {process.pid}")
