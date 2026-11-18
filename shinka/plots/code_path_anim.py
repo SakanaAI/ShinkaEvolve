@@ -11,6 +11,7 @@ import difflib
 
 from moviepy import VideoClip
 import numpy as np
+from shinka.database.run_db_path import resolve_run_db_path
 from shinka.utils import load_programs_to_df, get_path_to_best_node, store_best_path
 import argparse
 
@@ -24,14 +25,16 @@ args = parser.parse_args()
 
 results_dir = args.results_dir
 
-df = load_programs_to_df(f"{results_dir}/evolution_db.sqlite")
+# programs.sqlite, or the database file an older run directory already has
+df = load_programs_to_df(str(resolve_run_db_path(results_dir, None)))
 print(df.head())
 best_path = get_path_to_best_node(df)
 store_best_path(best_path, results_dir)
 best_path_dir = os.path.join(results_dir, "best_path")
 
-# copy main.py to original.py
-shutil.copy(f"{best_path_dir}/main.py", f"{best_path_dir}/original.py")
+# The patches are diffs against a file called original.py, so start from a
+# copy of the first program on the path under that name.
+shutil.copy(f"{best_path_dir}/code/main_0.py", f"{best_path_dir}/original.py")
 # --- Configuration ---
 BASE_CODE_FILE = f"{best_path_dir}/original.py"  # Replace with your base file
 PATCH_DIR = f"{best_path_dir}/patches"  # Directory containing your .patch files
@@ -337,7 +340,11 @@ except IOError:
 
 # --- Prepare States ---
 print("Preparing code states and diffs...")
-patch_files = sorted(glob.glob(os.path.join(PATCH_DIR, "*.patch")))
+# patch_<i>.patch, applied in path order (patch_10 comes after patch_9)
+patch_files = sorted(
+    glob.glob(os.path.join(PATCH_DIR, "patch_*.patch")),
+    key=lambda path: int(os.path.basename(path)[len("patch_") : -len(".patch")]),
+)
 if not patch_files:
     print(f"No patch files found in {PATCH_DIR}. Exiting.")
     exit()

@@ -348,7 +348,8 @@ def store_best_path(df: pd.DataFrame, results_dir: str):
     for _, row in best_path.iterrows():
         print(f"\nGeneration {row['generation']} - Score: {row['combined_score']:.2f}")
 
-        if row["code_diff"] is not None:
+        # The seed has no diff; in a DataFrame that is NaN rather than None.
+        if pd.notna(row["code_diff"]):
             patch_path = patch_dir / f"patch_{i}.patch"
             patch_path.write_text(str(row["code_diff"]), encoding="utf-8")
             print(f"Saved patch to {patch_path}")
