@@ -6,27 +6,24 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
-- Fixed evaluations disappearing when submitted during hung-job cancellation
-  in PR #219. Reconcile the live job list after awaited cancellations so new
-  evaluations are processed once and their worker slots are released.
-- Fixed generation-zero evaluation failures and timeouts in PR #220. Enforce
-  local deadlines, terminate timed-out evaluator process groups, preserve
-  diagnostics, and validate seed correctness and scores. Slurm terminal-state
-  checks reject failed or unverified results and bound status lookups.
-- Fixed stale SQLite run metadata in PR #221. Serialize generation, best-program,
-  archive, and stagnation updates across connections, publish committed cache
-  state in order, and repair legacy run metadata and stagnation markers on open.
-- Fixed fresh paid API requests continuing after known charges reach the budget
-  in PR #222, including retries and auxiliary stages. Preserve billed partial
-  replies and cancelled work, journal proposal and generated-seed charges before
-  evaluation, and transfer them to persisted programs once. Retry unresolved
-  meta and prompt billing reconciliation after transient storage failures.
-  Prevent cancelled metadata re-saves from counting the same bill twice.
-- Fixed resuming unfinished generation budgets in PR #223. Reuse stored seeds,
-  finish pending seed maintenance, fill missing generation IDs, exclude island
-  copies from completion counts, and preserve orphan artifacts across repeated
-  interruptions. Recover terminal failure charges once and export the selected
-  best program's source without replacing a valid export on staging failure.
+- Bound Slurm cancellation waits and retain evaluations submitted during a
+  hung-job cancellation so their results persist and their slots are released
+  in PR #219.
+- Isolate seed attempts from stale artifacts, validate results, and enforce
+  local deadlines from launch in PR #220. Verify the submitted Slurm job's
+  identity and successful completion, including when accounting data is
+  temporarily unavailable.
+- Serialize SQLite run-state updates and repair legacy run metadata in PR #221.
+  Preserve deferred maintenance and valid best-score watermarks during upgrades,
+  and restore best-program selection with the normal ranking rules.
+- Stop fresh paid requests and retries at the known budget in PR #222. Recover
+  billed partial and cancelled work once, retry failed accounting writes, and
+  reuse a paid seed after interruption. Resume deferred generations when budget
+  is available and interrupt retry sleeps while draining active requests.
+- Resume missing generations and preserve interrupted artifacts in PR #223.
+  Repair legacy failed seeds and replay deferred seed and child maintenance.
+  Recover terminal charges once and rebuild the selected best export while
+  preserving a valid export if staging fails.
 
 ## 0.0.8 - 2026-11-13
 
