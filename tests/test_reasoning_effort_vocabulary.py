@@ -122,6 +122,27 @@ def test_clients_reject_unknown_effort_at_construction(client_type):
     assert client.reasoning_efforts == "medium"
 
 
+@pytest.mark.parametrize("client_type", [LLMClient, AsyncLLMClient])
+def test_yaml_off_means_disabled(client_type):
+    """`reasoning_efforts: off` reaches the client as the boolean False."""
+    from omegaconf import OmegaConf
+
+    configured = OmegaConf.create("reasoning_efforts: off").reasoning_efforts
+    assert configured is False
+
+    client_type(model_names="gpt-5-mini", reasoning_efforts=configured)
+    assert normalize_reasoning_efforts(configured) == ["disabled"]
+    assert normalize_reasoning_efforts([False, "low"]) == ["disabled", "low"]
+    assert _sample("gemini-2.5-flash", configured)["thinking_budget"] == 0
+
+
+@pytest.mark.parametrize("effort", [True, 3, 0.5])
+@pytest.mark.parametrize("client_type", [LLMClient, AsyncLLMClient])
+def test_other_non_string_efforts_get_the_vocabulary_error(client_type, effort):
+    with pytest.raises(ValueError, match="Unsupported reasoning effort"):
+        client_type(model_names="gpt-5-mini", reasoning_efforts=effort)
+
+
 def test_normalization_covers_aliases_case_and_single_values():
     assert normalize_reasoning_effort("") == "disabled"
     assert normalize_reasoning_effort(None) == "disabled"

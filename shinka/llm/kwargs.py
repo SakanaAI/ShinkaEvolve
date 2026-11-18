@@ -58,9 +58,10 @@ NO_TEMPERATURE_MODELS = {
 }
 
 
-def normalize_reasoning_effort(effort: Optional[str]) -> str:
+def normalize_reasoning_effort(effort: Union[str, bool, None]) -> str:
     """Return the canonical name of a configured reasoning effort, or raise."""
-    name = "" if effort is None else str(effort).strip().lower()
+    # YAML reads `off` as False; like None it asks for no reasoning.
+    name = "" if effort is None or effort is False else str(effort).strip().lower()
     if name == "auto":
         _warn_about_auto_effort()
     name = _REASONING_EFFORT_ALIASES.get(name, name)
@@ -83,10 +84,10 @@ def _warn_about_auto_effort() -> None:
 
 
 def normalize_reasoning_efforts(
-    efforts: Union[Iterable[Optional[str]], str, None],
+    efforts: Union[Iterable[Union[str, bool, None]], str, bool, None],
 ) -> List[str]:
     """Validate every configured effort up front, not only the one sampled."""
-    if efforts is None or isinstance(efforts, str):
+    if isinstance(efforts, str) or not isinstance(efforts, Iterable):
         efforts = [efforts]
     return [normalize_reasoning_effort(effort) for effort in efforts]
 
