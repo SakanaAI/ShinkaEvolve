@@ -4621,28 +4621,42 @@ class ShinkaEvolveRunner:
                 return CompletedJobPersistResult(job=job, success=True)
 
             # Get job results with timeout to prevent hanging
+            results = None
+            retrieval_failure = None
             try:
                 results = await asyncio.wait_for(
                     self.scheduler.get_job_results_async(job.job_id, job.results_dir),
                     timeout=30.0,  # 30 second timeout
                 )
-                results_retrieved_at = time.time()
-                if job.results_retrieved_at is None:
-                    job.results_retrieved_at = results_retrieved_at
-                evaluation_finished_at = (
-                    job.completion_detected_at or job.results_retrieved_at
-                )
                 logger.info(
                     f"📂 RESULTS: Got results for {job.job_id}: {results is not None}"
                 )
             except asyncio.TimeoutError:
-                logger.error(f"❌ TIMEOUT: Getting results for {job.job_id} timed out")
+                retrieval_failure = "timed out after 30s"
                 await self._record_generation_event(
                     generation=job.generation,
                     status="results_timeout",
                     source_job_id=job.job_id,
                 )
-                return CompletedJobPersistResult(job=job, success=False)
+            except Exception as exc:
+                retrieval_failure = f"failed ({type(exc).__name__}): {exc}"
+            if retrieval_failure is not None:
+                # The evaluation itself may be fine, so retry the read first. Once
+                # retries run out the generation is recorded as failed below.
+                self._queue_failed_db_job(
+                    job,
+                    log_prefix="❌ RESULTS ERROR:",
+                    error_message=(
+                        f"Getting results for {job.job_id} {retrieval_failure}"
+                    ),
+                )
+                if str(job.job_id) in self.failed_jobs_for_retry:
+                    return CompletedJobPersistResult(job=job, success=False)
+            if job.results_retrieved_at is None:
+                job.results_retrieved_at = time.time()
+            evaluation_finished_at = (
+                job.completion_detected_at or job.results_retrieved_at
+            )
             await self._release_evaluation_slot_once(job)
             postprocess_worker_id = await self.postprocess_slot_pool.acquire()
             db_workers_in_use_at_postprocess_start = self.postprocess_slot_pool.in_use
@@ -4665,6 +4679,7 @@ class ShinkaEvolveRunner:
                 # Handle missing results - don't lose the job!
                 evaluation = failed_evaluation(
                     "Program evaluation failed: results could not be retrieved"
+                    + (f" (reading them {retrieval_failure})" if retrieval_failure else "")
                 )
                 stdout_log = ""
                 stderr_log = ""
@@ -4938,6 +4953,12 @@ class ShinkaEvolveRunner:
             )
             logger.error(
                 f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
+            )
+            # A retry reuses the row if the insert already happened.
+            self._queue_failed_db_job(
+                job,
+                log_prefix="❌ PERSIST ERROR:",
+                error_message=f"Persisting {job.job_id} failed: {e}",
             )
             return CompletedJobPersistResult(job=job, success=False)
         finally:
@@ -5429,8 +5450,13 @@ class ShinkaEvolveRunner:
                         f"❌ CRITICAL: Failed to process job {job.job_id} (gen {job.generation})"
                     )
             except Exception as e:
-                logger.error(
-                    f"❌ CRITICAL: Exception processing job {job.job_id} (gen {job.generation}): {e}"
+                self._queue_failed_db_job(
+                    job,
+                    log_prefix="❌ CRITICAL:",
+                    error_message=(
+                        f"Exception processing job {job.job_id} "
+                        f"(gen {job.generation}): {e}"
+                    ),
                 )
 
         logger.info(
@@ -5441,12 +5467,20 @@ class ShinkaEvolveRunner:
             failed_jobs = [
                 job for job in completed_jobs if job not in successfully_processed
             ]
-            failed_gens = [job.generation for job in failed_jobs]
+            retrying_gens = [
+                job.generation
+                for job in failed_jobs
+                if str(job.job_id) in self.failed_jobs_for_retry
+            ]
+            dropped_gens = [
+                job.generation
+                for job in failed_jobs
+                if str(job.job_id) not in self.failed_jobs_for_retry
+            ]
             logger.error(
-                f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: gens {failed_gens}"
-            )
-            logger.error(
-                "   These jobs remain in submitted_jobs registry for potential recovery"
+                f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: "
+                f"gens {retrying_gens} queued for retry, "
+                f"gens {dropped_gens} out of retries"
             )
 
     async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
@@ -5458,7 +5492,22 @@ class ShinkaEvolveRunner:
         if persist_result.persisted_event is None:
             return True
 
-        await self._apply_persisted_program_side_effects(persist_result.persisted_event)
+        try:
+            await self._apply_persisted_program_side_effects(
+                persist_result.persisted_event
+            )
+        except Exception as e:
+            # The row is stored, but it is not in the archive or on its islands
+            # until maintenance runs. A retry finds the row and applies them.
+            self._queue_failed_db_job(
+                job,
+                log_prefix="❌ SIDE EFFECTS ERROR:",
+                error_message=(
+                    f"Side effects for {job.job_id} (gen {job.generation}) "
+                    f"failed: {e}"
+                ),
+            )
+            return False
         return True
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
