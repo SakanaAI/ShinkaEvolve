@@ -20,7 +20,7 @@ from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
 
 logger = logging.getLogger(__name__)
-_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v1"
+_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v2"
 
 
 def clean_nan_values(obj: Any) -> Any:
