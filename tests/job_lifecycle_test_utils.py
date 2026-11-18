@@ -20,12 +20,16 @@ class FakeClock:
 
     def __init__(self) -> None:
         self.now = 1000.0
+        self.slept = 0.0
 
     def monotonic(self) -> float:
         return self.now
 
     def sleep(self, seconds: float) -> None:
         self.now += seconds
+        self.slept += seconds
+        # Fail instead of spinning forever when the code under test never stops waiting.
+        assert self.slept < 86400.0, "slept for more than a day of fake time"
 
     def install(self, monkeypatch: pytest.MonkeyPatch, *modules: Any) -> None:
         for module in modules:

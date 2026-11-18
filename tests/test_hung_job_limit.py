@@ -273,6 +273,22 @@ def test_resumed_run_takes_its_hang_limit_from_the_best_earlier_evaluation(
     assert runner._get_evaluation_runtime_limit_seconds() == 660.0
 
 
+def test_job_monitor_restores_the_hang_limit_before_it_watches_jobs(
+    scheduler: JobScheduler,
+) -> None:
+    runner = _runner(scheduler)
+    runner.async_db = _history(_program(True, 120.0))
+
+    async def start_monitor() -> None:
+        runner.should_stop = asyncio.Event()
+        runner.should_stop.set()
+        await runner._job_monitor_task()
+
+    asyncio.run(start_monitor())
+
+    assert runner._get_evaluation_runtime_limit_seconds() == 660.0
+
+
 @pytest.mark.parametrize(
     "best_program",
     [None, _program(False, 120.0), _program(True, None), OSError("database locked")],

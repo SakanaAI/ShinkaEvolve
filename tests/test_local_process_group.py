@@ -175,6 +175,23 @@ def _orchestrator(
         kill_leftovers(*(pid for pid in (evaluator_pid, worker) if pid))
 
 
+def test_evaluators_do_not_outlive_a_process_that_exits_normally(
+    tmp_path: Path,
+) -> None:
+    exit_once_the_worker_runs = """
+        while not os.path.exists(os.path.join(results_dir, "worker.pid")):
+            time.sleep(0.01)
+        """
+    with _orchestrator(tmp_path, then=exit_once_the_worker_runs) as (
+        runner,
+        evaluator,
+        worker,
+    ):
+        assert runner.wait(timeout=10.0) == 0
+        assert wait_until(lambda: not is_alive(evaluator))
+        assert wait_until(lambda: not is_alive(worker))
+
+
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
 def test_fatal_signal_takes_evaluators_along(tmp_path: Path, signum: int) -> None:
     with _orchestrator(tmp_path, then="time.sleep(30)") as (runner, evaluator, worker):
