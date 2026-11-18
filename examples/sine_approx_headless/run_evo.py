@@ -16,7 +16,6 @@ job_config = LocalJobConfig(
 )
 
 db_config = DatabaseConfig(
-    db_path="evolution_db.sqlite",
     num_islands=2,
     archive_size=8,
     num_archive_inspirations=1,

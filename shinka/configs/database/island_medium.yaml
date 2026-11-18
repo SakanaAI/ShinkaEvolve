@@ -1,7 +1,6 @@
 # from mad example TODO: update
 db_config:
   _target_: shinka.database.DatabaseConfig
-  db_path: "evolution_db.sqlite"
   num_islands: 2
   archive_size: 40
   elite_selection_ratio: 0.3

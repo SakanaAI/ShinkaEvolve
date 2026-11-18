@@ -1,7 +1,6 @@
 # from circle packing example TODO: update
 db_config:
   _target_: shinka.database.DatabaseConfig
-  db_path: "evolution_db.sqlite"
   num_islands: 5
   archive_size: 40
   # inspiration parameters
