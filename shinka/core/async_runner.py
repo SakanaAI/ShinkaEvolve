@@ -16,7 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from contextvars import Token
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -814,12 +814,12 @@ class ShinkaEvolveRunner:
         stage: str,
         record_id: str,
         generation: int,
-        read_missing_cost: Callable[[], float],
+        read_missing_cost: Callable[[], Awaitable[float]],
     ) -> None:
         key = (stage, record_id, str(uuid.uuid4()))
         if not hasattr(self, "_pending_cost_reconciliations"):
             self._pending_cost_reconciliations: dict[
-                tuple[str, str, str], tuple[int, Callable[[], float]]
+                tuple[str, str, str], tuple[int, Callable[[], Awaitable[float]]]
             ] = {}
         self._pending_cost_reconciliations[key] = (generation, read_missing_cost)
         await finish_cost_recording(self._reconcile_pending_cost(key))
@@ -828,7 +828,7 @@ class ShinkaEvolveRunner:
         stage, _, charge_id = key
         generation, read_missing_cost = self._pending_cost_reconciliations[key]
         try:
-            missing_cost = read_missing_cost()
+            missing_cost = await read_missing_cost()
         except Exception as exc:
             raise self._fail_billing(f"Could not reconcile {stage} charge") from exc
         # Once the read succeeds, ownership moves to the idempotent journal
@@ -935,7 +935,7 @@ class ShinkaEvolveRunner:
         previous_cost = program.metadata.get("meta_cost") or 0.0
         program.metadata["meta_cost"] = previous_cost + cost
 
-        def read_missing_cost():
+        async def read_missing_cost() -> float:
             stored = self.db.get(program.id)
             metadata = (stored.metadata or {}) if stored else {}
             stored_cost = metadata.get("meta_cost") or 0.0
@@ -1842,9 +1842,12 @@ class ShinkaEvolveRunner:
                 try:
                     self.prompt_db.add(new_prompt, verbose=self.verbose)
                 except Exception:
+                    async def read_missing_cost() -> float:
+                        return cost if self.prompt_db.get(new_prompt.id) is None else 0.0
+
                     await self._reconcile_cost(
                         "prompt_evolution", new_prompt.id, current_program_generation,
-                        lambda: cost if self.prompt_db.get(new_prompt.id) is None else 0.0,
+                        read_missing_cost,
                     )
                     raise
                 logger.info(
@@ -2379,25 +2382,25 @@ class ShinkaEvolveRunner:
         self, scope: ApiCostScope, cost_before_setup: float, known_cost: float,
         *, charge_id: Optional[str] = None,
     ) -> None:
-        with api_cost_lock:
-            scope.acknowledge(known_cost)
-            self.total_api_cost = max(self.total_api_cost, cost_before_setup + known_cost)
-        if charge_id is not None:
-            # Reuse the handoff receipt, including when its acknowledgement was
-            # lost. A persisted seed's matching ID suppresses this journal entry.
-            await self._record_evaluation_charge(0, charge_id, known_cost)
-            return
-        await finish_cost_recording(
-            self._reconcile_initial_costs(cost_before_setup, known_cost)
-        )
+        try:
+            if charge_id is not None:
+                # Reuse the receipt even when its acknowledgement was lost.
+                await self._record_evaluation_charge(0, charge_id, known_cost)
+            elif known_cost > 0.0:
+                await self._reconcile_cost(
+                    "initialization", "seed", 0,
+                    partial(self._read_missing_initial_cost, cost_before_setup, known_cost),
+                )
+        finally:
+            with api_cost_lock:
+                scope.acknowledge(known_cost)
+                self.total_api_cost = max(self.total_api_cost, cost_before_setup + known_cost)
 
-    async def _reconcile_initial_costs(self, cost_before_setup: float, known_cost: float) -> None:
+    async def _read_missing_initial_cost(self, cost_before_setup: float, known_cost: float) -> float:
         # Setup can commit a program before posting its cost in memory.
         persisted_cost = await self._get_total_api_costs()
         posted_cost = max(persisted_cost - cost_before_setup, 0.0)
-        pending_cost = max(known_cost - posted_cost, 0.0)
-        self.total_api_cost = max(self.total_api_cost, persisted_cost)
-        await self._record_unattached_cost(pending_cost, "initialization", 0)
+        return max(known_cost - posted_cost, 0.0)
 
     async def _job_monitor_task(self):
         """Monitor running jobs and process completed ones."""

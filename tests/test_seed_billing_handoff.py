@@ -134,6 +134,55 @@ def test_seed_insert_interruption_settles_embeddings_once(runner, monkeypatch, o
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("outcome", ["committed", "not_committed", "billed_empty_reply"])
+def test_seed_reconciliation_retries_a_failed_read(runner, monkeypatch, outcome):
+    async def run():
+        runner.async_db = AsyncProgramDatabase(runner.db, max_workers=1)
+        insert = runner.async_db.add_program_async
+
+        async def interrupted_insert(program, **kwargs):
+            if outcome == "committed":
+                await insert(program, **kwargs)
+            raise OSError("insert acknowledgement unavailable")
+
+        async def embed(path):
+            return await run_request(
+                AsyncMock(return_value=([0.1], 1.0)), lambda result: result[1],
+                "text-embedding-3-small", "embedding",
+            )
+
+        if outcome == "billed_empty_reply":
+            monkeypatch.setattr(llm_module, "query_async", AsyncMock(return_value=QueryResult(
+                None, "msg", "sys", [], "gpt-5-mini", {}, 1, 1, cost=1.0,
+                incomplete_reason="max_output_tokens",
+            )))
+        else:
+            runner._get_code_embedding_async = embed
+            runner.async_db.add_program_async = interrupted_insert
+
+        try:
+            with monkeypatch.context() as outage:
+                outage.setattr(runner, "_get_total_api_costs", AsyncMock(
+                    side_effect=OSError("reconciliation read unavailable")
+                ))
+                with pytest.raises(BillingPersistenceError, match="reconcile initialization"):
+                    if outcome == "billed_empty_reply":
+                        await runner._generate_initial_program()
+                    else:
+                        await runner._setup_initial_program("pass")
+            assert runner._paid_admission_closed()
+            await runner._flush_unwritten_charges()
+            await runner._flush_unwritten_charges()
+            assert runner.total_api_cost == pytest.approx(1.0)
+            assert await runner._get_total_api_costs() == pytest.approx(1.0)
+            journal_count = runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[0]
+            assert journal_count == (0 if outcome == "committed" else 1)
+        finally:
+            await runner.async_db.close_async()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("outcome", ["committed", "not_committed"])
 def test_failed_seed_receipt_blocks_evaluation_and_retries_same_bill(runner, monkeypatch, outcome):
     async def run():
