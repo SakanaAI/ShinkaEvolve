@@ -2307,21 +2307,6 @@ class ShinkaEvolveRunner:
                             "SUCCESS."
                         )
 
-                    # Save successful attempt
-                    await self._save_patch_attempt_async(
-                        generation=0,
-                        novelty_attempt=1,
-                        resample_attempt=1,
-                        patch_attempt=attempt + 1,
-                        response=response,
-                        error_msg=None,
-                        patch_text=initial_code,
-                        num_applied=1,
-                        patch_name=patch_name,
-                        patch_description=patch_description,
-                        success=True,
-                    )
-
                     # Include LLM metadata for storage (structured like meta_edit_data)
                     llm_metadata = {
                         "patch_type": "init",
@@ -2338,13 +2323,31 @@ class ShinkaEvolveRunner:
                         "diff_summary": {},  # No diff for initial program
                     }
 
+                    # Keep the paid seed recoverable even if diagnostic writes fail.
                     if total_costs > 0.0:
                         charge_id = str(uuid.uuid4())
                         llm_metadata["api_charge_id"] = charge_id
-                        seed = GeneratedSeedHandoff(charge_id, initial_code, llm_metadata, total_costs)
-                        await self._record_evaluation_charge(0, charge_id, total_costs, seed=seed)
+                        seed = GeneratedSeedHandoff(
+                            charge_id, initial_code, llm_metadata, total_costs
+                        )
+                        await self._record_evaluation_charge(
+                            0, charge_id, total_costs, seed=seed
+                        )
 
-                    # The receipt stays recoverable while the evaluator runs.
+                    await self._save_patch_attempt_async(
+                        generation=0,
+                        novelty_attempt=1,
+                        resample_attempt=1,
+                        patch_attempt=attempt + 1,
+                        response=response,
+                        error_msg=None,
+                        patch_text=initial_code,
+                        num_applied=1,
+                        patch_name=patch_name,
+                        patch_description=patch_description,
+                        success=True,
+                    )
+
                     await self._setup_initial_program_with_metadata(
                         initial_code,
                         patch_name,

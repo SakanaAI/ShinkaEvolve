@@ -170,6 +170,60 @@ def test_resume_uses_paid_seed_after_generation_artifacts_move(runner, monkeypat
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("artifact_error", [asyncio.CancelledError, OSError])
+def test_resume_uses_paid_seed_after_attempt_write_interruption(
+    runner, monkeypatch, artifact_error
+):
+    async def run():
+        runner.async_db = AsyncProgramDatabase(runner.db, max_workers=1)
+        writing_attempt = asyncio.Event()
+
+        async def interrupt_attempt(**kwargs):
+            assert kwargs["success"] and "pass" in kwargs["patch_text"]
+            if artifact_error is OSError:
+                raise OSError("diagnostic write unavailable")
+            writing_attempt.set()
+            await asyncio.Future()
+
+        runner._save_patch_attempt_async = interrupt_attempt
+        try:
+            task = asyncio.create_task(runner._generate_initial_program())
+            if artifact_error is asyncio.CancelledError:
+                try:
+                    await asyncio.wait_for(writing_attempt.wait(), 2)
+                finally:
+                    task.cancel()
+            with pytest.raises(artifact_error):
+                await asyncio.wait_for(task, 2)
+            runner.scheduler.run.assert_not_called()
+            assert await runner._get_total_api_costs() == pytest.approx(1.0)
+            ((details,),) = runner.db.conn.execute("SELECT details FROM attempt_log")
+            charge_id = json.loads(details)["api_charge_id"]
+        finally:
+            await runner.async_db.close_async()
+
+        runner.db.close()
+        runner.db = ProgramDatabase(runner.db_config, embedding_model="")
+        runner.async_db = AsyncProgramDatabase(runner.db, max_workers=1)
+        runner.total_api_cost = await runner._get_total_api_costs()
+        provider = AsyncMock(side_effect=AssertionError("paid seed must be reused"))
+        monkeypatch.setattr(llm_module, "query_async", provider)
+        try:
+            await runner._generate_initial_program()
+            provider.assert_not_awaited()
+            programs = runner.db.get_programs_by_generation(0)
+            original = next(p for p in programs if not p.metadata.get("_is_island_copy"))
+            assert original.metadata["api_charge_id"] == charge_id
+            assert "pass" in original.code
+            assert runner.total_api_cost == pytest.approx(1.0)
+            assert await runner._get_total_api_costs() == pytest.approx(1.0)
+            assert runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[0] == 1
+        finally:
+            await runner.async_db.close_async()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("outcome", ["committed", "not_committed"])
 @pytest.mark.parametrize("error_type", [OSError, asyncio.CancelledError])
 def test_seed_insert_interruption_settles_embeddings_once(runner, monkeypatch, outcome, error_type):
