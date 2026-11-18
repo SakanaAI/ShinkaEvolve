@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _PREVIEW_RUN_STATE_REPAIR_KEYS = ("run_state_reconciled_v1", "run_state_reconciled_v2")
 _RUN_STATE_REPAIR_KEY = "run_state_reconciled_v3"
 _MAINTENANCE_APPLIED_KEY = "postprocess_db_maintenance_applied"
+_COMPUTE_TIME_MIGRATION_KEY = "compute_time_migrated_v1"
 
 
 def clean_nan_values(obj: Any) -> Any:
@@ -497,8 +498,6 @@ class ProgramDatabase:
             "programs(children_count)",
             "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
             "programs(island_idx)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
-            "programs(system_prompt_id)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
@@ -549,6 +548,13 @@ class ProgramDatabase:
 
         # Run any necessary migrations
         self._run_migrations()
+        # Migration 2 adds this column to databases created before it existed,
+        # so its index can only be created once the migrations have run.
+        self.cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
+            "programs(system_prompt_id)"
+        )
+        self.conn.commit()
         self._repair_legacy_run_state()
 
         logger.debug("Database tables and indices ensured to exist.")
@@ -590,25 +596,35 @@ class ProgramDatabase:
         # Migration 3: Restore legacy compute_time semantics when detailed
         # pipeline timing is present. compute_time should mirror evaluation
         # runtime, while pipeline_seconds stores end-to-end wall time.
+        # Rows written since already satisfy this, so the full-table rewrite
+        # runs once per database instead of taking the write lock on every open.
         try:
-            self.cursor.execute("""
-                UPDATE programs
-                SET metadata = json_set(
-                    metadata,
-                    '$.compute_time',
-                    json_extract(metadata, '$.evaluation_seconds')
+            if not self._has_run_state_repair(_COMPUTE_TIME_MIGRATION_KEY):
+                self.cursor.execute("""
+                    UPDATE programs
+                    SET metadata = json_set(
+                        metadata,
+                        '$.compute_time',
+                        json_extract(metadata, '$.evaluation_seconds')
+                    )
+                    WHERE json_valid(metadata)
+                      AND json_type(metadata, '$.evaluation_seconds')
+                          IN ('real', 'integer')
+                      AND (
+                          json_type(metadata, '$.compute_time') IS NULL
+                          OR ABS(
+                              COALESCE(json_extract(metadata, '$.compute_time'), 0.0) -
+                              COALESCE(
+                                  json_extract(metadata, '$.evaluation_seconds'), 0.0
+                              )
+                          ) > 1e-9
+                      )
+                    """)
+                self.cursor.execute(
+                    "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, '1')",
+                    (_COMPUTE_TIME_MIGRATION_KEY,),
                 )
-                WHERE json_valid(metadata)
-                  AND json_type(metadata, '$.evaluation_seconds') IN ('real', 'integer')
-                  AND (
-                      json_type(metadata, '$.compute_time') IS NULL
-                      OR ABS(
-                          COALESCE(json_extract(metadata, '$.compute_time'), 0.0) -
-                          COALESCE(json_extract(metadata, '$.evaluation_seconds'), 0.0)
-                      ) > 1e-9
-                  )
-                """)
-            self.conn.commit()
+                self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Error during compute_time timing migration: {e}")
 
