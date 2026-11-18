@@ -367,6 +367,87 @@ def test_async_submission_keeps_existing_timeout_contract(
     assert command.call_args.kwargs.get("timeout") is None
 
 
+@pytest.mark.parametrize("stalled", ["pull", "save"])
+def test_sync_cold_docker_cache_timeout_defers_to_batch_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stalled: str
+) -> None:
+    monkeypatch.setattr(slurm, "DOCKER_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(slurm, "CACHE_MANIFEST", tmp_path / "manifest.json")
+    calls: list[str] = []
+
+    def run(cmd, **kwargs):
+        assert kwargs.get("timeout") == 30
+        if cmd[0] == "sbatch":
+            calls.append("sbatch")
+            assert "docker pull ubuntu:latest" in Path(cmd[-1]).read_text()
+            raise subprocess.TimeoutExpired(cmd, 30)
+        assert cmd[0] == "docker"
+        action = cmd[1]
+        calls.append(action)
+        if action == "save":
+            Path(cmd[-1]).write_text("incomplete tar")
+        if action == stalled:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(slurm.subprocess, "run", run)
+    instance = JobScheduler("slurm_docker", SlurmDockerJobConfig())
+    try:
+        with pytest.raises(subprocess.TimeoutExpired, match="sbatch"):
+            instance.run("main.py", str(tmp_path / "results"))
+    finally:
+        instance.shutdown()
+
+    expected_docker_calls = ["pull"] if stalled == "pull" else ["pull", "save"]
+    assert calls == [*expected_docker_calls, "sbatch"]
+    assert not (tmp_path / "ubuntu_latest.tar").exists()
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_async_cold_docker_cache_installs_image_without_seed_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(slurm, "DOCKER_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(slurm, "CACHE_MANIFEST", tmp_path / "manifest.json")
+
+    def run(cmd, **kwargs):
+        assert kwargs.get("timeout") is None
+        if cmd[:2] == ["docker", "save"]:
+            Path(cmd[-1]).write_text("complete tar")
+        return subprocess.CompletedProcess(cmd, 0, stdout="Submitted batch job 123")
+
+    monkeypatch.setattr(slurm.subprocess, "run", run)
+    instance = JobScheduler("slurm_docker", SlurmDockerJobConfig())
+    try:
+        assert instance.submit_async("main.py", str(tmp_path / "results")) == "123"
+    finally:
+        instance.shutdown()
+
+    assert (tmp_path / "ubuntu_latest.tar").read_text() == "complete tar"
+    assert slurm.load_cache_manifest() == {"ubuntu:latest": "ubuntu_latest.tar"}
+
+
+def test_async_docker_submission_can_proceed_with_readonly_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(slurm, "DOCKER_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(slurm, "CACHE_MANIFEST", tmp_path / "manifest.json")
+    monkeypatch.setattr(
+        slurm.tempfile, "TemporaryDirectory", Mock(side_effect=PermissionError())
+    )
+    run = Mock(
+        return_value=subprocess.CompletedProcess([], 0, stdout="Submitted job 123")
+    )
+    monkeypatch.setattr(slurm.subprocess, "run", run)
+    instance = JobScheduler("slurm_docker", SlurmDockerJobConfig())
+    try:
+        assert instance.submit_async("main.py", str(tmp_path / "results")) == "123"
+    finally:
+        instance.shutdown()
+
+    assert [call.args[0][0] for call in run.call_args_list] == ["docker", "sbatch"]
+
+
 @pytest.mark.parametrize("terminal_state", ["COMPLETED", "FAILED", "TIMEOUT"])
 def test_suspended_job_waits_until_terminal_state(
     scheduler: JobScheduler,

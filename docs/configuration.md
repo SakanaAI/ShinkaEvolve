@@ -253,6 +253,9 @@ Synchronous Slurm evaluations limit each `sbatch`, `squeue`, `sacct`, and `scont
 command to 30 seconds. Three consecutive status lookup errors fail the seed;
 a successful lookup resets that counter. Pending, running, and suspended jobs
 continue waiting in the queue. Slurm applies the `time` setting to job execution.
+Docker image preparation for synchronous submission also limits each cold-cache
+`docker pull` and `docker save` to 30 seconds. If either times out, the batch job
+uses its existing image-load or pull path.
 The `squeue` error `Invalid job id specified` triggers terminal verification
 through accounting or the controller. Verification allows six rounds, ten
 seconds apart, with at most one accounting and one

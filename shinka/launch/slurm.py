@@ -94,7 +94,7 @@ def save_cache_manifest(manifest):
         json.dump(manifest, f, indent=2)
 
 
-def get_local_image(image_name):
+def get_local_image(image_name: str, *, command_timeout: Optional[float] = None) -> str:
     """Check if image exists locally and return the appropriate image name."""
     manifest = load_cache_manifest()
 
@@ -108,19 +108,39 @@ def get_local_image(image_name):
     # Try to pull and cache the image
     try:
         logger.info(f"Pulling and caching {image_name}...")
-        subprocess.run(["docker", "pull", image_name], check=True)
+        subprocess.run(
+            ["docker", "pull", image_name], check=True, timeout=command_timeout
+        )
 
         # Save the image
         image_file = f"{image_name.replace('/', '_').replace(':', '_')}.tar"
         image_path = DOCKER_CACHE_DIR / image_file
-        subprocess.run(
-            ["docker", "save", image_name, "-o", str(image_path)], check=True
-        )
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix=".image-", dir=DOCKER_CACHE_DIR
+            ) as staging:
+                staged_image = Path(staging) / image_file
+                subprocess.run(
+                    ["docker", "save", image_name, "-o", str(staged_image)],
+                    check=True,
+                    timeout=command_timeout,
+                )
+                staged_image.replace(image_path)
+        except OSError as exc:
+            logger.warning("Could not stage Docker cache for %s: %s", image_name, exc)
+            return image_name
 
         # Update manifest
         manifest[image_name] = image_file
         save_cache_manifest(manifest)
 
+        return image_name
+    except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            "Docker cache preparation timed out for %s. The batch job can pull it: %s",
+            image_name,
+            exc,
+        )
         return image_name
     except subprocess.CalledProcessError:
         logger.info(f"Warning: Could not pull {image_name}, using as is")
@@ -244,7 +264,7 @@ fi
 """
     else:
         # Fallback to existing pull/cache logic
-        get_local_image(image)  # This function pulls and caches the image
+        get_local_image(image, command_timeout=command_timeout)
         image_file = f"{image.replace('/', '_').replace(':', '_')}.tar"
         load_command = f"""
 if [ -f "{DOCKER_CACHE_DIR}/{image_file}" ]; then
