@@ -1903,6 +1903,23 @@ def make_server(
     return ReusableTCPServer((host, port), handler_factory)
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
+
+
+def _print_banner(httpd: socketserver.TCPServer, host: str, search_root: str) -> None:
+    port = httpd.server_address[1]
+    print(f"[DEBUG] Server root directory: {WEBUI_DIR}")
+    print(f"[DEBUG] Search root directory: {search_root}")
+    print(f"\n[*] Serving http://{_url_host(host)}:{port}  (Ctrl+C to stop)")
+    if not _is_loopback_host(host):
+        print(
+            "[!] Listening beyond localhost with no authentication: anyone "
+            f"who can reach {host}:{port} can read the run data under "
+            f"{search_root}."
+        )
+
+
 def start_server(
     port: int,
     search_root: str,
@@ -1911,20 +1928,25 @@ def start_server(
     allowed_hosts: Sequence[str] = (),
 ):
     """Start the HTTP server."""
-    print(f"[DEBUG] Server root directory: {WEBUI_DIR}")
-    print(f"[DEBUG] Search root directory: {search_root}")
-
     with make_server(port, search_root, host, allowed_hosts) as httpd:
-        shown_host = f"[{host}]" if ":" in host else host
-        msg = f"\n[*] Serving http://{shown_host}:{port}  (Ctrl+C to stop)"
-        print(msg)
-        if not _is_loopback_host(host):
-            print(
-                "[!] Listening beyond localhost with no authentication: anyone "
-                f"who can reach {host}:{port} can read the run data under "
-                f"{search_root}."
-            )
+        _print_banner(httpd, host, search_root)
         httpd.serve_forever()
+
+
+def browser_url(host: str, port: int, db_rel_path: Optional[str] = None) -> str:
+    """URL that reaches a server bound to ``host`` from the machine it runs on.
+
+    A server on a wildcard or loopback address answers on ``localhost``; one
+    bound to a single other address answers only there.
+    """
+    if host in ("", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost"):
+        host = "localhost"
+    base_url = f"http://{_url_host(host)}:{port}/"
+    if not db_rel_path:
+        return base_url
+    # A specific DB goes straight to its tree view.
+    query = urllib.parse.urlencode({"db_path": db_rel_path})
+    return f"{base_url}viz_tree.html?{query}"
 
 
 def resolve_cli_paths(
@@ -2022,24 +2044,18 @@ def main():
 
     print(f"[INFO] Searching for databases in: {search_root}")
 
-    # Kick off the HTTP server in a daemon thread.
-    server_thread = threading.Thread(
-        target=start_server,
-        args=(args.port, search_root, db_rel_path, args.host, args.allowed_hosts),
-        daemon=True,
-    )
+    # Bind here rather than in the serving thread, so an address or port that
+    # cannot be used ends the command instead of leaving it idle.
+    try:
+        httpd = make_server(args.port, search_root, args.host, args.allowed_hosts)
+    except OSError as e:
+        print(f"Error: cannot listen on {args.host} port {args.port}: {e}")
+        sys.exit(1)
+    _print_banner(httpd, args.host, search_root)
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     server_thread.start()
-    time.sleep(0.8)  # tiny delay so the banner prints before we continue
 
-    # Construct URL, passing db path if provided
-    if db_rel_path:
-        # If a specific DB is provided, go directly to viz_tree.html
-        base_url = f"http://localhost:{args.port}/viz_tree.html"
-        url_params = urllib.parse.urlencode({"db_path": db_rel_path})
-        viz_url = f"{base_url}?{url_params}"
-    else:
-        # Otherwise, open the landing page with all results
-        viz_url = f"http://localhost:{args.port}/"
+    viz_url = browser_url(args.host, httpd.server_address[1], db_rel_path)
 
     # Try to open a browser if requested
     if args.open_browser:
@@ -2054,8 +2070,8 @@ def main():
         print("(remember to forward the port if this is a remote host)")
 
     try:
-        while True:
-            time.sleep(1)
+        while server_thread.is_alive():
+            server_thread.join(timeout=1)
     except KeyboardInterrupt:
         print("\n[*] Shutting down.")
 

@@ -5,12 +5,13 @@ Each test drives a real server bound to an ephemeral loopback port.
 
 import json
 import socket
+import sys
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Dict, Iterator, List
 
 import pytest
 
-from shinka.webui import security
+from shinka.webui import security, visualization
 from webui_test_utils import (
     PNG_BYTES,
     log_failed_proposal,
@@ -265,3 +266,110 @@ def test_host_names_that_only_resemble_an_allowed_one_are_refused(host: str):
     allowed = security.build_allowed_hosts("node17")
 
     assert not security.is_allowed_host(host, allowed)
+
+
+# --- command line ---------------------------------------------------------------
+
+
+class _IdleServer:
+    """Stands in for a bound server: ``main`` returns once serving ends."""
+
+    server_address = ("127.0.0.1", 4321)
+
+    def serve_forever(self) -> None:
+        return None
+
+
+def _run_cli(monkeypatch: pytest.MonkeyPatch, argv: List[str]) -> Dict[str, Any]:
+    """Run ``main`` without binding; return what it bound and what it opened."""
+    seen: Dict[str, Any] = {}
+
+    def fake_make_server(port, search_root, host, allowed_hosts):
+        seen.update(
+            port=port, root=search_root, host=host, allowed_hosts=list(allowed_hosts)
+        )
+        return _IdleServer()
+
+    monkeypatch.setattr(visualization, "make_server", fake_make_server)
+    monkeypatch.setattr(
+        visualization.webbrowser,
+        "open_new_tab",
+        lambda url: seen.update(opened=url),
+    )
+    monkeypatch.setattr(sys, "argv", ["shinka_visualize", *argv])
+    visualization.main()
+    return seen
+
+
+def test_cli_listens_on_loopback_unless_told_otherwise(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+):
+    seen = _run_cli(monkeypatch, [str(tree / "results")])
+
+    assert seen["host"] == "127.0.0.1"
+    assert seen["allowed_hosts"] == []
+    assert seen["root"] == str(tree / "results")
+
+
+def test_cli_passes_host_and_allowed_hosts_to_the_server(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+):
+    seen = _run_cli(
+        monkeypatch,
+        [
+            str(tree / "results"),
+            "--host",
+            "0.0.0.0",
+            "--allowed-host",
+            "viz.example.org",
+            "--allowed-host",
+            "alias",
+        ],
+    )
+
+    assert seen["host"] == "0.0.0.0"
+    assert seen["allowed_hosts"] == ["viz.example.org", "alias"]
+
+
+def test_cli_opens_the_tree_view_with_a_root_relative_db_path(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db = tree / "results" / "run_a" / "programs.sqlite"
+
+    seen = _run_cli(monkeypatch, [str(tree / "results"), "--db", str(db), "--open"])
+
+    assert seen["opened"] == (
+        "http://localhost:4321/viz_tree.html?db_path=run_a%2Fprograms.sqlite"
+    )
+
+
+def test_cli_exits_when_the_port_is_taken(
+    tree: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    with serve(tree / "results") as taken_port:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["shinka_visualize", str(tree / "results"), "--port", str(taken_port)],
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            visualization.main()
+
+    assert exit_info.value.code == 1
+    assert f"cannot listen on 127.0.0.1 port {taken_port}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "host, url",
+    [
+        ("127.0.0.1", "http://localhost:8888/"),
+        ("0.0.0.0", "http://localhost:8888/"),
+        ("::", "http://localhost:8888/"),
+        ("192.168.0.75", "http://192.168.0.75:8888/"),
+        ("node17", "http://node17:8888/"),
+        ("fd00::17", "http://[fd00::17]:8888/"),
+    ],
+)
+def test_printed_url_names_an_address_the_server_answers_on(host: str, url: str):
+    assert visualization.browser_url(host, 8888) == url
