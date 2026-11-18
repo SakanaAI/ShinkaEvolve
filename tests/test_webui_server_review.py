@@ -122,3 +122,33 @@ def test_failure_json_cannot_reach_code_outside_root_through_a_loop(
 
     assert status == 200
     assert json.loads(body)["code"] is None
+
+
+# --- names the request check must not refuse ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["run　wide", "run nbsp", "run narrow", "run‍joiner"],
+    ids=["ideographic-space", "no-break-space", "narrow-no-break-space", "zwj"],
+)
+def test_run_directories_with_unicode_spaces_are_served(tree: Path, name: str):
+    run = tree / "results" / name
+    run.mkdir()
+    write_program_db(run / "programs.sqlite", "p_unicode")
+    db_path = quote(f"{name}/programs.sqlite")
+
+    with serve(tree / "results") as port:
+        page_status, _, _ = request(port, "/viz_tree.html?db_path=" + db_path)
+        status, _, body = request(port, "/get_programs?db_path=" + db_path)
+
+    assert page_status == 200
+    assert status == 200
+    assert b"p_unicode" in body
+
+
+@pytest.mark.parametrize("control", ["%C2%85", "%C2%9B", "%7F", "%09"])
+def test_control_characters_beyond_ascii_are_still_refused(server: int, control: str):
+    target = f"/get_programs?db_path=run_a{control}/programs.sqlite"
+
+    assert request(server, target)[0] == 400

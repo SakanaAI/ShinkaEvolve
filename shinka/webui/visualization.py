@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -49,6 +50,16 @@ db_cache: Dict[str, Tuple[float, Any]] = {}
 def _printable(text: str) -> str:
     """Replace control and other non-printable characters with spaces."""
     return "".join(ch if ch.isprintable() else " " for ch in text)
+
+
+def _has_control_characters(text: str) -> bool:
+    """Whether ``text`` holds a C0, DEL or C1 control character.
+
+    Narrower than ``str.isprintable``, which is also false for every space but
+    the ASCII one and for the joiners inside emoji, all of which occur in
+    directory names.
+    """
+    return any(unicodedata.category(ch) == "Cc" for ch in text)
 
 
 class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -106,7 +117,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return None
         for values in query.values():
             decoded.extend(values)
-        if not all(text.isprintable() for text in decoded):
+        if any(_has_control_characters(text) for text in decoded):
             self.send_error(400, "Control characters in request")
             return None
         return parsed_url.path, query
