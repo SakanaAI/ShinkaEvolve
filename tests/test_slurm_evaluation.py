@@ -34,7 +34,7 @@ def mock_commands(monkeypatch: pytest.MonkeyPatch, accounting: list[str]) -> Moc
     responses = iter(accounting)
 
     def run(cmd, **kwargs):
-        if cmd[0] == "squeue":
+        if cmd[0] in {"squeue", "scontrol"}:
             return subprocess.CompletedProcess(cmd, 0, stdout="")
         assert cmd[0] == "sacct"
         assert "--allocations" in cmd
@@ -84,7 +84,7 @@ def test_sync_slurm_waits_for_accounting_visibility(
     results, _ = scheduler.run("main.py", str(artifacts))
 
     assert results["metrics"]["combined_score"] == 42
-    assert command.call_count == 4
+    assert command.call_count == 6
 
 
 @pytest.mark.parametrize(
@@ -110,7 +110,7 @@ def test_sync_slurm_requires_matching_accounting_record(
     with pytest.raises(RuntimeError, match="accounting.*123"):
         scheduler.run("main.py", str(artifacts))
 
-    assert command.call_count == 7
+    assert command.call_count == 13
 
 
 def test_async_slurm_retrieval_keeps_existing_contract(
@@ -162,7 +162,11 @@ def test_unavailable_accounting_has_finite_retries(
     command = Mock(
         side_effect=[
             subprocess.CompletedProcess([], 0, stdout=""),
-            *[subprocess.CalledProcessError(1, "sacct")] * 6,
+            *[
+                subprocess.CalledProcessError(1, "sacct"),
+                subprocess.CompletedProcess([], 0, stdout=""),
+            ]
+            * 6,
         ]
     )
     monkeypatch.setattr(slurm.subprocess, "run", command)
@@ -170,7 +174,7 @@ def test_unavailable_accounting_has_finite_retries(
 
     with pytest.raises(RuntimeError, match="accounting.*123"):
         scheduler.run("main.py", str(artifacts))
-    assert command.call_count == 7
+    assert command.call_count == 13
 
 
 @pytest.mark.parametrize(
@@ -287,7 +291,11 @@ def test_accounting_command_timeouts_exhaust_grace_period(
     command = Mock(
         side_effect=[
             subprocess.CompletedProcess([], 0, stdout=""),
-            *[subprocess.TimeoutExpired("sacct", 30)] * 6,
+            *[
+                subprocess.TimeoutExpired("sacct", 30),
+                subprocess.CompletedProcess([], 0, stdout=""),
+            ]
+            * 6,
         ]
     )
     monkeypatch.setattr(slurm.subprocess, "run", command)
@@ -295,7 +303,7 @@ def test_accounting_command_timeouts_exhaust_grace_period(
 
     with pytest.raises(RuntimeError, match="accounting.*123"):
         scheduler.run("main.py", str(artifacts))
-    assert command.call_count == 7
+    assert command.call_count == 13
 
 
 @pytest.mark.parametrize("backend", ["slurm_conda", "slurm_docker"])

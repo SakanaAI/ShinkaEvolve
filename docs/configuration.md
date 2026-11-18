@@ -234,22 +234,27 @@ complete CLI configuration.
 
 `conda_env` and `activate_script` are mutually exclusive.
 
-Generation-zero Slurm evaluations require a matching `sacct` allocation record
-with `State=COMPLETED` and `ExitCode=0:0` before accepting result files. Once
-`squeue` reports a terminal or absent job, accounting is queried up to six times, ten seconds apart,
-to allow delayed records to appear. Missing, inaccessible, or ambiguous records
-fail the seed evaluation with a diagnostic; partial artifacts from failed jobs
-are not accepted. This requires job accounting to be enabled and readable.
+Generation-zero Slurm evaluations require a verified terminal state of
+`COMPLETED` and `ExitCode=0:0` for the exact job before accepting result files.
+Once `squeue` reports a terminal or absent job, `sacct` checks the allocation.
+If accounting cannot verify it, `scontrol --oneliner show job` checks the
+controller's retained job record in the same attempt. A confirmed terminal
+failure is rejected immediately; controller success cannot override a confirmed
+accounting failure. This supports clusters without accounting while the
+controller still retains the completed job. Missing, inaccessible, ambiguous,
+or otherwise unverified status from both sources fails the seed with a
+diagnostic; partial artifacts are never evidence of successful completion.
 Slurm local fallback jobs instead use the actual subprocess exit status.
 Ordinary asynchronous result retrieval retains its existing contract.
 
-Synchronous Slurm evaluations also limit each `sbatch`, `squeue`, and `sacct`
+Synchronous Slurm evaluations limit each `sbatch`, `squeue`, `sacct`, and `scontrol`
 command to 30 seconds. Three consecutive status lookup errors fail the seed;
 a successful lookup resets that counter. Pending, running, and suspended jobs
-continue waiting without a queue deadline: the Slurm `time` setting limits job execution, not
-queue wait. The `squeue` error `Invalid job id specified` triggers accounting
-verification for jobs already retired from the controller. Accounting queries
-retain the six-attempt grace period, including command errors and timeouts.
+continue waiting in the queue. Slurm applies the `time` setting to job execution.
+The `squeue` error `Invalid job id specified` triggers terminal verification
+through accounting or the controller. Verification allows six rounds, ten
+seconds apart, with at most one accounting and one
+controller command per round, including command errors and timeouts.
 
 ---
 

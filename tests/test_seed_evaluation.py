@@ -232,6 +232,42 @@ def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:
     assert "missing-python" in seed.metadata["stderr_log"]
 
 
+@pytest.mark.parametrize("backend", ["slurm_conda", "slurm_docker"])
+@pytest.mark.parametrize("state", ["COMPLETED", "FAILED", "TIMEOUT"])
+def test_slurm_seed_without_accounting_uses_controller_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, state: str
+) -> None:
+    def submit(results_dir, *args, **kwargs):
+        path = Path(results_dir)
+        (path / "correct.json").write_text('{"correct": true}')
+        (path / "metrics.json").write_text('{"combined_score": 42}')
+        (path / "job_log.err").write_text("partial evaluator log")
+        return "123"
+
+    def run(cmd, **kwargs):
+        output = (
+            f"JobId=123 JobState={state} ExitCode=0:0" if cmd[0] == "scontrol" else ""
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=output)
+
+    monkeypatch.setattr(f"shinka.launch.scheduler.submit_{backend}", submit)
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", run)
+    config = (
+        SlurmCondaJobConfig() if backend == "slurm_conda" else SlurmDockerJobConfig()
+    )
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(), scheduler=JobScheduler(backend, config)
+    )
+
+    assert bool(seed.correct) is (state == "COMPLETED")
+    assert needs_fix is (state != "COMPLETED")
+    assert seed.combined_score == (42.0 if state == "COMPLETED" else 0.0)
+    if state != "COMPLETED":
+        assert seed.metadata["evaluation_failed"]
+        assert state in seed.metadata["stderr_log"]
+        assert "partial evaluator log" in seed.metadata["stderr_log"]
+
+
 @pytest.mark.parametrize(
     ("correct", "metrics", "exit_code", "diagnostic"),
     [
