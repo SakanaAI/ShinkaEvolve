@@ -31,6 +31,7 @@ git checkout -b name-of-change
 ```
 
 6. Implement your change. If the change fixes a bug or guards against a regression, add or update tests when it fits.
+   If you change dependencies in `pyproject.toml`, run `uv lock` and commit the updated `uv.lock`; CI installs with `uv sync --locked` and fails on a stale lock.
 7. Run the built-in checks from the repository root before opening a pull request:
 
 ```bash

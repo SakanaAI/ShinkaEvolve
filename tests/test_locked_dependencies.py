@@ -33,6 +33,13 @@ def _locked_versions(lock: dict, name: str) -> list[str]:
     ]
 
 
+def test_lockfile_is_not_ignored_by_git():
+    """An ignored lock is skipped by `git add` once it leaves the index."""
+    ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert "uv.lock" not in {rule.strip().lstrip("/") for rule in ignore_rules}
+
+
 def test_lockfile_records_the_declared_dependencies():
     """`uv lock --check` in miniature: a stale lock hides a broken fresh install."""
     lock = _lock()
