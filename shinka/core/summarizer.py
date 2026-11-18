@@ -138,10 +138,12 @@ class MetaSummarizer:
             logger.warning(f"Failed to read {outputs[total_processed]}: {e}")
             return False
 
-        # Programs a stale state file still lists were summarized long ago.
+        # The output replaces a stale state as a whole: the programs it still
+        # lists were summarized long ago, and so were the sections it holds.
         self.evaluated_since_last_meta = []
         sections = []
         for attribute, heading, introduction in _META_OUTPUT_SECTIONS:
+            setattr(self, attribute, None)
             prefix = f"{heading}\n\n{introduction}\n\n"
             start = text.find(prefix)
             if start != -1:
@@ -151,8 +153,9 @@ class MetaSummarizer:
         for (_, content_start, attribute), end in zip(sections, ends):
             setattr(self, attribute, text[content_start:end].strip() or None)
 
-        if self.meta_recommendations:
-            self.meta_recommendations_history = [self.meta_recommendations]
+        self.meta_recommendations_history = (
+            [self.meta_recommendations] if self.meta_recommendations else []
+        )
         # Later outputs must not reuse the file names of the earlier sessions.
         self.total_programs_processed = total_processed
         logger.info(

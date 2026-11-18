@@ -285,3 +285,25 @@ def test_unreadable_meta_output_does_not_stop_a_resume(tmp_path):
     summarizer = _summarizer(tmp_path)
 
     assert not summarizer.restore_persisted_state()
+
+
+def test_stale_state_is_not_mixed_into_a_newer_meta_output(tmp_path):
+    """The newer output replaces the whole state, also the sections it lacks."""
+    first = _summarizer(tmp_path)
+    first.add_evaluated_program(_program("a", 1))
+    _run_update(first, tmp_path)
+    newer_output = tmp_path / "meta" / "meta_7.txt"
+    newer_output.write_text(
+        "# INDIVIDUAL PROGRAM SUMMARIES\n\n"
+        "The following are summaries of individual programs "
+        "evaluated since the last meta update:\n\n"
+        "newer summary"
+    )
+
+    resumed = _resumed(tmp_path)
+
+    assert resumed.total_programs_processed == 7
+    assert resumed.meta_summary == "newer summary"
+    assert resumed.meta_scratch_pad is None
+    assert resumed.meta_recommendations is None
+    assert resumed.meta_recommendations_history == []
