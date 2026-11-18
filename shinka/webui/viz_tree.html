@@ -5679,14 +5679,13 @@ console.error("[DEBUG] Error in processData:", error);
             
             document.querySelector('#agent-code .code-controls').style.display = 'flex';
             
-            const sanitizedCode = escapeHtml(data.code);
             const lines = data.code.split('\n');
             const lineNumbers = Array.from({length: lines.length}, (_, i) => `<span>${i + 1}</span>`).join('');
 
             codeWrapper.innerHTML = `
                 <div class="code-container">
                     <div class="line-numbers-gutter">${lineNumbers}</div>
-                    <pre><code class="language-${escapeHtml(data.language || 'python')}">${sanitizedCode}</code></pre>
+                    <pre><code class="language-${escapeHtml(data.language || 'python')}">${escapeHtml(data.code)}</code></pre>
                 </div>
             `;
 

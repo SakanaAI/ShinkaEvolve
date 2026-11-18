@@ -7,7 +7,6 @@ escaped or sanitised before it reaches ``innerHTML``.
 
 import json
 import re
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List
@@ -15,6 +14,7 @@ from typing import List
 import pytest
 
 from shinka.webui import visualization
+from webui_template_scan import extract_js_function, run_js
 
 WEBUI_DIR = Path(__file__).resolve().parents[1] / "shinka" / "webui"
 PAGE_NAMES = ["viz_tree.html", "index.html", "compare.html"]
@@ -23,31 +23,28 @@ VIZ_TREE = PAGES["viz_tree.html"]
 
 PAYLOAD = "<img src=x onerror=\"alert('x')\">"
 
-
-def _extract_js_function_source(html: str, function_name: str) -> str:
-    match = re.search(rf"function {function_name}\([^)]*\)\s*\{{", html)
-    assert match, f"Could not find function {function_name}"
-    depth = 0
-    for idx in range(html.find("{", match.start()), len(html)):
-        if html[idx] == "{":
-            depth += 1
-        elif html[idx] == "}":
-            depth -= 1
-            if depth == 0:
-                return html[match.start() : idx + 1]
-    raise AssertionError(f"Unbalanced braces in {function_name}")
-
-
-def _run_js(sources: List[str], expression: str):
-    script = "\n".join([*sources, f"console.log(JSON.stringify({expression}));"])
-    completed = subprocess.run(
-        ["node", "-e", script], check=True, capture_output=True, text=True
-    )
-    return json.loads(completed.stdout)
+SANITIZE_OPTIONS = {
+    "USE_PROFILES": {"html": True},
+    "FORBID_TAGS": [
+        "style",
+        "img",
+        "picture",
+        "source",
+        "video",
+        "audio",
+        "track",
+        "form",
+        "input",
+        "button",
+        "select",
+        "textarea",
+    ],
+    "FORBID_ATTR": ["style", "background", "id", "name"],
+}
 
 
 def _viz_tree_functions(*names: str) -> List[str]:
-    return [_extract_js_function_source(VIZ_TREE, name) for name in names]
+    return [extract_js_function(VIZ_TREE, name) for name in names]
 
 
 def _markdown_helper_sources() -> List[str]:
@@ -71,9 +68,9 @@ def _markdown_helper_sources() -> List[str]:
 
 @pytest.mark.parametrize("page", PAGE_NAMES)
 def test_escape_html_covers_element_and_attribute_context(page: str):
-    source = _extract_js_function_source(PAGES[page], "escapeHtml")
+    source = extract_js_function(PAGES[page], "escapeHtml")
 
-    escaped, empty, number = _run_js(
+    escaped, empty, number = run_js(
         [source],
         f"[escapeHtml({json.dumps(PAYLOAD + ' & more')}), escapeHtml(null), escapeHtml(0)]",
     )
@@ -141,7 +138,7 @@ def test_program_summaries_escape_markup_and_keep_bold():
         f"- bullet {PAYLOAD}\n"
     )
 
-    html = _run_js(sources, f"formatProgramSummaries({json.dumps(content)})")
+    html = run_js(sources, f"formatProgramSummaries({json.dumps(content)})")
 
     assert "<img" not in html
     assert "&lt;img src=x" in html
@@ -152,7 +149,7 @@ def test_structured_entries_escape_markup():
     sources = _viz_tree_functions("escapeHtml", "formatStructuredEntries")
     content = f"Name: {PAYLOAD}\nSummary: {PAYLOAD}\nPerformance: {PAYLOAD}\n{PAYLOAD}"
 
-    html = _run_js(sources, f"formatStructuredEntries({json.dumps(content)})")
+    html = run_js(sources, f"formatStructuredEntries({json.dumps(content)})")
 
     assert "<img" not in html
     assert html.count("&lt;img src=x") == 4
@@ -164,22 +161,21 @@ def test_markdown_is_sanitised_after_rendering():
         "globalThis.DOMPurify = {sanitize: (html, options) => ({html, options})};",
     ]
 
-    block, inline = _run_js(
+    block, inline = run_js(
         stubs + _markdown_helper_sources(),
         f"[renderMarkdown({json.dumps(PAYLOAD)}), renderMarkdownInline('x')]",
     )
 
     assert block["html"] == "BLOCK:" + PAYLOAD
     assert inline["html"] == "INLINE:x"
-    for tag in ("img", "style", "form"):
-        assert tag in block["options"]["FORBID_TAGS"]
-    for attribute in ("style", "background", "id", "name"):
-        assert attribute in block["options"]["FORBID_ATTR"]
+    # The whole object: an added ADD_TAGS or ALLOW_UNKNOWN_PROTOCOLS widens
+    # what survives just as a removed entry does.
+    assert block["options"] == inline["options"] == SANITIZE_OPTIONS
 
 
 def test_markdown_falls_back_to_escaped_text_without_sanitiser():
     # A blocked CDN must not turn into unsanitised HTML.
-    html = _run_js(_markdown_helper_sources(), f"renderMarkdown({json.dumps(PAYLOAD)})")
+    html = run_js(_markdown_helper_sources(), f"renderMarkdown({json.dumps(PAYLOAD)})")
 
     assert "<img" not in html
     assert "&lt;img src=x" in html
@@ -188,8 +184,8 @@ def test_markdown_falls_back_to_escaped_text_without_sanitiser():
 def test_marked_is_only_called_through_the_sanitising_helpers():
     assert VIZ_TREE.count("marked.parse(") == 1
     assert VIZ_TREE.count("marked.parseInline(") == 1
-    assert "marked.parse(" in _extract_js_function_source(VIZ_TREE, "renderMarkdown")
-    assert "marked.parseInline(" in _extract_js_function_source(
+    assert "marked.parse(" in extract_js_function(VIZ_TREE, "renderMarkdown")
+    assert "marked.parseInline(" in extract_js_function(
         VIZ_TREE, "renderMarkdownInline"
     )
 
@@ -248,9 +244,9 @@ def test_meta_pdf_renderer_runs_without_scripts_or_local_file_access(monkeypatch
 
 
 def test_download_names_cannot_carry_path_separators():
-    source = _extract_js_function_source(VIZ_TREE, "safeFilenamePart")
+    source = extract_js_function(VIZ_TREE, "safeFilenamePart")
 
-    assert _run_js([source], "safeFilenamePart('../../x.sh')") == "______x_sh"
-    assert _run_js([source], "safeFilenamePart(7)") == "7"
+    assert run_js([source], "safeFilenamePart('../../x.sh')") == "______x_sh"
+    assert run_js([source], "safeFilenamePart(7)") == "7"
     assert "gen${gen}" not in VIZ_TREE
     assert ".${extension}" not in VIZ_TREE
