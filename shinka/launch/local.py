@@ -191,22 +191,27 @@ def monitor(
     verbose: bool = False,
     timeout: Optional[str] = None,
 ):
-    """
-    Monitors a local subprocess until completion and loads its results.
+    """Monitor an ordinary Local job and load any available results."""
+    _wait_for_completion(process, poll_interval, verbose, timeout)
+    return load_results(results_dir)
 
-    Args:
-        process: The ProcessWithLogging object to monitor.
-        results_dir: The directory where results will be stored.
-        poll_interval: Time in seconds between status checks for untimed jobs.
-        verbose: Whether to enable verbose logging.
-        timeout: Optional timeout in `hh:mm:ss` format.
 
-    Returns:
-        dict: Dictionary containing job results.
+def monitor_evaluation(
+    process: ProcessWithLogging, results_dir: str, *, timeout: Optional[str]
+) -> dict:
+    """Load seed artifacts only after the evaluator exits successfully."""
+    _wait_for_completion(process, timeout=timeout)
+    if process.returncode:
+        raise RuntimeError(f"Local evaluator exited with status {process.returncode}")
+    return load_results(results_dir)
 
-    Raises:
-        TimeoutError: The process was killed after exceeding the timeout.
-    """
+
+def _wait_for_completion(
+    process: ProcessWithLogging,
+    poll_interval: float = 0.5,
+    verbose: bool = False,
+    timeout: Optional[str] = None,
+) -> None:
     if verbose:
         logger.info(f"Monitoring local process with PID: {process.pid}...")
 
@@ -236,5 +241,3 @@ def monitor(
     return_code = process.returncode
     if verbose:
         logger.info(f"Process {process.pid} completed with return code: {return_code}")
-
-    return load_results(results_dir)

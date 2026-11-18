@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from shinka.core.async_runner import ShinkaEvolveRunner
+from shinka.core.config import EvolutionConfig
 from shinka.database import (
     AsyncProgramDatabase,
     DatabaseConfig,
@@ -35,6 +36,7 @@ def _run_seed(
     code: str = SEED,
     *,
     scheduler: JobScheduler | None = None,
+    meta_summarizer: Mock | None = None,
 ) -> tuple[Program, bool, Mock]:
     db_config = DatabaseConfig(db_path=str(tmp_path / "programs.db"), num_islands=1)
     db = ProgramDatabase(db_config)
@@ -48,7 +50,9 @@ def _run_seed(
     runner.max_evaluation_jobs = 1
     runner.max_db_workers = 1
     runner.total_api_cost = 0.0
-    runner.meta_summarizer = None
+    runner.meta_summarizer = meta_summarizer
+    if meta_summarizer is not None:
+        runner.evo_config = EvolutionConfig()
     runner.llm_selection = Mock()
     runner.stuck_detection_count = 0
     runner.wandb_logger = None
@@ -157,10 +161,11 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
             not (results_dir / "ready").exists() and time.monotonic() < ready_deadline
         ):
             time.sleep(0.01)
-        return local.monitor(process, directory, **kwargs)
+        return local.monitor_evaluation(process, directory, **kwargs)
 
     monkeypatch.setattr(
-        "shinka.launch.scheduler.monitor_local", monitor_after_partial_results
+        "shinka.launch.scheduler.monitor_local_evaluation",
+        monitor_after_partial_results,
     )
     seed, needs_fix, baseline = _run_seed(
         tmp_path, LocalJobConfig(eval_program_path=str(evaluator), time="00:00:01")
@@ -378,6 +383,7 @@ def test_slurm_seed_without_accounting_uses_controller_status(
             id="invalid-score",
         ),
         pytest.param('{"correct": true}', "{}", 4, "status 4", id="nonzero-exit"),
+        pytest.param("{", "{}", 7, "status 7", id="nonzero-exit-truncated-artifact"),
     ],
 )
 def test_seed_invalid_result_is_saved_for_fix_mode(
@@ -474,3 +480,26 @@ def test_incorrect_seed_with_nonfinite_score_can_be_formatted(
     assert seed.public_metrics == {"measured": 0}
     assert "non-finite" in seed.metadata["stderr_log"]
     assert "evaluator stderr" in seed.metadata["stderr_log"]
+
+
+def test_structured_seed_error_reaches_in_memory_meta_prompt(tmp_path: Path) -> None:
+    evaluator = _write_evaluator(
+        tmp_path,
+        """
+        (results / 'correct.json').write_text(
+            '{"correct": false, "error": {"message": "bad result"}}'
+        )
+        (results / 'metrics.json').write_text('{"combined_score": 0}')
+        """,
+    )
+    meta = Mock()
+    meta.should_update_meta.return_value = False
+    _, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator)), meta_summarizer=meta
+    )
+
+    assert needs_fix
+    program = meta.add_evaluated_program.call_args.args[0]
+    assert "bad result" in construct_individual_program_msg(
+        program, include_text_feedback=True
+    )

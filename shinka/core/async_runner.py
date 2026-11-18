@@ -1711,9 +1711,13 @@ class ShinkaEvolveRunner:
                 )
                 combined_score = 0.0
 
-            text_feedback = metrics.get("text_feedback", "")
-            if not correct_val and not text_feedback:
-                text_feedback = correctness.get("error") or ""
+            feedback = metrics.get("text_feedback")
+            if not correct_val and not feedback:
+                feedback = correctness.get("error")
+            if isinstance(feedback, list):
+                text_feedback = "\n".join(str(item) for item in feedback)
+            else:
+                text_feedback = "" if feedback is None else str(feedback)
         except Exception as exc:
             evaluation_failed = True
             evaluation_diagnostic = (

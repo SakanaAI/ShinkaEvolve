@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
+from .local import monitor_evaluation as monitor_local_evaluation
 from .local import ProcessWithLogging
 from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
 from .slurm_evaluation import CONTROL_COMMAND_TIMEOUT_SECONDS
@@ -288,11 +289,7 @@ class JobScheduler:
         if isinstance(job_id, str):
             results = monitor_slurm_evaluation(job_id, results_dir_t, job_name=job_name)
         else:
-            results = monitor_local(job_id, results_dir_t, timeout=timeout)
-            if job_id.returncode:
-                raise RuntimeError(
-                    f"Local evaluator exited with status {job_id.returncode}"
-                )
+            results = monitor_local_evaluation(job_id, results_dir_t, timeout=timeout)
 
         end_time = time.time()
         rtime = end_time - start_time
