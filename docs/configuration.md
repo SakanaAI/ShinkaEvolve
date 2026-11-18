@@ -190,7 +190,8 @@ presets and examples. Rules for `db_path` in a run:
   `results_dir` to move a run.
 - Give the name a `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
   and the resume rule below recognise database files by it; the runner warns
-  about any other name.
+  about any other name. `prompts.sqlite` and `prompts.db`
+  belong to the prompt database and are refused.
 - A run never starts at generation 0 next to programs it did not ask for. If
   the configured file has no programs but `programs.sqlite` or a database of the
   first releases (`evolution_db.sqlite`) does, the run resumes in that one and

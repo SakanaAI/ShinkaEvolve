@@ -83,6 +83,21 @@ def test_db_path_never_reaches_a_database_outside_the_results_dir(tmp_path, capl
     assert "Only the file name" in message
 
 
+@pytest.mark.parametrize(
+    "configured", ["prompts.sqlite", "prompts.db", "Prompts.sqlite", "sub/prompts.sqlite"]
+)
+def test_name_of_the_prompt_database_is_refused(tmp_path, configured):
+    """Every reader takes that file for the prompt database of the run."""
+    with pytest.raises(ValueError, match="prompt database"):
+        resolve_run_db_path(tmp_path, configured)
+
+
+@pytest.mark.parametrize("configured", ["..", "nested/..", "."])
+def test_db_path_that_names_no_file_is_refused(tmp_path, configured):
+    with pytest.raises(ValueError, match="names no file"):
+        resolve_run_db_path(tmp_path, configured)
+
+
 def test_path_into_the_results_dir_is_taken_as_is(tmp_path, caplog):
     """The runner writes the resolved path back into the config it was given."""
     with caplog.at_level(logging.WARNING):

@@ -115,7 +115,23 @@ def _names(paths: List[Path]) -> str:
 def _run_db_name(configured_db_path: Optional[str]) -> str:
     if not configured_db_path:
         return DEFAULT_RUN_DB_NAME
-    return Path(configured_db_path).name or DEFAULT_RUN_DB_NAME
+    name = Path(configured_db_path).name
+    if name in ("", ".."):
+        raise ValueError(
+            f"DatabaseConfig.db_path={configured_db_path!r} names no file. Give "
+            "the file name of the run database, or leave it unset."
+        )
+    if _is_prompt_db_name(name):
+        raise ValueError(
+            f"DatabaseConfig.db_path={configured_db_path!r} is the name of the "
+            "prompt database of a run. Choose another file name."
+        )
+    return name
+
+
+def _is_prompt_db_name(name: str) -> bool:
+    # Compared without case: on many file systems both spellings are one file.
+    return name.lower() in _PROMPT_DB_NAMES
 
 
 def _is_inside(configured_db_path: str, results_dir: Path) -> bool:
@@ -177,7 +193,7 @@ def _database_files(results_dir: Path) -> List[Path]:
     return sorted(
         path
         for path in results_dir.iterdir()
-        if path.suffix in _DB_SUFFIXES and path.name not in _PROMPT_DB_NAMES
+        if path.suffix in _DB_SUFFIXES and not _is_prompt_db_name(path.name)
     )
 
 
