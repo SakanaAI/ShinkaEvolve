@@ -1,6 +1,7 @@
 """Which database file a run directory reads and writes."""
 
 import logging
+import sqlite3
 from contextlib import closing
 from pathlib import Path
 
@@ -141,19 +142,41 @@ def test_programs_sqlite_wins_over_other_existing_databases(tmp_path):
     assert resolved == tmp_path / "programs.sqlite"
 
 
-@pytest.mark.parametrize("leftover", ["zero-bytes", "tables-only", "not-a-database"])
+@pytest.mark.parametrize("leftover", ["zero-bytes", "tables-only"])
 def test_file_without_programs_does_not_hide_the_existing_database(tmp_path, leftover):
     """An earlier resume attempt may have left an empty programs.sqlite."""
     _write_db(tmp_path / "evolution_db.sqlite")
     default_path = tmp_path / "programs.sqlite"
     if leftover == "zero-bytes":
         default_path.touch()
-    elif leftover == "tables-only":
-        _write_db(default_path, num_programs=0)
     else:
-        default_path.write_text("not sqlite")
+        _write_db(default_path, num_programs=0)
 
     assert resolve_run_db_path(tmp_path, None) == tmp_path / "evolution_db.sqlite"
+
+
+@pytest.mark.parametrize("damage", ["not-a-database", "corrupt", "foreign-schema"])
+def test_unreadable_database_is_not_swapped_for_another_one(tmp_path, caplog, damage):
+    """A damaged run database must fail on open, not resume from an older copy."""
+    _write_db(tmp_path / "evolution_db.sqlite")
+    _write_db(tmp_path / "backup.sqlite")
+    default_path = tmp_path / "programs.sqlite"
+    if damage == "not-a-database":
+        default_path.write_text("not sqlite")
+    elif damage == "corrupt":
+        _write_db(default_path)
+        with open(default_path, "r+b") as db_file:
+            db_file.write(b"\0" * 200)
+    else:
+        with closing(sqlite3.connect(default_path)) as conn:
+            conn.execute("CREATE TABLE programs (title TEXT)")
+            conn.execute("INSERT INTO programs VALUES ('news')")
+            conn.commit()
+
+    with caplog.at_level(logging.WARNING):
+        assert resolve_run_db_path(tmp_path, None) == default_path
+        assert find_run_db_path(tmp_path) == default_path
+    assert caplog.records == []
 
 
 def test_several_unnamed_databases_are_not_guessed_between(tmp_path):

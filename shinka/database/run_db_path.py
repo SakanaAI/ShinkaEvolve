@@ -10,6 +10,7 @@ configured name, so an edited configuration cannot restart a run at generation 0
 import logging
 import sqlite3
 from contextlib import closing
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -99,7 +100,9 @@ def _existing_run_db(
     results_dir: Path, target: Path, configured_db_path: Optional[str]
 ) -> Optional[Path]:
     """The database of ``results_dir`` that holds programs, ``target`` first."""
-    if _has_programs(target):
+    if _content_of(target) is not _Content.EMPTY:
+        # It holds programs, or it cannot be read. Opening it reports that
+        # error, which is safer than continuing in an older copy next to it.
         return target
 
     known = [results_dir / DEFAULT_RUN_DB_NAME]
@@ -109,7 +112,7 @@ def _existing_run_db(
     # The preset name, and the file an unset db_path produced back then.
     known += [results_dir / LEGACY_RUN_DB_NAME, results_dir / "None"]
     for known_path in known:
-        if _has_programs(known_path):
+        if known_path != target and _has_programs(known_path):
             return known_path
 
     # Any other name: the run was started with a db_path the caller no longer
@@ -143,14 +146,36 @@ def _database_files(results_dir: Path) -> List[Path]:
     )
 
 
+class _Content(Enum):
+    """What a file holds, seen as the program database of a run."""
+
+    PROGRAMS = "programs"
+    # No file, or a database without a program in it.
+    EMPTY = "empty"
+    # Damaged, locked, not permitted, or not a program database.
+    UNREADABLE = "unreadable"
+
+
 def _has_programs(db_path: Path) -> bool:
     """True if the file is a program database with at least one program."""
+    return _content_of(db_path) is _Content.PROGRAMS
+
+
+def _content_of(db_path: Path) -> _Content:
     if not db_path.is_file():
-        return False
+        return _Content.EMPTY
     try:
         with closing(
             sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
         ) as conn:
-            return conn.execute("SELECT 1 FROM programs LIMIT 1").fetchone() is not None
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'programs'"
+            ).fetchone()
+            if has_table is None:
+                return _Content.EMPTY
+            program = conn.execute(
+                "SELECT id, generation FROM programs LIMIT 1"
+            ).fetchone()
     except sqlite3.Error:
-        return False
+        return _Content.UNREADABLE
+    return _Content.PROGRAMS if program else _Content.EMPTY
