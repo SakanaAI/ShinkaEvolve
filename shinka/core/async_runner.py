@@ -4609,6 +4609,23 @@ class ShinkaEvolveRunner:
         exit_status = getattr(job.job_id, "returncode", None)
         return exit_status if type(exit_status) is int else None
 
+    _RESULTS_READ_TIMEOUT_SECONDS = 30.0
+
+    def _result_read(self, job: AsyncRunningJob, source_job_id: str) -> asyncio.Future:
+        """Return the job's results read, starting it on first use.
+
+        A read that outlasts its timeout keeps its scheduler thread, so a retry
+        waits on the same read instead of occupying another thread.
+        """
+        reads = getattr(self, "_result_reads", None)
+        if reads is None:
+            reads = self._result_reads = {}
+        if source_job_id not in reads:
+            reads[source_job_id] = asyncio.ensure_future(
+                self.scheduler.get_job_results_async(job.job_id, job.results_dir)
+            )
+        return reads[source_job_id]
+
     async def _persist_completed_job(
         self, job: AsyncRunningJob
     ) -> CompletedJobPersistResult:
@@ -4630,23 +4647,28 @@ class ShinkaEvolveRunner:
             # Get job results with timeout to prevent hanging
             results = None
             retrieval_failure = None
+            read = self._result_read(job, source_job_id)
             try:
                 results = await asyncio.wait_for(
-                    self.scheduler.get_job_results_async(job.job_id, job.results_dir),
-                    timeout=30.0,  # 30 second timeout
+                    asyncio.shield(read), timeout=self._RESULTS_READ_TIMEOUT_SECONDS
                 )
                 logger.info(
                     f"📂 RESULTS: Got results for {job.job_id}: {results is not None}"
                 )
-            except asyncio.TimeoutError:
-                retrieval_failure = "timed out after 30s"
-                await self._record_generation_event(
-                    generation=job.generation,
-                    status="results_timeout",
-                    source_job_id=job.job_id,
-                )
             except Exception as exc:
-                retrieval_failure = f"failed ({type(exc).__name__}): {exc}"
+                if read.done():
+                    retrieval_failure = f"failed ({type(exc).__name__}): {exc}"
+                else:
+                    retrieval_failure = (
+                        f"timed out after {self._RESULTS_READ_TIMEOUT_SECONDS:g}s"
+                    )
+                    await self._record_generation_event(
+                        generation=job.generation,
+                        status="results_timeout",
+                        source_job_id=job.job_id,
+                    )
+            if read.done():
+                self._result_reads.pop(source_job_id, None)
             if retrieval_failure is not None:
                 # The evaluation itself may be fine, so retry the read first. Once
                 # retries run out the generation is recorded as failed below.
