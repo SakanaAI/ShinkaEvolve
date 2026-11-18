@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import subprocess
 import time
@@ -9,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from shinka.core.async_runner import ShinkaEvolveRunner
+from shinka.core.seed_results import run_seed_evaluation
 from shinka.database import (
     AsyncProgramDatabase,
     DatabaseConfig,
@@ -24,6 +26,7 @@ from shinka.launch import (
 )
 from shinka.prompts.prompts_base import construct_individual_program_msg
 from shinka.utils import load_results
+from shinka.utils.utils_hydra import load_hydra_config
 
 
 SEED = "def approximate(x):\n    return x\n"
@@ -52,12 +55,14 @@ def _run_seed(
     runner.llm_selection = Mock()
     runner.stuck_detection_count = 0
     runner.wandb_logger = None
+    runner.best_program_id = None
     runner.scheduler = scheduler or JobScheduler("local", config)
     runner.async_db = AsyncProgramDatabase(db)
 
     async def setup() -> None:
         try:
             await runner._setup_initial_program(code)
+            await runner._update_best_solution_async()
         finally:
             await runner.async_db.close_async()
 
@@ -89,6 +94,94 @@ def _write_evaluator(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def test_seed_retry_requires_its_own_artifacts(tmp_path: Path) -> None:
+    public_results = tmp_path / "gen_0" / "results"
+    public_results.mkdir(parents=True)
+    (public_results / "correct.json").write_text('{"correct": true}')
+    (public_results / "metrics.json").write_text('{"combined_score": 42}')
+    (public_results / "job_log.err").write_text("previous attempt diagnostic")
+    evaluator = _write_evaluator(
+        tmp_path, "(results / 'correct.json').write_text('{\"correct\": true}')\n"
+    )
+
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator))
+    )
+
+    assert not seed.correct and needs_fix
+    assert "Metrics file not found" in seed.metadata["stderr_log"]
+    assert "evaluator stderr" in (public_results / "job_log.err").read_text()
+    assert not (public_results / "metrics.json").exists()
+    (previous_results,) = public_results.parent.glob("results-attempts/previous-*")
+    assert (
+        previous_results / "job_log.err"
+    ).read_text() == "previous attempt diagnostic"
+    assert (previous_results / "metrics.json").read_text() == '{"combined_score": 42}'
+
+
+def test_best_seed_export_contains_only_current_artifacts(tmp_path: Path) -> None:
+    public_results = tmp_path / "gen_0" / "results"
+    public_results.mkdir(parents=True)
+    (public_results / "old-diagnostics.txt").write_text("previous attempt")
+    evaluator = _write_evaluator(
+        tmp_path,
+        """
+        (results / 'correct.json').write_text('{"correct": true}')
+        (results / 'metrics.json').write_text('{"combined_score": 1}')
+        """,
+    )
+
+    seed, _, _ = _run_seed(tmp_path, LocalJobConfig(eval_program_path=str(evaluator)))
+
+    assert seed.correct
+    best = tmp_path / "best"
+    assert {path.name for path in best.iterdir()} == {"main.py", "results"}
+    assert not (best / "results").is_symlink()
+    assert load_results(str(best / "results"))["metrics"]["combined_score"] == 1
+
+
+def test_seed_attempt_paths_preserve_hydra_lookup_and_late_logs(tmp_path: Path) -> None:
+    hydra = tmp_path / ".hydra"
+    hydra.mkdir()
+    (hydra / "config.yaml").write_text("task: seed")
+    gen_dir = tmp_path / "gen_0"
+    gen_dir.mkdir()
+    public_results = gen_dir / "results"
+    attempts: list[Path] = []
+
+    def evaluate(_program, results):
+        attempts.append(Path(results))
+        assert load_hydra_config(results).task == "seed"
+        return {}, 0.0
+
+    for _ in range(2):
+        run_seed_evaluation(evaluate, "main.py", str(public_results))
+
+    first, second = attempts
+    assert first != second
+    (first / "job_log.out").write_text("late output")
+    assert not (public_results / "job_log.out").exists()
+    assert (first / "job_log.out").read_text() == "late output"
+
+
+def test_seed_publishes_artifacts_without_symlink_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        Path, "symlink_to", Mock(side_effect=OSError(errno.ENOTSUP, "no symlinks"))
+    )
+
+    def evaluate(_program, results):
+        (Path(results) / "job_log.out").write_text("current output")
+        raise RuntimeError("evaluator failed")
+
+    public_results = tmp_path / "results"
+    with pytest.raises(RuntimeError, match="evaluator failed"):
+        run_seed_evaluation(evaluate, "main.py", str(public_results))
+
+    assert (public_results / "job_log.out").read_text() == "current output"
+
+
 def test_seed_timeout_kills_local_evaluator_with_partial_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -102,9 +195,9 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
         (results / 'finished').touch()
         """,
     )
-    results_dir = tmp_path / "gen_0" / "results"
 
     def monitor_after_partial_results(process, directory, **kwargs):
+        results_dir = Path(directory)
         ready_deadline = time.monotonic() + 5.0
         while (
             not (results_dir / "ready").exists() and time.monotonic() < ready_deadline
@@ -119,6 +212,7 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
         tmp_path, LocalJobConfig(eval_program_path=str(evaluator), time="00:00:01")
     )
 
+    results_dir = tmp_path / "gen_0" / "results"
     assert (results_dir / "ready").exists()
     assert not (results_dir / "finished").exists()
     assert seed.correct == 0
@@ -184,13 +278,21 @@ def test_slurm_control_failures_enter_seed_fix_mode(
     expected_attempts: int,
 ) -> None:
     failed_attempts = 0
+    results_dir = None
 
     def run(cmd, **kwargs):
-        nonlocal failed_attempts
-        path = tmp_path / "gen_0" / "results"
-        (path / "correct.json").write_text('{"correct": true}')
-        (path / "metrics.json").write_text('{"combined_score": 42}')
-        (path / "job_log.err").write_text("partial evaluator log")
+        nonlocal failed_attempts, results_dir
+        if cmd[0] == "sbatch":
+            line = next(
+                line
+                for line in Path(cmd[1]).read_text().splitlines()
+                if line.startswith("#SBATCH --error=")
+            )
+            results_dir = Path(line.split("=", 1)[1]).parent
+        assert results_dir is not None
+        (results_dir / "correct.json").write_text('{"correct": true}')
+        (results_dir / "metrics.json").write_text('{"combined_score": 42}')
+        (results_dir / "job_log.err").write_text("partial evaluator log")
         if cmd[0] == failed_command:
             failed_attempts += 1
             assert failed_attempts <= expected_attempts, "Unbounded retries"

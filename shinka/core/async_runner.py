@@ -68,6 +68,7 @@ from shinka.core.prompt_evolver import (
     AsyncSystemPromptEvolver,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
+from shinka.core.seed_results import copy_seed_generation, run_seed_evaluation
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
 from shinka.pricing.catalog import (
@@ -1663,7 +1664,6 @@ class ShinkaEvolveRunner:
 
         # Create directories synchronously to avoid race conditions
         Path(gen_dir).mkdir(parents=True, exist_ok=True)
-        Path(results_dir).mkdir(parents=True, exist_ok=True)
 
         # Write the initial program file
         exec_fname = f"{gen_dir}/main.{self.lang_ext}"
@@ -1678,7 +1678,7 @@ class ShinkaEvolveRunner:
 
             # Run the evaluation synchronously for generation 0
             results, rtime = await asyncio.get_running_loop().run_in_executor(
-                None, self.scheduler.run, exec_fname, results_dir
+                None, run_seed_evaluation, self.scheduler.run, exec_fname, results_dir
             )
 
             if self.verbose:
@@ -6361,7 +6361,10 @@ class ShinkaEvolveRunner:
                 """Synchronous file operations to run in executor."""
                 if best_dir.exists():
                     shutil.rmtree(best_dir)
-                shutil.copytree(source_dir, best_dir)
+                if best_program.generation == 0:
+                    copy_seed_generation(Path(source_dir), best_dir)
+                else:
+                    shutil.copytree(source_dir, best_dir)
 
             await loop.run_in_executor(None, sync_file_operations)
 
