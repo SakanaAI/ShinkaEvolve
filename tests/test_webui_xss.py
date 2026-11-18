@@ -173,7 +173,8 @@ def test_markdown_is_sanitised_after_rendering():
     assert inline["html"] == "INLINE:x"
     for tag in ("img", "style", "form"):
         assert tag in block["options"]["FORBID_TAGS"]
-    assert "style" in block["options"]["FORBID_ATTR"]
+    for attribute in ("style", "background", "id", "name"):
+        assert attribute in block["options"]["FORBID_ATTR"]
 
 
 def test_markdown_falls_back_to_escaped_text_without_sanitiser():
@@ -241,3 +242,15 @@ def test_meta_pdf_renderer_runs_without_scripts_or_local_file_access(monkeypatch
     wkhtmltopdf = next(cmd for cmd in commands if cmd[0] == "wkhtmltopdf")
     assert "--disable-javascript" in wkhtmltopdf
     assert "--disable-local-file-access" in wkhtmltopdf
+
+
+# --- downloads ----------------------------------------------------------------
+
+
+def test_download_names_cannot_carry_path_separators():
+    source = _extract_js_function_source(VIZ_TREE, "safeFilenamePart")
+
+    assert _run_js([source], "safeFilenamePart('../../x.sh')") == "______x_sh"
+    assert _run_js([source], "safeFilenamePart(7)") == "7"
+    assert "gen${gen}" not in VIZ_TREE
+    assert ".${extension}" not in VIZ_TREE

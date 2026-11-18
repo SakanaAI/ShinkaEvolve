@@ -2114,7 +2114,8 @@
                 'style', 'img', 'picture', 'source', 'video', 'audio', 'track',
                 'form', 'input', 'button', 'select', 'textarea',
             ],
-            FORBID_ATTR: ['style'],
+            // `background` loads a URL; `id` and `name` can shadow globals.
+            FORBID_ATTR: ['style', 'background', 'id', 'name'],
         };
 
         function sanitizeRenderedMarkdown(render, text) {
@@ -2131,6 +2132,12 @@
 
         function renderMarkdownInline(text) {
             return sanitizeRenderedMarkdown(source => marked.parseInline(source), text);
+        }
+
+        // Names of downloaded files and zip entries are built from run data;
+        // keep path separators and dots out of each part.
+        function safeFilenamePart(value) {
+            return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
         }
 
         // Basic error handling
@@ -2314,7 +2321,7 @@
                                         'fortran': 'f90'
                                     }[language] || language;
 
-                                    a.download = `${agentName}_gen${gen}.${extension}`;
+                                    a.download = `${safeFilenamePart(agentName)}_gen${safeFilenamePart(gen)}.${safeFilenamePart(extension)}`;
                                     document.body.appendChild(a);
                                     a.click();
                                     document.body.removeChild(a);
@@ -12974,7 +12981,7 @@ console.error("[DEBUG] Error in processData:", error);
                     'f08': '!'
                 }[language.toLowerCase()] || '//';
                 
-                const filename = `${rank}_gen${gen}_${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.${extension}`;
+                const filename = `${rank}_gen${safeFilenamePart(gen)}_${safeFilenamePart(name)}.${safeFilenamePart(extension)}`;
                 
                 // Collect additional metadata
                 const patchType = program.metadata.patch_type || 'N/A';
