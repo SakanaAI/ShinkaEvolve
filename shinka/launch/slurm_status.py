@@ -12,11 +12,10 @@ STATUS_COMMAND_TIMEOUT_SECONDS = 30
 # The runner asks for statuses many times per second; the controller is asked
 # at most this often, with one command for every tracked job.
 STATUS_POLL_SECONDS = 5.0
-# A controller restart or failover must not cost the jobs that are running
-# through it, so a failing lookup means "still active" for this long.
-STATUS_OUTAGE_LIMIT_SECONDS = 900.0
-STATUS_OUTAGE_MIN_FAILURES = 3
-_FAILURE_LOG_EVERY = 12
+# A controller outage stops no jobs, so a failing lookup means "still active"
+# for as long as it lasts. The run stalls and resumes when the controller
+# answers; until then the outage is reported this often.
+STATUS_OUTAGE_LOG_SECONDS = 300.0
 
 
 def is_unknown_job_error(stderr: Optional[str]) -> bool:
@@ -48,13 +47,8 @@ def query_active_jobs(job_ids: list[str]) -> set[str]:
 class SlurmQueuePoller:
     """Tells which tracked jobs are still active, from batched ``squeue`` calls."""
 
-    def __init__(
-        self,
-        poll_interval: float = STATUS_POLL_SECONDS,
-        outage_limit: float = STATUS_OUTAGE_LIMIT_SECONDS,
-    ) -> None:
+    def __init__(self, poll_interval: float = STATUS_POLL_SECONDS) -> None:
         self._poll_interval = poll_interval
-        self._outage_limit = outage_limit
         self._lock = threading.Lock()
         self._polled_at: Optional[float] = None
         self._polled: set[str] = set()
@@ -63,6 +57,7 @@ class SlurmQueuePoller:
         self._unpolled: set[str] = set()
         self._failures = 0
         self._failing_since: Optional[float] = None
+        self._failure_reported_at: Optional[float] = None
 
     def active_jobs(self, job_ids: Iterable[str]) -> set[str]:
         """Return the subset of ``job_ids`` that has not left the queue."""
@@ -89,42 +84,31 @@ class SlurmQueuePoller:
         try:
             self._active = query_active_jobs(sorted(job_ids))
         except (OSError, subprocess.SubprocessError) as error:
-            self._active = self._jobs_assumed_active(job_ids, now, error)
+            self._report_failure(len(job_ids), now, error)
+            self._active = set(job_ids)
             return
         if self._failures:
             logger.info("Slurm status lookup recovered after %s failure(s)", self._failures)
         self._failures = 0
         self._failing_since = None
+        self._failure_reported_at = None
 
-    def _jobs_assumed_active(
-        self, job_ids: set[str], now: float, error: Exception
-    ) -> set[str]:
+    def _report_failure(self, job_count: int, now: float, error: Exception) -> None:
         self._failures += 1
         if self._failing_since is None:
             self._failing_since = now
+        reported_at = self._failure_reported_at
+        if reported_at is not None and now - reported_at < STATUS_OUTAGE_LOG_SECONDS:
+            return
+        self._failure_reported_at = now
         outage = now - self._failing_since
-        detail = getattr(error, "stderr", None) or error
-        if (
-            self._failures >= STATUS_OUTAGE_MIN_FAILURES
-            and outage >= self._outage_limit
-        ):
-            # Nothing can confirm these jobs any more. Hand them back so their
-            # result directories decide, instead of tracking them forever.
-            logger.error(
-                "Slurm status lookup has failed for %.0fs (%s attempts); treating "
-                "%s job(s) as finished: %s",
-                outage,
-                self._failures,
-                len(job_ids),
-                detail,
-            )
-            return set()
-        if self._failures % _FAILURE_LOG_EVERY == 1:
-            logger.warning(
-                "Slurm status lookup failed (%s in a row); assuming %s job(s) are "
-                "still active: %s",
-                self._failures,
-                len(job_ids),
-                detail,
-            )
-        return set(job_ids)
+        # The first failure may be a blip; one that outlasts a report interval is not.
+        log = logger.error if outage >= STATUS_OUTAGE_LOG_SECONDS else logger.warning
+        log(
+            "Slurm status lookup has failed for %.0fs (%s attempts); still tracking "
+            "%s job(s), the run resumes when the controller answers: %s",
+            outage,
+            self._failures,
+            job_count,
+            getattr(error, "stderr", None) or error,
+        )

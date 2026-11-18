@@ -110,47 +110,62 @@ def test_purged_id_in_a_list_falls_back_to_single_lookups(
     ],
     ids=["controller-down", "timeout", "missing-binary"],
 )
-def test_failed_lookup_keeps_jobs_only_for_a_bounded_outage(
+def test_failed_lookup_never_reports_a_job_as_finished(
     monkeypatch: pytest.MonkeyPatch,
     clock: FakeClock,
     caplog: pytest.LogCaptureFixture,
     error: Exception,
 ) -> None:
-    calls = fake_squeue(monkeypatch, lambda job_ids: error)
-    poller = SlurmQueuePoller(poll_interval=5.0, outage_limit=60.0)
+    # A controller outage stops no jobs, however long it lasts.
+    fake_squeue(monkeypatch, lambda job_ids: error)
+    poller = SlurmQueuePoller(poll_interval=5.0)
 
     with caplog.at_level(logging.WARNING, logger=slurm_status.__name__):
-        for _ in range(12):
+        for _ in range(2 * 60 * 12):
             assert poller.active_jobs(["101", "102"]) == {"101", "102"}
             clock.now += 5.0
-        assert poller.active_jobs(["101", "102"]) == set()
 
-    assert len(calls) == 13
-    assert "treating 2 job(s) as finished" in caplog.text
+    reports = [record for record in caplog.records if "still tracking" in record.message]
+    assert [record.levelno for record in reports[:2]] == [logging.WARNING, logging.ERROR]
+    # Two hours of outage are reported every few minutes, not on every poll.
+    assert 10 <= len(reports) <= 30
 
 
-def test_lookup_recovery_restarts_the_outage_window(
+def test_job_submitted_during_an_outage_stays_tracked(
     monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    fake_squeue(monkeypatch, lambda job_ids: squeue_failure("Socket timed out"))
+    poller = SlurmQueuePoller(poll_interval=5.0)
+    for _ in range(60 * 12):
+        assert poller.active_jobs(["101"]) == {"101"}
+        clock.now += 5.0
+
+    for _ in range(12):
+        assert poller.active_jobs(["101", "202"]) == {"101", "202"}
+        clock.now += 5.0
+
+
+def test_jobs_are_collected_once_the_lookup_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     failing = True
     fake_squeue(
         monkeypatch,
-        lambda job_ids: squeue_failure("Socket timed out") if failing else job_ids,
+        lambda job_ids: squeue_failure("Socket timed out") if failing else ["102"],
     )
-    poller = SlurmQueuePoller(poll_interval=5.0, outage_limit=60.0)
-
-    assert poller.active_jobs(["101"]) == {"101"}
-    # The runner was busy for longer than the outage limit before asking again:
-    # two failures are not yet an outage.
-    clock.now += 600.0
-    assert poller.active_jobs(["101"]) == {"101"}
-    failing = False
-    clock.now += 5.0
-    assert poller.active_jobs(["101"]) == {"101"}
-    failing = True
-    for _ in range(12):
+    poller = SlurmQueuePoller(poll_interval=5.0)
+    for _ in range(60 * 12):
+        assert poller.active_jobs(["101", "102"]) == {"101", "102"}
         clock.now += 5.0
-        assert poller.active_jobs(["101"]) == {"101"}
+
+    failing = False
+    with caplog.at_level(logging.INFO, logger=slurm_status.__name__):
+        # Job 101 finished during the outage; job 102 is still running.
+        assert poller.active_jobs(["101", "102"]) == {"102"}
+
+    assert "recovered after 720 failure(s)" in caplog.text
 
 
 def test_verbose_monitor_survives_a_job_that_is_still_listed(
