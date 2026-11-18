@@ -2647,10 +2647,15 @@ class ShinkaEvolveRunner:
                                 )
 
                         # Wait for ALL running jobs and proposals to
-                        # complete and be processed
+                        # complete and be processed. A finished job whose
+                        # results read is still running is not processed yet.
                         if (
                             len(self.running_jobs) == 0
                             and len(self.active_proposal_tasks) == 0
+                            and not any(
+                                self._is_waiting_for_results(job)
+                                for job in self.failed_jobs_for_retry.values()
+                            )
                         ):
                             # Final retry attempt for any remaining failed jobs
                             # before cost-limit shutdown
