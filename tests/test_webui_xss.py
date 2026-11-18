@@ -285,8 +285,9 @@ def test_highlighter_is_only_called_when_it_loaded():
     assert calls and len(calls) == len(guards)
 
 
-@pytest.mark.parametrize("parameter", ["rightTabIdToActivate", "leftTab"])
+@pytest.mark.parametrize("parameter", ["rightTabIdToActivate", "leftTab", "tabId"])
 def test_tab_named_in_the_url_is_escaped_for_the_selector(parameter: str):
     # A quote in ?right_tab= made querySelector throw while the page loaded.
+    # The value reaches a selector directly and through activateRightTab.
     assert f'[data-tab="${{CSS.escape({parameter})}}"]' in VIZ_TREE
     assert f'[data-tab="${{{parameter}}}"]' not in VIZ_TREE

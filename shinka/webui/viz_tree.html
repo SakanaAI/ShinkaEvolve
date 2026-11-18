@@ -2339,7 +2339,7 @@
                 initializeScoreTypeListeners();
 
                 function activateRightTab(tabId) {
-                    const tabElement = document.querySelector(`.tab[data-tab="${tabId}"]`);
+                    const tabElement = document.querySelector(`.tab[data-tab="${CSS.escape(tabId)}"]`);
                     const sectionElement = document.getElementById(tabId);
                     if (!tabElement || !sectionElement) {
                         return;
