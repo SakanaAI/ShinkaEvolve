@@ -28,7 +28,7 @@ from shinka.llm.providers.retry import is_permanent_status_error
 
 PERMANENT_STATUSES = [400, 401, 402, 403, 404, 413, 422]
 ENDPOINT_STATUSES = {401, 402, 403, 404}
-TRANSIENT_STATUSES = [408, 409, 429, 500, 503]
+TRANSIENT_STATUSES = [408, 409, 425, 429, 499, 500, 503]
 
 
 def _http_response(status: int, headers: dict[str, str] | None = None):

@@ -6,8 +6,10 @@ from typing import Any, List, Optional
 
 from .errors import LLMEndpointError, NonRetryableLLMError, RequestRejectedError
 
-# 4xx statuses that describe a transient condition and are worth retrying.
-RETRYABLE_CLIENT_STATUS_CODES = frozenset({408, 409, 429})
+# 4xx statuses that describe a transient condition and are worth retrying:
+# timeout, conflict, too early, rate limit, and a request cancelled in transit
+# (499, which Google returns for CANCELLED and proxies for a closed connection).
+RETRYABLE_CLIENT_STATUS_CODES = frozenset({408, 409, 425, 429, 499})
 # Statuses that mean the endpoint, credentials, model or account are wrong for
 # every request.
 ENDPOINT_FAILURE_STATUS_CODES = frozenset({401, 402, 403, 404})
