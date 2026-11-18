@@ -35,7 +35,7 @@ def _write_legacy_run_state(
     with db.conn:
         db.conn.execute(
             "DELETE FROM metadata_store "
-            "WHERE key IN ('run_state_reconciled_v1', 'run_state_reconciled_v2')"
+            "WHERE key IN ('run_state_reconciled_v1', 'run_state_reconciled_v3')"
         )
         db.conn.executemany(
             "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
@@ -109,7 +109,7 @@ def test_legacy_repair_rolls_back_and_retries_on_next_open(config):
         _write_legacy_run_state(writer, stale, marker=1)
         writer.conn.execute("""
             CREATE TRIGGER fail_legacy_repair BEFORE INSERT ON metadata_store
-            WHEN NEW.key = 'run_state_reconciled_v2'
+            WHEN NEW.key = 'run_state_reconciled_v3'
             BEGIN SELECT RAISE(ABORT, 'legacy run state repair failed'); END
             """)
 
@@ -155,7 +155,7 @@ def test_interleaved_legacy_writes_repair_marker_with_correct_best_id(config):
         with newer.conn:
             newer.conn.execute(
                 "DELETE FROM metadata_store "
-                "WHERE key IN ('run_state_reconciled_v1', 'run_state_reconciled_v2')"
+                "WHERE key IN ('run_state_reconciled_v1', 'run_state_reconciled_v3')"
             )
 
         # Legacy writers committed these three fields independently.
@@ -346,7 +346,7 @@ def test_preview_repair_upgrades_once_across_two_reopens(
             assert not repaired.check_and_spawn_island_if_stagnant(9)
             assert (
                 repaired.conn.execute(
-                    "SELECT value FROM metadata_store WHERE key = 'run_state_reconciled_v2'"
+                    "SELECT value FROM metadata_store WHERE key = 'run_state_reconciled_v3'"
                 ).fetchone()[0]
                 == "1"
             )
@@ -417,7 +417,7 @@ def test_preview_repair_preserves_deferred_maintenance_on_reopen(config):
     with closing(_open_db(config)) as writer:
         writer.add(seed)
         writer.conn.execute(
-            "DELETE FROM metadata_store WHERE key = 'run_state_reconciled_v2'"
+            "DELETE FROM metadata_store WHERE key = 'run_state_reconciled_v3'"
         )
         writer._update_metadata_in_db("run_state_reconciled_v1", "1")
         writer.add(pending, defer_maintenance=True)
@@ -443,7 +443,7 @@ def test_preview_repair_rolls_back_new_marker_and_retries(config):
         writer._update_metadata_in_db("run_state_reconciled_v1", "1")
         writer.conn.execute("""
             CREATE TRIGGER fail_preview_repair BEFORE INSERT ON metadata_store
-            WHEN NEW.key = 'run_state_reconciled_v2'
+            WHEN NEW.key = 'run_state_reconciled_v3'
             BEGIN SELECT RAISE(ABORT, 'preview repair failed'); END
             """)
 
@@ -457,7 +457,7 @@ def test_preview_repair_rolls_back_new_marker_and_retries(config):
         assert dict(
             reader.conn.execute(
                 "SELECT key, value FROM metadata_store "
-                "WHERE key IN ('run_state_reconciled_v1', 'run_state_reconciled_v2')"
+                "WHERE key IN ('run_state_reconciled_v1', 'run_state_reconciled_v3')"
             )
         ) == {"run_state_reconciled_v1": "1"}
 
@@ -467,7 +467,7 @@ def test_preview_repair_rolls_back_new_marker_and_retries(config):
         assert repaired.best_score_generation == 8
         assert (
             repaired.conn.execute(
-                "SELECT value FROM metadata_store WHERE key = 'run_state_reconciled_v2'"
+                "SELECT value FROM metadata_store WHERE key = 'run_state_reconciled_v3'"
             ).fetchone()[0]
             == "1"
         )

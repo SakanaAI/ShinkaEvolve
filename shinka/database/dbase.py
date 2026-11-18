@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import wraps
 from pathlib import Path
 import numpy as np
@@ -20,8 +20,8 @@ from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
 
 logger = logging.getLogger(__name__)
-_PREVIEW_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v1"
-_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v2"
+_PREVIEW_RUN_STATE_REPAIR_KEYS = ("run_state_reconciled_v1", "run_state_reconciled_v2")
+_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v3"
 _MAINTENANCE_APPLIED_KEY = "postprocess_db_maintenance_applied"
 
 
@@ -290,6 +290,13 @@ class _RunState:
     best_program_id: Optional[str]
     best_score_generation: int
     best_score_ever: Optional[float]
+
+
+@dataclass
+class _PendingPreviewRecord:
+    best: Optional[Program] = None
+    score: Optional[float] = None
+    watermark_matches_pending: bool = False
 
 
 class ProgramDatabase:
@@ -708,55 +715,164 @@ class ProgramDatabase:
             # A different connection may have repaired the database while we waited.
             if self._has_run_state_repair(_RUN_STATE_REPAIR_KEY):
                 return
-            preview_repaired = self._has_run_state_repair(_PREVIEW_RUN_STATE_REPAIR_KEY)
-            programs = self._original_run_programs()
-            if preview_repaired:
-                # The preview already repaired iteration and rank. Only use
-                # completed maintenance or evidence of the published watermark.
-                programs = (
-                    program
-                    for program in programs
-                    if program.metadata.get(_MAINTENANCE_APPLIED_KEY)
-                    or (
-                        (program.combined_score or 0.0) == state.best_score_ever
-                        and (
-                            program.id == state.best_program_id
-                            or program.generation <= state.best_score_generation
-                        )
-                    )
-                )
-            original = self._scan_original_run_programs(state, programs)
-            self._repair_legacy_best_score(state, original)
-            if not preview_repaired:
-                self._advance_last_iteration(state, original.last_iteration)
-                if original.best_program_id != state.best_program_id:
-                    self._write_metadata("best_program_id", original.best_program_id)
-                    state.best_program_id = original.best_program_id
+            preview_repaired = any(
+                self._has_run_state_repair(key)
+                for key in _PREVIEW_RUN_STATE_REPAIR_KEYS
+            )
+            pending = (
+                self._pending_preview_record(state)
+                if preview_repaired
+                else _PendingPreviewRecord()
+            )
+            trusted = (
+                replace(state, best_score_ever=None)
+                if pending.score is not None
+                else state
+            )
+            programs = self._run_state_repair_candidates(
+                trusted if preview_repaired else None
+            )
+            original, has_spawn_history = self._scan_original_run_programs(
+                trusted, programs
+            )
+            if has_spawn_history:
+                # Older copies record the source generation, so they cannot rule
+                # out a real spawn reset at the same generation as the pending row.
+                pending.watermark_matches_pending = False
+            self._repair_legacy_best_score(state, original, pending)
+            self._advance_last_iteration(state, original.last_iteration)
+            if (
+                not preview_repaired or pending.best is not None
+            ) and original.best_program_id != state.best_program_id:
+                self._write_metadata("best_program_id", original.best_program_id)
+                state.best_program_id = original.best_program_id
             self._write_metadata(_RUN_STATE_REPAIR_KEY, "1")
 
-    def _repair_legacy_best_score(self, state: _RunState, original: _RunState) -> None:
-        score = original.best_score_ever
-        if score is None or (
-            state.best_score_ever is not None and score < state.best_score_ever
+    def _pending_preview_record(self, state: _RunState) -> _PendingPreviewRecord:
+        pending = _PendingPreviewRecord()
+        best = self._get_tracked_best(state)
+        if best is not None and self._is_original_program(best):
+            if self._has_pending_run_maintenance(best):
+                pending.best = best
+            elif (best.combined_score or 0.0) == state.best_score_ever:
+                # A supported score can coincide with a pending tie at a reset.
+                return pending
+        if state.best_score_ever is None:
+            return pending
+
+        generation = state.best_score_generation
+        # A tied or unscored row could set the score watermark while a different
+        # candidate won the program ranking.
+        source = self._pending_preview_score_source(state, pending.best)
+        if source is not None:
+            pending.watermark_matches_pending = source == generation
+            pending.score = state.best_score_ever
+        elif (
+            pending.best is not None
+            and generation >= pending.best.generation
+            and (pending.best.combined_score or 0.0) == state.best_score_ever
         ):
-            return
+            pending.score = state.best_score_ever
+        return pending
+
+    def _pending_preview_score_source(
+        self, state: _RunState, best: Optional[Program]
+    ) -> Optional[int]:
+        watermark = state.best_score_generation
+        earliest = watermark
+        # A later reset can hide the generation of an unscored pending row
+        # when the preview ranked a different, negative-scored pending row.
+        if (
+            state.best_score_ever == 0.0
+            and best is not None
+            and best.combined_score is not None
+            and best.combined_score < 0.0
+        ):
+            earliest = 0
+        for row in self.cursor.execute(
+            """
+            SELECT id, '' AS code, generation, combined_score, correct, metadata
+            FROM programs
+            WHERE generation BETWEEN ? AND ? AND correct = 1
+              AND COALESCE(combined_score, 0.0) = ?
+              AND (generation = ? OR combined_score IS NULL)
+            ORDER BY generation DESC
+            """,
+            (earliest, watermark, state.best_score_ever, watermark),
+        ):
+            program = self._program_from_row(row)
+            if (
+                program is not None
+                and self._is_original_program(program)
+                and self._has_pending_run_maintenance(program)
+            ):
+                return program.generation
+        return None
+
+    def _repair_legacy_best_score(
+        self, state: _RunState, original: _RunState, pending: _PendingPreviewRecord
+    ) -> None:
+        score = original.best_score_ever
+        published_score = state.best_score_ever
+        if score is None or (published_score is not None and score < published_score):
+            if pending.score is None:
+                return
+            if pending.watermark_matches_pending:
+                state.best_score_generation = original.best_score_generation
         # Ties do not reset stagnation. Without maintenance order, only advance
         # to the earliest supporting generation and preserve any later reset.
         self._advance_best_score_generation(state, original.best_score_generation)
-        if score != state.best_score_ever:
+        if score != published_score:
             state.best_score_ever = score
-            self._write_metadata("best_score_ever", str(score))
+            self._write_metadata(
+                "best_score_ever", str(score) if score is not None else None
+            )
 
-    def _original_run_programs(self) -> Iterator[Program]:
-        # Only load ranking fields and the metadata that identifies island copies.
+    def _run_state_repair_candidates(
+        self, preview: Optional[_RunState]
+    ) -> Iterator[tuple[Program, bool]]:
         for row in self.cursor.execute("""
-            SELECT id, '' AS code, generation, timestamp, combined_score,
-                   public_metrics, correct, metadata
-            FROM programs ORDER BY rowid
+            SELECT p.id, '' AS code, p.generation, p.timestamp, p.combined_score,
+                   p.public_metrics, p.correct, p.metadata,
+                   a.program_id IS NOT NULL AS archived
+            FROM programs AS p LEFT JOIN archive AS a ON a.program_id = p.id
+            ORDER BY p.rowid
             """):
             program = self._program_from_row(row)
-            if program is not None and self._is_original_program(program):
-                yield program
+            if program is None:
+                continue
+            eligible = not self._has_pending_run_maintenance(program) and (
+                preview is None
+                or row["archived"]
+                or program.metadata.get(_MAINTENANCE_APPLIED_KEY) is True
+                or program.metadata.get("postprocess_side_effects_applied") is True
+                or (
+                    (program.combined_score or 0.0) == preview.best_score_ever
+                    and (
+                        program.id == preview.best_program_id
+                        or program.generation <= preview.best_score_generation
+                    )
+                )
+            )
+            yield program, eligible
+
+    @staticmethod
+    def _has_pending_run_maintenance(program: Program) -> bool:
+        metadata = program.metadata
+        if metadata.get("postprocess_side_effects_applied") is True:
+            return False
+        if _MAINTENANCE_APPLIED_KEY in metadata:
+            return metadata[_MAINTENANCE_APPLIED_KEY] is False
+        # Older deferred runner writes have timing and scheduler provenance.
+        job_id = metadata.get("source_job_id")
+        return (
+            program.generation > 0
+            and metadata.get("safe_processing") is True
+            and metadata.get("source_generation") == program.generation
+            and isinstance(job_id, str)
+            and bool(job_id)
+            and type(metadata.get("pipeline_accounted_seconds")) in (int, float)
+        )
 
     @staticmethod
     def _is_original_program(program: Program) -> bool:
@@ -766,8 +882,8 @@ class ProgramDatabase:
         )
 
     def _scan_original_run_programs(
-        self, published: _RunState, programs: Iterator[Program]
-    ) -> _RunState:
+        self, published: _RunState, programs: Iterator[tuple[Program, bool]]
+    ) -> tuple[_RunState, bool]:
         state = _RunState(
             last_iteration=0,
             best_program_id=None,
@@ -776,9 +892,16 @@ class ProgramDatabase:
         )
         best = None
         earliest_unscored = None
-        for program in programs:
+        unscored_seed_finished_at = None
+        earliest_scored_started_at = math.inf
+        has_spawn_history = False
+        for program, eligible in programs:
+            if not self._is_original_program(program):
+                if program.metadata.get("_spawned_island"):
+                    has_spawn_history = True
+                continue
             state.last_iteration = max(state.last_iteration, program.generation)
-            if not program.correct:
+            if not eligible or not program.correct:
                 continue
             if program.combined_score is None:
                 generation = program.generation
@@ -791,7 +914,16 @@ class ProgramDatabase:
                     best is None or generation <= published.best_score_generation
                 ):
                     self._record_repair_score(state, 0.0, generation)
+                if generation == 0 and best is None:
+                    unscored_seed_finished_at = self._maintenance_time(
+                        program, "finished"
+                    )
             else:
+                started_at = self._maintenance_time(program, "started")
+                earliest_scored_started_at = min(
+                    earliest_scored_started_at,
+                    started_at if started_at is not None else -math.inf,
+                )
                 self._record_repair_score(
                     state, program.combined_score, program.generation
                 )
@@ -803,15 +935,32 @@ class ProgramDatabase:
                 # Keep the incumbent if the original ranking cannot break the tie.
                 best = program
         # Insertion order can differ from maintenance order, and replay rewrites
-        # maintenance timestamps. Only infer zero from unscored rows when every
-        # candidate is unscored or the durable score independently confirms it.
-        if earliest_unscored is not None and (
+        # maintenance timestamps. A completed original seed that precedes all
+        # known scored maintenance can also explain a zero record lost in preview.
+        if (
+            published.best_score_ever is None
+            and unscored_seed_finished_at is not None
+            and unscored_seed_finished_at <= earliest_scored_started_at
+        ):
+            self._record_repair_score(state, 0.0, 0)
+        elif earliest_unscored is not None and (
             state.best_score_ever is None
             or (published.best_score_ever == 0.0 and state.best_score_ever < 0.0)
         ):
             self._record_repair_score(state, 0.0, earliest_unscored)
         state.best_program_id = best.id if best else None
-        return state
+        return state, has_spawn_history
+
+    @staticmethod
+    def _maintenance_time(program: Program, stage: str) -> Optional[float]:
+        value = program.metadata.get(f"postprocess_db_maintenance_{stage}_at")
+        if (
+            program.metadata.get(_MAINTENANCE_APPLIED_KEY) is True
+            and type(value) in (int, float)
+            and math.isfinite(value)
+        ):
+            return float(value)
+        return None
 
     @staticmethod
     def _record_repair_score(state: _RunState, score: float, generation: int) -> None:
