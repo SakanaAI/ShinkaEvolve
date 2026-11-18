@@ -14,6 +14,7 @@ from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.config import EvolutionConfig
 from shinka.core.summarizer import MetaSummarizer
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database.run_db_path import AmbiguousRunDatabaseError
 from shinka.llm import AsymmetricUCB
 
 
@@ -116,11 +117,9 @@ def test_new_run_without_db_path_stores_programs_in_programs_sqlite(tmp_path):
     assert [path.name for path in tmp_path.glob("*.sqlite")] == ["programs.sqlite"]
 
 
-@pytest.mark.parametrize("configured", ["custom.sqlite", None, "renamed.sqlite"])
-def test_resume_continues_in_a_custom_database_file(tmp_path, caplog, configured):
-    """Also after db_path was dropped from the config or changed."""
+def test_resume_continues_in_a_custom_database_file(tmp_path, caplog):
     _write_run(tmp_path / "custom.sqlite", [1.0, 2.0, 3.0])
-    runner = _resume_runner(tmp_path, configured)
+    runner = _resume_runner(tmp_path, "custom.sqlite")
 
     def check():
         assert runner.db_config.db_path == str(tmp_path / "custom.sqlite")
@@ -132,8 +131,20 @@ def test_resume_continues_in_a_custom_database_file(tmp_path, caplog, configured
         _setup(runner, check)
 
     assert [path.name for path in tmp_path.glob("*.sqlite")] == ["custom.sqlite"]
-    warned = any("already holds the programs" in r.getMessage() for r in caplog.records)
-    assert warned == (configured != "custom.sqlite")
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("configured", [None, "renamed.sqlite"])
+def test_resume_stops_when_programs_sit_under_an_unknown_name(tmp_path, configured):
+    """db_path was dropped from the config or changed: no silent new run."""
+    _write_run(tmp_path / "custom.sqlite", [1.0, 2.0, 3.0])
+    runner = _resume_runner(tmp_path, configured)
+
+    with pytest.raises(AmbiguousRunDatabaseError, match="custom.sqlite"):
+        asyncio.run(runner._setup_async())
+
+    assert [path.name for path in tmp_path.glob("*.sqlite")] == ["custom.sqlite"]
+    runner._generate_initial_program.assert_not_awaited()
 
 
 def test_config_reused_for_a_second_run_keeps_the_custom_name(tmp_path):

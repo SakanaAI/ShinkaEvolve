@@ -110,11 +110,8 @@ def test_resume_continues_in_the_configured_file(tmp_path, caplog, configured):
 @pytest.mark.parametrize(
     ("existing_name", "configured"),
     [
-        # db_path was added, changed or removed since the run started.
+        # db_path was added since the run started.
         ("programs.sqlite", "custom.sqlite"),
-        ("first.sqlite", "second.sqlite"),
-        ("custom.sqlite", None),
-        ("custom.db", None),
         # The first releases built the path as f"{results_dir}/{db_path}".
         ("evolution_db.sqlite", None),
         ("nested/custom.sqlite", "nested/custom.sqlite"),
@@ -134,6 +131,38 @@ def test_existing_programs_win_over_the_configured_name(
     assert resolved == tmp_path / existing_name
     (message,) = _warnings(caplog)
     assert f"{tmp_path / existing_name} already holds the programs" in message
+
+
+@pytest.mark.parametrize(
+    ("existing_name", "configured"),
+    [
+        # db_path was changed or removed since the run started, or the file is
+        # a copy somebody set aside.
+        ("first.sqlite", "second.sqlite"),
+        ("custom.sqlite", None),
+        ("custom.db", None),
+        ("backup.sqlite", None),
+    ],
+)
+def test_programs_under_an_unknown_name_are_not_adopted(
+    tmp_path, existing_name, configured
+):
+    _write_db(tmp_path / existing_name)
+
+    with pytest.raises(AmbiguousRunDatabaseError, match=existing_name) as error:
+        resolve_run_db_path(tmp_path, configured)
+
+    assert "set DatabaseConfig.db_path" in str(error.value)
+    assert resolve_run_db_path(tmp_path, existing_name) == tmp_path / existing_name
+
+
+def test_empty_configured_file_does_not_excuse_unknown_databases(tmp_path):
+    """A run killed before its seed was stored leaves programs.sqlite empty."""
+    _write_db(tmp_path / "programs.sqlite", num_programs=0)
+    _write_db(tmp_path / "a.sqlite")
+
+    with pytest.raises(AmbiguousRunDatabaseError, match="a.sqlite"):
+        resolve_run_db_path(tmp_path, None)
 
 
 def test_configured_file_with_programs_wins_over_other_databases(tmp_path, caplog):

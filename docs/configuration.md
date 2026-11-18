@@ -191,18 +191,20 @@ presets and examples. Rules for `db_path` in a run:
 - Give the name a `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
   and the resume rule below recognise database files by it; the runner warns
   about any other name.
-- Existing programs win over the configured name. If the configured file has no
-  programs but another database in `results_dir` does, the run resumes in that
-  one and logs a warning, so adding, changing or removing `db_path` cannot
-  restart a run at generation 0. This also covers run directories of the first
-  releases (`evolution_db.sqlite`). Use a new `results_dir` to start over.
-- If several databases other than `programs.sqlite` and `evolution_db.sqlite`
-  hold programs and none has the configured name, the runner stops with an
-  error instead of guessing: set `db_path` to the one to continue.
+- A run never starts at generation 0 next to programs it did not ask for. If
+  the configured file has no programs but `programs.sqlite` or a database of the
+  first releases (`evolution_db.sqlite`) does, the run resumes in that one and
+  logs a warning. Use a new `results_dir` to start over.
+- Programs under any other name are not adopted. If the configured file has no
+  programs and another database in `results_dir` does (the run was started with
+  a `db_path` the configuration no longer has, or somebody left a copy there),
+  the runner stops with an error that lists the files: set `db_path` to the one
+  to continue.
 
 `load_programs_to_df(results_dir)` and `python -m shinka.plots.code_path_anim`
-find the database of a run directory by the same rules. A `ProgramDatabase` you
-open yourself uses `db_path` as the full file path.
+look in the same places. Because reading changes nothing, they also load a
+database under an unknown name when it is the only one in the directory. A
+`ProgramDatabase` you open yourself uses `db_path` as the full file path.
 
 `island_selection_strategy` picks the island a parent is sampled from. `uniform`
 treats all islands alike and `equal` picks the island with the fewest correct
