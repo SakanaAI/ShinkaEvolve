@@ -1,5 +1,5 @@
 import logging
-from typing import Coroutine, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Coroutine, Dict, List, Optional, Sequence, Tuple, Union
 import re
 import json
 import multiprocessing as mp
@@ -13,6 +13,7 @@ from .providers import QueryResult
 from .providers.errors import (
     BilledCancellationError,
     EmptyResponseError,
+    LLMEndpointError,
     NonRetryableLLMError,
     RequestRejectedError,
     StructuredOutputNotSupportedError,
@@ -95,6 +96,46 @@ def _stop_after_empty_reply(exc: Exception, unanswered: _UnansweredReplies) -> b
     return False
 
 
+# A failure of one sample's own request or endpoint. Its siblings may still be
+# answered, for example by another model of the pool.
+_SAMPLE_FAILURES = (RequestRejectedError, LLMEndpointError)
+
+
+def _worst_sample_failure(
+    known: Optional[NonRetryableLLMError], failure: NonRetryableLLMError
+) -> NonRetryableLLMError:
+    """Keep the first failure, preferring an endpoint failure over a rejection."""
+    if known is None or (
+        isinstance(failure, LLMEndpointError)
+        and not isinstance(known, LLMEndpointError)
+    ):
+        return failure
+    return known
+
+
+def _collect_pool_batch(async_results: List[Any]) -> List[Tuple[int, Any]]:
+    """Gather a process pool's samples, dropping those that failed on their own.
+
+    Raises the sample failure when no sample was answered, so that a batch
+    nobody could serve does not look like an empty success.
+    """
+    results = []
+    sample_failure = None
+    for async_result in async_results:
+        try:
+            results.append(async_result.get())
+        except _SAMPLE_FAILURES as e:
+            logger.warning(f"Batch query sample failed: {str(e)}")
+            sample_failure = _worst_sample_failure(sample_failure, e)
+        except NonRetryableLLMError:
+            raise
+        except Exception as e:
+            logger.error(f"Error in batch query: {str(e)}")
+    if sample_failure is not None and all(result is None for _, result in results):
+        raise sample_failure
+    return results
+
+
 async def _collect_async_batch(
     queries: List[Coroutine[None, None, Tuple[int, Optional[QueryResult]]]],
 ) -> List[Tuple[int, QueryResult]]:
@@ -124,15 +165,17 @@ async def _collect_async_batch(
 
     results = []
     permanent_error = None
+    sample_failure = None
     total_cost = 0.0
     for index, outcome in enumerate(outcomes):
         if isinstance(outcome, asyncio.CancelledError):
             cancellation = cancellation or outcome
             if isinstance(outcome, BilledCancellationError):
                 total_cost += outcome.cost
-        elif isinstance(outcome, RequestRejectedError):
-            # One refused request does not doom the rest of the batch.
-            logger.info("Batch query task %s was rejected: %s", index, outcome)
+        elif isinstance(outcome, _SAMPLE_FAILURES):
+            logger.warning("Batch query task %s failed: %s", index, outcome)
+            sample_failure = _worst_sample_failure(sample_failure, outcome)
+            total_cost += outcome.cost
         elif isinstance(outcome, NonRetryableLLMError):
             permanent_error = permanent_error or outcome
             total_cost += outcome.cost
@@ -150,6 +193,9 @@ async def _collect_async_batch(
         if total_cost > 0:
             raise BilledCancellationError({"cost": total_cost}) from cancellation
         raise cancellation
+    if permanent_error is None and not results:
+        # Nobody answered: report why instead of an empty success.
+        permanent_error = sample_failure
     if permanent_error is not None:
         permanent_error.cost = total_cost
         raise permanent_error
@@ -269,18 +315,7 @@ class LLMClient:
                 )
 
             # Then collect all results and sort by index
-            results = []
-            for async_result in async_results:
-                try:
-                    idx, result = async_result.get()
-                    results.append((idx, result))
-                except RequestRejectedError as e:
-                    # One refused request does not doom the rest of the batch.
-                    logger.error(f"Error in batch query: {str(e)}")
-                except NonRetryableLLMError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in batch query: {str(e)}")
+            results = _collect_pool_batch(async_results)
 
             # Sort by index and extract just the results
             results.sort(key=lambda x: x[0])
@@ -394,18 +429,7 @@ class LLMClient:
                 )
 
             # Then collect all results and sort by index
-            results = []
-            for async_result in async_results:
-                try:
-                    idx, result = async_result.get()
-                    results.append((idx, result))
-                except RequestRejectedError as e:
-                    # One refused request does not doom the rest of the batch.
-                    logger.error(f"Error in batch query: {str(e)}")
-                except NonRetryableLLMError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in batch query: {str(e)}")
+            results = _collect_pool_batch(async_results)
 
             # Preserve request indices across failures for metadata-aware callers.
             results.sort(key=lambda x: x[0])
