@@ -49,7 +49,9 @@ def test_new_run_without_db_path_uses_programs_sqlite(tmp_path, caplog, configur
     assert caplog.records == []
 
 
-@pytest.mark.parametrize("configured", ["custom.sqlite", "evolution_db.sqlite", "my.db"])
+@pytest.mark.parametrize(
+    "configured", ["custom.sqlite", "evolution_db.sqlite", "my.db"]
+)
 def test_new_run_uses_the_configured_file_name(tmp_path, caplog, configured):
     with caplog.at_level(logging.WARNING):
         resolved = resolve_run_db_path(tmp_path, configured)
@@ -84,7 +86,8 @@ def test_db_path_never_reaches_a_database_outside_the_results_dir(tmp_path, capl
 
 
 @pytest.mark.parametrize(
-    "configured", ["prompts.sqlite", "prompts.db", "Prompts.sqlite", "sub/prompts.sqlite"]
+    "configured",
+    ["prompts.sqlite", "prompts.db", "Prompts.sqlite", "sub/prompts.sqlite"],
 )
 def test_name_of_the_prompt_database_is_refused(tmp_path, configured):
     """Every reader takes that file for the prompt database of the run."""
@@ -346,10 +349,15 @@ def test_load_programs_to_df_reports_a_directory_without_database(tmp_path, caps
 def test_hydra_presets_accept_a_db_path_override(preset):
     with config_root() as configs:
         with initialize_config_dir(version_base=None, config_dir=str(configs)):
-            default = compose(config_name="config", overrides=[f"database@_global_={preset}"])
+            default = compose(
+                config_name="config", overrides=[f"database@_global_={preset}"]
+            )
             custom = compose(
                 config_name="config",
-                overrides=[f"database@_global_={preset}", "db_config.db_path=custom.sqlite"],
+                overrides=[
+                    f"database@_global_={preset}",
+                    "db_config.db_path=custom.sqlite",
+                ],
             )
 
     assert default.db_config.db_path is None

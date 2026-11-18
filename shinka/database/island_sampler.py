@@ -99,8 +99,7 @@ class IslandSampler(ABC):
         fitness = self._get_island_best_fitness(island_indices)
         scores = [fitness.get(island_idx) for island_idx in island_indices]
         usable = [
-            isinstance(score, (int, float)) and math.isfinite(score)
-            for score in scores
+            isinstance(score, (int, float)) and math.isfinite(score) for score in scores
         ]
         worst = min((s for s, ok in zip(scores, usable) if ok), default=0.0)
         return np.array(

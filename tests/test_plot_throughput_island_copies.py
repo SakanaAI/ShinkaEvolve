@@ -82,5 +82,10 @@ def test_copy_mask_reads_every_flag_column():
     )
 
     assert list(_island_copy_mask(df)) == [True, True, True, False]
-    assert list(_island_copy_mask(df[["_spawned_island"]])) == [False, True, False, False]
+    assert list(_island_copy_mask(df[["_spawned_island"]])) == [
+        False,
+        True,
+        False,
+        False,
+    ]
     assert not _island_copy_mask(df[[]]).any()
