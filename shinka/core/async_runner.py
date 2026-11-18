@@ -4811,7 +4811,9 @@ class ShinkaEvolveRunner:
             except Exception as exc:
                 # The evaluation itself may be fine, so give the read another
                 # chance first. After that the generation is recorded as failed.
-                if read.done():
+                if read.done() and read.exception() is None:
+                    results = read.result()  # It finished as the wait ran out.
+                elif read.done():
                     retrieval_failure = f"failed ({type(exc).__name__}): {exc}"
                     self._queue_failed_db_job(
                         job,
@@ -5652,6 +5654,13 @@ class ShinkaEvolveRunner:
         """Process completed jobs inline, closer to the amd_shinka execution model."""
         successfully_processed: List[AsyncRunningJob] = []
 
+        # The whole batch was found finished now: a job must not be charged for
+        # the time the jobs ahead of it take to process.
+        detected_at = time.time()
+        for job in completed_jobs:
+            if job.completion_detected_at is None:
+                job.completion_detected_at = detected_at
+
         for job in completed_jobs:
             try:
                 success = await self._process_single_job_safely(job)
@@ -6131,9 +6140,13 @@ class ShinkaEvolveRunner:
                 f"🧹 Dropping {len(dropped_retry_gens)} retry-queued jobs after "
                 f"reaching target: gens {dropped_retry_gens}"
             )
+            pending_reads = getattr(self, "_result_reads", {})
             for job in self.failed_jobs_for_retry.values():
                 job.discard_if_completed = True
                 self.submitted_jobs.pop(str(job.job_id), None)
+                read = pending_reads.pop(self._source_job_key(job), None)
+                if read is not None:
+                    read.cancel()
             self.failed_jobs_for_retry.clear()
 
         if self.active_proposal_tasks:
