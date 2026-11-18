@@ -25,10 +25,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _submit_without_timeout(tmp_path: Path) -> tuple[ProcessWithLogging, int]:
+def _submit_without_timeout(
+    tmp_path: Path, *, runs_for: float = 30.0
+) -> tuple[ProcessWithLogging, int]:
     """Launch the way the asynchronous path does: no timeout is passed."""
     results_dir = tmp_path / "results"
-    evaluator = write_evaluator_with_worker(tmp_path)
+    evaluator = write_evaluator_with_worker(tmp_path, runs_for=runs_for)
     process = local.submit(
         str(results_dir),
         [sys.executable, str(evaluator), "--results_dir", str(results_dir)],
@@ -46,6 +48,41 @@ def test_killing_an_evaluator_takes_its_workers_with_it(tmp_path: Path) -> None:
 
         assert process.returncode == -signal.SIGKILL
         assert process.was_killed is True
+        assert wait_until(lambda: not is_alive(worker))
+    finally:
+        kill_leftovers(process.pid, worker)
+
+
+needs_exit_peek = pytest.mark.skipif(
+    not hasattr(os, "waitid"), reason="needs os.waitid to see an exit before reaping"
+)
+
+
+@needs_exit_peek
+def test_workers_left_behind_by_an_exited_evaluator_are_killed(tmp_path: Path) -> None:
+    process, worker = _submit_without_timeout(tmp_path, runs_for=0.0)
+    try:
+        assert wait_until(lambda: not is_alive(process.pid))
+        assert is_alive(worker)
+
+        assert process.has_exited() is True
+
+        assert process.returncode == 0
+        assert process.was_killed is False
+        assert wait_until(lambda: not is_alive(worker))
+    finally:
+        kill_leftovers(process.pid, worker)
+
+
+@needs_exit_peek
+def test_waiting_for_an_evaluator_kills_the_workers_it_left_behind(
+    tmp_path: Path,
+) -> None:
+    process, worker = _submit_without_timeout(tmp_path, runs_for=0.0)
+    try:
+        local.monitor(process, str(tmp_path / "results"), poll_interval=0.01)
+
+        assert process.returncode == 0
         assert wait_until(lambda: not is_alive(worker))
     finally:
         kill_leftovers(process.pid, worker)

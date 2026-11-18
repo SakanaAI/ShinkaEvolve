@@ -82,12 +82,24 @@ class ProcessWithLogging:
 
     def has_exited(self) -> bool:
         """Poll the evaluator and remember when its exit was first seen."""
+        self._kill_group_of_exited_leader()
         if self.process.poll() is None:
             return False
         if self._exit_observed_at is None:
             self._exit_observed_at = time.monotonic()
         _LIVE_PROCESSES.discard(self)
         return True
+
+    def _kill_group_of_exited_leader(self) -> None:
+        """Kill what an evaluator that exited on its own left running.
+
+        Only while the evaluator is unreaped: its pid, and with it the group
+        id, cannot have passed to another process until then.
+        """
+        if self.process.returncode is not None or self._process_group_id is None:
+            return
+        if _has_exited_unreaped(self.process.pid):
+            _kill_group(self.process, self._process_group_id)
 
     def runtime_seconds(self) -> float:
         """Seconds from launch until the exit was observed, or until now."""
@@ -108,6 +120,17 @@ class ProcessWithLogging:
                 file_handle.close()
             except Exception as e:
                 logger.error(f"Error closing log file: {e}")
+
+
+def _has_exited_unreaped(pid: int) -> bool:
+    """Whether a child has exited and nobody has collected its status yet."""
+    waitid = getattr(os, "waitid", None)
+    if waitid is None:  # macOS before Python 3.13
+        return False
+    try:
+        return waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        return False  # Another thread collected it.
 
 
 def _kill_group(process: subprocess.Popen, group_id: Optional[int]) -> None:
@@ -320,7 +343,7 @@ def _wait_for_completion(
 
     try:
         if timeout_seconds is None:
-            while process.poll() is None:
+            while not process.has_exited():
                 if verbose:
                     logger.info(f"Process {process.pid} is still running...")
                 time.sleep(poll_interval)

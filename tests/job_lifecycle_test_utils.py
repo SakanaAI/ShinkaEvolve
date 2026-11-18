@@ -86,11 +86,14 @@ def kill_leftovers(*pids: int) -> None:
             pass
 
 
-def write_evaluator_with_worker(directory: Path) -> Path:
-    """An evaluator that starts a worker, as `conda run` or a pool would."""
+def write_evaluator_with_worker(directory: Path, *, runs_for: float = 30.0) -> Path:
+    """An evaluator that starts a worker, as `conda run` or a pool would.
+
+    The worker outlives an evaluator that runs for less than 30 seconds.
+    """
     path = directory / "evaluate.py"
     path.write_text(
-        dedent("""
+        dedent(f"""
             import subprocess
             import sys
             import time
@@ -101,7 +104,7 @@ def write_evaluator_with_worker(directory: Path) -> Path:
             pending = results / "worker.tmp"
             pending.write_text(str(worker.pid))
             pending.rename(results / "worker.pid")
-            time.sleep(30)
+            time.sleep({runs_for})
             """)
     )
     return path
