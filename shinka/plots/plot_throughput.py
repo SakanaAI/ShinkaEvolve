@@ -126,9 +126,10 @@ def _get_series_with_default(
     return series
 
 
-# Metadata flags of rows that repeat another program's job, under the column
-# names `load_programs_to_df` gives them.
-_ISLAND_COPY_COLUMNS = ("_is_island_copy", "_spawned_island")
+# Flags of rows that repeat another program's job: the metadata flags under the
+# column names `load_programs_to_df` gives them, and the plain column of frames
+# built by hand.
+_ISLAND_COPY_COLUMNS = ("_is_island_copy", "_spawned_island", "is_island_copy")
 
 
 def _island_copy_mask(df: pd.DataFrame) -> pd.Series:

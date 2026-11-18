@@ -2,8 +2,10 @@
 
 from contextlib import closing
 
+import pandas as pd
+
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
-from shinka.plots.plot_throughput import _prepare_pool_runtime_data
+from shinka.plots.plot_throughput import _island_copy_mask, _prepare_pool_runtime_data
 from shinka.utils import load_programs_to_df
 
 _TIMING = {
@@ -67,3 +69,18 @@ def test_spawned_island_copy_never_replaces_its_original(tmp_path):
 
     assert _kept_ids(df) == ["seed"]
     assert _kept_ids(df.iloc[::-1]) == ["seed"]
+
+
+def test_copy_mask_reads_every_flag_column():
+    """The metadata flags of a run database, and the plain column of older frames."""
+    df = pd.DataFrame(
+        {
+            "_is_island_copy": [True, None, None, None],
+            "_spawned_island": [None, True, None, None],
+            "is_island_copy": [False, False, True, False],
+        }
+    )
+
+    assert list(_island_copy_mask(df)) == [True, True, True, False]
+    assert list(_island_copy_mask(df[["_spawned_island"]])) == [False, True, False, False]
+    assert not _island_copy_mask(df[[]]).any()
