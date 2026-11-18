@@ -66,7 +66,7 @@ def validate_evaluation_results(
     try:
         combined_score = float(combined_score)
     except OverflowError:  # an integer too large for a float
-        combined_score = math.copysign(math.inf, combined_score)
+        combined_score = math.inf if combined_score > 0 else -math.inf
     diagnostic = None
     if not math.isfinite(combined_score):
         if correct:
