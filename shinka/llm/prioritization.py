@@ -244,8 +244,8 @@ class BanditBase(ABC):
         self.set_state(read_bandit_state(path))
 
     def _restored_baseline(self, state: Dict[str, Any]) -> float:
-        baseline = self._finite_or_none(state.get("baseline"), "saved baseline score")
-        return 0.0 if baseline is None else baseline
+        baseline = self._finite_or_none(state["baseline"], "saved baseline score")
+        return self._baseline if baseline is None else baseline
 
     def _state_arm_names(self) -> Optional[List[str]]:
         if self._arm_names is None:
