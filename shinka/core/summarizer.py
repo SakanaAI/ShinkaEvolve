@@ -18,6 +18,31 @@ from shinka.prompts import (
 
 logger = logging.getLogger(__name__)
 
+# File in the run directory that carries the meta state across sessions.
+META_STATE_FILENAME = "meta_memory.json"
+
+# (state attribute, heading, introduction) of each meta output file section.
+_META_OUTPUT_SECTIONS = (
+    (
+        "meta_summary",
+        "# INDIVIDUAL PROGRAM SUMMARIES",
+        "The following are summaries of individual programs "
+        "evaluated since the last meta update:",
+    ),
+    (
+        "meta_scratch_pad",
+        "# GLOBAL INSIGHTS SCRATCHPAD",
+        "The following are global insights about optimization "
+        "approaches and their effectiveness:",
+    ),
+    (
+        "meta_recommendations",
+        "# META RECOMMENDATIONS",
+        "The following are actionable recommendations for the next "
+        "program generations:",
+    ),
+)
+
 
 class MetaSummarizer:
     """Handles meta-level summarization and recommendation generation."""
@@ -48,12 +73,79 @@ class MetaSummarizer:
         # Track the accumulated count of programs processed in meta updates
         self.total_programs_processed = 0
 
+        # Where the state is saved after every change (None: not persisted)
+        self._state_path: Optional[Path] = None
+
+    def persist_state_in(self, results_dir: str) -> None:
+        """Keep the meta state on disk in the run directory from now on."""
+        self._state_path = Path(results_dir) / META_STATE_FILENAME
+
+    def persist_state(self) -> None:
+        """Save the meta state if a run directory was set for it."""
+        if self._state_path is not None:
+            self.save_meta_state(str(self._state_path))
+
+    def restore_persisted_state(self) -> bool:
+        """Reload the meta state an earlier session left in the run directory."""
+        if self._state_path is None:
+            return False
+        if self.load_meta_state(str(self._state_path)):
+            return True
+        return self._restore_from_meta_output(self._state_path.parent / "meta")
+
+    def _restore_from_meta_output(self, meta_dir: Path) -> bool:
+        """Recover the state from the newest ``meta_<N>.txt`` of earlier sessions.
+
+        Sessions that ended before the state file was written left only these
+        output files. They hold the summaries, scratchpad and recommendations
+        and the number of processed programs; the programs that were still
+        waiting for a summary cannot be recovered from them.
+        """
+        outputs = {}
+        for path in meta_dir.glob("meta_*.txt"):
+            processed = path.stem.removeprefix("meta_")
+            if processed.isdigit():
+                outputs[int(processed)] = path
+        if not outputs:
+            return False
+
+        total_processed = max(outputs)
+        try:
+            text = outputs[total_processed].read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"Failed to read {outputs[total_processed]}: {e}")
+            return False
+
+        sections = []
+        for attribute, heading, introduction in _META_OUTPUT_SECTIONS:
+            prefix = f"{heading}\n\n{introduction}\n\n"
+            start = text.find(prefix)
+            if start != -1:
+                sections.append((start, start + len(prefix), attribute))
+        sections.sort()
+        ends = [start for start, _, _ in sections[1:]] + [len(text)]
+        for (_, content_start, attribute), end in zip(sections, ends):
+            setattr(self, attribute, text[content_start:end].strip() or None)
+
+        if self.meta_recommendations:
+            self.meta_recommendations_history = [self.meta_recommendations]
+        # Later outputs must not reuse the file names of the earlier sessions.
+        self.total_programs_processed = total_processed
+        logger.info(
+            f"Restored meta state from {outputs[total_processed]} "
+            f"({total_processed} programs processed)"
+        )
+        return True
+
     def add_evaluated_program(self, program: Program) -> None:
         """Add newly evaluated program to the tracking list."""
         logger.debug(
             f"Evaluating program {program.id} for meta memory: "
             f"correct={program.correct}"
         )
+        if any(tracked.id == program.id for tracked in self.evaluated_since_last_meta):
+            # A resumed run can replay a program the restored state already holds.
+            return
 
         # Track ALL evaluated programs (both correct and incorrect)
         # for meta learning
@@ -72,6 +164,7 @@ class MetaSummarizer:
                     f"programs tracked"
                 )
         self._last_logged_count = len(self.evaluated_since_last_meta)
+        self.persist_state()
 
     def should_update_meta(self, meta_rec_interval: Optional[int]) -> bool:
         """Check if meta update should be performed based on interval.
@@ -180,6 +273,7 @@ class MetaSummarizer:
             f"Processed and cleared {num_processed} programs from meta memory "
             f"(total processed: {self.total_programs_processed})"
         )
+        self.persist_state()
 
         return (
             (
@@ -501,6 +595,10 @@ class MetaSummarizer:
             for i, prog in enumerate(self.evaluated_since_last_meta):
                 try:
                     prog_dict = prog.to_dict()
+                    # Summaries never read the embeddings, which would make up
+                    # nearly all of a file that is rewritten on every change.
+                    for key in ("embedding", "embedding_pca_2d", "embedding_pca_3d"):
+                        prog_dict[key] = []
                     unprocessed_programs_data.append(prog_dict)
                 except Exception as e:
                     prog_id = prog.id if hasattr(prog, "id") else "unknown"
@@ -530,7 +628,7 @@ class MetaSummarizer:
 
             saved_count = len(unprocessed_programs_data)
 
-            logger.info(
+            logger.debug(
                 f"Saved meta state to {filepath}: "
                 f"{saved_count} unprocessed programs, "
                 f"summary: {'Yes' if self.meta_summary else 'No'}, "
@@ -718,35 +816,18 @@ class MetaSummarizer:
             logger.debug(f"Full traceback: {traceback.format_exc()}")
             return False
 
+    def format_meta_output(self) -> str:
+        """Render the summaries, scratchpad and recommendations as one text."""
+        sections = [
+            f"{heading}\n\n{introduction}\n\n{getattr(self, attribute)}"
+            for attribute, heading, introduction in _META_OUTPUT_SECTIONS
+            if getattr(self, attribute)
+        ]
+        return "\n\n".join(sections)
+
     def write_meta_output(self, results_dir: str) -> None:
         """Write meta summary, scratchpad, and recommendations to a file."""
-        output_str = ""
-
-        if self.meta_summary:
-            output_str += "# INDIVIDUAL PROGRAM SUMMARIES\n\n"
-            output_str += (
-                "The following are summaries of individual programs "
-                "evaluated since the last meta update:\n\n"
-            )
-            output_str += str(self.meta_summary)
-            output_str += "\n\n"
-
-        if self.meta_scratch_pad:
-            output_str += "# GLOBAL INSIGHTS SCRATCHPAD\n\n"
-            output_str += (
-                "The following are global insights about optimization "
-                "approaches and their effectiveness:\n\n"
-            )
-            output_str += str(self.meta_scratch_pad)
-            output_str += "\n\n"
-
-        if self.meta_recommendations:
-            output_str += "# META RECOMMENDATIONS\n\n"
-            output_str += (
-                "The following are actionable recommendations for the next "
-                "program generations:\n\n"
-            )
-            output_str += str(self.meta_recommendations)
+        output_str = self.format_meta_output()
 
         if output_str:
             # Create meta subdirectory if it doesn't exist

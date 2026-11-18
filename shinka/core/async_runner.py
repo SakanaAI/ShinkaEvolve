@@ -1489,8 +1489,12 @@ class ShinkaEvolveRunner:
 
     async def _setup_async(self):
         """Setup initial program (results directory already created)."""
-        # Update database path to be in results directory
-        db_path = Path(f"{self.results_dir}/programs.sqlite")
+        # Local import: this method is the only runner region that needs it.
+        from shinka.database.run_db_path import resolve_run_db_path
+
+        # Runs store their programs in programs.sqlite. A run directory from
+        # before that name was fixed is continued in the database it has.
+        db_path = resolve_run_db_path(self.results_dir, self.db_config.db_path)
 
         # Update database config with results directory path
         self.db_config.db_path = str(db_path)
@@ -1507,6 +1511,11 @@ class ShinkaEvolveRunner:
             enable_deadlock_debugging=self.enable_deadlock_debugging,
         )
         await self._flush_unwritten_charges()
+
+        # Keep the meta state on disk so that a resumed run can pick it up.
+        meta_summarizer = getattr(self, "meta_summarizer", None)
+        if meta_summarizer:
+            meta_summarizer.persist_state_in(str(self.results_dir))
 
         # Initialize prompt evolution database if enabled
         if self.evo_config.evolve_prompts:
@@ -1559,12 +1568,17 @@ class ShinkaEvolveRunner:
                 if 0 in persisted_generations
                 else None
             )
-            if persisted_generations == {0} and self.llm_selection is not None and seed:
+            if self.llm_selection is not None and seed:
+                # The bandit state is only saved every few generations. Set the
+                # baseline from the seed first so that a run interrupted before
+                # the first save does not resume with a baseline of zero.
                 score = seed.combined_score if seed.correct else None
                 self.llm_selection.set_baseline_score(
                     score if score is not None and math.isfinite(score) else 0.0
                 )
             self._load_bandit_state()
+            if meta_summarizer:
+                meta_summarizer.restore_persisted_state()
 
         if any(generation > 0 for generation in persisted_generations):
             self.db.recover_pending_child_maintenance()
