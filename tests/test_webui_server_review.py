@@ -345,3 +345,66 @@ def test_cached_programs_belong_to_the_database_that_was_asked_for(tmp_path: Pat
     assert b"from_first" in first_body
     assert b"from_second" in second_body
     assert b"from_first" not in second_body
+
+
+# --- failed proposals of a run opened from another directory --------------------
+
+
+def _failed_node(port: int, generation: int) -> dict:
+    target = "/get_program_details?db_path={db}&id={node}".format(
+        db=quote("run_a/programs.sqlite"), node=quote(f"failed:proposal:{generation}")
+    )
+    status, _, body = request(port, target)
+    assert status == 200, body[:300]
+    return json.loads(body)
+
+
+def _write_failed_generation(gen_dir: Path, recorded_dir: str) -> None:
+    """A failed generation whose files record paths under ``recorded_dir``."""
+    gen_dir.mkdir(parents=True)
+    (gen_dir / "main.py").write_text("FAILED_CODE = 1\n", encoding="utf-8")
+    (gen_dir / "failure.json").write_text(
+        json.dumps(
+            {
+                "language": "python",
+                "attempts": 3,
+                "artifacts": {"generated_code_path": f"{recorded_dir}/main.py"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_failed_proposal_is_found_when_the_run_was_started_elsewhere(tree: Path):
+    # The run records these paths relative to the directory it was started
+    # in (here the parent of the root), so they do not resolve under the root.
+    run = tree / "results" / "run_a"
+    _write_failed_generation(run / "gen_9", "results/run_a/gen_9")
+    log_failed_proposal(
+        run / "programs.sqlite",
+        9,
+        {"failure_json_path": "results/run_a/gen_9/failure.json"},
+    )
+
+    with serve(tree / "results") as port:
+        node = _failed_node(port, 9)
+
+    assert node["code"] == "FAILED_CODE = 1\n"
+    assert node["metadata"]["attempts"] == 3
+
+
+def test_failed_proposal_fallback_stays_inside_the_root(tree: Path):
+    run = tree / "results" / "run_a"
+    _write_failed_generation(tree / "private" / "gen_10", "results/run_a/gen_10")
+    (run / "gen_10").symlink_to(tree / "private" / "gen_10")
+    log_failed_proposal(
+        run / "programs.sqlite",
+        10,
+        {"failure_json_path": "results/run_a/gen_10/failure.json"},
+    )
+
+    with serve(tree / "results") as port:
+        node = _failed_node(port, 10)
+
+    assert node["code"] is None
+    assert "attempts" not in node["metadata"]

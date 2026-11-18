@@ -216,17 +216,33 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         except ValueError:
             return None
 
+    def _locate_failure_json(
+        self, recorded_path: Any, run_dir: str, generation: int
+    ) -> Optional[Path]:
+        """The ``failure.json`` of a failed generation, if it is inside the root.
+
+        A run records the path relative to the directory it was started in,
+        which resolves only when the UI is opened from there. Opened from
+        anywhere else, the file is where every run keeps it:
+        ``<run dir>/gen_<n>/failure.json``.
+        """
+        in_run_dir = os.path.join(run_dir, f"gen_{generation}", "failure.json")
+        for candidate in (recorded_path, in_run_dir):
+            failure_path = self._resolve_artifact_path(candidate)
+            if failure_path is not None and failure_path.is_file():
+                return failure_path
+        return None
+
     def _read_failure_json(
-        self, failure_json_path: Optional[str]
+        self, failure_path: Optional[Path]
     ) -> Optional[Dict[str, Any]]:
+        if failure_path is None:
+            return None
         try:
-            failure_path = self._resolve_artifact_path(failure_json_path)
-            if failure_path is None or not failure_path.is_file():
-                return None
             payload = json.loads(failure_path.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, dict) else None
         except Exception:
             return None
+        return payload if isinstance(payload, dict) else None
 
     def _language_from_suffix(self, suffix: str) -> str:
         ext = suffix.lstrip(".").lower()
@@ -306,10 +322,20 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         generation: int,
         created_at: float,
         details: Dict[str, Any],
+        run_dir: str,
         include_code: bool = False,
     ) -> Dict[str, Any]:
-        failure_json_path = details.get("failure_json_path")
-        failure_payload = self._read_failure_json(failure_json_path)
+        failure_path = self._locate_failure_json(
+            details.get("failure_json_path"), run_dir, generation
+        )
+        if failure_path is not None:
+            # Root-relative, so the lookups below find the file wherever the
+            # run recorded it.
+            details = {
+                **details,
+                "failure_json_path": os.path.relpath(failure_path, self._root()),
+            }
+        failure_payload = self._read_failure_json(failure_path)
         metadata = dict(details)
         if failure_payload:
             for key in [
@@ -412,6 +438,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     generation=gen,
                     created_at=float(row["created_at"]),
                     details=details,
+                    run_dir=os.path.dirname(abs_db_path),
                     include_code=include_code,
                 )
 
