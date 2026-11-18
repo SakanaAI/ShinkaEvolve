@@ -1974,8 +1974,12 @@ def resolve_cli_paths(
     case the two disagree and a ValueError says so.
     """
     search_root = os.path.realpath(root_directory or os.getcwd())
-    if not os.path.isdir(search_root):
+    if not os.path.exists(search_root):
         raise ValueError(f"Root directory does not exist: {search_root}")
+    if not os.path.isdir(search_root):
+        raise ValueError(
+            f"Root is not a directory: {search_root}. Use --db to open one database."
+        )
     if db is None:
         return search_root, None
 

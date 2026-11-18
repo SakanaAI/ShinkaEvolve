@@ -224,3 +224,18 @@ def test_allowed_names_leave_out_addresses_and_reverse_lookup_names(
 
     assert allowed == {"localhost", "node17", "node17.local", "alias"}
     assert security.is_allowed_host("10.1.2.3:8000", allowed)
+
+
+# --- paths given on the command line --------------------------------------------
+
+
+def test_root_that_is_a_file_is_reported_as_such(results: Path):
+    db = results / "run_a" / "programs.sqlite"
+
+    with pytest.raises(ValueError, match="is not a directory"):
+        visualization.resolve_cli_paths(str(db), None)
+
+
+def test_missing_root_is_reported_as_missing(results: Path):
+    with pytest.raises(ValueError, match="does not exist"):
+        visualization.resolve_cli_paths(str(results / "nowhere"), None)
