@@ -2446,6 +2446,7 @@ class ShinkaEvolveRunner:
     async def _job_monitor_task(self):
         """Monitor running jobs and process completed ones."""
         logger.info("🔄 Job monitor task started")
+        await self._restore_hang_limit_from_history()
 
         while not self.should_stop.is_set():
             try:
@@ -2811,7 +2812,7 @@ class ShinkaEvolveRunner:
                         )
 
             except Exception as e:
-                logger.error(f"Error in job monitor task: {e}")
+                logger.error(f"Error in job monitor task: {e}", exc_info=True)
                 self.should_stop.set()  # Stop on error
                 self.finalization_complete.set()
                 break
@@ -5775,20 +5776,36 @@ class ShinkaEvolveRunner:
         )
 
     def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
-        """Return the wall-clock runtime limit for a single evaluation job."""
+        """Return the runner's wall-clock limit for a single evaluation job."""
+        if str(getattr(self.scheduler, "job_type", "")).startswith("slurm"):
+            # Slurm enforces `time` from the moment a job starts running. The
+            # runner only knows when it was submitted, so a limit here would
+            # count the queue wait against the evaluation.
+            return None
+
         job_timeout = getattr(self.job_config, "time", None)
         if job_timeout:
             return float(parse_time_to_seconds(job_timeout))
 
-        if getattr(self.scheduler, "job_type", None) == "local":
-            if self._evaluation_seconds_ewma is not None:
-                return max(60.0, self._evaluation_seconds_ewma * 5.0 + 60.0)
+        # Without a configured limit, allow a multiple of the longest evaluation
+        # that succeeded. Crashes finish early and must not shrink the limit.
+        longest = getattr(self.scheduler, "longest_successful_runtime", None)
+        if longest is not None:
+            return max(60.0, longest * 5.0 + 60.0)
 
         return None
 
     def _is_job_hung(self, job: AsyncRunningJob, now: Optional[float] = None) -> bool:
         """Detect a single evaluation job that has exceeded its runtime budget."""
-        runtime_limit = self._get_evaluation_runtime_limit_seconds()
+        try:
+            runtime_limit = self._get_evaluation_runtime_limit_seconds()
+        except ValueError as e:
+            # Job configs validate `time` on construction; a value that still
+            # fails to parse must not stop the monitor that tracks every job.
+            if not getattr(self, "_invalid_job_time_reported", False):
+                self._invalid_job_time_reported = True
+                logger.error(f"Hung-job detection disabled: {e}")
+            return False
         if runtime_limit is None:
             return False
 
@@ -5800,6 +5817,30 @@ class ShinkaEvolveRunner:
 
         current_time = time.time() if now is None else now
         return (current_time - started_at) > runtime_limit
+
+    async def _restore_hang_limit_from_history(self) -> None:
+        """Give a resumed run the hang limit its earlier evaluations earned.
+
+        The scheduler learns how long a healthy evaluation takes from the seed
+        and from each success, and a resumed run evaluates no seed.
+        """
+        note_runtime = getattr(self.scheduler, "note_successful_runtime", None)
+        if (
+            note_runtime is None
+            or getattr(self.scheduler, "job_type", None) != "local"
+            or getattr(self.job_config, "time", None)
+        ):
+            return
+        try:
+            best_program = await self.async_db.get_best_program_async()
+        except Exception as e:
+            logger.debug(f"Could not read an earlier evaluation runtime: {e}")
+            return
+        if best_program is None or not best_program.correct:
+            return
+        seconds = (best_program.metadata or {}).get("evaluation_seconds")
+        if isinstance(seconds, (int, float)) and seconds > 0:
+            note_runtime(float(seconds))
 
     async def _update_completed_generations(self):
         """Update completed generations count for async evolution.
