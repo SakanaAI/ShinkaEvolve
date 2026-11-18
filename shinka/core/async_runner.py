@@ -2195,6 +2195,7 @@ class ShinkaEvolveRunner:
 
         sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
         total_costs = 0.0
+        seed_charge_id = None
 
         cost_before_setup = self.total_api_cost
         scope, token = self._begin_api_cost_scope()
@@ -2314,7 +2315,12 @@ class ShinkaEvolveRunner:
                         "diff_summary": {},  # No diff for initial program
                     }
 
-                    # Pass the metadata to setup method
+                    if total_costs > 0.0:
+                        seed_charge_id = str(uuid.uuid4())
+                        llm_metadata["api_charge_id"] = seed_charge_id
+                        await self._record_evaluation_charge(0, seed_charge_id, total_costs)
+
+                    # The receipt stays recoverable while the evaluator runs.
                     await self._setup_initial_program_with_metadata(
                         initial_code,
                         patch_name,
@@ -2361,18 +2367,25 @@ class ShinkaEvolveRunner:
         except (Exception, asyncio.CancelledError) as exc:
             total_costs += getattr(exc, "cost", 0.0)
             await self._settle_initial_costs(
-                scope, cost_before_setup, max(scope.pending, total_costs)
+                scope, cost_before_setup, max(scope.pending, total_costs),
+                charge_id=seed_charge_id,
             )
             raise
         finally:
             await self._finish_api_cost_scope(scope, token, "initialization", 0)
 
     async def _settle_initial_costs(
-        self, scope: ApiCostScope, cost_before_setup: float, known_cost: float
+        self, scope: ApiCostScope, cost_before_setup: float, known_cost: float,
+        *, charge_id: Optional[str] = None,
     ) -> None:
         with api_cost_lock:
             scope.acknowledge(known_cost)
             self.total_api_cost = max(self.total_api_cost, cost_before_setup + known_cost)
+        if charge_id is not None:
+            # Reuse the handoff receipt, including when its acknowledgement was
+            # lost. A persisted seed's matching ID suppresses this journal entry.
+            await self._record_evaluation_charge(0, charge_id, known_cost)
+            return
         await finish_cost_recording(
             self._reconcile_initial_costs(cost_before_setup, known_cost)
         )
