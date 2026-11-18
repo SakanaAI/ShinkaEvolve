@@ -70,6 +70,45 @@ def test_reindented_search_replaces_the_line_it_matched():
     assert updated == original.replace("        value = 1", "        value = 2")
 
 
+def test_block_whose_first_line_lost_its_indentation_still_applies():
+    original = (
+        "# EVOLVE-BLOCK-START\n"
+        "def solve(n):\n"
+        "    total = 0\n"
+        "    for i in range(n):\n"
+        "        total += i\n"
+        "    return total\n"
+        "# EVOLVE-BLOCK-END\n"
+    )
+    patch = _patch(
+        "for i in range(n):\n        total += i",
+        "for i in range(n):\n        total += 2 * i",
+    )
+
+    updated, num_applied, error = _apply(original, patch)
+
+    assert error is None
+    assert num_applied == 1
+    assert updated == original.replace("total += i", "total += 2 * i")
+
+
+def test_first_line_without_indentation_does_not_match_mid_line():
+    original = (
+        "# EVOLVE-BLOCK-START\n"
+        "    total = idx = 1\n"
+        "    done = True\n"
+        "# EVOLVE-BLOCK-END\n"
+    )
+
+    updated, num_applied, error = _apply(
+        original, _patch("idx = 1\n    done = True", "idx = 2\n    done = False")
+    )
+
+    assert num_applied == 0
+    assert error is not None and "SEARCH text not found" in error
+    assert updated == original
+
+
 # -- matches outside the editable region ---------------------------------------
 
 

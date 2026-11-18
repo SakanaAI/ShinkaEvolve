@@ -133,7 +133,8 @@ def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMa
     A block matches a run of consecutive lines, never a fragment of one, so
     ``x = 1`` cannot hit ``idx = 10``. Trailing whitespace is ignored. Matches
     at the block's own indentation come first, in file order, followed by
-    matches that need the block shifted to another indentation.
+    matches that need the block shifted to another indentation, and then by
+    matches of a block whose first line alone lost leading whitespace.
     """
     if not search_text.strip():
         return
@@ -183,6 +184,22 @@ def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMa
             yield match_at(
                 index, indent_offset=indent_offset, indent_chars=indent_chars
             )
+
+    # A block whose first line alone lost leading whitespace still names whole
+    # lines. It matches from where its text starts inside the indentation, so
+    # the replacement keeps the indentation the block left out.
+    for index in candidates:
+        line = stripped[index]
+        missing_indent = len(line) - len(search_lines[0])
+        if (
+            missing_indent > 0
+            and line.endswith(search_lines[0])
+            and not line[:missing_indent].strip()
+            and stripped[index + 1 : index + count] == search_lines[1:]
+        ):
+            match = match_at(index)
+            pos = match.pos + missing_indent
+            yield match._replace(text=original_text[pos : match.end], pos=pos)
 
 
 def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int]:
