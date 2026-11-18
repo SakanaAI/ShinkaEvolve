@@ -36,6 +36,7 @@ BAD_RESULTS = {
     ),
     "infinite-score": _results({"correct": True}, {"combined_score": math.inf}),
     "nan-score": _results({"correct": True}, {"combined_score": math.nan}),
+    "overflowing-score": _results({"correct": True}, {"combined_score": 10**400}),
     "string-correct": _results({"correct": "false"}, {"combined_score": 1.0}),
     "integer-correct": _results({"correct": 1}, {"combined_score": 1.0}),
     "correct-not-object": _results([True], {"combined_score": 1.0}),

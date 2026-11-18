@@ -63,7 +63,10 @@ def validate_evaluation_results(
     combined_score = metrics.get("combined_score", 0.0)
     if type(combined_score) not in (int, float):
         raise ValueError("metrics.json 'combined_score' must be numeric")
-    combined_score = float(combined_score)
+    try:
+        combined_score = float(combined_score)
+    except OverflowError:  # an integer too large for a float
+        combined_score = math.copysign(math.inf, combined_score)
     diagnostic = None
     if not math.isfinite(combined_score):
         if correct:
