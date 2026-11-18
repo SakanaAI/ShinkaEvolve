@@ -88,7 +88,7 @@ def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str
     results_dir_path = Path(results_dir)
 
     metrics_file_path = results_dir_path / "metrics.json"
-    if metrics_file_path.exists():
+    if metrics_file_path.is_file():
         try:
             loaded_results["metrics"] = _load_json(metrics_file_path)
         except (OSError, ValueError) as exc:
@@ -101,7 +101,7 @@ def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str
         loaded_results["evaluation_error"] = warning_msg
 
     correct_file_path = results_dir_path / "correct.json"
-    if correct_file_path.exists():
+    if correct_file_path.is_file():
         try:
             loaded_results["correct"] = _load_json(correct_file_path)
         except (OSError, ValueError) as exc:

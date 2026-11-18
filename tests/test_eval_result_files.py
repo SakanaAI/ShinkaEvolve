@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,36 @@ def test_unreadable_metrics_file_is_reported_not_raised(
     assert "metrics.json" in results["evaluation_error"]
     with pytest.raises(ValueError, match="Could not decode JSON"):
         validate_evaluation_results(results)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
+@pytest.mark.parametrize("name", ["metrics.json", "correct.json"])
+def test_named_pipe_in_place_of_a_result_file_does_not_block_the_read(
+    tmp_path: Path, name: str
+) -> None:
+    """The evaluated program can write to its results directory."""
+    (tmp_path / "metrics.json").write_text('{"combined_score": 1.0}')
+    (tmp_path / "correct.json").write_text('{"correct": true}')
+    (tmp_path / name).unlink()
+    os.mkfifo(tmp_path / name)
+    loaded: list[dict[str, Any]] = []
+    reader = threading.Thread(
+        target=lambda: loaded.append(load_results(str(tmp_path))), daemon=True
+    )
+
+    reader.start()
+    reader.join(timeout=5.0)
+    try:
+        assert not reader.is_alive(), "load_results is blocked on the pipe"
+    finally:
+        try:  # Release a blocked reader so it does not outlive the test.
+            os.close(os.open(tmp_path / name, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            pass
+
+    assert name in loaded[0]["evaluation_error"]
+    with pytest.raises(ValueError, match="file not found"):
+        validate_evaluation_results(loaded[0])
 
 
 def test_correctness_file_that_is_not_an_object_is_rejected(tmp_path: Path) -> None:
