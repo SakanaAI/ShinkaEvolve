@@ -89,9 +89,9 @@ class MetaSummarizer:
         """Reload the meta state an earlier session left in the run directory."""
         if self._state_path is None:
             return False
-        if self.load_meta_state(str(self._state_path)):
-            return True
-        return self._restore_from_meta_output(self._state_path.parent / "meta")
+        loaded = self.load_meta_state(str(self._state_path))
+        restored = self._restore_from_meta_output(self._state_path.parent / "meta")
+        return loaded or restored
 
     def _restore_from_meta_output(self, meta_dir: Path) -> bool:
         """Recover the state from the newest ``meta_<N>.txt`` of earlier sessions.
@@ -100,13 +100,17 @@ class MetaSummarizer:
         output files. They hold the summaries, scratchpad and recommendations
         and the number of processed programs; the programs that were still
         waiting for a summary cannot be recovered from them.
+
+        The state file is written before each output file. An output that
+        counts more processed programs than the loaded state therefore means
+        the state file is a leftover of an older session, and the output wins.
         """
         outputs = {}
         for path in meta_dir.glob("meta_*.txt"):
             processed = path.stem.removeprefix("meta_")
             if processed.isdigit():
                 outputs[int(processed)] = path
-        if not outputs:
+        if not outputs or max(outputs) <= self.total_programs_processed:
             return False
 
         total_processed = max(outputs)
@@ -116,6 +120,8 @@ class MetaSummarizer:
             logger.warning(f"Failed to read {outputs[total_processed]}: {e}")
             return False
 
+        # Programs a stale state file still lists were summarized long ago.
+        self.evaluated_since_last_meta = []
         sections = []
         for attribute, heading, introduction in _META_OUTPUT_SECTIONS:
             prefix = f"{heading}\n\n{introduction}\n\n"

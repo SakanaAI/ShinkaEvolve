@@ -31,11 +31,13 @@ def resolve_run_db_path(
         configured = None
 
     if not _has_programs(default_path):
-        candidates = [results_dir / LEGACY_RUN_DB_NAME]
+        candidates = []
         if configured is not None:
-            candidates.insert(0, results_dir / configured.name)
-            if not configured.is_absolute():
-                candidates.insert(0, results_dir / configured)
+            # As the first releases built it: f"{results_dir}/{db_path}"
+            candidates.append(results_dir / str(configured).lstrip("/\\"))
+            candidates.append(results_dir / configured.name)
+        # The preset name, and the file an unset db_path produced back then.
+        candidates += [results_dir / LEGACY_RUN_DB_NAME, results_dir / "None"]
         for legacy_path in candidates:
             if _has_programs(legacy_path):
                 logger.warning(

@@ -168,6 +168,27 @@ def test_state_is_recovered_from_meta_output_of_older_sessions(tmp_path):
     assert resumed.evaluated_since_last_meta == []
 
 
+def test_newer_meta_output_wins_over_a_stale_state_file(tmp_path):
+    """A state file left by an old release can predate later meta outputs."""
+    first = _summarizer(tmp_path)
+    for index in range(4):
+        first.add_evaluated_program(_program(f"p{index}", index))
+        if index == 1:
+            _run_update(first, tmp_path)
+            first.add_evaluated_program(_program("pending", 9))
+            stale_state = (tmp_path / META_STATE_FILENAME).read_text()
+    _run_update(first, tmp_path)
+    (tmp_path / META_STATE_FILENAME).write_text(stale_state)
+
+    resumed = _resumed(tmp_path)
+
+    assert resumed.total_programs_processed == 5
+    assert resumed.meta_summary == first.meta_summary
+    assert resumed.meta_scratch_pad == "insights (update 2)"
+    assert resumed.meta_recommendations == "1. recommendation (update 2)"
+    assert resumed.evaluated_since_last_meta == []
+
+
 def test_nothing_to_restore_in_a_new_run_directory(tmp_path):
     summarizer = _summarizer(tmp_path)
 

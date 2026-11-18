@@ -59,9 +59,13 @@ def test_custom_db_path_is_reported_as_ignored(tmp_path, caplog):
         ("evolution_db.sqlite", None),
         ("custom.sqlite", "custom.sqlite"),
         ("nested/custom.sqlite", "nested/custom.sqlite"),
+        # The first releases built the path as f"{results_dir}/{db_path}".
+        ("abs/custom.sqlite", "/abs/custom.sqlite"),
+        ("None", None),
     ],
 )
 def test_legacy_run_directory_keeps_its_database(tmp_path, legacy_name, configured):
+    (tmp_path / legacy_name).parent.mkdir(parents=True, exist_ok=True)
     _write_db(tmp_path / legacy_name)
 
     assert resolve_run_db_path(tmp_path, configured) == tmp_path / legacy_name
