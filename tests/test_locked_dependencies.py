@@ -1,13 +1,17 @@
 """The committed lockfile must match pyproject.toml and CI must install from it."""
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
-tomllib = pytest.importorskip("tomllib")  # Python 3.11+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pytest brings tomli along on Python 3.10
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
