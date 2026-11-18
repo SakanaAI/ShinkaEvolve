@@ -13,6 +13,7 @@ from shinka.model_availability import (
     AZURE_LLM_ENV_REQUIREMENTS,
     PROVIDER_ENV_ALTERNATIVES,
     PROVIDER_ENV_REQUIREMENTS,
+    missing_env_vars_for_provider,
     validate_model_env_access,
 )
 from shinka.pricing.catalog import PricingConfig, PricingMode, refresh_model_catalog
@@ -114,6 +115,36 @@ def test_validation_names_the_alternatives_when_none_is_complete(
     assert "missing ANTHROPIC_API_KEY (or instead set ANTHROPIC_AUTH_TOKEN)" in str(
         anthropic_error.value
     )
+
+
+def test_validation_names_the_primary_set_when_nothing_is_configured():
+    """With no AWS variable set, ask for the access-key trio as before."""
+    assert missing_env_vars_for_provider("bedrock") == (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_REGION_NAME",
+        "AWS_SECRET_ACCESS_KEY",
+    )
+
+    with pytest.raises(ValueError) as bedrock_error:
+        validate_model_env_access(llm_models=[_llm_model("bedrock")])
+
+    message = str(bedrock_error.value)
+    assert (
+        "missing AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY "
+        "(or instead set"
+    ) in message
+    assert "AWS_BEARER_TOKEN_BEDROCK + AWS_REGION_NAME" in message
+
+
+def test_shinka_models_help_lists_the_alternative_auth_variables(
+    capsys: pytest.CaptureFixture[str],
+):
+    with pytest.raises(SystemExit):
+        cli_models.main(["--help"])
+
+    help_text = capsys.readouterr().out
+    for env_var_name in ("ANTHROPIC_AUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION"):
+        assert env_var_name in help_text
 
 
 def test_openai_admin_key_alone_is_still_rejected(monkeypatch: pytest.MonkeyPatch):

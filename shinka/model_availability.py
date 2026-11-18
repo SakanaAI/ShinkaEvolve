@@ -21,8 +21,9 @@ EnvVarSet = tuple[str, ...]
 
 # A provider is usable when every variable of at least one set is present. The
 # sets mirror what `shinka.llm.client._constructor_configuration` accepts; the
-# first set is the one named in error messages. Ambient AWS credential sources
-# (profiles, instance roles) cannot be checked from the environment.
+# first set is the one named in error messages unless another is partly set.
+# Ambient AWS credential sources (profiles, instance roles) cannot be checked
+# from the environment.
 PROVIDER_ENV_ALTERNATIVES: dict[str, tuple[EnvVarSet, ...]] = {
     "anthropic": (("ANTHROPIC_API_KEY",), ("ANTHROPIC_AUTH_TOKEN",)),
     "azure": (("AZURE_OPENAI_API_KEY", "AZURE_API_ENDPOINT", "AZURE_API_VERSION"),),
@@ -98,8 +99,17 @@ def _missing_env_vars(env_var_names: EnvVarSet) -> EnvVarSet:
 
 
 def _closest_alternative(alternatives: tuple[EnvVarSet, ...]) -> EnvVarSet:
-    """Return the satisfied set, else the one with the fewest missing variables."""
-    return min(alternatives, key=lambda names: len(_missing_env_vars(names)))
+    """Return the satisfied set, else the started set that misses the fewest.
+
+    A set counts once one of its variables is present; with none started, the
+    primary set is the one to ask for.
+    """
+    started = [
+        names for names in alternatives if len(_missing_env_vars(names)) < len(names)
+    ]
+    return min(
+        started or alternatives[:1], key=lambda names: len(_missing_env_vars(names))
+    )
 
 
 def model_env_alternatives(
