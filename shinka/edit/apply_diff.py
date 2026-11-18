@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 import difflib
 import logging
-from typing import Iterator, NamedTuple, Union, Optional, List, Tuple
+from typing import Iterable, Iterator, NamedTuple, Union, Optional, List, Tuple
 
 from shinka.utils.languages import get_language_extension
 from .marker_validation import validate_evolve_markers
@@ -121,13 +121,37 @@ class _LineMatch(NamedTuple):
     text: str
     pos: int
     end: int
+    # How literally the block matched: 0 as written, 1 after re-indenting it,
+    # 2 after restoring leading whitespace of its first line.
+    looseness: int = 0
     # Set when the block only matched after re-indenting it: the signed shift
     # and the leading whitespace of the line it was matched at.
     indent_offset: int = 0
     indent_chars: Optional[str] = None
 
 
-def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMatch]:
+def _split_lines(text: str, breaks: Iterable[int]) -> tuple[list[str], list[int]]:
+    """Split text into lines and return them with their start offsets.
+
+    Lines end at a newline and, in addition, at every offset in ``breaks``.
+    """
+    lines = []
+    starts = []
+    line_start = 0
+    pending_breaks = sorted(set(breaks))
+    for line in text.split("\n"):
+        line_end = line_start + len(line)
+        cuts = [b for b in pending_breaks if line_start < b < line_end]
+        for start, end in zip([line_start, *cuts], [*cuts, line_end]):
+            lines.append(text[start:end])
+            starts.append(start)
+        line_start = line_end + 1
+    return lines, starts
+
+
+def _iter_line_matches(
+    search_text: str, original_text: str, breaks: Iterable[int] = ()
+) -> Iterator[_LineMatch]:
     """Yield every place where the search block matches whole lines.
 
     A block matches a run of consecutive lines, never a fragment of one, so
@@ -135,26 +159,27 @@ def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMa
     at the block's own indentation come first, in file order, followed by
     matches that need the block shifted to another indentation, and then by
     matches of a block whose first line alone lost leading whitespace.
+
+    ``breaks`` are offsets that end a line like a newline does. Passing the
+    EVOLVE region boundaries makes code that shares a line with a marker a
+    line of its own, so it can be matched without the marker.
     """
     if not search_text.strip():
         return
 
     search_lines = [line.rstrip() for line in search_text.split("\n")]
-    lines = original_text.split("\n")
+    lines, starts = _split_lines(original_text, breaks)
     stripped = [line.rstrip() for line in lines]
-    starts = []
-    offset = 0
-    for line in lines:
-        starts.append(offset)
-        offset += len(line) + 1
 
     count = len(search_lines)
     candidates = range(len(lines) - count + 1)
 
-    def match_at(index: int, **indent) -> _LineMatch:
-        end = starts[index + count - 1] + len(lines[index + count - 1])
+    def match_at(index: int, **details) -> _LineMatch:
+        # Whitespace after the last line stays: it may separate code from an
+        # EVOLVE marker that follows on the same line.
+        end = starts[index + count - 1] + len(stripped[index + count - 1])
         pos = starts[index]
-        return _LineMatch(original_text[pos:end], pos, end, **indent)
+        return _LineMatch(original_text[pos:end], pos, end, **details)
 
     for index in candidates:
         if stripped[index : index + count] == search_lines:
@@ -182,7 +207,10 @@ def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMa
             continue  # same as the unshifted block, handled above
         if stripped[index : index + count] == shifted_lines:
             yield match_at(
-                index, indent_offset=indent_offset, indent_chars=indent_chars
+                index,
+                looseness=1,
+                indent_offset=indent_offset,
+                indent_chars=indent_chars,
             )
 
     # A block whose first line alone lost leading whitespace still names whole
@@ -197,7 +225,7 @@ def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMa
             and not line[:missing_indent].strip()
             and stripped[index + 1 : index + count] == search_lines[1:]
         ):
-            match = match_at(index)
+            match = match_at(index, looseness=2)
             pos = match.pos + missing_indent
             yield match._replace(text=original_text[pos : match.end], pos=pos)
 
@@ -772,7 +800,13 @@ def apply_search_replace(
         # ── replacements ────────────────────────────────────────────────────
         # Find the lines the search text matches, with indentation correction
         # if needed, and take the first match that lies in an editable region.
-        matches = list(_iter_line_matches(search, new_text))
+        # Region boundaries end a line, so code sharing a line with a marker
+        # can be matched. Only the most literal matches count: a block that
+        # names immutable code as written must not fall back to an editable
+        # look-alike at another indentation.
+        boundaries = [offset for span in mutable for offset in span]
+        matches = list(_iter_line_matches(search, new_text, boundaries))
+        matches = [m for m in matches if m.looseness == matches[0].looseness]
         match = next((m for m in matches if _inside((m.pos, m.end), mutable)), None)
 
         if match is None:

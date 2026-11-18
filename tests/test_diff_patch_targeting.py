@@ -133,6 +133,66 @@ def test_match_only_outside_the_block_is_rejected():
     assert updated == original
 
 
+def test_verbatim_immutable_code_is_not_swapped_for_an_indented_look_alike():
+    original = (
+        "def helper():\n"
+        "    return 1\n"
+        "# EVOLVE-BLOCK-START\n"
+        "class Solver:\n"
+        "    def helper():\n"
+        "        return 1\n"
+        "# EVOLVE-BLOCK-END\n"
+    )
+    patch = _patch("def helper():\n    return 1", "def helper():\n    return 2")
+
+    updated, num_applied, error = _apply(original, patch)
+
+    assert num_applied == 0
+    assert error is not None
+    assert "Attempted to edit outside EVOLVE-BLOCK regions" in error
+    assert updated == original
+
+
+# -- code on the same line as a marker -------------------------------------------
+
+
+def test_code_before_an_end_marker_can_be_replaced():
+    original = "# EVOLVE-BLOCK-START\ndef f(x):\n    return x  # EVOLVE-BLOCK-END\n"
+
+    updated, num_applied, error = _apply(
+        original, _patch("    return x", "    return x + 1")
+    )
+
+    assert error is None
+    assert num_applied == 1
+    assert updated == original.replace("return x ", "return x + 1 ")
+
+
+def test_code_after_a_start_marker_can_be_replaced():
+    original = "<!-- EVOLVE-BLOCK-START --><p>hi</p>\n<!-- EVOLVE-BLOCK-END -->\n"
+
+    # Marker validation in apply_diff_patch rejects this layout for markdown,
+    # so it is only reachable through the matcher itself.
+    updated, num_applied = apply_search_replace(
+        _patch("<p>hi</p>", "<p>bye</p>"), original
+    )
+
+    assert num_applied == 1
+    assert updated == original.replace("hi", "bye")
+
+
+def test_marker_line_itself_stays_out_of_reach():
+    original = "# EVOLVE-BLOCK-START\nx = 1\ny = 2  # EVOLVE-BLOCK-END\ntail = 0\n"
+
+    updated, num_applied, error = _apply(
+        original, _patch("y = 2  # EVOLVE-BLOCK-END\ntail = 0", "y = 3\ntail = 1")
+    )
+
+    assert num_applied == 0
+    assert error is not None
+    assert updated == original
+
+
 # -- marker-only SEARCH -------------------------------------------------------
 
 _TWO_BLOCKS = (
