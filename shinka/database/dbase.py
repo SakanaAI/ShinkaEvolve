@@ -706,35 +706,35 @@ class ProgramDatabase:
             # A different connection may have repaired the database while we waited.
             if self._run_state_repaired():
                 return
-            last_generation, best = self._scan_original_run_programs(
-                state.best_program_id
-            )
-            self._advance_last_iteration(state, last_generation)
-            if best is not None:
-                self._repair_legacy_best_score(state, best)
-            best_id = best.id if best else None
+            original = self._scan_original_run_programs(state.best_program_id)
+            self._advance_last_iteration(state, original.last_iteration)
+            self._repair_legacy_best_score(state, original)
+            best_id = original.best_program_id
             if best_id != state.best_program_id:
                 self._write_metadata("best_program_id", best_id)
                 state.best_program_id = best_id
             self._write_metadata(_RUN_STATE_REPAIR_KEY, "1")
 
-    def _repair_legacy_best_score(self, state: _RunState, best: Program) -> None:
-        score = best.combined_score or 0.0
-        if score == state.best_score_ever and best.id != state.best_program_id:
-            # Legacy writers could commit the best score after losing its generation.
-            previous = self._get_tracked_best(state)
-            if (
-                previous is not None
-                and state.best_score_generation == previous.generation
-                and score > (previous.combined_score or 0.0)
-            ):
-                self._advance_best_score_generation(state, best.generation)
-        self._advance_best_score(state, best)
+    def _repair_legacy_best_score(self, state: _RunState, original: _RunState) -> None:
+        score = original.best_score_ever
+        if score is None or (
+            state.best_score_ever is not None and score < state.best_score_ever
+        ):
+            return
+        # Ties do not reset stagnation. Without maintenance order, only advance
+        # to the earliest supporting generation and preserve any later reset.
+        self._advance_best_score_generation(state, original.best_score_generation)
+        if score != state.best_score_ever:
+            state.best_score_ever = score
+            self._write_metadata("best_score_ever", str(score))
 
-    def _scan_original_run_programs(
-        self, tracked_best_id: Optional[str]
-    ) -> tuple[int, Optional[Program]]:
-        last_generation = 0
+    def _scan_original_run_programs(self, tracked_best_id: Optional[str]) -> _RunState:
+        state = _RunState(
+            last_iteration=0,
+            best_program_id=None,
+            best_score_generation=0,
+            best_score_ever=None,
+        )
         best = None
         # Only load ranking fields and the metadata that identifies island copies.
         for row in self.cursor.execute("""
@@ -748,15 +748,24 @@ class ProgramDatabase:
                 or program.metadata.get("_spawned_island")
             ):
                 continue
-            last_generation = max(last_generation, program.generation)
+            state.last_iteration = max(state.last_iteration, program.generation)
             if not program.correct:
                 continue
+            score = program.combined_score or 0.0
+            if state.best_score_ever is None or score > state.best_score_ever:
+                state.best_score_ever = score
+                state.best_score_generation = program.generation
+            elif score == state.best_score_ever:
+                state.best_score_generation = min(
+                    state.best_score_generation, program.generation
+                )
             if best is None or self._is_better(program, best):
                 best = program
             elif program.id == tracked_best_id and not self._is_better(best, program):
                 # Keep the incumbent if the original ranking cannot break the tie.
                 best = program
-        return last_generation, best
+        state.best_program_id = best.id if best else None
+        return state
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
