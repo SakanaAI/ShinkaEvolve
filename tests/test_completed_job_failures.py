@@ -173,6 +173,32 @@ def test_failed_maintenance_is_retried_on_the_stored_row(tmp_path: Path) -> None
     asyncio.run(run())
 
 
+def test_failure_after_maintenance_does_not_replay_side_effects(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(good_results(2.5)))
+            runner.evo_config.evolve_prompts = True
+            updates = 0
+
+            async def failing_prompt_update(*args: Any, **kwargs: Any) -> None:
+                nonlocal updates
+                updates += 1
+                raise RuntimeError("prompt database is locked")
+
+            runner._update_prompt_fitness = failing_prompt_update
+            job = make_job(meta_patch_data={"system_prompt_id": "prompt-1"})
+
+            await runner._process_completed_jobs_safely([job])
+
+            (child,) = children(sync_db)
+            assert child.metadata["postprocess_db_maintenance_applied"] is True
+            assert sync_db.get_best_program().id == child.id
+            assert runner.failed_jobs_for_retry == {}
+            assert updates == 1
+
+    asyncio.run(run())
+
+
 def test_unexpected_persistence_error_queues_a_retry(tmp_path: Path) -> None:
     async def run() -> None:
         async with open_database(tmp_path) as (sync_db, async_db):

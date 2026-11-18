@@ -5522,18 +5522,26 @@ class ShinkaEvolveRunner:
         if persist_result.persisted_event is None:
             return True
 
+        persisted_event = persist_result.persisted_event
         try:
-            await self._apply_persisted_program_side_effects(
-                persist_result.persisted_event
-            )
+            await self._apply_persisted_program_side_effects(persisted_event)
         except Exception as e:
+            metadata = persisted_event.program.metadata or {}
+            if metadata.get("postprocess_db_maintenance_applied") is True:
+                # The row is stored and maintained. Replaying the remaining side
+                # effects would count the program twice, so only report them.
+                logger.error(
+                    f"❌ SIDE EFFECTS ERROR: Side effects for {job.job_id} "
+                    f"(gen {job.generation}) are incomplete: {e}"
+                )
+                return True
             # The row is stored, but it is not in the archive or on its islands
-            # until maintenance runs. A retry finds the row and applies them.
+            # until maintenance runs. A retry finds the row and applies it.
             self._queue_failed_db_job(
                 job,
                 log_prefix="❌ SIDE EFFECTS ERROR:",
                 error_message=(
-                    f"Side effects for {job.job_id} (gen {job.generation}) "
+                    f"Maintenance for {job.job_id} (gen {job.generation}) "
                     f"failed: {e}"
                 ),
             )
