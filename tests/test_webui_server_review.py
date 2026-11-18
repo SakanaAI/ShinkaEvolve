@@ -4,6 +4,7 @@ Each test drives a real server bound to an ephemeral loopback port.
 """
 
 import json
+import socket
 from pathlib import Path
 from typing import Iterator
 
@@ -152,3 +153,115 @@ def test_control_characters_beyond_ascii_are_still_refused(server: int, control:
     target = f"/get_programs?db_path=run_a{control}/programs.sqlite"
 
     assert request(server, target)[0] == 400
+
+
+# --- controls the first round of tests did not pin ------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["note.svg", "page.html", "run_a/programs.sqlite", "run_a/meta/meta_1.txt"],
+)
+def test_plot_file_refuses_everything_but_images(tree: Path, name: str):
+    root = tree / "results"
+    (root / "note.svg").write_text("<svg onload='MARKER'/>", encoding="utf-8")
+    (root / "page.html").write_text("<script>MARKER</script>", encoding="utf-8")
+
+    with serve(root) as port:
+        status, _, body = request(port, "/plot_file/" + name)
+
+    assert status == 403
+    assert b"MARKER" not in body
+    assert b"# inside" not in body
+
+
+def test_plot_file_checks_the_type_of_the_file_a_link_points_to(tree: Path):
+    root = tree / "results"
+    (root / "fake.png").symlink_to(root / "run_a" / "meta" / "meta_1.txt")
+
+    with serve(root) as port:
+        status, _, body = request(port, "/plot_file/fake.png")
+
+    assert status == 403
+    assert b"# inside" not in body
+
+
+def _run_with_db(tree: Path, name: str) -> Path:
+    run = tree / "results" / name
+    run.mkdir()
+    write_program_db(run / "programs.sqlite", "p0")
+    return run
+
+
+def test_meta_directory_linked_out_of_root_is_not_listed_or_read(tree: Path):
+    run = _run_with_db(tree, "run_meta_dir")
+    (run / "meta").symlink_to(tree / "private" / "meta")
+    db_path = quote("run_meta_dir/programs.sqlite")
+
+    with serve(tree / "results") as port:
+        listing = request(port, "/get_meta_files?db_path=" + db_path)
+        content = request(
+            port, "/get_meta_content?processed_count=1&db_path=" + db_path
+        )
+
+    assert listing[0] == 404
+    assert content[0] == 404
+    assert b"OUTSIDE" not in listing[2] + content[2]
+
+
+@pytest.mark.parametrize("endpoint", ["/get_meta_content", "/download_meta_pdf"])
+def test_meta_file_linked_out_of_root_is_not_read(tree: Path, endpoint: str):
+    run = _run_with_db(tree, "run_meta_file")
+    (run / "meta").mkdir()
+    (run / "meta" / "meta_1.txt").symlink_to(tree / "private" / "meta" / "meta_1.txt")
+    target = f"{endpoint}?processed_count=1&db_path=" + quote(
+        "run_meta_file/programs.sqlite"
+    )
+
+    with serve(tree / "results") as port:
+        status, _, body = request(port, target)
+
+    assert status == 404
+    assert b"OUTSIDE" not in body
+
+
+def test_plots_directory_linked_out_of_root_is_not_listed_or_served(tree: Path):
+    outside_plots = tree / "private" / "gen_1" / "results" / "plots"
+    outside_plots.mkdir(parents=True)
+    (outside_plots / "o.png").write_bytes(PNG_BYTES)
+    run = _run_with_db(tree, "run_plots")
+    (run / "gen_1").symlink_to(tree / "private" / "gen_1")
+
+    with serve(tree / "results") as port:
+        listing = request(
+            port,
+            "/get_plots?generation=1&program_id=p0&db_path="
+            + quote("run_plots/programs.sqlite"),
+        )
+        plot = request(port, "/plot_file/run_plots/gen_1/results/plots/o.png")
+
+    assert (listing[0], json.loads(listing[2])) == (200, [])
+    assert plot[0] == 403
+    assert plot[2] != PNG_BYTES
+
+
+def test_allowed_hosts_reach_the_request_handler(tree: Path):
+    with serve(tree / "results", allowed_hosts=["viz.example.org"]) as port:
+        allowed = request(port, "/list_databases", host_header="viz.example.org")
+        machine = request(
+            port, "/list_databases", host_header=f"{socket.gethostname()}:{port}"
+        )
+        other = request(port, "/list_databases", host_header="other.example.org")
+
+    assert allowed[0] == 200
+    assert machine[0] == 200
+    assert other[0] == 403
+
+
+@pytest.mark.parametrize(
+    "host", ["evillocalhost", "xlocalhost:8000", "localhost.evil.example", "node170"]
+)
+def test_host_names_that_only_resemble_an_allowed_one_are_refused(host: str):
+    allowed = security.build_allowed_hosts("node17")
+
+    assert not security.is_allowed_host(host, allowed)
