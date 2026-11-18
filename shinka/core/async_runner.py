@@ -223,6 +223,7 @@ class AsyncRunningJob:
     novelty_cost: float = 0.0  # Track novelty checking cost
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
     db_retry_count: int = 0  # Track number of DB write retry attempts
+    last_persist_error: Optional[str] = None
     results_retrieved_at: Optional[float] = None
     completion_detected_at: Optional[float] = None
     discard_if_completed: bool = False
@@ -4415,6 +4416,7 @@ class ShinkaEvolveRunner:
     ) -> None:
         """Queue a completed job for DB retry bookkeeping."""
         job.db_retry_count += 1
+        job.last_persist_error = error_message
         logger.error(
             "%s %s (retry %s/%s)",
             log_prefix,
@@ -4434,11 +4436,105 @@ class ShinkaEvolveRunner:
 
         self.failed_jobs_for_retry.pop(str(job.job_id), None)
         logger.error(
-            "❌ RETRY EXHAUSTED: Job %s (gen %s) exceeded max retry attempts (%s). Job permanently lost.",
+            "❌ RETRY EXHAUSTED: Job %s (gen %s) exceeded max retry attempts (%s).",
             job.job_id,
             job.generation,
             self.MAX_DB_RETRY_ATTEMPTS,
         )
+
+    async def _record_job_out_of_retries(self, job: AsyncRunningJob) -> bool:
+        """Store a failed row for a job that no retry could persist.
+
+        Returns whether this recorded the generation. A job that already has a
+        row keeps it: only its maintenance is missing, which a resume applies.
+        """
+        diagnostic = (
+            "Program evaluation failed: the finished job could not be stored after "
+            f"{job.db_retry_count} attempts ({job.last_persist_error})"
+        )
+        try:
+            try:
+                code = await self._read_file_async(job.exec_fname) or ""
+            except Exception:
+                code = ""
+            now = time.time()
+            evaluation_started_at = (
+                job.evaluation_started_at or job.evaluation_submitted_at
+            )
+            program = Program(
+                id=str(uuid.uuid4()),
+                code=code,
+                language=self._program_language(),
+                generation=job.generation,
+                correct=False,
+                combined_score=0.0,
+                text_feedback=diagnostic,
+                timestamp=datetime.now().timestamp(),
+                parent_id=job.parent_id,
+                archive_inspiration_ids=job.archive_insp_ids,
+                top_k_inspiration_ids=job.top_k_insp_ids,
+                code_diff=job.code_diff,
+                embedding=job.code_embedding or [],
+                system_prompt_id=(job.meta_patch_data or {}).get("system_prompt_id"),
+                metadata=with_pipeline_timing(
+                    {
+                        **(job.meta_patch_data or {}),
+                        "embed_cost": job.embed_cost,
+                        "novelty_cost": job.novelty_cost,
+                        "stdout_log": "",
+                        "stderr_log": diagnostic,
+                        "results_missing": True,
+                        "evaluation_failed": True,
+                        "safe_processing": False,
+                        "source_job_id": self._source_job_key(job),
+                        "source_generation": job.generation,
+                    },
+                    pipeline_started_at=job.proposal_started_at,
+                    sampling_started_at=job.proposal_started_at,
+                    sampling_finished_at=evaluation_started_at,
+                    evaluation_started_at=evaluation_started_at,
+                    evaluation_finished_at=job.results_retrieved_at or now,
+                    postprocess_started_at=now,
+                    postprocess_finished_at=now,
+                ),
+            )
+            recorded = await asyncio.wait_for(
+                self.async_db.add_program_async(
+                    program,
+                    parent_id=job.parent_id,
+                    archive_insp_ids=job.archive_insp_ids,
+                    top_k_insp_ids=job.top_k_insp_ids,
+                    code_diff=job.code_diff,
+                    meta_patch_data=job.meta_patch_data,
+                    code_embedding=job.code_embedding,
+                    embed_cost=job.embed_cost,
+                    verbose=self.verbose,
+                    defer_maintenance=True,
+                ),
+                timeout=90.0,
+            )
+        except Exception as e:
+            logger.error(
+                "❌ JOB LOST: Job %s (gen %s) could not be recorded as failed: %s",
+                job.job_id,
+                job.generation,
+                e,
+            )
+            return False
+        if recorded:
+            logger.error(
+                "Recorded job %s (gen %s) as failed program %s",
+                job.job_id,
+                job.generation,
+                program.id,
+            )
+        else:
+            logger.error(
+                "Job %s (gen %s) is already stored; leaving its row as it is",
+                job.job_id,
+                job.generation,
+            )
+        return recorded
 
     async def _persist_failed_generation(
         self,
@@ -5517,6 +5613,13 @@ class ShinkaEvolveRunner:
 
     async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
         """Process a single job with comprehensive error handling. Returns True on success."""
+        if await self._persist_job_and_apply_side_effects(job):
+            return True
+        if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+            return False  # Queued for another attempt.
+        return await self._record_job_out_of_retries(job)
+
+    async def _persist_job_and_apply_side_effects(self, job: AsyncRunningJob) -> bool:
         persist_result = await self._persist_completed_job(job)
         if not persist_result.success:
             return False

@@ -230,6 +230,95 @@ def test_unexpected_persistence_error_queues_a_retry(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_job_that_cannot_be_persisted_is_recorded_once_retries_run_out(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(
+                async_db, StaticScheduler(good_results(2.5)), max_retries=3
+            )
+            _enable_retry_loop(runner)
+
+            async def unreadable(path: str) -> Any:
+                raise RuntimeError("cannot read program file")
+
+            runner._read_file_async = unreadable
+            job = make_job(generation=2, meta_patch_data={"api_costs": 0.25})
+
+            await runner._process_completed_jobs_safely([job])
+            for _ in range(2):
+                assert children(sync_db) == []
+                await runner._retry_failed_db_jobs()
+
+            (child,) = children(sync_db)
+            assert child.generation == 2 and child.code == ""
+            assert child.correct == 0 and child.combined_score == 0.0
+            assert child.metadata["evaluation_failed"] is True
+            assert child.metadata["api_costs"] == 0.25
+            assert "cannot read program file" in child.text_feedback
+            assert "3 attempts" in child.text_feedback
+            assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
+def test_row_whose_maintenance_keeps_failing_is_not_recorded_twice(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(
+                async_db, StaticScheduler(good_results(2.5)), max_retries=2
+            )
+            _enable_retry_loop(runner)
+
+            async def broken_maintenance(program: Any, **kwargs: Any) -> None:
+                raise RuntimeError("database is locked")
+
+            async_db.run_program_maintenance_async = broken_maintenance
+
+            await runner._process_completed_jobs_safely([make_job()])
+            await runner._retry_failed_db_jobs()
+
+            (child,) = children(sync_db)
+            assert child.correct == 1 and child.combined_score == 2.5
+            assert child.metadata["postprocess_db_maintenance_applied"] is False
+            assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
+def test_job_is_given_up_without_raising_when_the_database_stays_down(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(
+                async_db, StaticScheduler(good_results(2.5)), max_retries=2
+            )
+            _enable_retry_loop(runner)
+            add_program = async_db.add_program_async
+            attempts = 0
+
+            async def database_down(program: Any, **kwargs: Any) -> bool:
+                nonlocal attempts
+                attempts += 1
+                raise RuntimeError("disk I/O error")
+
+            async_db.add_program_async = database_down
+
+            await runner._process_completed_jobs_safely([make_job()])
+            await runner._retry_failed_db_jobs()
+            async_db.add_program_async = add_program
+
+            assert children(sync_db) == []
+            assert attempts == 3  # two attempts and the last-resort failed row
+            assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
 def test_exception_escaping_job_processing_queues_a_retry() -> None:
     async def run() -> None:
         runner = make_runner(None, StaticScheduler())
