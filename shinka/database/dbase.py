@@ -20,7 +20,9 @@ from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
 
 logger = logging.getLogger(__name__)
+_PREVIEW_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v1"
 _RUN_STATE_REPAIR_KEY = "run_state_reconciled_v2"
+_MAINTENANCE_APPLIED_KEY = "postprocess_db_maintenance_applied"
 
 
 def clean_nan_values(obj: Any) -> Any:
@@ -692,27 +694,44 @@ class ProgramDatabase:
         state.best_score_generation = max(state.best_score_generation, generation)
         self._write_metadata("best_score_generation", str(state.best_score_generation))
 
-    def _run_state_repaired(self) -> bool:
+    def _has_run_state_repair(self, key: str) -> bool:
         row = self.cursor.execute(
-            "SELECT 1 FROM metadata_store WHERE key = ?", (_RUN_STATE_REPAIR_KEY,)
+            "SELECT 1 FROM metadata_store WHERE key = ?", (key,)
         ).fetchone()
         return row is not None
 
     @db_retry()
     def _repair_legacy_run_state(self) -> None:
-        if self._run_state_repaired():
+        if self._has_run_state_repair(_RUN_STATE_REPAIR_KEY):
             return
         with self._run_state_transaction() as state:
             # A different connection may have repaired the database while we waited.
-            if self._run_state_repaired():
+            if self._has_run_state_repair(_RUN_STATE_REPAIR_KEY):
                 return
-            original = self._scan_original_run_programs(state.best_program_id)
-            self._advance_last_iteration(state, original.last_iteration)
+            preview_repaired = self._has_run_state_repair(_PREVIEW_RUN_STATE_REPAIR_KEY)
+            programs = self._original_run_programs()
+            if preview_repaired:
+                # The preview already repaired iteration and rank. Only use
+                # completed maintenance or evidence of the published watermark.
+                programs = (
+                    program
+                    for program in programs
+                    if program.metadata.get(_MAINTENANCE_APPLIED_KEY)
+                    or (
+                        (program.combined_score or 0.0) == state.best_score_ever
+                        and (
+                            program.id == state.best_program_id
+                            or program.generation == state.best_score_generation
+                        )
+                    )
+                )
+            original = self._scan_original_run_programs(state.best_program_id, programs)
             self._repair_legacy_best_score(state, original)
-            best_id = original.best_program_id
-            if best_id != state.best_program_id:
-                self._write_metadata("best_program_id", best_id)
-                state.best_program_id = best_id
+            if not preview_repaired:
+                self._advance_last_iteration(state, original.last_iteration)
+                if original.best_program_id != state.best_program_id:
+                    self._write_metadata("best_program_id", original.best_program_id)
+                    state.best_program_id = original.best_program_id
             self._write_metadata(_RUN_STATE_REPAIR_KEY, "1")
 
     def _repair_legacy_best_score(self, state: _RunState, original: _RunState) -> None:
@@ -728,14 +747,7 @@ class ProgramDatabase:
             state.best_score_ever = score
             self._write_metadata("best_score_ever", str(score))
 
-    def _scan_original_run_programs(self, tracked_best_id: Optional[str]) -> _RunState:
-        state = _RunState(
-            last_iteration=0,
-            best_program_id=None,
-            best_score_generation=0,
-            best_score_ever=None,
-        )
-        best = None
+    def _original_run_programs(self) -> Iterator[Program]:
         # Only load ranking fields and the metadata that identifies island copies.
         for row in self.cursor.execute("""
             SELECT id, '' AS code, generation, timestamp, combined_score,
@@ -743,11 +755,23 @@ class ProgramDatabase:
             FROM programs ORDER BY rowid
             """):
             program = self._program_from_row(row)
-            if program is None or (
+            if program is not None and not (
                 program.metadata.get("_is_island_copy")
                 or program.metadata.get("_spawned_island")
             ):
-                continue
+                yield program
+
+    def _scan_original_run_programs(
+        self, tracked_best_id: Optional[str], programs: Iterator[Program]
+    ) -> _RunState:
+        state = _RunState(
+            last_iteration=0,
+            best_program_id=None,
+            best_score_generation=0,
+            best_score_ever=None,
+        )
+        best = None
+        for program in programs:
             state.last_iteration = max(state.last_iteration, program.generation)
             if not program.correct:
                 continue
@@ -1076,7 +1100,7 @@ class ProgramDatabase:
 
             maintenance_finished_at = time.time()
             program.metadata = dict(program.metadata or {})
-            program.metadata["postprocess_db_maintenance_applied"] = True
+            program.metadata[_MAINTENANCE_APPLIED_KEY] = True
             program.metadata["postprocess_db_maintenance_started_at"] = (
                 maintenance_started_at
             )

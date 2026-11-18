@@ -268,23 +268,30 @@ def test_legacy_unscored_improvement_is_independent_of_negative_ranked_winner(
 
 
 @pytest.mark.parametrize("preview_marker, expected_marker", [(1, 8), (12, 12)])
+@pytest.mark.parametrize("maintenance_recorded", [False, True])
 def test_preview_repair_upgrades_once_across_two_reopens(
-    config, monkeypatch, preview_marker, expected_marker
+    config, monkeypatch, preview_marker, expected_marker, maintenance_recorded
 ):
     config.enable_dynamic_islands = True
     config.stagnation_threshold = 5
     with closing(_open_db(config)) as writer:
         best = _program(8, 10.0)
-        writer.add(best, defer_maintenance=True)
+        writer.add(best)
+        if not maintenance_recorded:
+            # Older maintained rows and partial maintenance lack the completion flag.
+            with writer.conn:
+                writer.conn.execute(
+                    "UPDATE programs SET metadata = '{}' WHERE id = ?", (best.id,)
+                )
         _write_legacy_run_state(writer, best, marker=preview_marker)
         writer._update_metadata_in_db("run_state_reconciled_v1", "1")
 
     scans = []
     scan_originals = ProgramDatabase._scan_original_run_programs
 
-    def track_scan(db, tracked_best_id):
+    def track_scan(db, tracked_best_id, programs):
         scans.append(tracked_best_id)
-        return scan_originals(db, tracked_best_id)
+        return scan_originals(db, tracked_best_id, programs)
 
     monkeypatch.setattr(ProgramDatabase, "_scan_original_run_programs", track_scan)
     with closing(ProgramDatabase(config, read_only=True)) as reader:
@@ -308,10 +315,50 @@ def test_preview_repair_upgrades_once_across_two_reopens(
         assert scans == [best.id]
 
 
+def test_preview_repair_preserves_markerless_tied_incumbent_watermark(config):
+    first, best = _program(5, 10.0), _program(8, 10.0)
+    with closing(_open_db(config)) as writer:
+        writer.add(first)
+        writer.add(best)
+        with writer.conn:
+            writer.conn.execute("UPDATE programs SET metadata = '{}'")
+        _write_legacy_run_state(writer, best, marker=first.generation)
+        writer._update_metadata_in_db("run_state_reconciled_v1", "1")
+
+    with closing(_open_db(config)) as repaired:
+        assert repaired.best_program_id == best.id
+        assert (repaired.best_score_ever, repaired.best_score_generation) == (10.0, 5)
+
+
+def test_preview_repair_preserves_deferred_maintenance_on_reopen(config):
+    config.enable_dynamic_islands = True
+    config.stagnation_threshold = 5
+    seed, pending = _program(0, 1.0), _program(9, 10.0)
+    with closing(_open_db(config)) as writer:
+        writer.add(seed)
+        writer.conn.execute(
+            "DELETE FROM metadata_store WHERE key = 'run_state_reconciled_v2'"
+        )
+        writer._update_metadata_in_db("run_state_reconciled_v1", "1")
+        writer.add(pending, defer_maintenance=True)
+
+    with closing(_open_db(config)) as repaired:
+        assert repaired.last_iteration == 9
+        assert repaired.get_best_program().id == seed.id
+        assert (repaired.best_score_ever, repaired.best_score_generation) == (1.0, 0)
+        assert {program.id for program in repaired._get_archive_programs()} == {seed.id}
+        assert repaired.check_and_spawn_island_if_stagnant(5)
+        repaired.run_post_add_maintenance(repaired.get(pending.id))
+
+    with closing(_open_db(config)) as reopened:
+        assert reopened.get_best_program().id == pending.id
+        assert (reopened.best_score_ever, reopened.best_score_generation) == (10.0, 9)
+
+
 def test_preview_repair_rolls_back_new_marker_and_retries(config):
     with closing(_open_db(config)) as writer:
         best = _program(8, 10.0)
-        writer.add(best, defer_maintenance=True)
+        writer.add(best)
         _write_legacy_run_state(writer, best, marker=1)
         writer._update_metadata_in_db("run_state_reconciled_v1", "1")
         writer.conn.execute("""
