@@ -3188,6 +3188,8 @@ class ShinkaEvolveRunner:
                         # We have a successful patch, break from resample loop
                         meta_patch_data["api_costs"] = api_costs
                         break
+                    except APIBudgetExceeded:
+                        raise
                     except Exception as e:
                         logger.warning(
                             f"Error in patch generation attempt {resample + 1}: {e}"
@@ -3432,6 +3434,11 @@ class ShinkaEvolveRunner:
                 failure_stage=last_failure_stage,
                 failure_reason=last_failure_reason,
             )
+            return None
+        except APIBudgetExceeded as exc:
+            pending_cost = max(api_costs + embed_cost + novelty_total_cost + exc.cost, scope.pending)
+            self._post_api_cost(pending_cost)
+            await self._record_unattached_cost(pending_cost, "proposal_budget", generation)
             return None
         except asyncio.CancelledError as exc:
             if not costs_transferred:
@@ -3895,6 +3902,8 @@ class ShinkaEvolveRunner:
                 if response is not None:
                     total_costs += response.cost or 0.0
 
+                if getattr(response, "incomplete_reason", None) == APIBudgetExceeded.incomplete_reason:
+                    raise APIBudgetExceeded()
                 output_limit_error = _output_limit_error(response)
                 if not response or not response.content:
                     error_str = output_limit_error or "LLM response content was None."
@@ -4057,16 +4066,17 @@ class ShinkaEvolveRunner:
                 raise cancellation_with_cost(exc, total_costs) from exc
             raise
 
-        except (LLMEndpointError, APIBudgetExceeded) as exc:
+        except APIBudgetExceeded as exc:
+            exc.cost += total_costs
+            raise
+
+        except LLMEndpointError as exc:
             metadata = {
-                "api_costs": total_costs + getattr(exc, "cost", 0.0),
+                "api_costs": total_costs + exc.cost,
                 "error_attempt": str(exc),
                 "non_retryable": True,
+                "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
             }
-            if isinstance(exc, LLMEndpointError):
-                metadata["endpoint_error"] = {
-                    "status_code": exc.status_code, "code": exc.code
-                }
             return None, metadata, False
 
         except Exception as e:
@@ -4148,6 +4158,8 @@ class ShinkaEvolveRunner:
                 if response is not None:
                     total_costs += response.cost or 0.0
 
+                if getattr(response, "incomplete_reason", None) == APIBudgetExceeded.incomplete_reason:
+                    raise APIBudgetExceeded()
                 output_limit_error = _output_limit_error(response)
                 if not response or not response.content:
                     error_str = output_limit_error or "LLM response content was None."
@@ -4319,17 +4331,19 @@ class ShinkaEvolveRunner:
                 raise cancellation_with_cost(exc, total_costs) from exc
             raise
 
-        except (LLMEndpointError, APIBudgetExceeded) as exc:
+        except APIBudgetExceeded as exc:
+            self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            exc.cost += total_costs
+            raise
+
+        except LLMEndpointError as exc:
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
             metadata = {
-                "api_costs": total_costs + getattr(exc, "cost", 0.0),
+                "api_costs": total_costs + exc.cost,
                 "error_attempt": str(exc),
                 "non_retryable": True,
+                "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
             }
-            if isinstance(exc, LLMEndpointError):
-                metadata["endpoint_error"] = {
-                    "status_code": exc.status_code, "code": exc.code
-                }
             return None, metadata, False
 
         except Exception as e:

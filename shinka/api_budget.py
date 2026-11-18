@@ -15,8 +15,11 @@ api_cost_lock = threading.Lock()
 
 
 class APIBudgetExceeded(RuntimeError):
+    incomplete_reason = "api_budget_exhausted"
+
     def __init__(self) -> None:
         super().__init__("API cost budget exhausted before request")
+        self.cost = 0.0
 
 
 @dataclass(eq=False)

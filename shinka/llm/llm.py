@@ -851,6 +851,7 @@ class AsyncLLMClient:
                 except APIBudgetExceeded:
                     if not unanswered.count:
                         raise
+                    unanswered.incomplete_reason = APIBudgetExceeded.incomplete_reason
                     break
                 except Exception as e:
                     logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")

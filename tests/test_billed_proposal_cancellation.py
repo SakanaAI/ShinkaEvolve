@@ -151,11 +151,14 @@ def test_proposal_stops_fresh_requests_at_cost_limit(
         monkeypatch.setattr(llm_module.asyncio, "sleep", noop)
         monkeypatch.setattr(llm_module, "query_async", provider)
         runner._save_patch_attempt_async = noop
+        runner._write_failure_artifact_async = AsyncMock(return_value=("unused", {}))
 
         assert await start_proposal(runner, fix_mode) is None
         assert calls == 2
         assert_recorded_once(runner, 1.20)
         assert await runner._get_total_api_costs() == pytest.approx(1.20)
+        assert runner._get_generations_without_program_due_to_proposal_failure() == []
+        runner._write_failure_artifact_async.assert_not_awaited()
 
     asyncio.run(run())
 
@@ -197,6 +200,9 @@ def test_running_requests_drain_while_fresh_requests_see_pending_cost(
         assert runner.total_api_cost == 0.0
         assert await start_proposal(runner, False, generation=3) is None
         assert len(calls) == 2
+        assert runner.db.conn.execute(
+            "SELECT COUNT(*) FROM attempt_log WHERE generation = 3"
+        ).fetchone()[0] == 0
         release[1].set()
         finish_recording.set()
         await asyncio.gather(first, second)
