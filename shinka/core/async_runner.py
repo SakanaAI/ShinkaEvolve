@@ -2162,15 +2162,7 @@ class ShinkaEvolveRunner:
                             logger.debug(
                                 f"Running jobs: {len(self.running_jobs)}, Active proposals: {len(self.active_proposal_tasks)}"
                             )
-                    still_running = []
-                    current_running_jobs = list(self.running_jobs)
-                    current_job_ids = {id(job) for job in current_running_jobs}
-                    monitored_job_ids = {id(job) for job in monitored_jobs}
-                    concurrently_added_jobs = [
-                        job
-                        for job in current_running_jobs
-                        if id(job) not in monitored_job_ids
-                    ]
+                    current_job_ids = {id(job) for job in self.running_jobs}
 
                     for job, is_running in zip(monitored_jobs, status_results):
                         if id(job) not in current_job_ids:
@@ -2179,7 +2171,6 @@ class ShinkaEvolveRunner:
                             logger.warning(
                                 f"Error checking job {job.job_id}: {is_running}"
                             )
-                            still_running.append(job)
                         elif not is_running:
                             completed_jobs.append(job)
                             runtime = time.time() - job.start_time
@@ -2200,18 +2191,26 @@ class ShinkaEvolveRunner:
                             cancelled = await self.scheduler.cancel_job_async(
                                 job.job_id
                             )
-                            if not cancelled:
+                            current_job_ids = {id(job) for job in self.running_jobs}
+                            if cancelled:
+                                completed_jobs.append(job)
+                            elif id(job) in current_job_ids:
                                 logger.warning(
                                     f"Failed to cancel hung job {job.job_id} "
                                     f"(gen {job.generation}); keeping it running"
                                 )
-                                still_running.append(job)
-                                continue
-                            completed_jobs.append(job)
-                        else:
-                            still_running.append(job)
 
-                    self.running_jobs = still_running + concurrently_added_jobs
+                    # Polling and cancellation can yield to other job updates.
+                    completed_jobs = [
+                        job for job in completed_jobs if id(job) in current_job_ids
+                    ]
+                    if completed_jobs:
+                        completed_job_ids = {id(job) for job in completed_jobs}
+                        self.running_jobs = [
+                            job
+                            for job in self.running_jobs
+                            if id(job) not in completed_job_ids
+                        ]
 
                 if completed_jobs:
                     if self.verbose:
