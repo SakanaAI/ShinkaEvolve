@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -211,20 +212,23 @@ def test_valid_child_results_are_stored_as_reported(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+class LocalHandle(SimpleNamespace):
+    """Stands in for ProcessWithLogging: a PID and, once finished, an exit status."""
+
+    def __str__(self) -> str:
+        return f"ProcessWithLogging(PID: {self.pid})"
+
+
 def test_correct_result_from_a_failed_local_evaluator_is_rejected(
     tmp_path: Path,
 ) -> None:
     """Result files left behind by a crashed evaluator are not trusted."""
 
-    class Handle(SimpleNamespace):
-        def __str__(self) -> str:
-            return f"ProcessWithLogging(PID: {self.pid})"
-
     async def run() -> None:
         async with open_database(tmp_path) as (sync_db, async_db):
             runner = make_runner(async_db, StaticScheduler(good_results()))
-            crashed = make_job(job_id=Handle(pid=10, returncode=-9), generation=1)
-            clean = make_job(job_id=Handle(pid=11, returncode=0), generation=2)
+            crashed = make_job(job_id=LocalHandle(pid=10, returncode=-9), generation=1)
+            clean = make_job(job_id=LocalHandle(pid=11, returncode=0), generation=2)
 
             assert await runner._process_single_job_safely(crashed)
             assert await runner._process_single_job_safely(clean)
@@ -232,7 +236,62 @@ def test_correct_result_from_a_failed_local_evaluator_is_rejected(
             by_generation = {child.generation: child for child in children(sync_db)}
             assert by_generation[1].correct == 0
             assert "status -9" in by_generation[1].text_feedback
+            assert "runner stopped" not in by_generation[1].text_feedback
             assert by_generation[2].correct == 1
+
+    asyncio.run(run())
+
+
+def test_rejected_result_is_kept_in_metadata(tmp_path: Path) -> None:
+    """A verdict rejected by the exit rule can still be looked up and restored."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(good_results(2.5)))
+            crashed = make_job(job_id=LocalHandle(pid=10, returncode=3), generation=1)
+            clean = make_job(job_id=LocalHandle(pid=11, returncode=0), generation=2)
+
+            assert await runner._process_single_job_safely(crashed)
+            assert await runner._process_single_job_safely(clean)
+
+            by_generation = {child.generation: child for child in children(sync_db)}
+            assert by_generation[1].correct == 0
+            assert by_generation[1].combined_score == 0.0
+            assert by_generation[1].public_metrics == {}
+            assert by_generation[1].metadata["rejected_evaluation"] == {
+                "correct": {"correct": True, "error": None},
+                "metrics": {"combined_score": 2.5, "public": {"acc": 1.0}, "private": {}},
+                "exit_status": 3,
+            }
+            assert "rejected_evaluation" not in by_generation[2].metadata
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("runtime", "stopped_by_runner"), [(61.0, True), (20.0, False)]
+)
+def test_diagnostic_says_when_the_runner_itself_stopped_the_evaluator(
+    tmp_path: Path, runtime: float, stopped_by_runner: bool
+) -> None:
+    """A kill at the time limit is not a crash of the evaluator."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(good_results()))
+            runner.job_config = SimpleNamespace(time="00:01:00")
+            job = make_job(job_id=LocalHandle(pid=10, returncode=-9))
+            job.evaluation_started_at = time.time() - runtime
+
+            assert await runner._process_single_job_safely(job)
+
+            (child,) = children(sync_db)
+            assert child.correct == 0
+            assert "status -9" in child.text_feedback
+            assert (
+                "the runner stopped the evaluator after 61s; its runtime limit is 60s"
+                in child.text_feedback
+            ) is stopped_by_runner
 
     asyncio.run(run())
 

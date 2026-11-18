@@ -109,6 +109,7 @@ def make_runner(
     runner.evaluation_slot_pool = LogicalSlotPool(2, "evaluation")
     runner.postprocess_slot_pool = LogicalSlotPool(2, "postprocess")
     runner.db_config = SimpleNamespace(max_stdout_log_chars=None)
+    runner.job_config = SimpleNamespace(time=None)
     runner._read_file_async = lambda path: asyncio.sleep(0, result="print('hi')\n")
     runner._update_best_solution_async = lambda: asyncio.sleep(0, result=None)
 

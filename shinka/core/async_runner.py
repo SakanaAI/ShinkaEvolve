@@ -4710,6 +4710,28 @@ class ShinkaEvolveRunner:
         exit_status = getattr(job.job_id, "returncode", None)
         return exit_status if type(exit_status) is int else None
 
+    def _runner_stop_note(
+        self, job: AsyncRunningJob, exit_status: Optional[int]
+    ) -> str:
+        """Say when the runner, not the evaluator, ended a local evaluation.
+
+        The time limit and hung-job detection both kill the evaluator, so it
+        was the runner if a signal ended a job that had outrun its limit.
+        """
+        if exit_status is None or exit_status >= 0:
+            return ""
+        limit = self._get_evaluation_runtime_limit_seconds()
+        started_at = (
+            job.evaluation_started_at or job.evaluation_submitted_at or job.start_time
+        )
+        runtime = (job.completion_detected_at or time.time()) - started_at
+        if limit is None or runtime <= limit:
+            return ""
+        return (
+            f" (the runner stopped the evaluator after {runtime:.0f}s; "
+            f"its runtime limit is {limit:g}s)"
+        )
+
     _RESULTS_READ_TIMEOUT_SECONDS = 30.0
 
     def _result_read(self, job: AsyncRunningJob, source_job_id: str) -> asyncio.Future:
@@ -4803,15 +4825,25 @@ class ShinkaEvolveRunner:
             postprocess_started_at = time.time()
 
             # Always create a program entry, even if results are missing
+            rejected_results = None
             if results:
+                exit_status = self._evaluator_exit_status(job)
                 try:
                     evaluation = validate_evaluation_results(
-                        results, exit_status=self._evaluator_exit_status(job)
+                        results, exit_status=exit_status
                     )
                 except ValueError as exc:
                     evaluation = failed_evaluation(
-                        f"Program evaluation failed: {exc}", results
+                        f"Program evaluation failed: {exc}"
+                        + self._runner_stop_note(job, exit_status),
+                        results,
                     )
+                    # Kept so a rejected verdict can be looked up and restored.
+                    rejected_results = {
+                        "correct": results.get("correct"),
+                        "metrics": results.get("metrics"),
+                        "exit_status": exit_status,
+                    }
                 stdout_log = truncate_log_tail(
                     results.get("stdout_log", ""),
                     self.db_config.max_stdout_log_chars,
@@ -4876,6 +4908,11 @@ class ShinkaEvolveRunner:
                         "stderr_log": stderr_log,
                         "results_missing": not results,
                         **({"evaluation_failed": True} if evaluation.failed else {}),
+                        **(
+                            {"rejected_evaluation": rejected_results}
+                            if rejected_results
+                            else {}
+                        ),
                         "safe_processing": True,
                         "postprocess_db_maintenance_applied": False,
                         "source_job_id": source_job_id,

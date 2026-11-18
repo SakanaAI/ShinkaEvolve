@@ -1,6 +1,7 @@
 """Child results from real local evaluator processes are validated end to end."""
 
 import asyncio
+import time
 from pathlib import Path
 from textwrap import dedent
 
@@ -113,6 +114,67 @@ def test_local_child_evaluation_is_validated(
             )
             best = sync_db.get_best_program()
             assert best.id == (child.id if correct else SEED_ID)
+
+    try:
+        asyncio.run(run())
+    finally:
+        scheduler.shutdown()
+
+
+def test_evaluator_killed_at_its_time_limit_is_reported_as_stopped_by_the_runner(
+    tmp_path: Path,
+) -> None:
+    """A correct result followed by a hang is rejected, and the row says who killed it."""
+    evaluator = tmp_path / "evaluate.py"
+    evaluator.write_text(
+        EVALUATOR_PREAMBLE
+        + dedent(
+            """
+            (results / 'metrics.json').write_text('{"combined_score": 7.0}')
+            (results / 'correct.json').write_text('{"correct": true}')
+            import time
+            time.sleep(60)
+            """
+        )
+    )
+    program = tmp_path / "gen_1" / "main.py"
+    program.parent.mkdir()
+    program.write_text("def run_experiment(seed):\n    return seed\n")
+    results_dir = program.parent / "results"
+    config = LocalJobConfig(eval_program_path=str(evaluator), time="00:00:02")
+    scheduler = JobScheduler("local", config)
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, scheduler)
+            runner.job_config = config
+            handle = await scheduler.submit_async_nonblocking(
+                str(program), str(results_dir)
+            )
+            submitted_at = time.time()
+            job = make_job(
+                job_id=handle,
+                exec_fname=str(program),
+                results_dir=str(results_dir),
+                start_time=submitted_at,
+                evaluation_submitted_at=submitted_at,
+                evaluation_started_at=submitted_at,
+            )
+            while await scheduler.check_job_status_async(job):  # as the monitor does
+                await asyncio.sleep(0.05)
+
+            assert await runner._process_single_job_safely(job)
+
+            (child,) = children(sync_db)
+            assert child.correct == 0 and child.combined_score == 0.0
+            assert "exited with status -9" in child.text_feedback
+            assert "the runner stopped the evaluator after" in child.text_feedback
+            assert "its runtime limit is 2s" in child.text_feedback
+            assert child.metadata["rejected_evaluation"] == {
+                "correct": {"correct": True},
+                "metrics": {"combined_score": 7.0},
+                "exit_status": -9,
+            }
 
     try:
         asyncio.run(run())
