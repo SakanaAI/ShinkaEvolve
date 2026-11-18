@@ -425,7 +425,7 @@ class JobScheduler:
                     job_id,
                     results_dir,
                     verbose=self.verbose,
-                    timeout=self.config.time,
+                    timeout=self.config.time or None,
                 )
                 job_id.has_exited()
                 seconds = job_id.runtime_seconds()

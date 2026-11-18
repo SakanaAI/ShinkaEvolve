@@ -116,6 +116,15 @@ def _evaluate(
     assert results["correct"]["correct"] is (program != "crash")
 
 
+def test_empty_time_means_no_limit_when_results_are_collected(tmp_path: Path) -> None:
+    config = LocalJobConfig(eval_program_path=str(_write_evaluator(tmp_path)), time="")
+    scheduler = JobScheduler("local", config)
+    try:
+        _evaluate(scheduler, tmp_path, "healthy", "ok", took_seconds=1.0)
+    finally:
+        scheduler.shutdown()
+
+
 def test_early_crash_does_not_shrink_the_adaptive_limit(
     scheduler: JobScheduler, tmp_path: Path
 ) -> None:
