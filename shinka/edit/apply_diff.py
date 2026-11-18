@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 import difflib
 import logging
-from typing import Union, Optional, List, Tuple
+from typing import Iterator, NamedTuple, Union, Optional, List, Tuple
 
 from shinka.utils.languages import get_language_extension
 from .marker_validation import validate_evolve_markers
@@ -58,8 +58,34 @@ def _inside(span: tuple[int, int], ranges: list[tuple[int, int]]) -> bool:
 
 
 def _strip_trailing_whitespace(text: str) -> str:
-    """Strip trailing whitespace from each line in the text."""
-    return "\n".join(line.rstrip() for line in text.splitlines())
+    """Strip trailing whitespace from each line in the text.
+
+    Lines end at a newline only. ``str.splitlines`` also breaks on form feeds
+    and other separators, which are ordinary characters inside a string
+    literal and must survive.
+    """
+    return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+def _normalize_mutable_whitespace(text: str) -> str:
+    """Strip trailing whitespace from the lines inside EVOLVE regions.
+
+    SEARCH text reaches the matcher with its trailing whitespace stripped, so
+    editable lines get the same treatment. Everything outside the regions is
+    immutable and returned byte for byte.
+    """
+    parts = []
+    cursor = 0
+    for start, end in sorted(_mutable_ranges(text)):
+        if start < cursor:
+            continue  # nested region, already covered by the enclosing one
+        lines = text[start:end].split("\n")
+        # The last piece is the indentation of the END marker's own line.
+        stripped = [line.rstrip() for line in lines[:-1]] + lines[-1:]
+        parts += [text[cursor:start], "\n".join(stripped)]
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def _indent_of(line: str) -> int:
@@ -76,7 +102,7 @@ def _shift_indentation(text: str, offset: int, indent_chars: str = "") -> str:
     padded with spaces beyond it. Empty lines are emitted empty.
     """
     shifted = []
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if line.strip():
             indent = max(_indent_of(line) + offset, 0)
             if indent <= len(indent_chars):
@@ -89,28 +115,53 @@ def _shift_indentation(text: str, offset: int, indent_chars: str = "") -> str:
     return "\n".join(shifted)
 
 
-def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int]:
+class _LineMatch(NamedTuple):
+    """Whole lines of the original that a SEARCH block matches."""
+
+    text: str
+    pos: int
+    end: int
+    # Set when the block only matched after re-indenting it: the signed shift
+    # and the leading whitespace of the line it was matched at.
+    indent_offset: int = 0
+    indent_chars: Optional[str] = None
+
+
+def _iter_line_matches(search_text: str, original_text: str) -> Iterator[_LineMatch]:
+    """Yield every place where the search block matches whole lines.
+
+    A block matches a run of consecutive lines, never a fragment of one, so
+    ``x = 1`` cannot hit ``idx = 10``. Trailing whitespace is ignored. Matches
+    at the block's own indentation come first, in file order, followed by
+    matches that need the block shifted to another indentation.
     """
-    Try to find search_text in original_text, and if not found, try to find
-    it with proper indentation. Returns (matched_text, position) or ("", -1).
-    """
-    # Handle empty search text
     if not search_text.strip():
-        return "", -1
+        return
 
-    # First try exact match
-    pos = original_text.find(search_text)
-    if pos != -1:
-        return search_text, pos
+    search_lines = [line.rstrip() for line in search_text.split("\n")]
+    lines = original_text.split("\n")
+    stripped = [line.rstrip() for line in lines]
+    starts = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line) + 1
 
-    # If not found, try to find the first line with different indentation
-    search_lines = search_text.splitlines()
-    if not search_lines:
-        return "", -1
+    count = len(search_lines)
+    candidates = range(len(lines) - count + 1)
+
+    def match_at(index: int, **indent) -> _LineMatch:
+        end = starts[index + count - 1] + len(lines[index + count - 1])
+        pos = starts[index]
+        return _LineMatch(original_text[pos:end], pos, end, **indent)
+
+    for index in candidates:
+        if stripped[index : index + count] == search_lines:
+            yield match_at(index)
 
     first_search_line = search_lines[0].strip()
     if not first_search_line:
-        return "", -1
+        return
 
     # A search block copied out of a nested scope carries its own base
     # indentation. Measure the signed offset from that base to each candidate
@@ -118,16 +169,32 @@ def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int
     # dedent below the first line keep dedenting and cannot be flattened onto
     # a same-indent block that lives in a different scope.
     base_indent = _indent_of(search_lines[0])
-    for line in original_text.splitlines():
-        if line.strip() == first_search_line:
-            offset = _indent_of(line) - base_indent
-            indent_chars = line[: _indent_of(line)]
-            indented_search = _shift_indentation(search_text, offset, indent_chars)
-            indented_pos = original_text.find(indented_search)
-            if indented_pos != -1:
-                return indented_search, indented_pos
+    for index in candidates:
+        line = lines[index]
+        if line.strip() != first_search_line:
+            continue
+        indent_offset = _indent_of(line) - base_indent
+        indent_chars = line[: _indent_of(line)]
+        shifted = _shift_indentation(search_text, indent_offset, indent_chars)
+        shifted_lines = shifted.split("\n")
+        if shifted_lines == search_lines:
+            continue  # same as the unshifted block, handled above
+        if stripped[index : index + count] == shifted_lines:
+            yield match_at(
+                index, indent_offset=indent_offset, indent_chars=indent_chars
+            )
 
-    return "", -1
+
+def _find_indented_match(search_text: str, original_text: str) -> tuple[str, int]:
+    """
+    Find the lines search_text matches in original_text, first as given and
+    then with corrected indentation. Returns (matched_text, position) or
+    ("", -1).
+    """
+    match = next(_iter_line_matches(search_text, original_text), None)
+    if match is None:
+        return "", -1
+    return match.text, match.pos
 
 
 def _apply_indentation_to_replace(
@@ -191,6 +258,29 @@ def redact_immutable(text: str, no_state: bool = False) -> str:
 
 class PatchError(RuntimeError):
     pass
+
+
+_MARKER_ONLY_SEARCH_ERROR = """SEARCH block contains only EVOLVE-BLOCK markers
+
+The EVOLVE-BLOCK-START and EVOLVE-BLOCK-END lines are immutable and cannot be
+used as an anchor.
+
+Suggestions:
+1. To change code, copy the lines you want to replace into the SEARCH block
+2. To add code at the end of the editable region, leave the SEARCH block empty
+3. Do not repeat the EVOLVE-BLOCK markers in SEARCH/REPLACE blocks"""
+
+
+def _reject_marker_only_search(patch_text: str) -> None:
+    """Raise when a SEARCH block names nothing but EVOLVE-BLOCK markers.
+
+    Removing the markers would leave an empty SEARCH, which means "insert at
+    the end of the last editable region": not where the block pointed.
+    """
+    for block in PATCH_PATTERN.finditer(patch_text):
+        search = block.group(1)
+        if search.strip() and not _clean_evolve_markers(search).strip():
+            raise PatchError(_MARKER_ONLY_SEARCH_ERROR)
 
 
 def _find_similar_lines(
@@ -607,6 +697,7 @@ def apply_search_replace(
     Mutable ranges are recalculated after each replacement to account for
     text changes.
     """
+    _reject_marker_only_search(patch_text)
     new_text = original
     num_applied = 0
     for block in PATCH_PATTERN.finditer(patch_text):
@@ -662,36 +753,31 @@ def apply_search_replace(
             continue
 
         # ── replacements ────────────────────────────────────────────────────
-        # Try to find the search text, with indentation correction if needed
-        matched_search, pos = _find_indented_match(search, new_text)
+        # Find the lines the search text matches, with indentation correction
+        # if needed, and take the first match that lies in an editable region.
+        matches = list(_iter_line_matches(search, new_text))
+        match = next((m for m in matches if _inside((m.pos, m.end), mutable)), None)
 
-        if pos == -1:
+        if match is None:
+            if matches:
+                msg = _create_evolve_block_error(
+                    matches[0].text, matches[0].pos, new_text, mutable
+                )
+                raise PatchError(msg)
             if strict:
                 msg = _create_search_not_found_error(search, new_text, mutable)
                 raise PatchError(msg)
             continue
 
-        span = (pos, pos + len(matched_search))
-        if not _inside(span, mutable):
-            msg = _create_evolve_block_error(matched_search, pos, new_text, mutable)
-            raise PatchError(msg)
-
         # If we found an indented match, shift the replace text by the same
         # signed offset the search block was shifted by
-        if matched_search != search:
-            matched_lines = matched_search.splitlines()
-            search_lines = search.splitlines()
-            if matched_lines and search_lines:
-                indent_offset = _indent_of(matched_lines[0]) - _indent_of(
-                    search_lines[0]
-                )
-                indent_chars = matched_lines[0][: _indent_of(matched_lines[0])]
-                replace = _apply_indentation_to_replace(
-                    replace, indent_offset, indent_chars
-                )
-                logger.debug("Applied indentation correction to search/replace block")
+        if match.indent_chars is not None:
+            replace = _apply_indentation_to_replace(
+                replace, match.indent_offset, match.indent_chars
+            )
+            logger.debug("Applied indentation correction to search/replace block")
 
-        new_text = new_text.replace(matched_search, replace, 1)
+        new_text = new_text[: match.pos] + replace + new_text[match.end :]
         num_applied += 1
     return new_text, num_applied
 
@@ -753,8 +839,8 @@ def apply_diff_patch(
     else:
         original = original_str
 
-    # Strip trailing whitespace from original text
-    original = _strip_trailing_whitespace(original)
+    # Normalize the editable regions only; immutable code is left untouched
+    original = _normalize_mutable_whitespace(original)
 
     error_message: Optional[str] = None
     # Init with original content and 0 applied patches in case of error
@@ -766,6 +852,7 @@ def apply_diff_patch(
     patch_str = _strip_trailing_whitespace(patch_str)
 
     # Remove EVOLVE-BLOCK markers before parsing SEARCH/REPLACE sections.
+    raw_patch_str = patch_str
     patch_str = _clean_evolve_markers(patch_str)
 
     if patch_dir is not None:
@@ -776,6 +863,9 @@ def apply_diff_patch(
         patch_path.write_text(patch_str, "utf-8")
 
     try:
+        # Checked on the text as written: with the markers removed, a
+        # marker-only SEARCH can no longer be told from an empty one.
+        _reject_marker_only_search(raw_patch_str)
         # Apply the patch
         applied_content, patches_count = apply_search_replace(patch_str, original)
         updated_content = applied_content
