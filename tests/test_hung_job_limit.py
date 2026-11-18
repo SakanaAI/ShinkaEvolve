@@ -124,7 +124,6 @@ def test_early_crash_does_not_shrink_the_adaptive_limit(
 
     _evaluate(scheduler, tmp_path, "crash_first", "crash", took_seconds=1.0)
     assert scheduler.longest_successful_runtime is None
-    assert runner._get_evaluation_runtime_limit_seconds() is None
 
     _evaluate(scheduler, tmp_path, "healthy", "ok", took_seconds=300.0)
     _evaluate(scheduler, tmp_path, "crash_later", "crash", took_seconds=1.0)
@@ -147,6 +146,50 @@ def test_killed_evaluation_does_not_extend_the_adaptive_limit(
     assert scheduler.longest_successful_runtime == pytest.approx(20.0, abs=5.0)
 
 
+def test_hang_limit_exists_before_any_evaluation_has_succeeded(
+    scheduler: JobScheduler, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A candidate that loops forever must not hold its slot for the rest of the run.
+    runner = _runner(scheduler)
+
+    with caplog.at_level(logging.INFO, logger="shinka.core.async_runner"):
+        _evaluate(scheduler, tmp_path, "crash", "crash", took_seconds=1.0)
+        limit = runner._get_evaluation_runtime_limit_seconds()
+        runner._get_evaluation_runtime_limit_seconds()
+
+    assert limit == pytest.approx(1.0 * 5.0 + 60.0, abs=25.0)
+    assert runner._is_job_hung(_job(submitted_seconds_ago=10 * 3600)) is True
+    assert caplog.text.count("Hang limit for local evaluations") == 1
+    assert "no evaluation has succeeded yet" in caplog.text
+
+
+def test_evaluation_killed_before_any_success_raises_the_provisional_limit(
+    scheduler: JobScheduler, tmp_path: Path
+) -> None:
+    # A limit learned from an early crash may be too low for a healthy
+    # candidate. It has to grow, or every slower candidate would be killed.
+    runner = _runner(scheduler)
+    _evaluate(scheduler, tmp_path, "crash", "crash", took_seconds=1.0)
+
+    _evaluate(scheduler, tmp_path, "slow", "ok", took_seconds=70.0, killed=True)
+
+    assert scheduler.longest_successful_runtime is None
+    limit = runner._get_evaluation_runtime_limit_seconds()
+    assert limit == pytest.approx(70.0 * 5.0 + 60.0, abs=25.0)
+
+
+def test_first_success_replaces_the_provisional_limit(
+    scheduler: JobScheduler, tmp_path: Path
+) -> None:
+    runner = _runner(scheduler)
+    _evaluate(scheduler, tmp_path, "slow_crash", "crash", took_seconds=600.0)
+
+    _evaluate(scheduler, tmp_path, "healthy", "ok", took_seconds=20.0)
+
+    limit = runner._get_evaluation_runtime_limit_seconds()
+    assert limit == pytest.approx(20.0 * 5.0 + 60.0, abs=25.0)
+
+
 def test_seed_evaluation_sets_the_adaptive_limit(
     scheduler: JobScheduler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -166,9 +209,10 @@ def test_seed_evaluation_sets_the_adaptive_limit(
     assert runner._get_evaluation_runtime_limit_seconds() == 1560.0
 
 
-def test_failed_seed_leaves_the_adaptive_limit_unset(
+def test_incorrect_seed_sets_only_a_provisional_limit(
     scheduler: JobScheduler, tmp_path: Path
 ) -> None:
+    runner = _runner(scheduler)
     program_path = tmp_path / "seed.py"
     program_path.write_text("crash")
 
@@ -176,6 +220,22 @@ def test_failed_seed_leaves_the_adaptive_limit_unset(
 
     assert results["correct"]["correct"] is False
     assert scheduler.longest_successful_runtime is None
+    assert runner._get_evaluation_runtime_limit_seconds() == pytest.approx(60.0, abs=25.0)
+
+
+def test_seed_whose_evaluator_fails_sets_a_provisional_limit(tmp_path: Path) -> None:
+    evaluator = tmp_path / "evaluate.py"
+    evaluator.write_text("raise SystemExit(3)")
+    scheduler = JobScheduler("local", LocalJobConfig(eval_program_path=str(evaluator)))
+    try:
+        with pytest.raises(RuntimeError, match="exited with status 3"):
+            scheduler.run(str(tmp_path / "seed.py"), str(tmp_path / "seed"))
+
+        limit = _runner(scheduler)._get_evaluation_runtime_limit_seconds()
+    finally:
+        scheduler.shutdown()
+
+    assert limit == pytest.approx(60.0, abs=25.0)
 
 
 def _history(best_program) -> SimpleNamespace:

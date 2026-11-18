@@ -86,6 +86,7 @@ class JobScheduler:
         self._slurm_queue = SlurmQueuePoller()
         self._state_lock = threading.Lock()
         self._longest_successful_runtime: Optional[float] = None
+        self._longest_finished_runtime: Optional[float] = None
         # Evaluations `run` is blocked on, so that `shutdown` can release it.
         self._seed_jobs: List[Union[str, ProcessWithLogging]] = []
         self._closed = False
@@ -184,11 +185,14 @@ class JobScheduler:
         """
         return self._longest_successful_runtime
 
-    def _note_local_runtime(
-        self, results: Optional[Dict[str, Any]], seconds: float
-    ) -> None:
-        if _reports_correct(results):
-            self.note_successful_runtime(seconds)
+    @property
+    def longest_finished_runtime(self) -> Optional[float]:
+        """Seconds the longest local evaluation took, whatever its outcome.
+
+        Counts crashes, incorrect results and evaluations that were killed.
+        It is what there is to go by before any evaluation has succeeded.
+        """
+        return self._longest_finished_runtime
 
     def note_successful_runtime(self, seconds: float) -> None:
         """Record how long a successful evaluation took, e.g. in an earlier run."""
@@ -196,6 +200,12 @@ class JobScheduler:
             longest = self._longest_successful_runtime
             if longest is None or seconds > longest:
                 self._longest_successful_runtime = seconds
+
+    def _note_finished_runtime(self, seconds: float) -> None:
+        with self._state_lock:
+            longest = self._longest_finished_runtime
+            if longest is None or seconds > longest:
+                self._longest_finished_runtime = seconds
 
     def run(
         self, exec_fname_t: str, results_dir_t: str
@@ -277,6 +287,9 @@ class JobScheduler:
         finally:
             with self._state_lock:
                 self._seed_jobs.remove(job_id)
+            if isinstance(job_id, ProcessWithLogging):
+                # Also when the seed crashed or timed out.
+                self._note_finished_runtime(job_id.runtime_seconds())
 
         end_time = time.time()
         rtime = end_time - start_time
@@ -284,8 +297,8 @@ class JobScheduler:
         # Ensure results is not None
         if results is None:
             results = {"correct": {"correct": False}, "metrics": {}}
-        if self.job_type == "local":
-            self._note_local_runtime(results, rtime)
+        if self.job_type == "local" and _reports_correct(results):
+            self.note_successful_runtime(rtime)
 
         return results, rtime
 
@@ -414,9 +427,11 @@ class JobScheduler:
                     verbose=self.verbose,
                     timeout=self.config.time,
                 )
-                if not job_id.was_killed:
-                    job_id.has_exited()
-                    self._note_local_runtime(results, job_id.runtime_seconds())
+                job_id.has_exited()
+                seconds = job_id.runtime_seconds()
+                self._note_finished_runtime(seconds)
+                if not job_id.was_killed and _reports_correct(results):
+                    self.note_successful_runtime(seconds)
                 return results
         return None
 

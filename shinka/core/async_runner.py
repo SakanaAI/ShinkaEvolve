@@ -5834,10 +5834,26 @@ class ShinkaEvolveRunner:
         # Without a configured limit, allow a multiple of the longest evaluation
         # that succeeded. Crashes finish early and must not shrink the limit.
         longest = getattr(self.scheduler, "longest_successful_runtime", None)
-        if longest is not None:
-            return max(60.0, longest * 5.0 + 60.0)
+        basis = "longest successful evaluation"
+        if longest is None:
+            # Until one succeeds, go by the longest evaluation that has ended
+            # at all, so that a candidate that never returns cannot hold its
+            # slot for the rest of the run. Evaluations this limit killed count
+            # too: a limit learned from an early crash then grows instead of
+            # killing every slower candidate.
+            longest = getattr(self.scheduler, "longest_finished_runtime", None)
+            basis = "longest evaluation so far; no evaluation has succeeded yet"
+        if longest is None:
+            return None
 
-        return None
+        limit = max(60.0, longest * 5.0 + 60.0)
+        if limit != getattr(self, "_reported_hang_limit", None):
+            self._reported_hang_limit = limit
+            logger.info(
+                f"Hang limit for local evaluations: {limit:.0f}s "
+                f"(5 x {longest:.1f}s + 60s, {basis})"
+            )
+        return limit
 
     def _is_job_hung(self, job: AsyncRunningJob, now: Optional[float] = None) -> bool:
         """Detect a single evaluation job that has exceeded its runtime budget."""
