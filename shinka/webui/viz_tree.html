@@ -4101,7 +4101,7 @@ ${'='.repeat(80)}
                 // Prefer the URL-selected right tab on initial hydration.
                 const urlRightTabId = new URLSearchParams(window.location.search).get('right_tab');
                 const rightTabIdToActivate = urlRightTabId || activeRightTabId || 'agent-info';
-                if (rightTabIdToActivate && document.querySelector(`.tab[data-tab="${rightTabIdToActivate}"]`)) {
+                if (rightTabIdToActivate && document.querySelector(`.tab[data-tab="${CSS.escape(rightTabIdToActivate)}"]`)) {
                     window.activateRightTab?.(rightTabIdToActivate);
                 } else {
                     window.activateRightTab?.('agent-info');
@@ -6180,10 +6180,12 @@ console.error("[DEBUG] Error in processData:", error);
             }
             llmResultContainer.innerHTML = llmResultHtml;
 
-            // Apply syntax highlighting to code blocks
-            document.querySelectorAll('pre code:not(.nohighlight)').forEach((block) => {
-                hljs.highlightElement(block);
-            });
+            // Apply syntax highlighting to code blocks, if the library loaded
+            if (typeof hljs !== 'undefined') {
+                document.querySelectorAll('pre code:not(.nohighlight)').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+            }
             
             // Update analysis tab if it's active
             if (document.getElementById('analysis') && document.getElementById('analysis').classList.contains('active')) {
@@ -9186,7 +9188,7 @@ console.error("[DEBUG] Error in processData:", error);
                 // Restore left tab
                 const leftTab = urlParams.get('left_tab');
                 if (leftTab) {
-                    const tabElement = document.querySelector(`.left-tab[data-tab="${leftTab}"]`);
+                    const tabElement = document.querySelector(`.left-tab[data-tab="${CSS.escape(leftTab)}"]`);
                     if (tabElement) {
                         setTimeout(() => tabElement.click(), 100);
                     }

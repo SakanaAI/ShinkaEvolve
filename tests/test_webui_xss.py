@@ -272,3 +272,21 @@ def test_every_loaded_library_is_used(page: str):
         ]
         assert len(provided) == 1, f"unknown library, add it to LIBRARY_GLOBALS: {url}"
         assert re.search(rf"\b{provided[0]}\b\s*[.(]", own_code), f"never used: {url}"
+
+
+# --- robustness against a blocked script or a hostile link ----------------------
+
+
+def test_highlighter_is_only_called_when_it_loaded():
+    # With SRI a changed CDN file is blocked; the tree must still open.
+    calls = re.findall(r"\bhljs\.\w+\(", VIZ_TREE)
+    guards = re.findall(r"if \(typeof hljs !== 'undefined'\)", VIZ_TREE)
+
+    assert calls and len(calls) == len(guards)
+
+
+@pytest.mark.parametrize("parameter", ["rightTabIdToActivate", "leftTab"])
+def test_tab_named_in_the_url_is_escaped_for_the_selector(parameter: str):
+    # A quote in ?right_tab= made querySelector throw while the page loaded.
+    assert f'[data-tab="${{CSS.escape({parameter})}}"]' in VIZ_TREE
+    assert f'[data-tab="${{{parameter}}}"]' not in VIZ_TREE
