@@ -6,8 +6,12 @@ import sys
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
+from .local import monitor_evaluation as monitor_local_evaluation
 from .local import ProcessWithLogging
+from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
+from .slurm_evaluation import CONTROL_COMMAND_TIMEOUT_SECONDS
 from .slurm import (
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
@@ -228,14 +232,21 @@ class JobScheduler:
         job_id: Union[str, ProcessWithLogging]
         cmd = self._build_command(exec_fname_t, results_dir_t)
         start_time = time.time()
+        timeout = None
+        job_name = f"shinka-seed-{uuid4().hex}"
 
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
+            timeout = self.config.time or None
+            if timeout is not None:
+                # Reject an invalid timeout before starting the subprocess.
+                parse_time_to_seconds(timeout)
             job_id = submit_local(
                 results_dir_t,
                 cmd,
                 verbose=self.verbose,
                 env_overrides=self._build_local_env_overrides(),
+                timeout=timeout,
             )
         elif self.job_type == "slurm_docker":
             assert isinstance(self.config, SlurmDockerJobConfig)
@@ -252,6 +263,9 @@ class JobScheduler:
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
+                command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
+                job_name=job_name,
+                seed_results_dir=results_dir_t,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -268,14 +282,17 @@ class JobScheduler:
                 self.config.modules,
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
+                command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
+                job_name=job_name,
+                seed_results_dir=results_dir_t,
             )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
 
         if isinstance(job_id, str):
-            results = monitor_slurm(job_id, results_dir_t)
+            results = monitor_slurm_evaluation(job_id, results_dir_t, job_name=job_name)
         else:
-            results = monitor_local(job_id, results_dir_t)
+            results = monitor_local_evaluation(job_id, results_dir_t, timeout=timeout)
 
         end_time = time.time()
         rtime = end_time - start_time
