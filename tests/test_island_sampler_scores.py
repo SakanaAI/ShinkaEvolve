@@ -124,3 +124,15 @@ def test_islands_without_a_preference_are_sampled_uniformly(
     sampler = _sampler(conn, strategy, best_scores)
 
     assert _probabilities(sampler, 2) == pytest.approx([0.5, 0.5])
+
+
+@pytest.mark.parametrize("strategy", ["proportional", "weighted"])
+@pytest.mark.parametrize("scored", [[-3.0, -1.0], [2.0, 5.0]])
+def test_unscored_island_is_sampled_like_the_worst_scored_one(conn, strategy, scored):
+    """A missing score is not a score of 0.0, whatever the scale of the others."""
+    sampler = _sampler(conn, strategy, [None, *scored])
+
+    unscored, worst, best = _probabilities(sampler, 3)
+
+    assert unscored == pytest.approx(worst)
+    assert best > worst

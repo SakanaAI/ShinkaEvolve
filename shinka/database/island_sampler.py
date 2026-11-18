@@ -93,15 +93,19 @@ class IslandSampler(ABC):
     def _best_fitness_values(self, island_indices: List[int]) -> np.ndarray:
         """Best fitness per island, in the order given, as finite floats.
 
-        Islands whose best program has no usable score count as 0.0.
+        An island whose best program has no usable score counts like the worst
+        scored island, or as 0.0 when no island has a usable score.
         """
         fitness = self._get_island_best_fitness(island_indices)
-        values = []
-        for island_idx in island_indices:
-            value = fitness.get(island_idx)
-            usable = isinstance(value, (int, float)) and math.isfinite(value)
-            values.append(float(value) if usable else 0.0)
-        return np.array(values, dtype=float)
+        scores = [fitness.get(island_idx) for island_idx in island_indices]
+        usable = [
+            isinstance(score, (int, float)) and math.isfinite(score)
+            for score in scores
+        ]
+        worst = min((s for s, ok in zip(scores, usable) if ok), default=0.0)
+        return np.array(
+            [score if ok else worst for score, ok in zip(scores, usable)], dtype=float
+        )
 
 
 class UniformIslandSampler(IslandSampler):
