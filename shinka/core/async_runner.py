@@ -16,10 +16,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from contextvars import Token
+from collections.abc import Callable
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable, Callable
+from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
 from dataclasses import dataclass, field
 from rich.console import Console
 from rich.table import Table
