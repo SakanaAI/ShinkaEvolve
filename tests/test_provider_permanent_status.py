@@ -176,6 +176,23 @@ def test_endpoint_error_carries_the_provider_error_code(provider, expected_code)
     assert raised.value.code == expected_code
 
 
+def test_provider_text_is_bounded_before_it_is_stored():
+    """A hostile or verbose endpoint must not fill run artifacts with its reply."""
+    endless_code = _FailingClient([_openai_error(401, code="c" * 50_000)], False)
+    endless_body = openai.APIStatusError(
+        "m" * 50_000, response=_http_response(400), body=None
+    )
+
+    with pytest.raises(LLMEndpointError) as endpoint_error:
+        _run_query("openai", endless_code)
+    with pytest.raises(RequestRejectedError) as rejection:
+        _run_query("openai", _FailingClient([endless_body], False))
+
+    assert len(endpoint_error.value.code) <= 200
+    assert len(str(rejection.value)) <= 1_500
+    assert str(rejection.value).startswith("OpenAI rejected the request with HTTP 400")
+
+
 def test_server_retry_directive_overrides_the_status_code():
     assert is_permanent_status_error(_openai_error(400)) is True
     assert is_permanent_status_error(_openai_error(429)) is False

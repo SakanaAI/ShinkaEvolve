@@ -19,6 +19,15 @@ ACCOUNT_FAILURE_CODES = frozenset(
 )
 
 
+# The endpoint chooses these strings and they are stored in run artifacts.
+MAX_ERROR_CODE_LENGTH = 120
+MAX_ERROR_DETAIL_LENGTH = 1000
+
+
+def _clipped(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
 def _status_code(exc: Exception) -> Optional[int]:
     # OpenAI and Anthropic expose `status_code`; google-genai exposes `code`.
     for attribute in ("status_code", "code"):
@@ -88,12 +97,13 @@ def permanent_status_error(
         return None
     status_code = _status_code(exc)
     assert status_code is not None
-    code = _error_code(exc)
+    code = _clipped(_error_code(exc), MAX_ERROR_CODE_LENGTH)
     if _is_endpoint_failure(exc):
         # Do not persist headers, credentials, request URLs or raw response bodies.
         return LLMEndpointError(status_code, code)
+    detail = _clipped(str(exc), MAX_ERROR_DETAIL_LENGTH)
     return RequestRejectedError(
-        f"{provider} rejected the request with HTTP {status_code} ({code}): {exc}"
+        f"{provider} rejected the request with HTTP {status_code} ({code}): {detail}"
     )
 
 
