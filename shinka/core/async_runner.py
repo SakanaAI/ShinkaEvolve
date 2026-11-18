@@ -5756,10 +5756,14 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        submission = asyncio.ensure_future(
+            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
+        )
         try:
-            job_id = await self.scheduler.submit_async_nonblocking(
-                exec_fname, results_dir
-            )
+            job_id = await asyncio.shield(submission)
+        except asyncio.CancelledError:
+            await self._abandon_cancelled_submission(submission, evaluation_worker_id)
+            raise
         except Exception:
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
@@ -5774,6 +5778,46 @@ class ShinkaEvolveRunner:
             evaluation_started_at,
             running_eval_jobs_at_submit,
         )
+
+    async def _abandon_cancelled_submission(
+        self, submission: "asyncio.Future[Any]", evaluation_worker_id: int
+    ) -> None:
+        """Cancel the job of a submission whose proposal was cancelled.
+
+        The worker thread running ``sbatch``/``Popen`` cannot be interrupted, so
+        it may still launch a job that no caller is left to track.
+        """
+        cancellation = asyncio.ensure_future(
+            self._cancel_job_once_submitted(submission)
+        )
+        try:
+            # Shutdown cancels a proposal more than once. The job has to be
+            # cancelled all the same, or it would outlive the run untracked.
+            while not cancellation.done():
+                try:
+                    await asyncio.shield(cancellation)
+                except asyncio.CancelledError:
+                    continue
+        finally:
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+
+    async def _cancel_job_once_submitted(
+        self, submission: "asyncio.Future[Any]"
+    ) -> None:
+        try:
+            job_id = await submission
+        except Exception:
+            return  # Nothing was launched.
+        try:
+            cancelled = await self.scheduler.cancel_job_async(job_id)
+        except Exception as e:
+            logger.warning(f"Error cancelling evaluation job {job_id}: {e}")
+            cancelled = False
+        if not cancelled:
+            logger.warning(
+                f"Could not cancel evaluation job {job_id}, submitted while its "
+                "proposal was being cancelled; it may keep running untracked"
+            )
 
     def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
         """Return the runner's wall-clock limit for a single evaluation job."""
@@ -6164,6 +6208,29 @@ class ShinkaEvolveRunner:
 
         logger.info("Meta summarizer task exited")
 
+    async def _cancel_running_evaluations(self) -> None:
+        """Cancel evaluations that nobody will collect once the run stops."""
+        jobs = list(getattr(self, "running_jobs", ()))
+        if not jobs:
+            return
+        logger.info(
+            f"🛑 Cancelling {len(jobs)} running evaluation job(s) before shutdown"
+        )
+        outcomes = await asyncio.gather(
+            *(self.scheduler.cancel_job_async(job.job_id) for job in jobs),
+            return_exceptions=True,
+        )
+        left_running = [
+            str(job.job_id)
+            for job, cancelled in zip(jobs, outcomes)
+            if cancelled is not True
+        ]
+        if left_running:
+            logger.warning(
+                f"Could not cancel {len(left_running)} evaluation job(s); they "
+                f"may still be running: {left_running}"
+            )
+
     async def _cleanup_async(self):
         """Cleanup async resources."""
         try:
@@ -6177,6 +6244,12 @@ class ShinkaEvolveRunner:
                 await asyncio.gather(
                     *self.active_proposal_tasks.values(), return_exceptions=True
                 )
+
+            # Never let a failed cancellation skip the billing flush below.
+            try:
+                await self._cancel_running_evaluations()
+            except Exception as e:
+                logger.warning(f"Failed to cancel running evaluations: {e}")
 
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:
