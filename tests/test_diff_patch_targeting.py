@@ -41,9 +41,7 @@ def test_search_that_is_only_part_of_a_line_is_not_found():
 
 
 def test_multiline_search_must_end_at_a_line_end():
-    original = (
-        "# EVOLVE-BLOCK-START\na = 1\nb = 22\na = 1\nb = 2\n# EVOLVE-BLOCK-END\n"
-    )
+    original = "# EVOLVE-BLOCK-START\na = 1\nb = 22\na = 1\nb = 2\n# EVOLVE-BLOCK-END\n"
 
     updated, _, error = _apply(original, _patch("a = 1\nb = 2", "c = 3"))
 
@@ -191,6 +189,94 @@ def test_marker_line_itself_stays_out_of_reach():
     assert num_applied == 0
     assert error is not None
     assert updated == original
+
+
+# -- trailing comments --------------------------------------------------------
+
+
+def _block(*lines: str, comment: str = "#") -> str:
+    body = "\n".join(lines)
+    return f"{comment} EVOLVE-BLOCK-START\n{body}\n{comment} EVOLVE-BLOCK-END\n"
+
+
+def test_search_without_the_trailing_comment_of_its_line_applies():
+    original = _block("lr = 0.01  # tuned", "steps = 10")
+
+    updated, num_applied, error = _apply(original, _patch("lr = 0.01", "lr = 0.02"))
+
+    assert error is None
+    assert num_applied == 1
+    assert updated == _block("lr = 0.02  # tuned", "steps = 10")
+
+
+def test_commented_line_is_preferred_over_a_look_alike_at_another_indentation():
+    original = _block(
+        "def f():",
+        "    best = 0.0  # running best",
+        "    return best",
+        "class G:",
+        "    def g(self):",
+        "        best = 0.0",
+        "        return best",
+    )
+
+    updated, _, error = _apply(original, _patch("    best = 0.0", "    best = 1.0"))
+
+    assert error is None
+    assert updated == original.replace("best = 0.0  # running", "best = 1.0  # running")
+
+
+def test_whole_line_match_is_preferred_over_a_commented_line():
+    original = _block("x = 1  # first", "x = 1")
+
+    updated, _, error = _apply(original, _patch("x = 1", "x = 2"))
+
+    assert error is None
+    assert updated == _block("x = 1  # first", "x = 2")
+
+
+def test_comments_inside_a_block_are_replaced_with_their_lines():
+    original = _block("a = 1  # one", "b = 2", "c = 3  # three")
+
+    updated, _, error = _apply(
+        original, _patch("a = 1\nb = 2\nc = 3", "a = 10\nc = 30")
+    )
+
+    assert error is None
+    assert updated == _block("a = 10", "c = 30  # three")
+
+
+@pytest.mark.parametrize(
+    ("line", "search"),
+    [
+        # Code, not a comment: `//` divides in Python and `#` sits in a string.
+        ("x = a // 2", "x = a"),
+        ("x = a + b", "x = a"),
+        ("# x = 1", ""),
+        ("    # only a comment", "    "),
+    ],
+)
+def test_search_line_that_ends_before_code_is_not_found(line, search):
+    original = _block("y = 0", line, "z = 9")
+    patch = _patch(f"y = 0\n{search}\nz = 9", "y = 1")
+
+    updated, num_applied, error = _apply(original, patch)
+
+    assert num_applied == 0
+    assert error is not None and "SEARCH text not found" in error
+    assert updated == original
+
+
+def test_trailing_comment_follows_the_comment_style_of_the_file():
+    original = _block("int lr = 1;  // tuned", "int q = a # b;", comment="//")
+
+    updated, _, error = _apply(original, _patch("int lr = 1;", "int lr = 2;"), "cpp")
+    assert error is None
+    assert updated == original.replace("int lr = 1;", "int lr = 2;")
+
+    _, num_applied, error = _apply(original, _patch("int q = a", "int q = c"), "cpp")
+    assert num_applied == 0
+    assert error is not None and "SEARCH text not found" in error
 
 
 # -- marker-only SEARCH -------------------------------------------------------

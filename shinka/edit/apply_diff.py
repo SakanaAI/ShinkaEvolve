@@ -2,7 +2,16 @@ import re
 from pathlib import Path
 import difflib
 import logging
-from typing import Iterable, Iterator, NamedTuple, Union, Optional, List, Tuple
+from typing import (
+    Iterable,
+    Iterator,
+    NamedTuple,
+    Sequence,
+    Union,
+    Optional,
+    List,
+    Tuple,
+)
 
 from shinka.utils.languages import get_language_extension
 from .marker_validation import validate_evolve_markers
@@ -20,6 +29,12 @@ EVOLVE_START = re.compile(
 )
 EVOLVE_END = re.compile(
     r"(?:#|//|!|<!--|\(\*)?[^\S\r\n]*EVOLVE-BLOCK-END[^\S\r\n]*(?:-->|\*\))?"
+)
+
+
+# The comment opener in front of an EVOLVE marker, when there is one.
+_MARKER_COMMENT_OPENER = re.compile(
+    r"(#|//|!|<!--|\(\*)[^\S\r\n]*EVOLVE-BLOCK-(?:START|END)"
 )
 
 
@@ -121,8 +136,9 @@ class _LineMatch(NamedTuple):
     text: str
     pos: int
     end: int
-    # How literally the block matched: 0 as written, 1 after re-indenting it,
-    # 2 after restoring leading whitespace of its first line.
+    # How literally the block matched: 0 as written, 1 without the trailing
+    # comments of its lines, 2 after re-indenting it, 3 after restoring leading
+    # whitespace of its first line.
     looseness: int = 0
     # Set when the block only matched after re-indenting it: the signed shift
     # and the leading whitespace of the line it was matched at.
@@ -149,20 +165,40 @@ def _split_lines(text: str, breaks: Iterable[int]) -> tuple[list[str], list[int]
     return lines, starts
 
 
+def _comment_openers(text: str) -> tuple[str, ...]:
+    """How a comment starts in the file's language, read off its EVOLVE markers."""
+    return tuple({match.group(1) for match in _MARKER_COMMENT_OPENER.finditer(text)})
+
+
+def _is_code_then_comment(line: str, code: str, comment_openers: Sequence[str]) -> bool:
+    """True if ``line`` is ``code`` followed by a comment and nothing else."""
+    if not code.strip() or not line.startswith(code):
+        return False
+    rest = line[len(code) :].lstrip()
+    return any(rest.startswith(opener) for opener in comment_openers)
+
+
 def _iter_line_matches(
-    search_text: str, original_text: str, breaks: Iterable[int] = ()
+    search_text: str,
+    original_text: str,
+    breaks: Iterable[int] = (),
+    comment_openers: Sequence[str] = (),
 ) -> Iterator[_LineMatch]:
     """Yield every place where the search block matches whole lines.
 
     A block matches a run of consecutive lines, never a fragment of one, so
     ``x = 1`` cannot hit ``idx = 10``. Trailing whitespace is ignored. Matches
-    at the block's own indentation come first, in file order, followed by
+    at the block's own indentation come first, in file order. They are followed
+    by matches of a block that left out the trailing comments of its lines, by
     matches that need the block shifted to another indentation, and then by
     matches of a block whose first line alone lost leading whitespace.
 
     ``breaks`` are offsets that end a line like a newline does. Passing the
     EVOLVE region boundaries makes code that shares a line with a marker a
     line of its own, so it can be matched without the marker.
+
+    ``comment_openers`` start a comment in the file's language. Without them
+    no line is matched without its comment.
     """
     if not search_text.strip():
         return
@@ -184,6 +220,18 @@ def _iter_line_matches(
     for index in candidates:
         if stripped[index : index + count] == search_lines:
             yield match_at(index)
+
+    # A block that names its lines without their trailing comments: the code
+    # is the same, so this comes before any guess about indentation. The
+    # comment after the last line is not part of the match and stays.
+    for index in candidates:
+        if stripped[index : index + count] != search_lines and all(
+            line == code or _is_code_then_comment(line, code, comment_openers)
+            for line, code in zip(stripped[index : index + count], search_lines)
+        ):
+            match = match_at(index, looseness=1)
+            end = starts[index + count - 1] + len(search_lines[-1])
+            yield match._replace(text=original_text[match.pos : end], end=end)
 
     first_search_line = search_lines[0].strip()
     if not first_search_line:
@@ -208,7 +256,7 @@ def _iter_line_matches(
         if stripped[index : index + count] == shifted_lines:
             yield match_at(
                 index,
-                looseness=1,
+                looseness=2,
                 indent_offset=indent_offset,
                 indent_chars=indent_chars,
             )
@@ -225,7 +273,7 @@ def _iter_line_matches(
             and not line[:missing_indent].strip()
             and stripped[index + 1 : index + count] == search_lines[1:]
         ):
-            match = match_at(index, looseness=2)
+            match = match_at(index, looseness=3)
             pos = match.pos + missing_indent
             yield match._replace(text=original_text[pos : match.end], pos=pos)
 
@@ -811,7 +859,9 @@ def apply_search_replace(
         # names immutable code as written must not fall back to an editable
         # look-alike at another indentation.
         boundaries = [offset for span in mutable for offset in span]
-        matches = list(_iter_line_matches(search, new_text, boundaries))
+        matches = list(
+            _iter_line_matches(search, new_text, boundaries, _comment_openers(new_text))
+        )
         matches = [m for m in matches if m.looseness == matches[0].looseness]
         match = next((m for m in matches if _inside((m.pos, m.end), mutable)), None)
 
