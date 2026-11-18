@@ -7,7 +7,7 @@
     <link rel="icon" type="image/png" href="favicon.png">
     <!-- Remove Highlight.js CSS -->
     <!-- <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.7.0/styles/github.min.css"> -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" integrity="sha384-eFTL69TLRZTkNfYZOLM+G04821K1qZao/4QLJbet1pP4tcF+fdXq/9CdqAbWRl/L" crossorigin="anonymous">
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -2072,19 +2072,67 @@
             </div>
             
     <!-- Place all external script tags here, before the main inline script -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/python.min.js"></script>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Every CDN script is pinned to an exact version and carries an SRI hash:
+         when bumping a version, recompute it with
+         curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js" integrity="sha384-9MhbyIRcBVQiiC7FSd7T38oJNj2Zh+EfxS7/vjhBi4OOT78NlHSnzM31EZRWR1LZ" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.2/dist/d3.min.js" integrity="sha384-LxfWGZyh6PaLjBRPf7NWiEYs9Mn0UQ6ZmqbLLZhxlOBBNWF2a2K0Pfc5efkrNnhQ" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.18/dist/purify.min.js" integrity="sha384-lkArbWjiZKuE+bzKbj1vOEF7DKYBDNvgwZMCt5OH8bdRB92zpzyNska9Q/XKPHQD" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" integrity="sha384-Yv5O+t3uE3hunW8uyrbpPW3iw6/5/Y7HitWJBLgqfMoA36NogMmy+8wWZMpn3HWc" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" integrity="sha384-JcnsjUPPylna1s1fvi1u12X5qjY5OL56iySh75FdtrwhO/SWXgMjoVqcKyIIWOLk" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js" integrity="sha384-g4mRvs7AO0/Ol5LxcGyz4Doe21pVhGNnC3EQw5shw+z+aXDN86HqUdwXWO+Gz2zI" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js" integrity="sha384-kfJm1UHujU89hXr0VHT0u0t4lqavqaoomP6wix8D9fhzTeFvC9DYyaT36//Qd144" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/python.min.js" integrity="sha384-0EkvOvPJDe7t47eSkiz1pp/B1WWuqLqcrGPJKePN+rZ3d50pFtcIqsBUgCMLUoMu" crossorigin="anonymous"></script>
+    <script src="https://cdn.plot.ly/plotly-1.58.5.min.js" integrity="sha384-W7FXNbEY44RgDK8MunBe4gETSKi3Qo2bJAXX3PH8v5l3hdabFb9dbCIn3X69OFjX" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
 
     <!-- Add our script after all external dependencies -->
     <script>
+        // --- HTML safety helpers ---
+        // Everything loaded from a run is untrusted: patch names, descriptions
+        // and meta notes are model output, and metric names, ids and file
+        // names come from the run directory. Escape it before it reaches
+        // innerHTML or d3's .html().
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return '';
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Markdown from a run goes through DOMPurify after rendering. Notes
+        // need text formatting only, so anything that loads a remote
+        // resource, restyles the page or builds a form is dropped too. If
+        // either library failed to load, show the text escaped instead.
+        const MARKDOWN_SANITIZE_OPTIONS = {
+            USE_PROFILES: { html: true },
+            FORBID_TAGS: [
+                'style', 'img', 'picture', 'source', 'video', 'audio', 'track',
+                'form', 'input', 'button', 'select', 'textarea',
+            ],
+            FORBID_ATTR: ['style'],
+        };
+
+        function sanitizeRenderedMarkdown(render, text) {
+            const source = text === null || text === undefined ? '' : String(text);
+            if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+                return `<span style="white-space: pre-wrap;">${escapeHtml(source)}</span>`;
+            }
+            return DOMPurify.sanitize(render(source), MARKDOWN_SANITIZE_OPTIONS);
+        }
+
+        function renderMarkdown(text) {
+            return sanitizeRenderedMarkdown(source => marked.parse(source), text);
+        }
+
+        function renderMarkdownInline(text) {
+            return sanitizeRenderedMarkdown(source => marked.parseInline(source), text);
+        }
+
         // Basic error handling
         window.onerror = function(msg, url, lineNo, columnNo, error) {
             console.error('Error: ' + msg + '\nURL: ' + url + '\nLine: ' + lineNo + '\nColumn: ' + columnNo + '\nError object: ' + JSON.stringify(error));
@@ -2767,7 +2815,7 @@ ${'='.repeat(80)}
         function showMetaMessage(message) {
             const metaContent = document.getElementById('meta-content');
             if (metaContent) {
-                metaContent.innerHTML = `<p style="text-align: center; color: #666; margin-top: 50px;">${message}</p>`;
+                metaContent.innerHTML = `<p style="text-align: center; color: #666; margin-top: 50px;">${escapeHtml(message)}</p>`;
             }
         }
         
@@ -2865,11 +2913,11 @@ ${'='.repeat(80)}
                     if (!inSection) {
                         // Content before first section - treat as introduction
                         html += `<div style="margin-bottom: 20px; padding: 15px; background-color: #f9f9f9; border-radius: 5px;">`;
-                        html += marked.parse(section);
+                        html += renderMarkdown(section);
                         html += `</div>`;
                     } else {
                         // Content within a section - just use regular markdown parsing
-                        html += marked.parse(section);
+                        html += renderMarkdown(section);
                     }
                 }
             }
@@ -2911,7 +2959,7 @@ ${'='.repeat(80)}
                 
                 // First line should be the program name (after the **Program Name: prefix)
                 const programName = lines[0].replace(/\*\*$/, '').trim();
-                entryHtml += `<div class="meta-name" style="font-weight: bold; color: #2c3e50; margin-bottom: 12px; font-size: 16px;">Program Name: ${programName}</div>`;
+                entryHtml += `<div class="meta-name" style="font-weight: bold; color: #2c3e50; margin-bottom: 12px; font-size: 16px;">Program Name: ${escapeHtml(programName)}</div>`;
                 
                 // Process the rest of the lines
                 let currentField = '';
@@ -2954,7 +3002,7 @@ ${'='.repeat(80)}
         
         // Helper function to process simple markdown formatting
         function processSimpleMarkdown(text) {
-            return text
+            return escapeHtml(text)
                 // Convert **text** to <strong>text</strong>
                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                 // Convert *text* to <em>text</em>
@@ -2984,17 +3032,17 @@ ${'='.repeat(80)}
                     const trimmedLine = line.trim();
                     if (trimmedLine.startsWith('Name:')) {
                         currentField = 'name';
-                        entryHtml += `<div class="meta-name" style="font-weight: bold; color: #2c3e50; margin-bottom: 8px;">${trimmedLine}</div>`;
+                        entryHtml += `<div class="meta-name" style="font-weight: bold; color: #2c3e50; margin-bottom: 8px;">${escapeHtml(trimmedLine)}</div>`;
                     } else if (trimmedLine.startsWith('Summary:')) {
                         currentField = 'summary';
-                        entryHtml += `<div class="meta-summary" style="margin-bottom: 8px; line-height: 1.5;">${trimmedLine}</div>`;
+                        entryHtml += `<div class="meta-summary" style="margin-bottom: 8px; line-height: 1.5;">${escapeHtml(trimmedLine)}</div>`;
                     } else if (trimmedLine.startsWith('Performance:')) {
                         currentField = 'performance';
-                        entryHtml += `<div class="meta-performance" style="font-style: italic; color: #34495e;">${trimmedLine}</div>`;
+                        entryHtml += `<div class="meta-performance" style="font-style: italic; color: #34495e;">${escapeHtml(trimmedLine)}</div>`;
                     } else if (trimmedLine) {
                         // Continuation of previous field
                         const indentStyle = currentField === 'name' ? 'margin-left: 0px;' : 'margin-left: 10px;';
-                        entryHtml += `<div style="${indentStyle} margin-bottom: 5px; line-height: 1.5;">${trimmedLine}</div>`;
+                        entryHtml += `<div style="${indentStyle} margin-bottom: 5px; line-height: 1.5;">${escapeHtml(trimmedLine)}</div>`;
                     }
                 });
                 
@@ -3070,10 +3118,10 @@ ${'='.repeat(80)}
                     sections.individualPrograms = formatProgramSummaries(sectionContent.trim());
                 } else if (sectionTitle === 'GLOBAL INSIGHTS SCRATCHPAD') {
                     rawSections.globalInsights = sectionContent.trim();
-                    sections.globalInsights = marked.parse(sectionContent.trim());
+                    sections.globalInsights = renderMarkdown(sectionContent.trim());
                 } else if (sectionTitle === 'META RECOMMENDATIONS') {
                     rawSections.metaRecommendations = sectionContent.trim();
-                    sections.metaRecommendations = marked.parse(sectionContent.trim());
+                    sections.metaRecommendations = renderMarkdown(sectionContent.trim());
                 }
             }
             
@@ -3108,7 +3156,7 @@ ${'='.repeat(80)}
                 metaContent.innerHTML = `
                     <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #eee;">
                         <h3 style="margin: 0; color: #333;">Scratchpad - Update ${currentGen}</h3>
-                        <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">File: ${metaData.filename}</p>
+                        <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">File: ${escapeHtml(metaData.filename)}</p>
                     </div>
                     <div class="meta-content-body" style="line-height: 1.6;" id="meta-section-content">
                         <!-- Content will be loaded by showMetaSection -->
@@ -3131,7 +3179,7 @@ ${'='.repeat(80)}
         function generateSimpleDiffHTML(oldText, newText) {
             if (typeof Diff === 'undefined') {
                 console.warn("[WARN] Diff library not loaded, showing markdown");
-                return marked.parse(newText);
+                return renderMarkdown(newText);
             }
             
             try {
@@ -3145,11 +3193,11 @@ ${'='.repeat(80)}
                         if (line.trim() === '' && index === lines.length - 1) return; // Skip final empty line
                         
                         if (part.added) {
-                            result += `<div class="diff-added" style="display: block; margin: 2px 0;">${marked.parseInline(line)}</div>\n`;
+                            result += `<div class="diff-added" style="display: block; margin: 2px 0;">${renderMarkdownInline(line)}</div>\n`;
                         } else if (part.removed) {
-                            result += `<div class="diff-removed" style="display: block; margin: 2px 0;">${marked.parseInline(line)}</div>\n`;
+                            result += `<div class="diff-removed" style="display: block; margin: 2px 0;">${renderMarkdownInline(line)}</div>\n`;
                         } else {
-                            result += `${marked.parseInline(line)}<br>\n`;
+                            result += `${renderMarkdownInline(line)}<br>\n`;
                         }
                     });
                 });
@@ -3157,7 +3205,7 @@ ${'='.repeat(80)}
                 return result;
             } catch (e) {
                 console.error("[ERROR] Failed to generate simple diff:", e);
-                return marked.parse(newText);
+                return renderMarkdown(newText);
             }
         }
         
@@ -3200,18 +3248,11 @@ ${'='.repeat(80)}
         
 
         
-        // Helper function to escape HTML
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
         // Helper function to show meta error message
         function showMetaError(message) {
             const metaContent = document.getElementById('meta-content');
             if (metaContent) {
-                metaContent.innerHTML = `<p style="text-align: center; color: #e74c3c; margin-top: 50px;">${message}</p>`;
+                metaContent.innerHTML = `<p style="text-align: center; color: #e74c3c; margin-top: 50px;">${escapeHtml(message)}</p>`;
             }
         }
         
@@ -3986,7 +4027,7 @@ ${'='.repeat(80)}
                                 <p>The database appears to be in use by a running evolution process.</p>
                                 <p><strong>With WAL mode enabled:</strong> This should resolve shortly.</p>
                                 <p>Try refreshing in a few seconds, or wait for the evolution to complete.</p>
-                                <button onclick="loadDatabase('${dbPath}')" style="margin-top: 10px; padding: 8px 16px; background-color: #ffc107; border: none; border-radius: 3px; cursor: pointer;">
+                                <button data-db-path="${escapeHtml(dbPath)}" onclick="loadDatabase(this.dataset.dbPath)" style="margin-top: 10px; padding: 8px 16px; background-color: #ffc107; border: none; border-radius: 3px; cursor: pointer;">
                                     🔄 Retry Now
                                 </button>
                             </div>
@@ -4003,7 +4044,7 @@ ${'='.repeat(80)}
                         fileList.innerHTML = `
                             <div style="padding: 20px; text-align: center; color: #dc3545; background-color: #f8d7da; border: 1px solid #dc3545; border-radius: 5px; margin: 10px 0;">
                                 <h3>❌ Failed to Load Database</h3>
-                                <p>Error: ${error.message}</p>
+                                <p>Error: ${escapeHtml(error.message)}</p>
                                 <p>Please check the database file and try again.</p>
                             </div>
                         `;
@@ -4768,26 +4809,26 @@ console.error("[DEBUG] Error in processData:", error);
                         
                         if (d.data.isUnifiedRoot) {
                             tooltip.html(`
-                                <strong style="color: #9b59b6; font-size: 13px;">⭐ ${patchName}</strong><br>
+                                <strong style="color: #9b59b6; font-size: 13px;">⭐ ${escapeHtml(patchName)}</strong><br>
                                 <strong>Type:</strong> Unified Root<br>
-                                <strong>Score:</strong> ${score}<br>
+                                <strong>Score:</strong> ${escapeHtml(score)}<br>
                                 <em>Common origin for all islands</em>
                             `);
                         } else {
                             if (isFailedProposalNode(d.data)) {
                                 tooltip.html(`
-                                    <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                                    <strong style="color: #ffb3b3; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
                                     <strong>Status:</strong> Failed Proposal<br>
                                     <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
                                     <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
                                 `);
                             } else {
                             tooltip.html(`
-                                <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
-                                <strong>Score:</strong> ${score}<br>
-                                <strong>Type:</strong> ${patchType}<br>
-                                <strong>Island:</strong> ${islandIdx}<br>
-                                <strong>Model:</strong> ${modelName}
+                                <strong style="color: #58a6ff; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
+                                <strong>Score:</strong> ${escapeHtml(score)}<br>
+                                <strong>Type:</strong> ${escapeHtml(patchType)}<br>
+                                <strong>Island:</strong> ${escapeHtml(islandIdx)}<br>
+                                <strong>Model:</strong> ${escapeHtml(modelName)}
                             `);
                             }
                         }
@@ -5638,7 +5679,7 @@ console.error("[DEBUG] Error in processData:", error);
             codeWrapper.innerHTML = `
                 <div class="code-container">
                     <div class="line-numbers-gutter">${lineNumbers}</div>
-                    <pre><code class="language-${data.language || 'python'}">${sanitizedCode}</code></pre>
+                    <pre><code class="language-${escapeHtml(data.language || 'python')}">${sanitizedCode}</code></pre>
                 </div>
             `;
 
@@ -5666,7 +5707,7 @@ console.error("[DEBUG] Error in processData:", error);
             const tableBody = document.querySelector("#program-table tbody");
             if (tableBody) {
                 tableBody.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
-                const row = tableBody.querySelector(`tr[data-node-id="${data.id}"]`);
+                const row = tableBody.querySelector(`tr[data-node-id="${CSS.escape(String(data.id))}"]`);
                 if (row) {
                     row.classList.add('selected');
                 }
@@ -5676,7 +5717,7 @@ console.error("[DEBUG] Error in processData:", error);
             const bestPathContainer = document.querySelector("#best-path-container");
             if (bestPathContainer) {
                 bestPathContainer.querySelectorAll('.timeline-item').forEach(i => i.classList.remove('selected'));
-                const item = bestPathContainer.querySelector(`.timeline-item[data-node-id="${data.id}"]`);
+                const item = bestPathContainer.querySelector(`.timeline-item[data-node-id="${CSS.escape(String(data.id))}"]`);
                 if (item) {
                     item.classList.add('selected');
                 }
@@ -5690,11 +5731,11 @@ console.error("[DEBUG] Error in processData:", error);
             
             // Update node summary
             document.getElementById("node-summary").innerHTML = `
-                <h3>${agentName} (Gen ${data.generation})</h3>
-                <p><strong>ID:</strong> <span style="font-family: monospace;">${data.id}</span></p>
-                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${data.parent_id || 'None'}</span></p>
-                <p><strong>Score:</strong> <span class="${getScoreClass(score)}">${formatScore(score)}</span></p>
-                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${data.error}</span></p>` : ''}
+                <h3>${escapeHtml(agentName)} (Gen ${escapeHtml(data.generation)})</h3>
+                <p><strong>ID:</strong> <span style="font-family: monospace;">${escapeHtml(data.id)}</span></p>
+                <p><strong>Parent ID:</strong> <span style="font-family: monospace;">${escapeHtml(data.parent_id || 'None')}</span></p>
+                <p><strong>Score:</strong> <span class="${getScoreClass(score)}">${escapeHtml(formatScore(score))}</span></p>
+                ${data.error ? `<p><strong>Error:</strong> <span class="metric-bad">${escapeHtml(data.error)}</span></p>` : ''}
             `;
             
 
@@ -5710,7 +5751,7 @@ console.error("[DEBUG] Error in processData:", error);
             let publicMetricsHtml = '';
             if (data.public_metrics && Object.keys(data.public_metrics).length > 0) {
                 for (const [key, value] of Object.entries(data.public_metrics)) {
-                    publicMetricsHtml += `<p><strong>${key}:</strong> ${formatScore(value)}</p>`;
+                    publicMetricsHtml += `<p><strong>${escapeHtml(key)}:</strong> ${escapeHtml(formatScore(value))}</p>`;
                 }
             } else {
                 publicMetricsHtml = '<p>No public metrics available.</p>';
@@ -5719,7 +5760,7 @@ console.error("[DEBUG] Error in processData:", error);
             let privateMetricsHtml = '';
             if (data.private_metrics && Object.keys(data.private_metrics).length > 0) {
                 for (const [key, value] of Object.entries(data.private_metrics)) {
-                    privateMetricsHtml += `<p><strong>${key}:</strong> ${formatScore(value)}</p>`;
+                    privateMetricsHtml += `<p><strong>${escapeHtml(key)}:</strong> ${escapeHtml(formatScore(value))}</p>`;
                 }
             } else {
                 privateMetricsHtml = '<p>No private metrics available.</p>';
@@ -5735,7 +5776,7 @@ console.error("[DEBUG] Error in processData:", error);
                         let valueHtml;
                         if (typeof value === 'object' && value !== null) {
                             valueHtml = `<pre style="white-space: pre-wrap; word-wrap: break-word; background-color: #f6f8fa; padding: 10px; border-radius: 3px; margin-top: 5px;">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
-                            metadataHtml += `<div style="margin-bottom: 10px;"><strong>${key}:</strong>${valueHtml}</div>`;
+                            metadataHtml += `<div style="margin-bottom: 10px;"><strong>${escapeHtml(key)}:</strong>${valueHtml}</div>`;
                         } else {
                             const valueStr = String(value);
                             
@@ -5749,12 +5790,12 @@ console.error("[DEBUG] Error in processData:", error);
                                         </div>
                                     </details>
                                 `;
-                                privateMetaFieldsHtml += `<p><strong>${key}:</strong>${valueHtml}</p>`;
+                                privateMetaFieldsHtml += `<p><strong>${escapeHtml(key)}:</strong>${valueHtml}</p>`;
                             } else {
                                 const isLongValue = valueStr.length > 50;
                                 const valueClass = isLongValue ? 'metadata-value' : '';
                                 valueHtml = `<span class="${valueClass}">${escapeHtml(valueStr)}</span>`;
-                                metadataHtml += `<p><strong>${key}:</strong> ${valueHtml}</p>`;
+                                metadataHtml += `<p><strong>${escapeHtml(key)}:</strong> ${valueHtml}</p>`;
                             }
                         }
                     }
@@ -5783,8 +5824,8 @@ console.error("[DEBUG] Error in processData:", error);
                     
                     analysisMetricsHtml += `
                         <tr>
-                            <td style="border: 1px solid #ddd; padding: 6px;">${displayKey}</td>
-                            <td style="border: 1px solid #ddd; padding: 6px; text-align: right; font-family: monospace;">${formattedValue}</td>
+                            <td style="border: 1px solid #ddd; padding: 6px;">${escapeHtml(displayKey)}</td>
+                            <td style="border: 1px solid #ddd; padding: 6px; text-align: right; font-family: monospace;">${escapeHtml(formattedValue)}</td>
                         </tr>`;
                 }
                 
@@ -5800,17 +5841,17 @@ console.error("[DEBUG] Error in processData:", error);
             let gridItemsHtml = `
                     <div class="details-section">
                         <h5>General</h5>
-                        <p><strong>Language:</strong> ${data.language || 'N/A'}</p>
-                        <p><strong>Island:</strong> ${data.island_idx !== null && data.island_idx !== undefined ? data.island_idx : 'N/A'}</p>
-                        <p><strong>Timestamp:</strong> ${formatTimestamp(data.timestamp)}</p>
+                        <p><strong>Language:</strong> ${escapeHtml(data.language || 'N/A')}</p>
+                        <p><strong>Island:</strong> ${escapeHtml(data.island_idx !== null && data.island_idx !== undefined ? data.island_idx : 'N/A')}</p>
+                        <p><strong>Timestamp:</strong> ${escapeHtml(formatTimestamp(data.timestamp))}</p>
                         <p><strong>Correct:</strong> ${data.correct ? 'Yes' : 'No'}</p>
-                        <p><strong>Children:</strong> ${data.children_count || 0}</p>
-                        <p><strong>Complexity:</strong> ${data.complexity || 'N/A'}</p>
+                        <p><strong>Children:</strong> ${escapeHtml(data.children_count || 0)}</p>
+                        <p><strong>Complexity:</strong> ${escapeHtml(data.complexity || 'N/A')}</p>
         </div>
                     ${failureSummaryHtml}
                     <div class="details-section">
                         <h5>Performance Score</h5>
-                        <p><strong>Combined Score:</strong> ${formatScore(data.combined_score)}</p>
+                        <p><strong>Combined Score:</strong> ${escapeHtml(formatScore(data.combined_score))}</p>
                     </div>
                     <div class="details-section">
                         <h5>Public Metrics</h5>
@@ -5854,8 +5895,8 @@ console.error("[DEBUG] Error in processData:", error);
                     patchDescriptionHtml = `
                         <p><strong>Description:</strong> 
                         <span class="tooltip">
-                            <span class="truncated-text">${patchDescription}</span>
-                            <span class="tooltip-text">${patchDescription}</span>
+                            <span class="truncated-text">${escapeHtml(patchDescription)}</span>
+                            <span class="tooltip-text">${escapeHtml(patchDescription)}</span>
                         </span>
                         </p>
                     `;
@@ -5897,10 +5938,10 @@ console.error("[DEBUG] Error in processData:", error);
                         inspirationHtml += `
                             <tr>
                                 <td style="border: 1px solid #ddd; padding: 4px;">Parent</td>
-                                <td style="border: 1px solid #ddd; padding: 4px; font-family: monospace; color: #007bff; cursor: pointer; text-decoration: underline;" onclick="selectNodeById('${parentId}')">${shortId}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${gen}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${island}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${score}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px; font-family: monospace; color: #007bff; cursor: pointer; text-decoration: underline;" data-node-id="${escapeHtml(parentId)}" onclick="selectNodeById(this.dataset.nodeId)">${escapeHtml(shortId)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(gen)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(island)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(score)}</td>
                             </tr>`;
                     }
                     
@@ -5914,10 +5955,10 @@ console.error("[DEBUG] Error in processData:", error);
                         inspirationHtml += `
                             <tr>
                                 <td style="border: 1px solid #ddd; padding: 4px;">Top-K</td>
-                                <td style="border: 1px solid #ddd; padding: 4px; font-family: monospace; color: #007bff; cursor: pointer; text-decoration: underline;" onclick="selectNodeById('${id}')">${shortId}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${gen}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${island}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${score}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px; font-family: monospace; color: #007bff; cursor: pointer; text-decoration: underline;" data-node-id="${escapeHtml(id)}" onclick="selectNodeById(this.dataset.nodeId)">${escapeHtml(shortId)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(gen)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(island)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(score)}</td>
                             </tr>`;
                     });
                     
@@ -5931,10 +5972,10 @@ console.error("[DEBUG] Error in processData:", error);
                         inspirationHtml += `
                             <tr>
                                 <td style="border: 1px solid #ddd; padding: 4px;">Archive</td>
-                                <td style="border: 1px solid #ddd; padding: 4px; font-family: monospace; color: #007bff; cursor: pointer; text-decoration: underline;" onclick="selectNodeById('${id}')">${shortId}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${gen}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${island}</td>
-                                <td style="border: 1px solid #ddd; padding: 4px;">${score}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px; font-family: monospace; color: #007bff; cursor: pointer; text-decoration: underline;" data-node-id="${escapeHtml(id)}" onclick="selectNodeById(this.dataset.nodeId)">${escapeHtml(shortId)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(gen)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(island)}</td>
+                                <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(score)}</td>
                             </tr>`;
                     });
                     
@@ -5949,8 +5990,8 @@ console.error("[DEBUG] Error in processData:", error);
                     <div class="details-section">
                         <h5>Patch Information</h5>
                         <div class="details-section-content">
-                        <p><strong>Patch Type:</strong> ${patchType}</p>
-                        <p><strong>Patch Name:</strong> ${patchName}</p>
+                        <p><strong>Patch Type:</strong> ${escapeHtml(patchType)}</p>
+                        <p><strong>Patch Name:</strong> ${escapeHtml(patchName)}</p>
                             ${patchDescriptionHtml}
                         </div>
                     </div>
@@ -5980,10 +6021,10 @@ console.error("[DEBUG] Error in processData:", error);
                 data.migration_history.forEach(m => {
                     migrationHistoryHtml += `
                         <tr>
-                            <td style="border: 1px solid #ddd; padding: 4px;">${m.generation}</td>
-                            <td style="border: 1px solid #ddd; padding: 4px;">${m.from}</td>
-                            <td style="border: 1px solid #ddd; padding: 4px;">${m.to}</td>
-                            <td style="border: 1px solid #ddd; padding: 4px;">${formatTimestamp(m.timestamp)}</td>
+                            <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(m.generation)}</td>
+                            <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(m.from)}</td>
+                            <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(m.to)}</td>
+                            <td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(formatTimestamp(m.timestamp))}</td>
                         </tr>`;
                 });
                 
@@ -6006,7 +6047,7 @@ console.error("[DEBUG] Error in processData:", error);
                 longContentHtml += `
                     <div class="details-section" style="margin-top: 15px;">
                         <h5>Thought Process</h5>
-                        <div class="markdown">${marked.parse(data.metadata.thought)}</div>
+                        <div class="markdown">${renderMarkdown(data.metadata.thought)}</div>
                     </div>
                 `;
             }
@@ -6080,7 +6121,7 @@ console.error("[DEBUG] Error in processData:", error);
                     })
                     .catch(err => {
                         console.error("[DEBUG] Failed to load program details:", err);
-                        codeWrapper.innerHTML = `<p style="color: #dc3545;">Failed to load code: ${err.message}</p>`;
+                        codeWrapper.innerHTML = `<p style="color: #dc3545;">Failed to load code: ${escapeHtml(err.message)}</p>`;
                         diffContentWrapper.innerHTML = "<p>Failed to load diff.</p>";
                         diffControls.style.display = 'none';
                     });
@@ -6190,16 +6231,6 @@ console.error("[DEBUG] Error in processData:", error);
             return html;
         }
 
-        // Helper function to escape HTML content to prevent XSS and formatting issues
-        function escapeHtml(text) {
-            if (!text) return '';
-            return text
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
 
         // Function to fetch and display plots for a program
         async function fetchAndDisplayPlots(generation, programId) {
@@ -6207,7 +6238,7 @@ console.error("[DEBUG] Error in processData:", error);
             if (!plotsContainer || !window.currentDbPath) return;
             
             try {
-                const url = `/get_plots?db_path=${encodeURIComponent(window.currentDbPath)}&generation=${generation}&program_id=${programId}`;
+                const url = `/get_plots?db_path=${encodeURIComponent(window.currentDbPath)}&generation=${encodeURIComponent(generation)}&program_id=${encodeURIComponent(programId)}`;
                 const response = await fetch(url);
                 
                 if (!response.ok) {
@@ -6281,7 +6312,7 @@ console.error("[DEBUG] Error in processData:", error);
                         plotDiv.style.cssText = 'border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #fafafa;';
                         plotDiv.innerHTML = `
                             <div style="font-weight: bold; margin-bottom: 8px; color: #333;">${icon} ${escapeHtml(plot.filename)}</div>
-                            <img src="${fileUrl}" alt="${escapeHtml(plot.filename)}" style="max-width: 100%; height: auto; border-radius: 4px; cursor: pointer;" onclick="window.open('${fileUrl}', '_blank')">
+                            <img src="${escapeHtml(fileUrl)}" alt="${escapeHtml(plot.filename)}" style="max-width: 100%; height: auto; border-radius: 4px; cursor: pointer;" onclick="window.open(this.src, '_blank')">
                         `;
                         
                         // Check if we need a new row
@@ -6450,7 +6481,7 @@ console.error("[DEBUG] Error in processData:", error);
                 })
                 .catch(err => {
                     console.error('[DEBUG] Failed to load initial program:', err);
-                    diffContentWrapper.innerHTML = `<p style="color: #dc3545;">Failed to load initial program: ${err.message}</p>`;
+                    diffContentWrapper.innerHTML = `<p style="color: #dc3545;">Failed to load initial program: ${escapeHtml(err.message)}</p>`;
                 });
         }
         
@@ -8172,20 +8203,20 @@ console.error("[DEBUG] Error in processData:", error);
                 const patchName = (prog.metadata?.patch_name || 'unnamed').substring(0, 15);
                 
                 row.innerHTML = `
-                    <td>${prog.original_rank}</td>
-                    <td>${prog.generation}</td>
+                    <td>${escapeHtml(prog.original_rank)}</td>
+                    <td>${escapeHtml(prog.generation)}</td>
                     <td style="text-align: center; color: ${prog.in_archive ? '#28a745' : '#6c757d'}; font-weight: bold;">${archiveStatus}</td>
                     <td>${escapeHtml(statusLabel)}</td>
-                    <td>${patchName}</td>
-                    <td>${prog.metadata?.patch_type || 'N/A'}</td>
-                    <td>${islandIdx}</td>
-                    <td>${scoreDisplay}</td>
-                    <td>${apiCost}</td>
-                    <td>${complexity}</td>
-                    <td>${noveltyAttempt}</td>
-                    <td>${resampleAttempt}</td>
-                    <td>${patchAttempt}</td>
-                    <td>${model}</td>
+                    <td>${escapeHtml(patchName)}</td>
+                    <td>${escapeHtml(prog.metadata?.patch_type || 'N/A')}</td>
+                    <td>${escapeHtml(islandIdx)}</td>
+                    <td>${escapeHtml(scoreDisplay)}</td>
+                    <td>${escapeHtml(apiCost)}</td>
+                    <td>${escapeHtml(complexity)}</td>
+                    <td>${escapeHtml(noveltyAttempt)}</td>
+                    <td>${escapeHtml(resampleAttempt)}</td>
+                    <td>${escapeHtml(patchAttempt)}</td>
+                    <td>${escapeHtml(model)}</td>
                 `;
                 tableBody.appendChild(row);
             });
@@ -8792,8 +8823,8 @@ console.error("[DEBUG] Error in processData:", error);
                     const label2 = orderedLabelsData[i];
                     
                     tooltip.html(`
-                        <strong><b>${label1.gen}</b>: ${label1.name}</strong><br>
-                        <strong><b>${label2.gen}</b>: ${label2.name}</strong><br>
+                        <strong><b>${escapeHtml(label1.gen)}</b>: ${escapeHtml(label1.name)}</strong><br>
+                        <strong><b>${escapeHtml(label2.gen)}</b>: ${escapeHtml(label2.name)}</strong><br>
                         Similarity: ${d.toFixed(3)}
                     `)
                     .style("left", (event.pageX + 10) + "px")
@@ -8860,8 +8891,8 @@ console.error("[DEBUG] Error in processData:", error);
                         .style("z-index", "1000");
 
                     tooltip.html(`
-                        <strong>${program.metadata.patch_name || 'unnamed'}</strong><br>
-                        Score: ${formatScore(d)}
+                        <strong>${escapeHtml(program.metadata.patch_name || 'unnamed')}</strong><br>
+                        Score: ${escapeHtml(formatScore(d))}
                     `)
                     .style("left", (event.pageX + 10) + "px")
                     .style("top", (event.pageY - 10) + "px");
@@ -10406,17 +10437,17 @@ console.error("[DEBUG] Error in processData:", error);
                     
                     if (isFailedProposalNode(d.data)) {
                         tooltip.html(`
-                            <strong style="color: #ffb3b3; font-size: 13px;">${patchName}</strong><br>
+                            <strong style="color: #ffb3b3; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
                             <strong>Status:</strong> Failed Proposal<br>
                             <strong>Failure:</strong> ${escapeHtml(d.data.metadata.failure_class || d.data.metadata.failure_stage || 'failed_proposal')}<br>
                             <strong>Reason:</strong> ${escapeHtml(d.data.metadata.failure_reason || d.data.text_feedback || 'N/A')}
                         `);
                     } else {
                         tooltip.html(`
-                            <strong style="color: #58a6ff; font-size: 13px;">${patchName}</strong><br>
-                            <strong>Score:</strong> ${score}<br>
-                            <strong>Type:</strong> ${patchType}<br>
-                            <strong>Island:</strong> ${islandIdx}
+                            <strong style="color: #58a6ff; font-size: 13px;">${escapeHtml(patchName)}</strong><br>
+                            <strong>Score:</strong> ${escapeHtml(score)}<br>
+                            <strong>Type:</strong> ${escapeHtml(patchType)}<br>
+                            <strong>Island:</strong> ${escapeHtml(islandIdx)}
                         `);
                     }
                     tooltip.style("left", (event.pageX + 15) + "px")
@@ -10594,15 +10625,15 @@ console.error("[DEBUG] Error in processData:", error);
                     const detailsString = events.map(p => {
                         const shortId = p.program_id.substring(0, 8) + '...';
                         const score = (p.score !== null && p.score !== undefined) ? p.score.toFixed(2) : 'N/A';
-                        const link = `<a href="#" onclick="event.preventDefault(); selectNodeById('${p.program_id}');" style="color: #007bff; text-decoration: underline;">${shortId}</a>`;
-                        return `Gen ${p.program_gen}, Program: ${link}, Score: ${score} (${p.from} → ${p.to})`;
+                        const link = `<a href="#" data-node-id="${escapeHtml(p.program_id)}" onclick="event.preventDefault(); selectNodeById(this.dataset.nodeId);" style="color: #007bff; text-decoration: underline;">${escapeHtml(shortId)}</a>`;
+                        return `Gen ${escapeHtml(p.program_gen)}, Program: ${link}, Score: ${score} (${escapeHtml(p.from)} → ${escapeHtml(p.to)})`;
                     }).join('<br>');
 
                     const totalCount = events.length;
                     
                     summaryHtml += `
                         <tr>
-                            <td>${gen}</td>
+                            <td>${escapeHtml(gen)}</td>
                             <td>${detailsString}</td>
                             <td>${totalCount}</td>
                         </tr>`;
@@ -10678,12 +10709,12 @@ console.error("[DEBUG] Error in processData:", error);
             items.append("div")
                 .attr("class", "timeline-content")
                 .html(d => {
-                        const description = d.metadata.patch_description ? `<p><strong>Description:</strong> ${d.metadata.patch_description}</p>` : '';
+                        const description = d.metadata.patch_description ? `<p><strong>Description:</strong> ${escapeHtml(d.metadata.patch_description)}</p>` : '';
                         return `
-                        <h4>Gen ${d.generation}: <span style="font-weight: normal;">${d.metadata.patch_name || 'unnamed'}</span></h4>
-                        <p><strong>ID:</strong> <a href="#" onclick="event.preventDefault(); event.stopPropagation(); selectNodeById('${d.id}', false, false);">${d.id}</a></p>
-                        <p><strong>Type:</strong> ${d.metadata.patch_type || 'N/A'}</p>
-                        <p><strong>Score:</strong> ${formatScore(d.combined_score)}</p>
+                        <h4>Gen ${escapeHtml(d.generation)}: <span style="font-weight: normal;">${escapeHtml(d.metadata.patch_name || 'unnamed')}</span></h4>
+                        <p><strong>ID:</strong> <a href="#" data-node-id="${escapeHtml(d.id)}" onclick="event.preventDefault(); event.stopPropagation(); selectNodeById(this.dataset.nodeId, false, false);">${escapeHtml(d.id)}</a></p>
+                        <p><strong>Type:</strong> ${escapeHtml(d.metadata.patch_type || 'N/A')}</p>
+                        <p><strong>Score:</strong> ${escapeHtml(formatScore(d.combined_score))}</p>
                         ${description}
                         `;
                 });
@@ -11017,11 +11048,11 @@ console.error("[DEBUG] Error in processData:", error);
                                 const xLabel = xPath.split('.').pop().replace(/_/g, ' ');
                                 const yLabel = yPath.split('.').pop().replace(/_/g, ' ');
                                 tooltip.html(`
-                                    <strong>${cellData.metadata?.patch_name || 'Unnamed'}</strong><br>
-                                    <strong>Score:</strong> ${formatScore(cellData.combined_score)}<br>
-                                    <strong>${xLabel}:</strong> ${xStart.toFixed(2)} - ${xEnd.toFixed(2)}<br>
-                                    <strong>${yLabel}:</strong> ${yStart.toFixed(2)} - ${yEnd.toFixed(2)}<br>
-                                    <strong>Generation:</strong> ${cellData.generation}
+                                    <strong>${escapeHtml(cellData.metadata?.patch_name || 'Unnamed')}</strong><br>
+                                    <strong>Score:</strong> ${escapeHtml(formatScore(cellData.combined_score))}<br>
+                                    <strong>${escapeHtml(xLabel)}:</strong> ${xStart.toFixed(2)} - ${xEnd.toFixed(2)}<br>
+                                    <strong>${escapeHtml(yLabel)}:</strong> ${yStart.toFixed(2)} - ${yEnd.toFixed(2)}<br>
+                                    <strong>Generation:</strong> ${escapeHtml(cellData.generation)}
                                 `)
                                 .style("visibility", "visible");
                             })
@@ -12709,7 +12740,7 @@ console.error("[DEBUG] Error in processData:", error);
                     });
 
                     if (individualPoints.length === 0) {
-                        plotContainer.innerHTML = `<p>No data available for metric: ${metricPath}</p>`;
+                        plotContainer.innerHTML = `<p>No data available for metric: ${escapeHtml(metricPath)}</p>`;
                         return;
                     }
 
@@ -16165,9 +16196,9 @@ console.error("[DEBUG] Error in processData:", error);
                 const poolLineWidth = getRuntimeTimelineLineWidth();
                 if (summary) {
                     summary.innerHTML = `
-                        <span><strong>Sampling:</strong> peak ${peaks.sampling}/${capacities.sampling || 0}</span>
-                        <span><strong>Evaluation:</strong> peak ${peaks.evaluation}/${capacities.evaluation || 0}</span>
-                        <span><strong>Postprocess:</strong> peak ${peaks.postprocess}/${capacities.postprocess || 0}</span>
+                        <span><strong>Sampling:</strong> peak ${escapeHtml(peaks.sampling)}/${escapeHtml(capacities.sampling || 0)}</span>
+                        <span><strong>Evaluation:</strong> peak ${escapeHtml(peaks.evaluation)}/${escapeHtml(capacities.evaluation || 0)}</span>
+                        <span><strong>Postprocess:</strong> peak ${escapeHtml(peaks.postprocess)}/${escapeHtml(capacities.postprocess || 0)}</span>
                     `;
                 }
 
@@ -16974,7 +17005,7 @@ console.error("[DEBUG] Error in processData:", error);
                 if (analysisContent && analysisContent.children.length > 0) {
                     const errorDiv = document.createElement('div');
                     errorDiv.style.cssText = 'text-align: center; color: #e74c3c; margin: 20px; padding: 10px; background: #ffe6e6; border-radius: 5px;';
-                    errorDiv.innerHTML = `<strong>Error computing analysis statistics:</strong> ${error.message}`;
+                    errorDiv.innerHTML = `<strong>Error computing analysis statistics:</strong> ${escapeHtml(error.message)}`;
                     analysisContent.insertBefore(errorDiv, analysisContent.firstChild);
                 }
             }
@@ -17064,7 +17095,7 @@ console.error("[DEBUG] Error in processData:", error);
                 const msg = isTemporary 
                     ? 'Prompts temporarily unavailable (database may be busy). Try refreshing later.'
                     : `Error: ${error.message}`;
-                container.innerHTML = `<p style="text-align: center; color: #999; margin-top: 50px;">${msg}</p>`;
+                container.innerHTML = `<p style="text-align: center; color: #999; margin-top: 50px;">${escapeHtml(msg)}</p>`;
                 const legend = document.getElementById('meta-prompt-legend');
                 if (legend) legend.style.display = 'none';
             }
@@ -17553,7 +17584,7 @@ console.error("[DEBUG] Error in processData:", error);
                             Generated Programs (${programIds.length})
                         </div>
                         <div style="font-size: 10px; color: #888; padding: 8px; background: #f8f8f8; border-radius: 4px;">
-                            ${programIds.slice(0, 10).map(id => id.substring(0, 12) + '...').join(', ')}
+                            ${escapeHtml(programIds.slice(0, 10).map(id => String(id).substring(0, 12) + '...').join(', '))}
                             ${programIds.length > 10 ? ` and ${programIds.length - 10} more...` : ''}
                         </div>
                     </div>
@@ -17624,7 +17655,7 @@ console.error("[DEBUG] Error in processData:", error);
                     .map(([k, v]) => {
                         const formatted = formatValue(k, v);
                         if (formatted === null) return null;
-                        return `<div><span style="color: #888;">${formatLabel(k)}:</span> <strong>${formatted}</strong></div>`;
+                        return `<div><span style="color: #888;">${escapeHtml(formatLabel(k))}:</span> <strong>${escapeHtml(formatted)}</strong></div>`;
                     })
                     .filter(item => item !== null)
                     .join('');
@@ -17646,20 +17677,20 @@ console.error("[DEBUG] Error in processData:", error);
                     <div style="margin-bottom: 12px; flex-shrink: 0;">
                         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
                             <span style="background-color: ${patchColor}; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600;">
-                                ${promptData.patch_type.toUpperCase()}
+                                ${escapeHtml(String(promptData.patch_type || '').toUpperCase())}
                             </span>
-                            <span style="color: #888; font-size: 11px;">Prompt Gen ${promptData.generation}</span>
-                            <span style="background-color: #8e44ad; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600;">P${promptData.program_generation || 0}</span>
+                            <span style="color: #888; font-size: 11px;">Prompt Gen ${escapeHtml(promptData.generation)}</span>
+                            <span style="background-color: #8e44ad; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600;">P${escapeHtml(promptData.program_generation || 0)}</span>
                             ${promptData.in_archive ? '<span style="background-color: #27ae60; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;">ARCHIVE</span>' : ''}
                         </div>
                         <div style="font-size: 10px; color: #888; font-family: monospace;">
-                            ID: ${promptData.id.substring(0, 24)}...
+                            ID: ${escapeHtml(String(promptData.id).substring(0, 24))}...
                         </div>
-                        ${promptData.name ? `<div style="font-size: 13px; font-weight: 600; color: #333; margin-top: 8px;">${promptData.name}</div>` : ''}
+                        ${promptData.name ? `<div style="font-size: 13px; font-weight: 600; color: #333; margin-top: 8px;">${escapeHtml(promptData.name)}</div>` : ''}
                         ${promptData.description ? `
                             <div id="prompt-description-box" style="margin-top: 8px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;">
                                 <div id="prompt-description-content" style="font-size: 11px; color: #666; line-height: 1.4; padding: 8px; max-height: 80px; overflow: hidden; transition: max-height 0.3s ease;">
-                                    ${promptData.description}
+                                    ${escapeHtml(promptData.description)}
                                 </div>
                                 <div id="prompt-description-toggle" onclick="togglePromptDescription()" style="display: none; font-size: 10px; color: #8e44ad; padding: 4px 8px; cursor: pointer; text-align: center; border-top: 1px solid #e0e0e0; background: #f0f0f0; user-select: none;">
                                     ▼ Show more
@@ -17677,7 +17708,7 @@ console.error("[DEBUG] Error in processData:", error);
                             </div>
                             <div>
                                 <div style="font-size: 9px; color: #888; text-transform: uppercase; margin-bottom: 2px;">Programs</div>
-                                <div style="font-size: 16px; font-weight: 600; color: #333;">${promptData.program_count} <span style="font-size: 12px; color: #27ae60;">(${calculatedCorrectCount} ✓)</span></div>
+                                <div style="font-size: 16px; font-weight: 600; color: #333;">${escapeHtml(promptData.program_count)} <span style="font-size: 12px; color: #27ae60;">(${calculatedCorrectCount} ✓)</span></div>
                             </div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #eee;">
@@ -17696,7 +17727,7 @@ console.error("[DEBUG] Error in processData:", error);
                     
                     <div style="margin-bottom: 12px; font-size: 11px; color: #666; flex-shrink: 0;">
                         <div style="margin-bottom: 3px;"><strong>Created:</strong> ${timestamp}</div>
-                        <div><strong>Parent:</strong> ${promptData.parent_id ? promptData.parent_id.substring(0, 20) + '...' : 'None (root)'}</div>
+                        <div><strong>Parent:</strong> ${escapeHtml(promptData.parent_id ? String(promptData.parent_id).substring(0, 20) + '...' : 'None (root)')}</div>
                     </div>
                     
                     <div style="flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden;">
@@ -17783,9 +17814,9 @@ console.error("[DEBUG] Error in processData:", error);
                     else beatColor = '#e74c3c';
                 }
                 
-                return `<tr style="cursor: pointer;" onclick="selectProgramFromPromptView('${p.id}')" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor=''">
-                    <td style="padding: 4px 6px; border-bottom: 1px solid #eee; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${name}">${name}</td>
-                    <td style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #eee;">${p.generation}</td>
+                return `<tr style="cursor: pointer;" data-node-id="${escapeHtml(p.id)}" onclick="selectProgramFromPromptView(this.dataset.nodeId)" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor=''">
+                    <td style="padding: 4px 6px; border-bottom: 1px solid #eee; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(name)}">${escapeHtml(name)}</td>
+                    <td style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #eee;">${escapeHtml(p.generation)}</td>
                     <td style="padding: 4px 6px; text-align: right; border-bottom: 1px solid #eee;">${score}</td>
                     <td style="padding: 4px 6px; text-align: right; border-bottom: 1px solid #eee; color: ${improvementColor};">${improvement}</td>
                     <td style="padding: 4px 6px; text-align: right; border-bottom: 1px solid #eee; color: ${beatColor};">${beatDisplay}</td>
@@ -17880,7 +17911,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
                         <h3 style="margin: 0 0 10px 0; color: #8e44ad; font-size: 14px; flex-shrink: 0;">
                             System Prompt Text
-                            ${prompt.name ? `<span style="font-weight: normal; color: #666;"> — ${prompt.name}</span>` : ''}
+                            ${prompt.name ? `<span style="font-weight: normal; color: #666;"> — ${escapeHtml(prompt.name)}</span>` : ''}
                         </h3>
                         <pre style="white-space: pre-wrap; word-wrap: break-word; background: #1e1e1e; color: #d4d4d4;
                             padding: 15px; border-radius: 5px; font-size: 12px; flex: 1; overflow: auto; margin: 0;
@@ -17890,7 +17921,7 @@ console.error("[DEBUG] Error in processData:", error);
                     <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
                         <h3 style="margin: 0 0 10px 0; color: #e67e22; font-size: 14px; flex-shrink: 0;">
                             Diff with Parent
-                            ${parentPrompt ? `<span style="font-weight: normal; color: #666;"> — ${parentPrompt.name || parentPrompt.id.substring(0, 12) + '...'}</span>` : ''}
+                            ${parentPrompt ? `<span style="font-weight: normal; color: #666;"> — ${escapeHtml(parentPrompt.name || String(parentPrompt.id).substring(0, 12) + '...')}</span>` : ''}
                         </h3>
                         <div style="background: #1e1e1e; border-radius: 5px; flex: 1; overflow: auto; font-family: 'Monaco', 'Menlo', 'Consolas', monospace; font-size: 12px; line-height: 1.5;">
                             ${diffHtml}
@@ -18003,12 +18034,6 @@ console.error("[DEBUG] Error in processData:", error);
             }
             
             return lcs;
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
         }
 
     </script>
