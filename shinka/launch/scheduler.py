@@ -16,6 +16,7 @@ from .slurm import (
 from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
+SLURM_CANCEL_TIMEOUT_SECONDS = 30
 
 
 def _has_value(value: Optional[str]) -> bool:
@@ -445,11 +446,13 @@ class JobScheduler:
             try:
                 if self.job_type in ["slurm_docker", "slurm_conda"]:
                     if isinstance(job_id, str):
-                        # For SLURM jobs, use scancel command
                         import subprocess
 
                         result = subprocess.run(
-                            ["scancel", job_id], capture_output=True, text=True
+                            ["scancel", job_id],
+                            capture_output=True,
+                            text=True,
+                            timeout=SLURM_CANCEL_TIMEOUT_SECONDS,
                         )
                         return result.returncode == 0
                 else:
