@@ -6261,12 +6261,6 @@ class ShinkaEvolveRunner:
                     *self.active_proposal_tasks.values(), return_exceptions=True
                 )
 
-            # Never let a failed cancellation skip the billing flush below.
-            try:
-                await self._cancel_running_evaluations()
-            except Exception as e:
-                logger.warning(f"Failed to cancel running evaluations: {e}")
-
             # Final recomputation of prompt percentiles to ensure fitness is accurate
             if self.prompt_db is not None and self.db is not None:
                 try:
@@ -6299,7 +6293,13 @@ class ShinkaEvolveRunner:
                 await self._finish_wandb_logging()
             finally:
                 await self.async_db.close_async()
-                self.scheduler.shutdown()
+                # Charges and the database are safe first: cancelling can take
+                # minutes on a slow controller, and a second interrupt may cut
+                # it short.
+                try:
+                    await self._cancel_running_evaluations()
+                finally:
+                    self.scheduler.shutdown()
 
         except BillingPersistenceError:
             raise

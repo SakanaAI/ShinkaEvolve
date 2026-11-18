@@ -11,6 +11,7 @@ from typing import Any, Optional
 import pytest
 
 from shinka.core.async_runner import AsyncRunningJob, ShinkaEvolveRunner
+from shinka.core.billing import BillingPersistenceError
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.launch import JobScheduler, LocalJobConfig, ProcessWithLogging
 
@@ -66,12 +67,14 @@ def test_cleanup_cancels_evaluations_that_are_still_running() -> None:
 
     asyncio.run(runner._cleanup_async())
 
+    # Charges and the database are safe before the cancellations, which can
+    # take minutes on a slow controller.
     assert events == [
-        "cancel:101",
-        "cancel:102",
         "flush_charges",
         "finish_wandb",
         "close_db",
+        "cancel:101",
+        "cancel:102",
         "scheduler.shutdown",
     ]
 
@@ -86,10 +89,56 @@ def test_cleanup_finishes_when_a_cancellation_fails(
     with caplog.at_level(logging.WARNING):
         asyncio.run(runner._cleanup_async())
 
-    assert events[:2] == ["cancel:101", "cancel:102"]
-    assert events[2:] == ["flush_charges", "finish_wandb", "close_db", "scheduler.shutdown"]
+    assert events[-3:] == ["cancel:101", "cancel:102", "scheduler.shutdown"]
     assert "Could not cancel 1 evaluation job(s)" in caplog.text
     assert "['101']" in caplog.text
+
+
+def test_cleanup_interrupted_while_cancelling_has_saved_charges_and_database() -> None:
+    events: list[str] = []
+
+    class _SlowController(_Scheduler):
+        async def cancel_job_async(self, job_id: str) -> bool:
+            events.append(f"cancel:{job_id}")
+            await asyncio.Event().wait()
+            return True
+
+    runner = _cleanup_runner(events, _SlowController(events))
+    runner.running_jobs = [_job("101", 1)]
+
+    async def interrupt_cleanup() -> None:
+        cleanup = asyncio.ensure_future(runner._cleanup_async())
+        while "cancel:101" not in events:
+            await asyncio.sleep(0)
+        cleanup.cancel()  # A second Ctrl-C.
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+
+    asyncio.run(asyncio.wait_for(interrupt_cleanup(), timeout=10.0))
+
+    assert events == [
+        "flush_charges",
+        "finish_wandb",
+        "close_db",
+        "cancel:101",
+        "scheduler.shutdown",
+    ]
+
+
+def test_cleanup_cancels_evaluations_when_the_charges_cannot_be_saved() -> None:
+    events: list[str] = []
+    runner = _cleanup_runner(events, _Scheduler(events))
+    runner.running_jobs = [_job("101", 1)]
+
+    async def fail_flush() -> None:
+        raise BillingPersistenceError("ledger unavailable")
+
+    runner._flush_unwritten_charges = fail_flush
+
+    with pytest.raises(BillingPersistenceError):
+        asyncio.run(runner._cleanup_async())
+
+    assert events == ["close_db", "cancel:101", "scheduler.shutdown"]
 
 
 def test_cleanup_without_running_evaluations_cancels_nothing() -> None:
