@@ -22,7 +22,7 @@ classifiers = [
 ]
 urls = {Homepage = "https://sakana.ai/shinka-evolve/", Documentation = "https://sakanaai.github.io/ShinkaEvolve/", Repository = "https://github.com/SakanaAI/ShinkaEvolve", Issues = "https://github.com/SakanaAI/ShinkaEvolve/issues"}
 dependencies = [
-    "openai",
+    "openai>=2.34.0",
     "numpy",
     "pandas",
     "anthropic>=1.9.0",
