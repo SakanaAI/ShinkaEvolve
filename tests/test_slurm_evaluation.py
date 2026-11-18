@@ -30,16 +30,27 @@ def scheduler(request, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def artifacts(tmp_path: Path) -> Path:
-    (tmp_path / "correct.json").write_text('{"correct": true}')
-    (tmp_path / "metrics.json").write_text('{"combined_score": 42}')
-    return tmp_path
+    results = tmp_path / "results"
+    execution = tmp_path / f"results.{JOB_NAME}.execution-0"
+    for path in (results, execution):
+        path.mkdir()
+        (path / "correct.json").write_text('{"correct": true}')
+        (path / "metrics.json").write_text('{"combined_score": 42}')
+    execution.with_name(f"{execution.name}.receipt").write_bytes(b"complete\n")
+    return results
 
 
-def mock_commands(monkeypatch: pytest.MonkeyPatch, accounting: list[str]) -> Mock:
+def mock_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    accounting: list[str],
+    queue_status: str = "COMPLETED|0",
+) -> Mock:
     responses = iter(accounting)
 
     def run(cmd, **kwargs):
-        if cmd[0] in {"squeue", "scontrol"}:
+        if cmd[0] == "squeue":
+            return subprocess.CompletedProcess(cmd, 0, stdout=queue_status)
+        if cmd[0] == "scontrol":
             return subprocess.CompletedProcess(cmd, 0, stdout="")
         assert cmd[0] == "sacct"
         assert "--allocations" in cmd
@@ -86,6 +97,34 @@ def test_sync_slurm_accepts_successful_allocation(
     assert [call.args[0][0] for call in command.call_args_list] == ["squeue", "sacct"]
 
 
+@pytest.mark.parametrize("appears_during_accounting", [False, True])
+def test_sync_slurm_rejects_an_unfinished_newer_execution(
+    scheduler: JobScheduler,
+    artifacts: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    appears_during_accounting: bool,
+) -> None:
+    previous = artifacts.with_name(f"{artifacts.name}.{JOB_NAME}.execution-2")
+    previous.mkdir()
+    previous.with_name(f"{previous.name}.receipt").write_bytes(b"complete\n")
+    latest = artifacts.with_name(f"{artifacts.name}.{JOB_NAME}.execution-10.receipt")
+    command = mock_commands(monkeypatch, [f"123|{JOB_NAME}|COMPLETED|0:0\n"] * 6)
+    if appears_during_accounting:
+        run = command.side_effect
+
+        def start_latest(cmd, **kwargs):
+            if cmd[0] == "sacct":
+                latest.touch()
+            return run(cmd, **kwargs)
+
+        command.side_effect = start_latest
+    else:
+        latest.touch()
+
+    with pytest.raises(RuntimeError, match="no completion receipt: .*execution-10"):
+        scheduler.run("main.py", str(artifacts))
+
+
 def test_sync_slurm_waits_for_accounting_visibility(
     scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -129,7 +168,7 @@ def test_sync_slurm_requires_matching_accounting_record(
 def test_async_slurm_retrieval_keeps_existing_contract(
     scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    command = mock_commands(monkeypatch, [])
+    command = mock_commands(monkeypatch, [], queue_status="")
 
     results = scheduler.get_job_results("123", str(artifacts))
 
@@ -240,6 +279,8 @@ def test_retired_job_reaches_authoritative_accounting(
             raise subprocess.CalledProcessError(
                 1, cmd, stderr="slurm_load_jobs error: Invalid job id specified\n"
             )
+        if cmd[0] == "scontrol":
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
         assert cmd[0] == "sacct"
         return subprocess.CompletedProcess(cmd, 0, stdout=f"123|{JOB_NAME}|{state}|0:0")
 
@@ -254,7 +295,7 @@ def test_retired_job_reaches_authoritative_accounting(
     else:
         with pytest.raises(RuntimeError, match=state):
             scheduler.run("main.py", str(artifacts))
-    assert attempts == 2
+    assert attempts == (3 if state == "COMPLETED" else 2)
 
 
 def test_active_jobs_reset_lookup_errors_without_a_queue_deadline(
@@ -263,8 +304,8 @@ def test_active_jobs_reset_lookup_errors_without_a_queue_deadline(
     failure = subprocess.CalledProcessError(
         1, "squeue", stderr="Controller unavailable"
     )
-    pending = subprocess.CompletedProcess([], 0, stdout="PENDING")
-    running = subprocess.CompletedProcess([], 0, stdout="RUNNING")
+    pending = subprocess.CompletedProcess([], 0, stdout="PENDING|0")
+    running = subprocess.CompletedProcess([], 0, stdout="RUNNING|0")
     command = Mock(
         side_effect=[
             failure,
@@ -462,8 +503,8 @@ def test_suspended_job_waits_until_terminal_state(
         commands.append(cmd[0])
         if cmd[0] == "squeue":
             assert "--states=all" in cmd
-            assert "--format=%T" in cmd
-            return subprocess.CompletedProcess(cmd, 0, stdout=next(states))
+            assert "--Format=State:40|,RestartCnt" in cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{next(states)}|0")
         return subprocess.CompletedProcess(
             cmd, 0, stdout=f"123|{JOB_NAME}|{terminal_state}|0:0"
         )

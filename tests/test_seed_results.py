@@ -117,10 +117,10 @@ def test_cancelling_seed_during_snapshot_copy_keeps_retry_results(
         copy_started = asyncio.Event()
         loop = asyncio.get_running_loop()
 
-        def paused_copy(snapshot):
+        def paused_copy(snapshot, artifact_dir):
             loop.call_soon_threadsafe(copy_started.set)
             assert release_copy.wait(5), "test did not release snapshot copy"
-            copy_results(snapshot)
+            copy_results(snapshot, artifact_dir)
 
         monkeypatch.setattr(previous, "_copy_results", paused_copy)
         pending = asyncio.create_task(previous.run(evaluate, "cancelled"))

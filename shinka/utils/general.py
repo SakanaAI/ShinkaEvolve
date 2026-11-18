@@ -60,12 +60,13 @@ def load_result_logs(results_dir: str) -> dict[str, str]:
     return logs
 
 
-def load_results(results_dir: str) -> dict[str, Any]:
+def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str, Any]:
     """
     Loads results from the specified directory.
 
     Args:
         results_dir: The directory containing the results.
+        log_dir: The directory containing the evaluator logs, if separate.
 
     Returns:
         dict: A dictionary containing the loaded results.
@@ -73,7 +74,7 @@ def load_results(results_dir: str) -> dict[str, Any]:
     loaded_results = {
         "correct": {"correct": False},
         "metrics": {},
-        **load_result_logs(results_dir),
+        **load_result_logs(results_dir if log_dir is None else log_dir),
     }
     results_dir_path = Path(results_dir)
 

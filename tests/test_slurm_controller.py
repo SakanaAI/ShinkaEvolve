@@ -29,9 +29,110 @@ def scheduler(request, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def artifacts(tmp_path: Path) -> Path:
-    (tmp_path / "correct.json").write_text('{"correct": true}')
-    (tmp_path / "metrics.json").write_text('{"combined_score": 42}')
-    return tmp_path
+    results = tmp_path / "results"
+    results.mkdir()
+    execution = tmp_path / f"results.{JOB_NAME}.execution-0"
+    execution.mkdir()
+    (execution / "correct.json").write_text('{"correct": true}')
+    (execution / "metrics.json").write_text('{"combined_score": 42}')
+    execution.with_name(f"{execution.name}.receipt").write_bytes(b"complete\n")
+    return results
+
+
+@pytest.mark.parametrize("visible_on_poll", [1, 2])
+def test_slurm_receipt_can_appear_during_terminal_verification(
+    scheduler: JobScheduler,
+    artifacts: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    visible_on_poll: int,
+) -> None:
+    receipt = artifacts.with_name(f"{artifacts.name}.{JOB_NAME}.execution-0.receipt")
+    receipt.unlink()
+    polls = 0
+
+    def run(command, **kwargs):
+        nonlocal polls
+        if command[0] == "sacct":
+            polls += 1
+            if polls == visible_on_poll:
+                receipt.write_bytes(b"complete\n")
+            output = f"123|{JOB_NAME}|COMPLETED|0:0"
+        else:
+            output = ""
+        return subprocess.CompletedProcess(command, 0, stdout=output)
+
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("shinka.launch.slurm_evaluation.time.sleep", Mock())
+
+    results, _ = scheduler.run("main.py", str(artifacts))
+
+    assert results["metrics"]["combined_score"] == 42
+    assert polls == visible_on_poll
+
+
+@pytest.mark.parametrize("queue_reports_restart", [False, True])
+def test_old_receipt_cannot_win_while_current_receipt_is_invisible(
+    scheduler: JobScheduler,
+    artifacts: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    queue_reports_restart: bool,
+) -> None:
+    current = artifacts.with_name(f"{artifacts.name}.{JOB_NAME}.execution-1")
+    current.mkdir()
+    (current / "correct.json").write_text('{"correct": true}')
+    (current / "metrics.json").write_text('{"combined_score": 23}')
+    polls = 0
+
+    def run(command, **kwargs):
+        nonlocal polls
+        if command[0] == "squeue":
+            output = "COMPLETED|1" if queue_reports_restart else ""
+        elif command[0] == "sacct":
+            polls += 1
+            if polls == 2:
+                current.with_name(f"{current.name}.receipt").write_bytes(b"complete\n")
+            output = f"123|{JOB_NAME}|COMPLETED|0:0"
+        else:
+            assert command[0] == "scontrol"
+            output = (
+                f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0 Restarts=1"
+            )
+        return subprocess.CompletedProcess(command, 0, stdout=output)
+
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("shinka.launch.slurm_evaluation.time.sleep", Mock())
+
+    results, _ = scheduler.run("main.py", str(artifacts))
+
+    assert results["metrics"]["combined_score"] == 23
+    assert polls == 2
+
+
+@pytest.mark.parametrize("controller_available", [False, True])
+def test_requeued_accounting_success_checks_current_controller(
+    scheduler: JobScheduler,
+    artifacts: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    controller_available: bool,
+) -> None:
+    execution = artifacts.with_name(f"{artifacts.name}.{JOB_NAME}.execution-1")
+    execution.mkdir()
+    (execution / "correct.json").write_text('{"correct": true}')
+    (execution / "metrics.json").write_text('{"combined_score": 23}')
+    execution.with_name(f"{execution.name}.receipt").write_bytes(b"complete\n")
+    controller = (
+        f"JobId=123 JobName={JOB_NAME} JobState=FAILED ExitCode=1:0 Restarts=1"
+        if controller_available
+        else FileNotFoundError("controller unavailable")
+    )
+    mock_status(monkeypatch, f"123|{JOB_NAME}|COMPLETED|0:0", controller)
+
+    if controller_available:
+        with pytest.raises(RuntimeError, match="controller: state=FAILED"):
+            scheduler.run("main.py", str(artifacts))
+    else:
+        results, _ = scheduler.run("main.py", str(artifacts))
+        assert results["metrics"]["combined_score"] == 23
 
 
 def mock_status(
@@ -43,7 +144,7 @@ def mock_status(
         assert kwargs["timeout"] == 30
         assert not kwargs.get("shell")
         if cmd[0] == "squeue":
-            return subprocess.CompletedProcess(cmd, 0, stdout="COMPLETED")
+            return subprocess.CompletedProcess(cmd, 0, stdout="COMPLETED|0")
         if cmd[0] == "scontrol":
             assert cmd == ["scontrol", "--oneliner", "show", "job", "123"]
             output = controller
@@ -247,7 +348,7 @@ def test_recycled_job_id_waits_for_current_accounting(
 ) -> None:
     command = Mock(
         side_effect=[
-            subprocess.CompletedProcess([], 0, stdout=""),
+            subprocess.CompletedProcess([], 0, stdout="COMPLETED|0"),
             subprocess.CompletedProcess(
                 [], 0, stdout="123|previous-allocation|COMPLETED|0:0"
             ),

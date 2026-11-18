@@ -31,40 +31,54 @@ class SeedResultAttempt:
             result = await asyncio.to_thread(evaluate, program_path, str(self.path))
         except Exception:
             try:
-                await self._publish_results()
+                await self._publish_results(self.path)
             except OSError as exc:
                 logger.warning(
                     "Could not publish seed results from %s: %s", self.path, exc
                 )
             raise
-        await self._publish_results()
+        artifact_dir = result[0].get("_artifact_dir", self.path)
+        await self._publish_results(artifact_dir)
         for name in ("correct.json", "metrics.json"):
-            if (self.path / name).is_symlink() and not (
+            if (artifact_dir / name).is_symlink() and not (
                 self._public_results / name
             ).is_file():
                 raise ValueError(f"{name} must refer to a file within the seed attempt")
         return result
 
-    async def _publish_results(self) -> None:
+    async def _publish_results(self, artifact_dir: Path) -> None:
         snapshot = self._history / f".publish-{self._id}"
-        await asyncio.to_thread(self._copy_results, snapshot)
+        await asyncio.to_thread(self._copy_results, snapshot, artifact_dir)
         # Only the live runner may replace the public path.
         snapshot.rename(self._public_results)
 
-    def _copy_results(self, snapshot: Path) -> None:
+    def _copy_results(self, snapshot: Path, artifact_dir: Path) -> None:
         # A Slurm allocation can outlive status verification. Keep its original
         # directory available and copy files independently of the producer.
         self.path.mkdir(exist_ok=True)
-        root = self.path.resolve()
+        root = artifact_dir.resolve()
+        log_names = ("job_log.out", "job_log.err")
 
         def ignore(directory: str, names: list[str]) -> list[str]:
+            source = Path(directory)
             return [
                 name
                 for name in names
-                if not _can_snapshot(Path(directory) / name, root)
+                if not _can_snapshot(source / name, root)
+                or (
+                    artifact_dir != self.path
+                    and source == artifact_dir
+                    and name in log_names
+                )
             ]
 
-        shutil.copytree(self.path, snapshot, ignore=ignore)
+        shutil.copytree(artifact_dir, snapshot, ignore=ignore)
+        if artifact_dir != self.path:
+            log_root = self.path.resolve()
+            for name in log_names:
+                path = self.path / name
+                if path.is_file() and _can_snapshot(path, log_root):
+                    shutil.copy2(path, snapshot / name)
 
 
 def _can_snapshot(path: Path, root: Path) -> bool:

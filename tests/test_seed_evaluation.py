@@ -94,6 +94,15 @@ def _write_evaluator(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def _write_slurm_seed_artifacts(path: Path, job_name: str, state: str) -> None:
+    execution = path.with_name(f"{path.name}.{job_name}.execution-0")
+    execution.mkdir()
+    (execution / "correct.json").write_text('{"correct": true}')
+    (execution / "metrics.json").write_text('{"combined_score": 42}')
+    receipt = execution.with_name(f"{execution.name}.receipt")
+    receipt.write_bytes(b"complete\n" if state == "COMPLETED" else b"")
+
+
 def test_seed_retry_requires_its_own_artifacts(tmp_path: Path) -> None:
     public_results = tmp_path / "gen_0" / "results"
     public_results.mkdir(parents=True)
@@ -195,13 +204,12 @@ def test_slurm_seed_requires_successful_job(
         nonlocal job_name
         job_name = kwargs["job_name"]
         path = Path(results_dir)
-        (path / "correct.json").write_text('{"correct": true}')
-        (path / "metrics.json").write_text('{"combined_score": 42}')
+        _write_slurm_seed_artifacts(path, job_name, state)
         (path / "job_log.err").write_text("evaluator stderr")
         return "123"
 
     def run(cmd, **kwargs):
-        output = "" if cmd[0] == "squeue" else f"123|{job_name}|{state}|0:0"
+        output = f"{state}|0" if cmd[0] == "squeue" else f"123|{job_name}|{state}|0:0"
         return subprocess.CompletedProcess(cmd, 0, stdout=output)
 
     monkeypatch.setattr(f"shinka.launch.scheduler.submit_{backend}", submit)
@@ -327,8 +335,7 @@ def test_slurm_seed_without_accounting_uses_controller_status(
         nonlocal job_name
         job_name = kwargs["job_name"]
         path = Path(results_dir)
-        (path / "correct.json").write_text('{"correct": true}')
-        (path / "metrics.json").write_text('{"combined_score": 42}')
+        _write_slurm_seed_artifacts(path, job_name, state)
         (path / "job_log.err").write_text("partial evaluator log")
         return "123"
 

@@ -10,6 +10,8 @@ from shinka.utils import load_results
 from typing import Optional, Dict
 import logging
 
+from .slurm_results import render_seed_evaluator
+
 logger = logging.getLogger(__name__)
 
 
@@ -160,6 +162,7 @@ SBATCH_DOCKER_TEMPLATE = """\
 #SBATCH --gres=gpu:{gpus}
 {additional_sbatch_params}
 
+{seed_setup}
 # (optional) load modules or set env here
 module --quiet purge
 
@@ -174,7 +177,7 @@ docker run --rm \\
     {docker_flags} \\
     {image} {cmd}
 
-exit $?
+{seed_finish}
 """
 
 SBATCH_CONDA_TEMPLATE = """\
@@ -190,6 +193,7 @@ SBATCH_CONDA_TEMPLATE = """\
 #SBATCH --gres=gpu:{gpus}
 {additional_sbatch_params}
 
+{seed_setup}
 # Load modules
 module --quiet purge
 {module_load_commands}
@@ -202,7 +206,7 @@ echo "Job running on $(hostname) under Slurm job $SLURM_JOB_ID"
 {eval_env_exports}
 {cmd}
 
-exit $?
+{seed_finish}
 """
 
 
@@ -211,6 +215,15 @@ def _sbatch_command(sbatch_path: str, job_name: Optional[str]) -> list[str]:
     if job_name is not None:
         return ["sbatch", f"--job-name={job_name}", sbatch_path]
     return ["sbatch", sbatch_path]
+
+
+def _seed_submission_env(seed_results_dir: Optional[str]) -> Optional[Dict[str, str]]:
+    if seed_results_dir is None or "SLURM_RESTART_COUNT" not in os.environ:
+        return None
+    # A new job submitted from inside a restarted batch starts at execution zero.
+    env = os.environ.copy()
+    env.pop("SLURM_RESTART_COUNT")
+    return env
 
 
 def submit_docker(
@@ -230,6 +243,7 @@ def submit_docker(
     *,
     command_timeout: Optional[float] = None,
     job_name: Optional[str] = None,
+    seed_results_dir: Optional[str] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -287,8 +301,12 @@ fi
     for k, v in sbatch_kwargs.items():
         additional_sbatch_params += f"#SBATCH --{k}={v}"
 
+    batch_name = job_name or f"docker-{uuid.uuid4().hex[:6]}"
+    seed_setup, command, seed_finish = render_seed_evaluator(
+        cmd, seed_results_dir, batch_name
+    )
     sbatch_script = SBATCH_DOCKER_TEMPLATE.format(
-        job_name=job_name or f"docker-{uuid.uuid4().hex[:6]}",
+        job_name=batch_name,
         log_dir=log_dir,
         time=time,
         partition=partition,
@@ -297,9 +315,11 @@ fi
         additional_sbatch_params=additional_sbatch_params,
         docker_flags=docker_flags,
         image=image,
-        cmd=" ".join(cmd),
+        cmd=command,
         load_command=load_command,
         eval_env_docker_flags=_render_env_docker_flags(eval_env),
+        seed_setup=seed_setup,
+        seed_finish=seed_finish,
     )
 
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch") as f:
@@ -312,6 +332,7 @@ fi
         check=True,
         text=True,
         timeout=command_timeout,
+        env=_seed_submission_env(seed_results_dir),
     )
     # Slurm replies: "Submitted batch job <jobid>"
     job_id = result.stdout.strip().split()[-1]
@@ -337,6 +358,7 @@ def submit_conda(
     *,
     command_timeout: Optional[float] = None,
     job_name: Optional[str] = None,
+    seed_results_dir: Optional[str] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -374,8 +396,12 @@ def submit_conda(
     for k, v in sbatch_kwargs.items():
         additional_sbatch_params += f"#SBATCH --{k}={v}"
 
+    batch_name = job_name or f"conda-{uuid.uuid4().hex[:6]}"
+    seed_setup, command, seed_finish = render_seed_evaluator(
+        cmd, seed_results_dir, batch_name
+    )
     sbatch_script = SBATCH_CONDA_TEMPLATE.format(
-        job_name=job_name or f"conda-{uuid.uuid4().hex[:6]}",
+        job_name=batch_name,
         log_dir=log_dir,
         time=time,
         partition=partition,
@@ -384,8 +410,10 @@ def submit_conda(
         additional_sbatch_params=additional_sbatch_params,
         activation_commands=activation_commands,
         module_load_commands=module_load_commands,
-        cmd=" ".join(cmd),
+        cmd=command,
         eval_env_exports=_render_env_exports(eval_env),
+        seed_setup=seed_setup,
+        seed_finish=seed_finish,
     )
 
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch") as f:
@@ -400,6 +428,7 @@ def submit_conda(
             check=True,
             text=True,
             timeout=command_timeout,
+            env=_seed_submission_env(seed_results_dir),
         )
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.strip() if e.stderr else str(e)

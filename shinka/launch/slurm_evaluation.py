@@ -3,12 +3,14 @@
 The asynchronous scheduler keeps its existing status/retrieval contract.
 """
 
+from pathlib import Path
 import subprocess
 import time
 from typing import Any
 
 from shinka.utils import load_results
 from . import slurm
+from .slurm_results import latest_execution, require_completed_execution
 
 
 TERMINAL_STATUS_ATTEMPTS = 6
@@ -34,17 +36,21 @@ def monitor_evaluation(
     """Load artifacts only after the evaluator has verifiably succeeded."""
     if job_id.startswith("local-"):
         _wait_for_local_success(job_id, poll_interval)
-    else:
-        _wait_for_queue_exit(job_id, job_name, poll_interval)
-        _require_terminal_success(job_id, job_name)
-    return load_results(results_dir)
+        return load_results(results_dir)
+
+    queue_restart = _wait_for_queue_exit(job_id, job_name, poll_interval)
+    execution_dir = _require_terminal_success(job_id, job_name, results_dir, queue_restart)
+    results = load_results(str(execution_dir), log_dir=results_dir)
+    results["_artifact_dir"] = execution_dir
+    return results
 
 
-def _wait_for_queue_exit(job_id: str, job_name: str, poll_interval: float) -> None:
+def _wait_for_queue_exit(job_id: str, job_name: str, poll_interval: float) -> int | None:
     consecutive_errors = 0
+    latest_restart = None
     while True:
         try:
-            status = _queue_status(job_id, job_name)
+            status, restart = _queue_status(job_id, job_name)
         except (OSError, subprocess.SubprocessError) as exc:
             consecutive_errors += 1
             if consecutive_errors >= STATUS_ERROR_LIMIT:
@@ -53,13 +59,15 @@ def _wait_for_queue_exit(job_id: str, job_name: str, poll_interval: float) -> No
                     f"{consecutive_errors} consecutive times: {exc}"
                 ) from exc
         else:
+            if restart is not None:
+                latest_restart = max(latest_restart or 0, restart)
             if not status or status == "COMPLETED" or status in FAILED_STATES:
-                return
+                return latest_restart
             consecutive_errors = 0
         time.sleep(poll_interval)
 
 
-def _queue_status(job_id: str, job_name: str) -> str:
+def _queue_status(job_id: str, job_name: str) -> tuple[str, int | None]:
     try:
         result = subprocess.run(
             [
@@ -69,7 +77,7 @@ def _queue_status(job_id: str, job_name: str) -> str:
                 f"--name={job_name}",
                 "--noheader",
                 "--states=all",
-                "--format=%T",
+                "--Format=State:40|,RestartCnt",
             ],
             capture_output=True,
             text=True,
@@ -80,9 +88,10 @@ def _queue_status(job_id: str, job_name: str) -> str:
         # The controller may have purged a finished job before our next poll.
         # Absence is only a cue to verify terminal status, never proof of success.
         if (exc.stderr or "").strip().endswith("Invalid job id specified"):
-            return ""
+            return "", None
         raise
-    return result.stdout.strip()
+    state, _, restart = result.stdout.strip().partition("|")
+    return state.strip(), int(restart) if restart.strip().isdecimal() else None
 
 
 def _wait_for_local_success(job_id: str, poll_interval: float) -> None:
@@ -103,9 +112,15 @@ def _wait_for_local_success(job_id: str, poll_interval: float) -> None:
         time.sleep(poll_interval)
 
 
-def _require_terminal_success(job_id: str, job_name: str) -> None:
+def _require_terminal_success(
+    job_id: str, job_name: str, results_dir: str, queue_restart: int | None
+) -> Path:
     details = {}
+    execution = None
+    minimum_restart = queue_restart or 0
     for attempt in range(TERMINAL_STATUS_ATTEMPTS):
+        accounting_success = False
+        verified_success = False
         for source, read_status in (
             ("accounting", _read_accounting),
             ("controller", _read_controller),
@@ -118,14 +133,52 @@ def _require_terminal_success(job_id: str, job_name: str) -> None:
             details[source] = "no unambiguous matching job record"
             if record is None:
                 continue
-            state, exit_code = record
+            visible = latest_execution(results_dir, job_name)
+            if visible is not None and (execution is None or visible[0] > execution[0]):
+                execution = visible
+                accounting_success = False
+            restart = max(minimum_restart, execution[0] if execution else 0)
+            state, exit_code, observed_restart = record
             details[source] = f"state={state}, ExitCode={exit_code}"
-            if state == "COMPLETED" and exit_code == "0:0":
-                return
+            success = state == "COMPLETED" and exit_code == "0:0"
+            if source == "accounting" and (restart or (success and queue_restart is None)):
+                # Accounting may lack a restart count. Check the retained
+                # controller record when a requeue is known or squeue had no count.
+                accounting_success = success
+                continue
+            if source == "controller" and observed_restart is not None:
+                accounting_success = False
+                minimum_restart = max(minimum_restart, observed_restart)
+                if observed_restart != restart:
+                    details[source] += (
+                        f", Restarts={observed_restart}, expected {restart}"
+                    )
+                    continue
+            elif restart:
+                details[source] += ", no restart count"
+                continue
+            if success:
+                verified_success = True
+                break
             if state == "COMPLETED" or state.split()[0] in FAILED_STATES:
                 raise RuntimeError(
                     f"Slurm job {job_id} failed: {source}: {details[source]}"
                 )
+        if verified_success or accounting_success:
+            if execution is not None and execution[0] >= minimum_restart:
+                try:
+                    require_completed_execution(execution[1])
+                except (OSError, RuntimeError) as exc:
+                    details["results"] = str(exc)
+                else:
+                    visible = latest_execution(results_dir, job_name)
+                    if visible == execution:
+                        return execution[1]
+                    if visible is not None and visible[0] > execution[0]:
+                        execution = visible
+                    details["results"] = "execution receipt changed during verification"
+            else:
+                details["results"] = f"no visible receipt for execution {minimum_restart}"
         if attempt + 1 < TERMINAL_STATUS_ATTEMPTS:
             time.sleep(TERMINAL_STATUS_RETRY_SECONDS)
     diagnostic = "; ".join(f"{source}: {detail}" for source, detail in details.items())
@@ -134,7 +187,7 @@ def _require_terminal_success(job_id: str, job_name: str) -> None:
     )
 
 
-def _read_accounting(job_id: str, job_name: str) -> tuple[str, str] | None:
+def _read_accounting(job_id: str, job_name: str) -> tuple[str, str, int | None] | None:
     # Allocation-only output prevents a successful batch/extern step from
     # masking a failed job. Widen State to avoid Slurm's truncated labels.
     result = subprocess.run(
@@ -163,10 +216,10 @@ def _read_accounting(job_id: str, job_name: str) -> tuple[str, str] | None:
     ]
     if len(matches) != 1 or not matches[0][2] or not matches[0][3]:
         return None
-    return matches[0][2], matches[0][3]
+    return matches[0][2], matches[0][3], None
 
 
-def _read_controller(job_id: str, job_name: str) -> tuple[str, str] | None:
+def _read_controller(job_id: str, job_name: str) -> tuple[str, str, int | None] | None:
     result = subprocess.run(
         ["scontrol", "--oneliner", "show", "job", job_id],
         capture_output=True,
@@ -182,13 +235,20 @@ def _read_controller(job_id: str, job_name: str) -> tuple[str, str] | None:
         "JobName": [],
         "JobState": [],
         "ExitCode": [],
+        "Restarts": [],
     }
     for token in records[0].split():
         name, _, value = token.partition("=")
         if name in fields:
             fields[name].append(value)
+    restart_counts = fields.pop("Restarts")
+    if restart_counts and (
+        len(restart_counts) != 1 or not restart_counts[0].isdecimal()
+    ):
+        return None
     if any(len(values) != 1 or not values[0] for values in fields.values()):
         return None
     if fields["JobId"][0] != job_id or fields["JobName"][0] != job_name:
         return None
-    return fields["JobState"][0], fields["ExitCode"][0]
+    restart = int(restart_counts[0]) if restart_counts else None
+    return fields["JobState"][0], fields["ExitCode"][0], restart

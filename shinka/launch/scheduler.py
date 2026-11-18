@@ -264,6 +264,7 @@ class JobScheduler:
                 eval_env=self._build_eval_env(),
                 command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
                 job_name=job_name,
+                seed_results_dir=results_dir_t,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -282,6 +283,7 @@ class JobScheduler:
                 eval_env=self._build_eval_env(),
                 command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
                 job_name=job_name,
+                seed_results_dir=results_dir_t,
             )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
