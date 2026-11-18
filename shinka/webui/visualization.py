@@ -13,6 +13,7 @@ import json
 import markdown
 import os
 import re
+import socket
 import socketserver
 import sqlite3
 import subprocess
@@ -23,26 +24,41 @@ import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Any, Dict, FrozenSet, Optional, Sequence, Tuple
 
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
+from shinka.webui.security import (
+    DEFAULT_HOST,
+    IMAGE_CONTENT_TYPES,
+    STATIC_FILES,
+    build_allowed_hosts,
+    is_allowed_host,
+    resolve_under_root,
+)
 
 # We'll use a simple text-to-PDF approach instead of complex dependencies
 WEASYPRINT_AVAILABLE = False
 
 DEFAULT_PORT = 8000
+WEBUI_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
 
 
 class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args, search_root=None, **kwargs):
+    # Hostnames accepted in the Host header; set per server by the factory.
+    allowed_hosts: FrozenSet[str] = build_allowed_hosts(DEFAULT_HOST)
+
+    def __init__(self, *args, search_root=None, allowed_hosts=None, **kwargs):
         self.search_root = search_root or os.getcwd()
-        super().__init__(*args, **kwargs)
+        if allowed_hosts is not None:
+            self.allowed_hosts = allowed_hosts
+        super().__init__(*args, directory=WEBUI_DIR, **kwargs)
 
     def end_headers(self):
         """Disable browser caching for local HTML shells to avoid stale embedded JS."""
+        self.send_header("X-Content-Type-Options", "nosniff")
         parsed_url = urllib.parse.urlparse(self.path)
         if parsed_url.path in ("/", "/index.html", "/viz_tree.html", "/compare.html"):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -53,6 +69,55 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         """Override to provide more detailed logging."""
         print(f"\n[SERVER] {format % args}")
+
+    def send_error(self, code, message=None, explain=None):
+        """Send an error whose reason phrase cannot carry injected headers.
+
+        Messages echo request values (paths, ids). The base class writes the
+        message into the status line verbatim, so a CR/LF in it would start a
+        new header or body.
+        """
+        if message is not None:
+            message = "".join(ch if ch.isprintable() else " " for ch in str(message))
+        super().send_error(code, message, explain)
+
+    def _reject_foreign_host(self) -> bool:
+        """Send 403 and return True unless the Host header names this server."""
+        host_header = self.headers.get("Host")
+        if is_allowed_host(host_header, self.allowed_hosts):
+            return False
+        self.send_error(
+            403,
+            "Host not allowed",
+            f"Host header {host_header!r} does not name this server. "
+            "Restart shinka_visualize with --allowed-host <name> to accept it.",
+        )
+        return True
+
+    def _serve_static(self, head_only: bool = False):
+        """Serve one of the UI's own files; nothing else in the package dir."""
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/":
+            self.path = path = "/index.html"
+        if path not in STATIC_FILES:
+            self.send_error(404, "File not found")
+            return
+        if head_only:
+            return http.server.SimpleHTTPRequestHandler.do_HEAD(self)
+        return http.server.SimpleHTTPRequestHandler.do_GET(self)
+
+    def do_HEAD(self):
+        if self._reject_foreign_host():
+            return
+        return self._serve_static(head_only=True)
+
+    def _root(self) -> str:
+        return os.path.realpath(self.search_root)
+
+    def _resolve_artifact_path(self, artifact_path: Optional[str]) -> Optional[Path]:
+        """Resolve a path recorded in the DB or a failure JSON under the root."""
+        resolved = resolve_under_root(self.search_root, artifact_path)
+        return Path(resolved) if resolved is not None else None
 
     def _make_failed_node_id(self, generation: int) -> str:
         return f"failed:proposal:{generation}"
@@ -69,11 +134,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     def _read_failure_json(
         self, failure_json_path: Optional[str]
     ) -> Optional[Dict[str, Any]]:
-        if not failure_json_path:
-            return None
         try:
-            failure_path = Path(self.search_root) / failure_json_path
-            if not failure_path.exists():
+            failure_path = self._resolve_artifact_path(failure_json_path)
+            if failure_path is None or not failure_path.exists():
                 return None
             return json.loads(failure_path.read_text(encoding="utf-8"))
         except Exception:
@@ -113,9 +176,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if generated_code_path:
             return self._language_from_suffix(Path(generated_code_path).suffix)
 
-        failure_json_path = details.get("failure_json_path")
-        if failure_json_path:
-            failure_path = Path(self.search_root) / failure_json_path
+        failure_path = self._resolve_artifact_path(details.get("failure_json_path"))
+        if failure_path is not None:
             candidates = sorted(failure_path.parent.glob("main.*"))
             if candidates:
                 return self._language_from_suffix(candidates[0].suffix)
@@ -130,16 +192,14 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         generated_code_path = ((failure_payload or {}).get("artifacts", {}) or {}).get(
             "generated_code_path"
         )
-        if generated_code_path:
-            code_path = Path(self.search_root) / generated_code_path
-            if code_path.exists():
-                return code_path
+        code_path = self._resolve_artifact_path(generated_code_path)
+        if code_path is not None and code_path.exists():
+            return code_path
 
-        failure_json_path = details.get("failure_json_path")
-        if not failure_json_path:
+        failure_path = self._resolve_artifact_path(details.get("failure_json_path"))
+        if failure_path is None:
             return None
 
-        failure_path = Path(self.search_root) / failure_json_path
         language = self._resolve_failed_node_language(details, failure_payload)
         preferred_suffix = {
             "python": ".py",
@@ -237,6 +297,13 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         try:
             cursor = conn.cursor()
             cursor.execute("PRAGMA busy_timeout = 5000;")
+            # DBs written by early releases have no attempt_log, and the UI
+            # never migrates a DB it only reads.
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attempt_log'"
+            )
+            if cursor.fetchone() is None:
+                return []
             query = """
                 SELECT generation, details, created_at
                 FROM attempt_log
@@ -273,6 +340,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         print(f"\n[SERVER] Received GET request for: {self.path}")
+        if self._reject_foreign_host():
+            return
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
         query = urllib.parse.parse_qs(parsed_url.query)
@@ -341,12 +410,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db_path = query["db_path"][0]
             return self.handle_get_database_stats(db_path)
 
-        if path == "/":
-            print("[SERVER] Root path requested, serving index.html")
-            self.path = "/index.html"
-
-        # Serve static files from the webui directory
-        return http.server.SimpleHTTPRequestHandler.do_GET(self)
+        return self._serve_static()
 
     def handle_list_databases(self):
         """Scan the search root directory for .db files."""
@@ -429,13 +493,49 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Convert db_path to the actual file path (now a no-op since path is not modified)."""
         return db_path
 
+    def _resolve_db_path(self, db_path: str) -> Optional[str]:
+        """Absolute path of a client-supplied DB path inside the search root.
+
+        Sends 403 and returns None when the path escapes the root. Every
+        handler that takes ``db_path`` goes through here.
+        """
+        abs_db_path = resolve_under_root(
+            self.search_root, self._get_actual_db_path(db_path)
+        )
+        if abs_db_path is None:
+            self.send_error(403, "Database path is outside the served directory")
+        return abs_db_path
+
+    def _resolve_meta_file(
+        self, abs_db_path: str, processed_count: str
+    ) -> Optional[str]:
+        """Path of ``meta_<count>.txt`` next to a DB, or None after an error.
+
+        Looks in the ``meta`` subdirectory first, then next to the DB for runs
+        that predate it.
+        """
+        if not processed_count.isascii() or not processed_count.isdigit():
+            self.send_error(400, "processed_count must be a non-negative integer")
+            return None
+        db_dir = os.path.dirname(abs_db_path)
+        meta_filename = f"meta_{processed_count}.txt"
+        for candidate in (
+            os.path.join(db_dir, "meta", meta_filename),
+            os.path.join(db_dir, meta_filename),
+        ):
+            meta_file_path = resolve_under_root(self.search_root, candidate)
+            if meta_file_path is not None and os.path.isfile(meta_file_path):
+                return meta_file_path
+        self.send_error(404, f"Meta file not found: {meta_filename}")
+        return None
+
     def handle_get_programs(self, db_path: str):
         """Fetch all programs from a given database file."""
         print(f"[SERVER] Fetching programs from DB: {db_path}")
 
-        # Handle the case where db_path might have the task name prepended
-        # Extract the actual path by removing the task name prefix if present
-        actual_db_path = self._get_actual_db_path(db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
 
         # Check cache first
         if db_path in db_cache:
@@ -445,12 +545,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response(cached_data)
                 return
 
-        # Construct absolute path to the database from search root using actual path
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
         print(f"[SERVER] Absolute DB path: {abs_db_path} (from {db_path})")
 
         if not os.path.exists(abs_db_path):
-            self.send_error(404, f"Database file not found: {actual_db_path}")
+            self.send_error(404, f"Database file not found: {db_path}")
             return
 
         # Retry logic for the reader with improved WAL mode support
@@ -542,11 +640,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Fetch lightweight program summaries (no code, no embeddings)."""
         print(f"[SERVER] Fetching program summaries from DB: {db_path}")
 
-        actual_db_path = self._get_actual_db_path(db_path)
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
 
         if not os.path.exists(abs_db_path):
-            self.send_error(404, f"Database file not found: {actual_db_path}")
+            self.send_error(404, f"Database file not found: {db_path}")
             return
 
         max_retries = 8
@@ -612,11 +711,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Get program count and max timestamp for efficient change detection."""
         print(f"[SERVER] Fetching program count from DB: {db_path}")
 
-        actual_db_path = self._get_actual_db_path(db_path)
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
 
         if not os.path.exists(abs_db_path):
-            self.send_error(404, f"Database file not found: {actual_db_path}")
+            self.send_error(404, f"Database file not found: {db_path}")
             return
 
         max_retries = 8
@@ -690,11 +790,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Get full details for a single program (including code and embeddings)."""
         print(f"[SERVER] Fetching program details for ID: {program_id}")
 
-        actual_db_path = self._get_actual_db_path(db_path)
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
 
         if not os.path.exists(abs_db_path):
-            self.send_error(404, f"Database file not found: {actual_db_path}")
+            self.send_error(404, f"Database file not found: {db_path}")
             return
 
         failed_generation = self._parse_failed_node_generation(program_id)
@@ -778,11 +879,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """List available meta files keyed by processed-count suffix."""
         print(f"[SERVER] Listing meta files for DB: {db_path}")
 
-        # Get the actual database path
-        actual_db_path = self._get_actual_db_path(db_path)
-
-        # Get the directory containing the database file
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
         db_dir = os.path.dirname(abs_db_path)
 
         # Look in the meta subdirectory
@@ -793,8 +892,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             print("[SERVER] Meta subdirectory not found, checking DB directory")
             meta_dir = db_dir
 
-        if not os.path.exists(meta_dir):
-            self.send_error(404, f"Meta directory not found: {meta_dir}")
+        if resolve_under_root(self.search_root, meta_dir) is None or not os.path.isdir(
+            meta_dir
+        ):
+            self.send_error(404, "Meta directory not found")
             return
 
         meta_files = []
@@ -836,23 +937,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             f"processed_count: {processed_count}"
         )
 
-        # Get the actual database path
-        actual_db_path = self._get_actual_db_path(db_path)
-
-        # Get the directory containing the database file
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
-        db_dir = os.path.dirname(abs_db_path)
-
-        # Construct the meta file path - try meta subdirectory first
-        meta_filename = f"meta_{processed_count}.txt"
-        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
-
-        # Fall back to db_dir for backward compatibility
-        if not os.path.exists(meta_file_path):
-            meta_file_path = os.path.join(db_dir, meta_filename)
-
-        if not os.path.exists(meta_file_path):
-            self.send_error(404, f"Meta file not found: {meta_filename}")
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
+        meta_file_path = self._resolve_meta_file(abs_db_path, processed_count)
+        if meta_file_path is None:
             return
 
         try:
@@ -863,7 +952,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "processed_count": int(processed_count),
                 # Backward-compatible alias for older clients.
                 "generation": int(processed_count),
-                "filename": meta_filename,
+                "filename": os.path.basename(meta_file_path),
                 "content": content,
             }
 
@@ -884,23 +973,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             f"{db_path}, processed_count: {processed_count}"
         )
 
-        # Get the actual database path
-        actual_db_path = self._get_actual_db_path(db_path)
-
-        # Get the directory containing the database file
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
-        db_dir = os.path.dirname(abs_db_path)
-
-        # Construct the meta file path - try meta subdirectory first
-        meta_filename = f"meta_{processed_count}.txt"
-        meta_file_path = os.path.join(db_dir, "meta", meta_filename)
-
-        # Fall back to db_dir for backward compatibility
-        if not os.path.exists(meta_file_path):
-            meta_file_path = os.path.join(db_dir, meta_filename)
-
-        if not os.path.exists(meta_file_path):
-            self.send_error(404, f"Meta file not found: {meta_filename}")
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
+        meta_file_path = self._resolve_meta_file(abs_db_path, processed_count)
+        if meta_file_path is None:
             return
 
         try:
@@ -941,26 +1018,30 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             f"gen: {generation}, program: {program_id}"
         )
 
-        # Get the actual database path
-        actual_db_path = self._get_actual_db_path(db_path)
-
-        # Get the directory containing the database file
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
+        if not generation.isascii() or not generation.isdigit():
+            self.send_error(400, "generation must be a non-negative integer")
+            return
         db_dir = os.path.dirname(abs_db_path)
 
         # Construct the plots directory path
         # Structure: db_dir/gen_X/results/plots/
-        plots_dir = os.path.join(db_dir, f"gen_{generation}", "results", "plots")
+        plots_dir = resolve_under_root(
+            self.search_root,
+            os.path.join(db_dir, f"gen_{generation}", "results", "plots"),
+        )
 
         plot_files = []
-        if os.path.exists(plots_dir):
+        if plots_dir is not None and os.path.isdir(plots_dir):
             for filename in os.listdir(plots_dir):
                 filepath = os.path.join(plots_dir, filename)
                 if os.path.isfile(filepath):
                     ext = os.path.splitext(filename)[1].lower()
-                    if ext in [".png", ".gif", ".jpg", ".jpeg"]:
+                    if ext in IMAGE_CONTENT_TYPES:
                         # Create URL-safe path relative to search_root
-                        rel_path = os.path.relpath(filepath, self.search_root)
+                        rel_path = os.path.relpath(filepath, self._root())
                         plot_files.append(
                             {
                                 "filename": filename,
@@ -984,29 +1065,21 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         rel_path = urllib.parse.unquote(parsed_url.path[11:])  # Remove /plot_file/
 
-        abs_path = os.path.join(self.search_root, rel_path)
-        print(f"[SERVER] Serving plot file: {abs_path}")
-
-        if not os.path.exists(abs_path):
-            self.send_error(404, f"Plot file not found: {rel_path}")
-            return
-
-        # Security check: ensure the path is within search_root
-        abs_path = os.path.abspath(abs_path)
-        abs_search_root = os.path.abspath(self.search_root)
-        if not abs_path.startswith(abs_search_root):
+        # Only images, and only from inside the search root. Both checks come
+        # before the existence check so the endpoint cannot be used to probe
+        # for files it will not serve.
+        abs_path = resolve_under_root(self.search_root, rel_path)
+        content_type = IMAGE_CONTENT_TYPES.get(
+            os.path.splitext(abs_path or "")[1].lower()
+        )
+        if abs_path is None or content_type is None:
             self.send_error(403, "Access denied")
             return
+        print(f"[SERVER] Serving plot file: {abs_path}")
 
-        # Determine content type
-        ext = os.path.splitext(abs_path)[1].lower()
-        content_types = {
-            ".png": "image/png",
-            ".gif": "image/gif",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-        }
-        content_type = content_types.get(ext, "application/octet-stream")
+        if not os.path.isfile(abs_path):
+            self.send_error(404, f"Plot file not found: {rel_path}")
+            return
 
         try:
             with open(abs_path, "rb") as f:
@@ -1028,11 +1101,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """Fetch all system prompts from the prompts.db in the same directory."""
         print(f"[SERVER] Fetching system prompts for DB: {db_path}")
 
-        # Get the actual database path
-        actual_db_path = self._get_actual_db_path(db_path)
-
-        # Construct path to prompts.sqlite (in same directory as programs.sqlite)
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
         db_dir = os.path.dirname(abs_db_path)
         prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
 
@@ -1130,8 +1201,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_get_database_stats(self, db_path: str):
         """Get quick aggregate stats for a database (count, best score, cost)."""
-        actual_db_path = self._get_actual_db_path(db_path)
-        abs_db_path = os.path.join(self.search_root, actual_db_path)
+        abs_db_path = self._resolve_db_path(db_path)
+        if abs_db_path is None:
+            return
 
         if not os.path.exists(abs_db_path):
             self.send_json_response({"error": "not_found"})
@@ -1510,6 +1582,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 result = subprocess.run(
                     [
                         "wkhtmltopdf",
+                        # The meta text is model output and may carry HTML:
+                        # no scripts, no reading other local files.
+                        "--disable-javascript",
+                        "--disable-local-file-access",
                         "--page-size",
                         "A4",
                         "--margin-top",
@@ -1678,7 +1754,6 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         payload = json.dumps(clean_data, default=self._json_encoder).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -1708,39 +1783,96 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-def create_handler_factory(search_root):
-    """Create a handler factory that passes the search root to handler."""
+def create_handler_factory(search_root, allowed_hosts=None):
+    """Create a handler factory that passes the server settings to handler."""
 
     def handler_factory(*args, **kwargs):
-        return DatabaseRequestHandler(*args, search_root=search_root, **kwargs)
+        return DatabaseRequestHandler(
+            *args, search_root=search_root, allowed_hosts=allowed_hosts, **kwargs
+        )
 
     return handler_factory
 
 
-def start_server(port: int, search_root: str, db_path: Optional[str] = None):
-    """Start the HTTP server."""
-    # Change to the webui directory inside the shinka package to serve static files
-    webui_dir = os.path.dirname(__file__)
-    webui_dir = os.path.abspath(webui_dir)
+def _is_loopback_host(host: str) -> bool:
+    return host == "localhost" or host == "::1" or host.startswith("127.")
 
-    if not os.path.exists(webui_dir):
-        raise FileNotFoundError(f"Webui directory not found: {webui_dir}")
 
-    os.chdir(webui_dir)
-    print(f"[DEBUG] Server root directory: {webui_dir}")
-    print(f"[DEBUG] Search root directory: {search_root}")
+def make_server(
+    port: int,
+    search_root: str,
+    host: str = DEFAULT_HOST,
+    allowed_hosts: Sequence[str] = (),
+) -> socketserver.TCPServer:
+    """Bind the visualization server without starting to serve."""
+    if not os.path.exists(WEBUI_DIR):
+        raise FileNotFoundError(f"Webui directory not found: {WEBUI_DIR}")
 
-    # Create handler factory with search root
-    handler_factory = create_handler_factory(search_root)
+    handler_factory = create_handler_factory(
+        search_root, build_allowed_hosts(host, allowed_hosts)
+    )
 
     # Reuse the socket so you can restart quickly
     class ReusableTCPServer(socketserver.TCPServer):
         allow_reuse_address = True
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
 
-    with ReusableTCPServer(("", port), handler_factory) as httpd:
-        msg = f"\n[*] Serving http://0.0.0.0:{port}  (Ctrl+C to stop)"
+    return ReusableTCPServer((host, port), handler_factory)
+
+
+def start_server(
+    port: int,
+    search_root: str,
+    db_path: Optional[str] = None,
+    host: str = DEFAULT_HOST,
+    allowed_hosts: Sequence[str] = (),
+):
+    """Start the HTTP server."""
+    print(f"[DEBUG] Server root directory: {WEBUI_DIR}")
+    print(f"[DEBUG] Search root directory: {search_root}")
+
+    with make_server(port, search_root, host, allowed_hosts) as httpd:
+        shown_host = f"[{host}]" if ":" in host else host
+        msg = f"\n[*] Serving http://{shown_host}:{port}  (Ctrl+C to stop)"
         print(msg)
+        if not _is_loopback_host(host):
+            print(
+                "[!] Listening beyond localhost with no authentication: anyone "
+                f"who can reach {host}:{port} can read the run data under "
+                f"{search_root}."
+            )
         httpd.serve_forever()
+
+
+def resolve_cli_paths(
+    root_directory: Optional[str], db: Optional[str]
+) -> Tuple[str, Optional[str]]:
+    """Work out the search root and the root-relative ``--db`` path.
+
+    A relative ``--db`` is looked up under the root first, then under the
+    current directory. When ``--db`` lies outside the root, the DB's own
+    directory becomes the root, unless a root was named explicitly, in which
+    case the two disagree and a ValueError says so.
+    """
+    search_root = os.path.realpath(root_directory or os.getcwd())
+    if not os.path.isdir(search_root):
+        raise ValueError(f"Root directory does not exist: {search_root}")
+    if db is None:
+        return search_root, None
+
+    db_real = os.path.realpath(os.path.join(search_root, db))
+    if not os.path.exists(db_real):
+        db_real = os.path.realpath(db)
+    if not os.path.isfile(db_real):
+        raise ValueError(f"Database file does not exist: {db}")
+
+    if resolve_under_root(search_root, db_real) is None:
+        if root_directory is not None:
+            raise ValueError(
+                f"Database {db_real} is outside the root directory {search_root}"
+            )
+        search_root = os.path.dirname(db_real)
+    return search_root, os.path.relpath(db_real, search_root)
 
 
 def main():
@@ -1750,7 +1882,7 @@ def main():
     parser.add_argument(
         "root_directory",
         nargs="?",
-        default=os.getcwd(),
+        default=None,
         help=(
             "Root directory to search for database files "
             "(default: current working directory)"
@@ -1762,6 +1894,28 @@ def main():
         type=int,
         default=DEFAULT_PORT,
         help="Port to listen on (default: 8000).",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=DEFAULT_HOST,
+        help=(
+            "Address to listen on (default: 127.0.0.1, this machine only). "
+            "Use 0.0.0.0 to accept connections from other machines; the "
+            "server has no authentication."
+        ),
+    )
+    parser.add_argument(
+        "--allowed-host",
+        dest="allowed_hosts",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Extra hostname browsers may use to reach the server, e.g. a DNS "
+            "alias or reverse-proxy name. Repeatable. localhost, IP addresses "
+            "and this machine's hostname are always accepted."
+        ),
     )
     parser.add_argument(
         "--open",
@@ -1777,11 +1931,10 @@ def main():
     )
     args = parser.parse_args()
 
-    # Resolve the root directory to an absolute path
-    search_root = os.path.abspath(args.root_directory)
-
-    if not os.path.exists(search_root):
-        print(f"Error: Root directory does not exist: {search_root}")
+    try:
+        search_root, db_rel_path = resolve_cli_paths(args.root_directory, args.db)
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
     print(f"[INFO] Searching for databases in: {search_root}")
@@ -1789,17 +1942,17 @@ def main():
     # Kick off the HTTP server in a daemon thread.
     server_thread = threading.Thread(
         target=start_server,
-        args=(args.port, search_root, args.db),
+        args=(args.port, search_root, db_rel_path, args.host, args.allowed_hosts),
         daemon=True,
     )
     server_thread.start()
     time.sleep(0.8)  # tiny delay so the banner prints before we continue
 
     # Construct URL, passing db path if provided
-    if args.db:
+    if db_rel_path:
         # If a specific DB is provided, go directly to viz_tree.html
         base_url = f"http://localhost:{args.port}/viz_tree.html"
-        url_params = urllib.parse.urlencode({"db_path": args.db})
+        url_params = urllib.parse.urlencode({"db_path": db_rel_path})
         viz_url = f"{base_url}?{url_params}"
     else:
         # Otherwise, open the landing page with all results
