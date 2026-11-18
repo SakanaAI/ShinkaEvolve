@@ -1,5 +1,7 @@
+import asyncio
 import os
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -31,16 +33,16 @@ def test_seed_publishes_snapshot_and_isolates_late_output(
 
     if first_fails:
         with pytest.raises(RuntimeError, match="status verification failed"):
-            SeedResultAttempt(str(public_results)).run(evaluate, "main.py")
+            asyncio.run(SeedResultAttempt(str(public_results)).run(evaluate, "main.py"))
     else:
-        SeedResultAttempt(str(public_results)).run(evaluate, "main.py")
+        asyncio.run(SeedResultAttempt(str(public_results)).run(evaluate, "main.py"))
 
     public_log = public_results / "job_log.out"
     assert public_log.read_text() == "attempt 1"
     (attempts[0] / "job_log.out").write_text("late output")
     assert public_log.read_text() == "attempt 1"
 
-    SeedResultAttempt(str(public_results)).run(evaluate, "main.py")
+    asyncio.run(SeedResultAttempt(str(public_results)).run(evaluate, "main.py"))
 
     first, second = attempts
     assert first != second
@@ -70,7 +72,7 @@ def test_seed_snapshot_is_independent_of_owned_links_and_special_files(
         raise RuntimeError("status verification failed")
 
     with pytest.raises(RuntimeError, match="status verification failed"):
-        attempt.run(evaluate, "main.py")
+        asyncio.run(attempt.run(evaluate, "main.py"))
 
     (attempt.path / "log-target").write_text("late stderr")
     assert (public_results / "job_log.err").read_text() == "partial stderr"
@@ -94,4 +96,42 @@ def test_seed_cannot_accept_results_linked_to_an_older_attempt(tmp_path: Path) -
         return {"metrics": {"combined_score": 42}}, 0.0
 
     with pytest.raises(ValueError, match="metrics.json.*within the seed attempt"):
-        attempt.run(evaluate, "main.py")
+        asyncio.run(attempt.run(evaluate, "main.py"))
+
+
+def test_cancelling_seed_during_snapshot_copy_keeps_retry_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gen_dir = tmp_path / "gen_0"
+    gen_dir.mkdir()
+    public = gen_dir / "results"
+    previous = SeedResultAttempt(str(public))
+    release_copy = Event()
+    copy_results = previous._copy_results
+
+    def evaluate(program, results):
+        (Path(results) / "job_log.out").write_text(program)
+        return {}, 0.0
+
+    async def run():
+        copy_started = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def paused_copy(snapshot):
+            loop.call_soon_threadsafe(copy_started.set)
+            assert release_copy.wait(5), "test did not release snapshot copy"
+            copy_results(snapshot)
+
+        monkeypatch.setattr(previous, "_copy_results", paused_copy)
+        pending = asyncio.create_task(previous.run(evaluate, "cancelled"))
+        try:
+            await asyncio.wait_for(copy_started.wait(), 5)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            await SeedResultAttempt(str(public)).run(evaluate, "retry")
+        finally:
+            release_copy.set()
+
+    asyncio.run(run())
+    assert (public / "job_log.out").read_text() == "retry"

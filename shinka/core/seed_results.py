@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 import shutil
@@ -17,7 +18,7 @@ class SeedResultAttempt:
         self._history = self._public_results.parent.parent / ".seed-results-attempts"
         self.path = self._history / f"attempt-{self._id}"
 
-    def run(
+    async def run(
         self,
         evaluate: Callable[[str, str], tuple[dict[str, Any], float]],
         program_path: str,
@@ -27,16 +28,16 @@ class SeedResultAttempt:
             self._public_results.rename(self._history / f"previous-{self._id}")
 
         try:
-            result = evaluate(program_path, str(self.path))
+            result = await asyncio.to_thread(evaluate, program_path, str(self.path))
         except Exception:
             try:
-                self._publish_results()
+                await self._publish_results()
             except OSError as exc:
                 logger.warning(
                     "Could not publish seed results from %s: %s", self.path, exc
                 )
             raise
-        self._publish_results()
+        await self._publish_results()
         for name in ("correct.json", "metrics.json"):
             if (self.path / name).is_symlink() and not (
                 self._public_results / name
@@ -44,7 +45,13 @@ class SeedResultAttempt:
                 raise ValueError(f"{name} must refer to a file within the seed attempt")
         return result
 
-    def _publish_results(self) -> None:
+    async def _publish_results(self) -> None:
+        snapshot = self._history / f".publish-{self._id}"
+        await asyncio.to_thread(self._copy_results, snapshot)
+        # Only the live runner may replace the public path.
+        snapshot.rename(self._public_results)
+
+    def _copy_results(self, snapshot: Path) -> None:
         # A Slurm allocation can outlive status verification. Keep its original
         # directory available and copy files independently of the producer.
         self.path.mkdir(exist_ok=True)
@@ -57,9 +64,7 @@ class SeedResultAttempt:
                 if not _can_snapshot(Path(directory) / name, root)
             ]
 
-        snapshot = self._history / f".publish-{self._id}"
         shutil.copytree(self.path, snapshot, ignore=ignore)
-        snapshot.rename(self._public_results)
 
 
 def _can_snapshot(path: Path, root: Path) -> bool:

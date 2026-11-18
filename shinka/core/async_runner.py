@@ -1678,9 +1678,7 @@ class ShinkaEvolveRunner:
                 logger.info(f"Starting initial program evaluation: {exec_fname}")
 
             # Run the evaluation synchronously for generation 0
-            results, rtime = await asyncio.get_running_loop().run_in_executor(
-                None, seed_attempt.run, self.scheduler.run, exec_fname
-            )
+            results, rtime = await seed_attempt.run(self.scheduler.run, exec_fname)
 
             if self.verbose:
                 logger.info(f"Initial program evaluation completed in {rtime:.2f}s")
