@@ -71,6 +71,15 @@ class ProcessWithLogging:
         _LIVE_PROCESSES.discard(self)
         return True
 
+    def kill_without_reaping(self) -> None:
+        """Kill the evaluator's group and return at once, for a signal handler.
+
+        Reaping takes a lock that the interrupted code may hold. An evaluator
+        nobody reaped still owns its group id, so nothing else is signalled.
+        """
+        if self.process.returncode is None:
+            _kill_group(self.process, self._process_group_id)
+
     def has_exited(self) -> bool:
         """Poll the evaluator and remember when its exit was first seen."""
         if self.process.poll() is None:
@@ -101,7 +110,7 @@ class ProcessWithLogging:
                 logger.error(f"Error closing log file: {e}")
 
 
-def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
+def _kill_group(process: subprocess.Popen, group_id: Optional[int]) -> None:
     try:
         if group_id is None:
             process.kill()
@@ -112,6 +121,10 @@ def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
     except PermissionError:
         # macOS reports a group whose members have all exited this way.
         process.kill()
+
+
+def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
+    _kill_group(process, group_id)
     process.wait()
 
 
@@ -133,16 +146,27 @@ def kill_evaluators_on_fatal_signals() -> None:
     """
     if os.name != "posix" or threading.current_thread() is not threading.main_thread():
         return
-    for signum in (signal.SIGTERM, signal.SIGHUP):
+    for signum in _fatal_signals():
         if signal.getsignal(signum) is signal.SIG_DFL:
             signal.signal(signum, _die_with_evaluators)
 
 
+def _fatal_signals() -> Tuple[int, int]:
+    return signal.SIGTERM, signal.SIGHUP
+
+
 def _die_with_evaluators(signum, frame) -> None:
-    _kill_live_evaluators()
-    # Then end the way the signal would have ended this process.
-    signal.signal(signum, signal.SIG_DFL)
-    os.kill(os.getpid(), signum)
+    # A closing terminal can send a second signal while this one is handled;
+    # it must not start the handler again inside itself.
+    for fatal in _fatal_signals():
+        signal.signal(fatal, signal.SIG_IGN)
+    try:
+        for process in list(_LIVE_PROCESSES):
+            process.kill_without_reaping()
+    finally:
+        # Then end the way the signal would have ended this process.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
 
 
 def _stream_output(pipe, file_handle, verbose_prefix=None):
