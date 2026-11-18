@@ -210,6 +210,8 @@ class JobScheduler:
     def run(
         self, exec_fname_t: str, results_dir_t: str
     ) -> Tuple[Dict[str, Any], float]:
+        if self._closed:
+            raise RuntimeError("JobScheduler is shut down and runs no more evaluations")
         job_id: Union[str, ProcessWithLogging]
         cmd = self._build_command(exec_fname_t, results_dir_t)
         start_time = time.time()
@@ -275,6 +277,7 @@ class JobScheduler:
             closed = self._closed
         try:
             if closed:
+                # Shut down while the evaluation was being launched.
                 self._cancel_job(job_id)
             if isinstance(job_id, str):
                 results = monitor_slurm_evaluation(

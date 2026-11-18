@@ -16,6 +16,7 @@ from job_lifecycle_test_utils import (
     worker_pid,
     write_evaluator_with_worker,
 )
+from shinka.launch import scheduler as scheduler_module
 from shinka.launch import (
     JobScheduler,
     LocalJobConfig,
@@ -132,6 +133,33 @@ def test_shutdown_releases_a_seed_evaluation_that_is_still_running(
         assert wait_until(lambda: not is_alive(worker))
     finally:
         kill_leftovers(worker)
+
+
+def test_seed_evaluation_is_refused_after_shutdown(
+    scheduler: JobScheduler, tmp_path: Path
+) -> None:
+    results_dir = tmp_path / "results"
+    scheduler.shutdown()
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        scheduler.run("main.py", str(results_dir))
+
+    assert not results_dir.exists(), "no evaluator may be launched"
+
+
+def test_seed_evaluation_launched_during_shutdown_is_killed(
+    scheduler: JobScheduler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch = scheduler_module.submit_local
+
+    def shut_down_then_launch(*args, **kwargs) -> ProcessWithLogging:
+        scheduler.shutdown()
+        return launch(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler_module, "submit_local", shut_down_then_launch)
+
+    with pytest.raises(RuntimeError, match="exited with status -9"):
+        scheduler.run("main.py", str(tmp_path / "results"))
 
 
 def test_local_scheduler_arms_the_fatal_signal_hook(
