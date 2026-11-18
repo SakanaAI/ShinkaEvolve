@@ -69,6 +69,20 @@ def test_directory_part_of_db_path_is_not_used(tmp_path, caplog, configured):
     assert str(tmp_path / "my.db") in message
 
 
+def test_db_path_never_reaches_a_database_outside_the_results_dir(tmp_path, caplog):
+    """`..` in db_path must not continue (and write to) another run's database."""
+    results_dir = tmp_path / "new_run"
+    results_dir.mkdir()
+    _write_db(tmp_path / "other_run" / "x.sqlite")
+
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_run_db_path(results_dir, "../other_run/x.sqlite")
+
+    assert resolved == results_dir / "x.sqlite"
+    (message,) = _warnings(caplog)
+    assert "Only the file name" in message
+
+
 def test_path_into_the_results_dir_is_taken_as_is(tmp_path, caplog):
     """The runner writes the resolved path back into the config it was given."""
     with caplog.at_level(logging.WARNING):

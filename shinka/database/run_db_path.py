@@ -107,8 +107,7 @@ def _existing_run_db(
 
     known = [results_dir / DEFAULT_RUN_DB_NAME]
     if configured_db_path:
-        # As the first releases built it: f"{results_dir}/{db_path}"
-        known.append(results_dir / str(configured_db_path).lstrip("/\\"))
+        known += _first_release_paths(results_dir, configured_db_path)
     # The preset name, and the file an unset db_path produced back then.
     known += [results_dir / LEGACY_RUN_DB_NAME, results_dir / "None"]
     for known_path in known:
@@ -130,6 +129,17 @@ def _existing_run_db(
             "for a run, or pass the file path when loading."
         )
     return others[0] if others else None
+
+
+def _first_release_paths(results_dir: Path, configured_db_path: str) -> List[Path]:
+    """The path the first releases built, ``f"{results_dir}/{db_path}"``.
+
+    Empty when that path leaves the directory (``..``, a drive letter): a run
+    must not continue in the database of another one.
+    """
+    path = results_dir / str(configured_db_path).lstrip("/\\")
+    inside = path.resolve().is_relative_to(results_dir.resolve())
+    return [path] if inside else []
 
 
 def _database_files(results_dir: Path) -> List[Path]:
