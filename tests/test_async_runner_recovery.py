@@ -3,6 +3,7 @@ import json
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,23 +22,29 @@ from shinka.llm.providers import QueryResult
 
 
 class _FakeAsyncDB:
-    def __init__(self, total_programs: int):
-        self.total_programs = total_programs
-
     async def get_total_program_count_async(self):
-        return self.total_programs
+        return 0
+
+    async def get_generation_updates_async(self, after_rowid):
+        return after_rowid, {}
 
 
 class _RecordingAsyncDB(_FakeAsyncDB):
     def __init__(self):
-        super().__init__(total_programs=0)
         self.programs = []
         self.maintenance_calls = 0
         self.attempt_events = []
 
     async def add_program_async(self, program, **kwargs):
         self.programs.append((program, kwargs))
-        self.total_programs += 1
+
+    async def get_total_program_count_async(self):
+        return len(self.programs)
+
+    async def get_generation_updates_async(self, after_rowid):
+        return len(self.programs), {
+            p.generation: True for p, _ in self.programs[after_rowid:]
+        }
 
     async def run_program_maintenance_async(self, program, verbose=False):
         self.maintenance_calls += 1
@@ -85,7 +92,6 @@ class _FakeScheduler:
 
 class _FakeAsyncDBWithGuard(_FakeAsyncDB):
     def __init__(self):
-        super().__init__(total_programs=0)
         self.add_calls = 0
         self.source_job_checks = []
 
@@ -154,7 +160,7 @@ class _TrackedScheduler:
 
 def _build_runner(**overrides):
     runner = object.__new__(ShinkaEvolveRunner)
-    runner.async_db = overrides.get("async_db", _FakeAsyncDB(0))
+    runner.async_db = overrides.get("async_db", _FakeAsyncDB())
     runner.db = overrides.get("db", SimpleNamespace(last_iteration=0))
     runner.db_config = overrides.get("db_config", SimpleNamespace(num_islands=1))
     runner.job_config = overrides.get("job_config", SimpleNamespace(time=None))
@@ -162,6 +168,9 @@ def _build_runner(**overrides):
     runner.evo_config = overrides.get("evo_config", SimpleNamespace(num_generations=10))
     runner.completed_generations = overrides.get("completed_generations", 0)
     runner.next_generation_to_submit = overrides.get("next_generation_to_submit", 1)
+    runner._settled_resume_generations = deque()
+    runner._confirmed_program_rowid = 0
+    runner._confirmed_generation_ids = set()
     runner.running_jobs = overrides.get("running_jobs", [])
     runner.active_proposal_tasks = overrides.get("active_proposal_tasks", {})
     runner.failed_jobs_for_retry = overrides.get("failed_jobs_for_retry", {})
@@ -196,23 +205,6 @@ def _build_runner(**overrides):
         "_prompt_percentile_recompute_pending", False
     )
     return runner
-
-
-def test_restore_resume_progress_uses_actual_program_count():
-    async def _run():
-        runner = _build_runner(
-            async_db=_FakeAsyncDB(total_programs=7),
-            db=SimpleNamespace(last_iteration=8),
-            db_config=SimpleNamespace(num_islands=2),
-            evo_config=SimpleNamespace(num_generations=10),
-        )
-
-        await runner._restore_resume_progress()
-
-        assert runner.completed_generations == 6
-        assert runner.next_generation_to_submit == 9
-
-    asyncio.run(_run())
 
 
 def test_get_remaining_completed_work_accounts_for_inflight_jobs():
@@ -1099,8 +1091,8 @@ def test_update_prompt_fitness_only_recomputes_after_correct_programs():
 
 def test_get_missing_persisted_generations_reports_budget_gap():
     class _FakeAsyncDB:
-        async def get_persisted_generation_ids_async(self):
-            return {0, 1, 3, 4}
+        async def get_persisted_generation_origins_async(self):
+            return {gen: True for gen in [0, 1, 3, 4]}
 
     async def _run():
         runner = _build_runner(
@@ -1115,23 +1107,23 @@ def test_get_missing_persisted_generations_reports_budget_gap():
     asyncio.run(_run())
 
 
-def test_get_generations_without_program_due_to_proposal_failure_uses_attempt_log():
+def test_get_terminal_proposal_failure_generations_uses_attempt_log():
     class _FakeCursor:
         def __init__(self):
             self.executed = None
 
-        def execute(self, query, params):
+        def execute(self, query, params=()):
             self.executed = (query, params)
 
         def fetchall(self):
-            return [(2,), (5,), (8,)]
+            return [(gen, '{"node_kind":"failed_proposal"}') for gen in [2, 5, 8]]
 
     runner = _build_runner(
         db=SimpleNamespace(cursor=_FakeCursor()),
         evo_config=SimpleNamespace(num_generations=100),
     )
 
-    assert runner._get_generations_without_program_due_to_proposal_failure() == [
+    assert runner._get_terminal_proposal_failure_generations() == [
         2,
         5,
         8,

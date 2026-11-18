@@ -12,6 +12,8 @@ import rich  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
 
+from .write_transaction import write_transaction
+
 logger = logging.getLogger(__name__)
 
 # Cost fields that cost totals sum over every program row.
@@ -228,6 +230,10 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         Implements island migration by moving a subset of programs between
         islands. Called periodically based on migration_interval.
         """
+        with write_transaction(self.conn):
+            return self._move_island_programs(current_generation)
+
+    def _move_island_programs(self, current_generation: int) -> bool:
         num_islands = getattr(self.config, "num_islands", 0)
         migration_rate = getattr(self.config, "migration_rate", 0.1)
         island_elitism = getattr(self.config, "island_elitism", True)
@@ -289,8 +295,6 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
             dest_idx = random.choice(dest_islands)
             self._migrate_program(migrant_id, source_idx, dest_idx, current_generation)
             migrations_summary[source_idx][dest_idx].append(migrant_id)
-
-        self.conn.commit()
 
         if migrations_summary:
             self._print_migration_summary(migrations_summary)
@@ -617,18 +621,40 @@ class CombinedIslandManager:
         return " | ".join(island_display)
 
     def copy_program_to_islands(self, program: Any) -> List[str]:
+        with write_transaction(self.conn):
+            return self._insert_island_copies(program)
+
+    def _insert_island_copies(self, program: Any) -> List[str]:
         """
-        Copy a program to all other islands.
+        Copy a program to configured islands that do not already have its copy.
         Returns a list of new program IDs that were created.
         """
         num_islands = getattr(self.config, "num_islands", 0)
         if num_islands <= 1:
             return []
 
+        self.cursor.execute(
+            "SELECT island_idx, metadata FROM programs WHERE generation = ?",
+            (program.generation,),
+        )
+        existing_islands = set()
+        for island, raw_metadata in self.cursor.fetchall():
+            try:
+                metadata = json.loads(raw_metadata or "{}")
+            except ValueError:
+                continue
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("_original_program_id") == program.id
+            ):
+                existing_islands.add(island)
+
         created_ids = []
         # Create copies for islands 1 through num_islands-1
         # (original program is already on island 0)
         for island_idx in range(1, num_islands):
+            if island_idx in existing_islands:
+                continue
             # Create a new program ID
             new_id = str(uuid.uuid4())
             # Copy all program data but change the ID and island_idx
@@ -709,7 +735,6 @@ class CombinedIslandManager:
                 )
                 logger.debug(f"Added copy {new_id[:8]}... to archive (correct program)")
 
-        self.conn.commit()
         logger.info(
             f"Created {len(created_ids)} copies of program "
             f"{program.id[:8]}... for islands 1-{num_islands - 1}"

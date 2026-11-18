@@ -18,6 +18,7 @@ from .island_sampler import create_island_sampler, IslandSampler
 from .display import DatabaseDisplay
 from shinka.embed import EmbeddingClient
 from shinka.defaults import default_archive_criteria
+from .write_transaction import write_transaction
 
 logger = logging.getLogger(__name__)
 _PREVIEW_RUN_STATE_REPAIR_KEYS = ("run_state_reconciled_v1", "run_state_reconciled_v2")
@@ -371,7 +372,7 @@ class ProgramDatabase:
                     raise FileNotFoundError(
                         f"Database file not found for read-only connection: {db_file}"
                     )
-                db_uri = f"file:{db_file}?mode=ro"
+                db_uri = f"{db_file.as_uri()}?mode=ro"
                 self.conn = sqlite3.connect(db_uri, uri=True, timeout=60.0)
                 logger.debug(
                     "Connected to SQLite database in read-only mode: %s",
@@ -1255,46 +1256,162 @@ class ProgramDatabase:
         if not programs:
             return
 
-        for program in sorted(programs, key=lambda item: item.generation):
-            maintenance_started_at = time.time()
-            self._update_archive(program)
-            self._update_best_program(program)
+        previous_migration = self._schedule_migration
+        updated_metadata = []
+        try:
+            for program in sorted(programs, key=lambda item: item.generation):
+                stored = self._stored_program_metadata(program.id)
+                if stored.get("postprocess_db_maintenance_applied") is True:
+                    program.metadata = stored
+                    continue
+                metadata = self._apply_pending_program_maintenance(program)
+                updated_metadata.append((program, metadata))
+            if updated_metadata:
+                updated_metadata = self._finish_program_maintenance(updated_metadata)
+        except BaseException:
+            self._schedule_migration = previous_migration
+            raise
 
+        for program, metadata in updated_metadata:
+            program.metadata = metadata
             if verbose:
                 self._print_program_summary(program)
-
-            if self.island_manager.needs_island_copies(program):
-                logger.info(
-                    f"Creating copies of initial program {program.id} for all islands"
-                )
-                self.island_manager.copy_program_to_islands(program)
-                if program.metadata:
-                    program.metadata.pop("_needs_island_copies", None)
-                    self._persist_program_metadata(program)
-
-            if self.island_manager.should_schedule_migration(program):
-                self._schedule_migration = True
-
-            self.check_and_spawn_island_if_stagnant(program.generation)
-
-            maintenance_finished_at = time.time()
-            program.metadata = dict(program.metadata or {})
-            program.metadata[_MAINTENANCE_APPLIED_KEY] = True
-            program.metadata["postprocess_db_maintenance_started_at"] = (
-                maintenance_started_at
-            )
-            program.metadata["postprocess_db_maintenance_finished_at"] = (
-                maintenance_finished_at
-            )
-            program.metadata["postprocess_db_maintenance_seconds"] = max(
-                0.0, maintenance_finished_at - maintenance_started_at
-            )
-            self._persist_program_metadata(program)
 
         if recompute_embeddings:
             self._recompute_embeddings_and_clusters()
 
-        self.check_scheduled_operations()
+    def _stored_program_metadata(self, program_id: str) -> Dict[str, Any]:
+        row = self.cursor.execute(
+            "SELECT metadata FROM programs WHERE id = ?", (program_id,)
+        ).fetchone()
+        stored = json.loads(row["metadata"] or "{}") if row else {}
+        return stored if isinstance(stored, dict) else {}
+
+    def _apply_pending_program_maintenance(self, program: Program) -> Dict[str, Any]:
+        started_at = time.time()
+        metadata = dict(program.metadata or {})
+        self._update_archive(program)
+        self._update_best_program(program)
+        self._finish_tracked_best_score(program)
+        if self.island_manager.needs_island_copies(program):
+            self.island_manager.copy_program_to_islands(program)
+            metadata.pop("_needs_island_copies", None)
+        self.check_and_spawn_island_if_stagnant(
+            program.generation, maintenance_program_id=program.id
+        )
+
+        finished_at = time.time()
+        metadata.update(
+            postprocess_db_maintenance_applied=True,
+            postprocess_db_maintenance_started_at=started_at,
+            postprocess_db_maintenance_finished_at=finished_at,
+            postprocess_db_maintenance_seconds=max(0.0, finished_at - started_at),
+        )
+        return metadata
+
+    def _finish_tracked_best_score(self, program: Program) -> None:
+        # An older worker could commit the best ID before the stagnation fields.
+        if not program.correct or self.best_program_id != program.id:
+            return
+        score = program.combined_score or 0.0
+        if not (self.best_score_ever is None or score > self.best_score_ever):
+            return
+        generation = max(self.best_score_generation, program.generation)
+        with self.conn:
+            self.cursor.executemany(
+                "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
+                [("best_score_generation", str(generation)), ("best_score_ever", str(score))],
+            )
+        self.best_score_generation = generation
+        self.best_score_ever = score
+
+    def _finish_program_maintenance(
+        self, updates: List[Tuple[Program, Dict[str, Any]]]
+    ) -> List[Tuple[Program, Dict[str, Any]]]:
+        # Migration can move a program twice if it commits before its receipt.
+        with write_transaction(self.conn):
+            pending = []
+            already_applied = []
+            for program, metadata in updates:
+                stored = self._stored_program_metadata(program.id)
+                if stored.get("postprocess_db_maintenance_applied") is True:
+                    already_applied.append((program, stored))
+                    continue
+                pending.append((program, metadata))
+                if self.island_manager.should_schedule_migration(program):
+                    self._schedule_migration = True
+            self.check_scheduled_operations()
+            self.cursor.executemany(
+                "UPDATE programs SET metadata = ? WHERE id = ?",
+                [(json.dumps(metadata), program.id) for program, metadata in pending],
+            )
+            self.cursor.executemany(
+                "DELETE FROM metadata_store WHERE key = ?",
+                [
+                    (self._maintenance_receipt_key(program.id, step),)
+                    for program, _ in pending
+                    for step in ("archive", "spawn")
+                ],
+            )
+        return pending + already_applied
+
+    @staticmethod
+    def _maintenance_receipt_key(program_id: str, step: str) -> str:
+        return f"program_maintenance:{step}:{program_id}"
+
+    def _claim_maintenance_step(self, program_id: str, step: str) -> bool:
+        """Record the decision in the same write transaction as its effects."""
+        stored = self._stored_program_metadata(program_id)
+        if stored.get("postprocess_db_maintenance_applied") is True:
+            return False
+        self.cursor.execute(
+            "INSERT OR IGNORE INTO metadata_store (key, value) VALUES (?, NULL)",
+            (self._maintenance_receipt_key(program_id, step),),
+        )
+        return self.cursor.rowcount == 1
+
+    def recover_pending_child_maintenance(self) -> None:
+        """Finish the database work of already evaluated children on resume."""
+        pending_ids = []
+        self.cursor.execute(
+            "SELECT id, generation, metadata FROM programs WHERE generation > 0 "
+            "ORDER BY generation, rowid"
+        )
+        for row in self.cursor:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except ValueError:
+                continue
+            if isinstance(metadata, dict) and self._has_pending_child_maintenance(
+                row["generation"], metadata
+            ):
+                pending_ids.append(row["id"])
+
+        for program_id in pending_ids:
+            program = self.get(program_id)
+            if program is not None:
+                self.run_post_add_maintenance(program)
+
+    @staticmethod
+    def _has_pending_child_maintenance(generation: int, metadata: dict) -> bool:
+        if (
+            metadata.get("_is_island_copy")
+            or metadata.get("_spawned_island")
+            or metadata.get("postprocess_side_effects_applied") is True
+        ):
+            return False
+        if "postprocess_db_maintenance_applied" in metadata:
+            return metadata["postprocess_db_maintenance_applied"] is False
+        # The timing breakdown arrived with the deferred maintenance marker.
+        # Older inline writes also have scheduler IDs, even when fully maintained.
+        job_id = metadata.get("source_job_id")
+        return (
+            metadata.get("safe_processing") is True
+            and metadata.get("source_generation") == generation
+            and isinstance(job_id, str)
+            and bool(job_id)
+            and type(metadata.get("pipeline_accounted_seconds")) in (int, float)
+        )
 
     def _persist_program_metadata(self, program: Program) -> None:
         with self.conn:
@@ -2180,6 +2297,82 @@ class ProgramDatabase:
         return [p for p in programs if p is not None]
 
     @db_retry()
+    def repair_legacy_failed_seeds(self) -> None:
+        """Repair generation-zero rows promoted by the old evaluation fallback."""
+        seeds = self.get_programs_by_generation(0)
+        failed_ids = {
+            seed.id
+            for seed in seeds
+            if (seed.metadata or {}).get("evaluation_failed") is True
+        }
+        if not failed_ids:
+            return
+        while True:
+            copies = {
+                seed.id
+                for seed in seeds
+                if any(
+                    (seed.metadata or {}).get(key) in failed_ids
+                    for key in ("_original_program_id", "_spawned_from_program_id")
+                    if isinstance((seed.metadata or {}).get(key), str)
+                )
+            }
+            if copies <= failed_ids:
+                break
+            failed_ids.update(copies)
+
+        invalid_seeds = [seed for seed in seeds if seed.correct and seed.id in failed_ids]
+        if not invalid_seeds:
+            return
+        with self.conn:
+            rows = [(seed.id,) for seed in invalid_seeds]
+            self.cursor.executemany("UPDATE programs SET correct = 0 WHERE id = ?", rows)
+            self.cursor.executemany("DELETE FROM archive WHERE program_id = ?", rows)
+            self._repair_legacy_seed_tracking(invalid_seeds)
+        self._load_metadata_from_db()
+
+    def _repair_legacy_seed_tracking(self, invalid_seeds: List[Program]) -> None:
+        invalid_ids = {seed.id for seed in invalid_seeds}
+        repaired_metadata: dict[str, Optional[str]] = {}
+        if self.beam_search_parent_id in invalid_ids:
+            repaired_metadata["beam_search_parent_id"] = None
+        repair_best = self.best_program_id in invalid_ids
+        repair_stagnation = (repair_best or self.best_score_generation == 0) and any(
+            (seed.combined_score or 0.0) == self.best_score_ever for seed in invalid_seeds
+        )
+        if repair_best or repair_stagnation:
+            self.cursor.execute("SELECT * FROM programs WHERE correct = 1")
+            best = None
+            highest_score = None
+            for row in self.cursor:
+                candidate = self._program_from_row(row)
+                if candidate is None:
+                    continue
+                metadata = candidate.metadata or {}
+                if metadata.get("_is_island_copy") or metadata.get("_spawned_island"):
+                    continue
+                if best is None or self._is_better(candidate, best):
+                    best = candidate
+                if highest_score is None or (candidate.combined_score or 0.0) > (
+                    highest_score.combined_score or 0.0
+                ):
+                    highest_score = candidate
+            if repair_best:
+                repaired_metadata["best_program_id"] = best.id if best else None
+            if repair_stagnation:
+                repaired_metadata["best_score_generation"] = str(
+                    max(self.best_score_generation, highest_score.generation)
+                    if highest_score else self.best_score_generation
+                )
+                repaired_metadata["best_score_ever"] = (
+                    str(highest_score.combined_score or 0.0) if highest_score else None
+                )
+        self.cursor.executemany(
+            "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
+            repaired_metadata.items(),
+        )
+
+    @db_retry()
     def get_top_programs(
         self,
         n: int = 10,
@@ -2653,6 +2846,8 @@ class ProgramDatabase:
 
         self.conn.execute("BEGIN IMMEDIATE")
         with self.conn:
+            if not self._claim_maintenance_step(program.id, "archive"):
+                return
             # Maintenance can be replayed after the archive update committed.
             self.cursor.execute(
                 "SELECT 1 FROM archive WHERE program_id = ?",
@@ -2891,7 +3086,9 @@ class ProgramDatabase:
             self._update_metadata_in_db(key, value)
 
     @db_retry()
-    def check_and_spawn_island_if_stagnant(self, current_generation: int) -> bool:
+    def check_and_spawn_island_if_stagnant(
+        self, current_generation: int, *, maintenance_program_id: Optional[str] = None
+    ) -> bool:
         """Check for stagnation and spawn a new island if needed.
 
         Args:
@@ -2908,6 +3105,10 @@ class ProgramDatabase:
             return False
 
         with self._run_state_transaction() as state:
+            if maintenance_program_id is not None and not self._claim_maintenance_step(
+                maintenance_program_id, "spawn"
+            ):
+                return False
             threshold = getattr(self.config, "stagnation_threshold", 100)
             gens_stagnant = current_generation - state.best_score_generation
             spawned = (
