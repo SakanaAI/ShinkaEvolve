@@ -12,6 +12,8 @@ import rich  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
 
+from .write_transaction import write_transaction
+
 logger = logging.getLogger(__name__)
 
 # Cost fields that cost totals sum over every program row.
@@ -228,6 +230,10 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
         Implements island migration by moving a subset of programs between
         islands. Called periodically based on migration_interval.
         """
+        with write_transaction(self.conn):
+            return self._move_island_programs(current_generation)
+
+    def _move_island_programs(self, current_generation: int) -> bool:
         num_islands = getattr(self.config, "num_islands", 0)
         migration_rate = getattr(self.config, "migration_rate", 0.1)
         island_elitism = getattr(self.config, "island_elitism", True)
@@ -289,8 +295,6 @@ class ElitistMigrationStrategy(IslandMigrationStrategy):
             dest_idx = random.choice(dest_islands)
             self._migrate_program(migrant_id, source_idx, dest_idx, current_generation)
             migrations_summary[source_idx][dest_idx].append(migrant_id)
-
-        self.conn.commit()
 
         if migrations_summary:
             self._print_migration_summary(migrations_summary)
@@ -617,6 +621,10 @@ class CombinedIslandManager:
         return " | ".join(island_display)
 
     def copy_program_to_islands(self, program: Any) -> List[str]:
+        with write_transaction(self.conn):
+            return self._insert_island_copies(program)
+
+    def _insert_island_copies(self, program: Any) -> List[str]:
         """
         Copy a program to configured islands that do not already have its copy.
         Returns a list of new program IDs that were created.
@@ -727,7 +735,6 @@ class CombinedIslandManager:
                 )
                 logger.debug(f"Added copy {new_id[:8]}... to archive (correct program)")
 
-        self.conn.commit()
         logger.info(
             f"Created {len(created_ids)} copies of program "
             f"{program.id[:8]}... for islands 1-{num_islands - 1}"
@@ -979,7 +986,14 @@ class CombinedIslandManager:
         return collected
 
     def spawn_new_island(self) -> bool:
+        """Spawn a new island and commit its program copies."""
+        with self.conn:
+            return self.insert_spawned_island()
+
+    def insert_spawned_island(self) -> bool:
         """Spawn a new island by copying a program (or subtree) based on config.
+
+        The caller owns the transaction.
 
         The strategy is determined by config.island_spawn_strategy:
         - "initial": Copy the initial program (generation 0) for a fresh start
@@ -1032,8 +1046,6 @@ class CombinedIslandManager:
                 prog, new_island_idx, new_parent_id, strategy, is_root=is_root
             )
             old_to_new_id[prog["id"]] = new_id
-
-        self.conn.commit()
 
         strategy_desc = {
             "initial": "initial program",

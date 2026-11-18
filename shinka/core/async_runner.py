@@ -1327,6 +1327,9 @@ class ShinkaEvolveRunner:
                 )
             self._load_bandit_state()
 
+        if any(generation > 0 for generation in persisted_generations):
+            self.db.recover_pending_child_maintenance()
+
         if 0 not in persisted_generations:
             initial_program_path = self._find_saved_seed(seed_path)
             if initial_program_path is not None:
@@ -4406,6 +4409,7 @@ class ShinkaEvolveRunner:
                         "stderr_log": stderr_log,
                         "results_missing": results is None,
                         "safe_processing": True,
+                        "postprocess_db_maintenance_applied": False,
                         "source_job_id": source_job_id,
                         "source_generation": job.generation,
                         "timeline_lane_mode": "pool_slots",
