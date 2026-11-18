@@ -316,16 +316,22 @@ Suggestions:
 3. Do not repeat the EVOLVE-BLOCK markers in SEARCH/REPLACE blocks"""
 
 
-def _reject_marker_only_search(patch_text: str) -> None:
-    """Raise when a SEARCH block names nothing but EVOLVE-BLOCK markers.
+def _reject_marker_only_search(patch_text: str, original: str) -> None:
+    """Raise when a SEARCH of only EVOLVE-BLOCK markers names no usable place.
 
-    Removing the markers would leave an empty SEARCH, which means "insert at
-    the end of the last editable region": not where the block pointed.
+    Removing the markers leaves an empty SEARCH, which appends to the last
+    editable region. That is where an END marker points in a file with one
+    region. A START marker, or any marker in a file with several regions,
+    points somewhere else.
     """
+    single_region = len(_mutable_ranges(original)) == 1
     for block in PATCH_PATTERN.finditer(patch_text):
         search = block.group(1)
-        if search.strip() and not _clean_evolve_markers(search).strip():
-            raise PatchError(_MARKER_ONLY_SEARCH_ERROR)
+        if not search.strip() or _clean_evolve_markers(search).strip():
+            continue
+        if single_region and not EVOLVE_START.search(search):
+            continue
+        raise PatchError(_MARKER_ONLY_SEARCH_ERROR)
 
 
 def _find_similar_lines(
@@ -742,7 +748,7 @@ def apply_search_replace(
     Mutable ranges are recalculated after each replacement to account for
     text changes.
     """
-    _reject_marker_only_search(patch_text)
+    _reject_marker_only_search(patch_text, original)
     new_text = original
     num_applied = 0
     for block in PATCH_PATTERN.finditer(patch_text):
@@ -916,7 +922,7 @@ def apply_diff_patch(
     try:
         # Checked on the text as written: with the markers removed, a
         # marker-only SEARCH can no longer be told from an empty one.
-        _reject_marker_only_search(raw_patch_str)
+        _reject_marker_only_search(raw_patch_str, original)
         # Apply the patch
         applied_content, patches_count = apply_search_replace(patch_str, original)
         updated_content = applied_content

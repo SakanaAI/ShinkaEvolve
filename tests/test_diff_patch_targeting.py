@@ -242,6 +242,33 @@ def test_apply_search_replace_rejects_marker_only_search():
         apply_search_replace(_patch("# EVOLVE-BLOCK-START", "import os"), _TWO_BLOCKS)
 
 
+_ONE_BLOCK = "import os\n# EVOLVE-BLOCK-START\na = 1\n# EVOLVE-BLOCK-END\nprint(a)\n"
+
+
+@pytest.mark.parametrize("replace", ["b = 2\n# EVOLVE-BLOCK-END", "b = 2"])
+def test_end_marker_search_appends_to_the_only_block(replace):
+    """With one editable region its END marker names the place an append goes."""
+    patch = _patch("# EVOLVE-BLOCK-END", replace)
+
+    updated, num_applied, error = _apply(_ONE_BLOCK, patch)
+
+    assert error is None
+    assert num_applied == 1
+    appended = replace.split("\n")[0]
+    assert updated == _ONE_BLOCK.replace("a = 1\n", f"a = 1\n{appended}\n")
+
+
+@pytest.mark.parametrize(
+    "search", ["# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-START\n# EVOLVE-BLOCK-END"]
+)
+def test_start_marker_search_is_rejected_in_a_single_block_file(search):
+    updated, num_applied, error = _apply(_ONE_BLOCK, _patch(search, "b = 2"))
+
+    assert num_applied == 0
+    assert error is not None and "only EVOLVE-BLOCK markers" in error
+    assert updated == _ONE_BLOCK
+
+
 def test_marker_used_as_context_still_matches_the_code_below_it():
     patch = _patch("# EVOLVE-BLOCK-START\nb = 2", "# EVOLVE-BLOCK-START\nb = 3")
 
