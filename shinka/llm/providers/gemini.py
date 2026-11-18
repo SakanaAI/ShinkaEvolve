@@ -2,7 +2,7 @@ import backoff
 import logging
 from typing import Any, cast
 from google.genai import types
-from shinka.api_budget import APIBudgetExceeded, check_provider_attempt
+from shinka.api_budget import APIBudgetExceeded, check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import (
     BACKOFF_MAX_TIME,
     BACKOFF_MAX_TRIES,
@@ -301,7 +301,7 @@ def query_gemini(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
-    on_backoff=backoff_handler,
+    on_backoff=[mark_provider_retry_wait, backoff_handler],
     giveup=_giveup_gemini,
 )
 async def query_gemini_async(

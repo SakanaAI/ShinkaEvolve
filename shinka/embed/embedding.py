@@ -7,7 +7,12 @@ import openai
 import pandas as pd
 
 from shinka.google_genai import google_genai_auth_mode
-from shinka.api_budget import APIBudgetExceeded, check_provider_attempt, run_request
+from shinka.api_budget import (
+    APIBudgetExceeded,
+    check_provider_attempt,
+    mark_provider_retry_wait,
+    run_request,
+)
 from .client import (
     get_async_client_embed,
     get_client_embed,
@@ -99,6 +104,7 @@ async def _create_openai_embedding(client, model: str, code: list[str]):
         except openai.APIError as exc:
             if attempt == max_retries or not _retryable_embedding_error(exc):
                 raise
+            mark_provider_retry_wait()
             await asyncio.sleep(0.5 * 2 ** min(attempt, 4))
 
 

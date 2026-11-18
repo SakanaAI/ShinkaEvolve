@@ -15,7 +15,7 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel
 
-from shinka.api_budget import check_provider_attempt
+from shinka.api_budget import check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import TIMEOUT
 
 from .errors import EmptyResponseError
@@ -279,6 +279,7 @@ async def _run_headless_command_async(
         if not _is_transient_claude_credit_error(model=model, completed=completed):
             return completed
         if attempt < attempts - 1:
+            mark_provider_retry_wait()
             await asyncio.sleep(_CLAUDE_TRANSIENT_BACKOFF_SECONDS * (attempt + 1))
     return completed
 

@@ -2,7 +2,7 @@ import asyncio
 import backoff
 import openai
 import time
-from shinka.api_budget import check_provider_attempt
+from shinka.api_budget import check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .errors import EmptyResponseError
 from .pricing import calculate_cost, model_exists
@@ -269,7 +269,7 @@ def query_openai(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
-    on_backoff=async_backoff_handler,
+    on_backoff=[mark_provider_retry_wait, async_backoff_handler],
 )
 async def query_openai_async(
     client,

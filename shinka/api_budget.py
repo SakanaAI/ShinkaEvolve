@@ -69,7 +69,12 @@ def may_charge(model: str, kind: ModelKind = "llm") -> bool:
 @dataclass
 class _PaidRequest:
     exhausted: Callable[[], bool]
-    cancelled: bool = False
+    caller_cancelled: Callable[[], bool] = lambda: False
+    waiting_to_retry: bool = False
+
+    def check_admission(self) -> None:
+        if self.caller_cancelled() or self.exhausted():
+            raise APIBudgetExceeded()
 
 
 _paid_request: ContextVar[_PaidRequest | None] = ContextVar(
@@ -82,9 +87,17 @@ def check_provider_attempt() -> bool:
     request = _paid_request.get()
     if request is None:
         return False
-    if request.cancelled or request.exhausted():
-        raise APIBudgetExceeded()
+    request.check_admission()
+    request.waiting_to_retry = False
     return True
+
+
+def mark_provider_retry_wait(_details: object = None) -> None:
+    """Mark the interval between a failed transport attempt and its retry."""
+    request = _paid_request.get()
+    if request is not None:
+        request.check_admission()
+        request.waiting_to_retry = True
 
 
 async def run_request(
@@ -136,13 +149,17 @@ async def _receive_shielded(
         task = asyncio.ensure_future(receive())
     finally:
         _paid_request.reset(token)
+    waiter = asyncio.shield(task)
+    if request is not None:
+        # Task.cancel() cancels this future before either coroutine can resume.
+        request.caller_cancelled = waiter.cancelled
     try:
-        return await asyncio.shield(task)
+        return await waiter
     except asyncio.CancelledError:
         # Keep the started request alive to receive its bill. Provider retry
         # admission closes as soon as its caller cancels.
-        if request is not None:
-            request.cancelled = True
+        if request is not None and request.waiting_to_retry:
+            task.cancel()
         while not task.done():
             try:
                 await asyncio.shield(task)
