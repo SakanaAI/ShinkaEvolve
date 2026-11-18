@@ -45,12 +45,32 @@ def resolve_under_root(root: str, candidate: Optional[str]) -> Optional[str]:
     if not candidate or "\x00" in candidate:
         return None
     real_root = os.path.realpath(root)
-    real_path = os.path.realpath(os.path.join(real_root, candidate))
+    real_path = _fully_resolved(os.path.join(real_root, candidate))
+    if real_path is None:
+        return None
     try:
         inside = os.path.commonpath([real_root, real_path]) == real_root
     except ValueError:  # e.g. different drives on Windows
         return None
     return real_path if inside else None
+
+
+def _fully_resolved(path: str) -> Optional[str]:
+    """``path`` with every symlink resolved, or ``None`` if that cannot be done.
+
+    Before Python 3.13 a lenient ``realpath`` gives up at a symlink loop and
+    returns the components after it unresolved, so ``loop/../link`` comes back
+    as a path that still goes through ``link``. Strict resolution raises on a
+    loop instead. Only a path that does not exist yet is resolved leniently,
+    and then only accepted if resolving the result again changes nothing.
+    """
+    try:
+        return os.path.realpath(path, strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        lenient = os.path.realpath(path)
+        return lenient if os.path.realpath(lenient) == lenient else None
+    except OSError:  # a symlink loop, or a component that cannot be read
+        return None
 
 
 def hostname_from_host_header(value: Optional[str]) -> Optional[str]:
