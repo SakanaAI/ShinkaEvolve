@@ -17,4 +17,5 @@ db_config:
   exploitation_alpha: 1.0
   exploitation_ratio: 0.2
   # weighted tree parent selection parameters
-  parent_selection_lambda: 10.0
+  parent_selection_lambda: 10.0  # File name of the run database inside results_dir; null: programs.sqlite
+  db_path: null

@@ -6,7 +6,9 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from hydra import compose, initialize_config_dir
 
+from shinka.configs import config_root
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.database.run_db_path import (
     AmbiguousRunDatabaseError,
@@ -255,3 +257,20 @@ def test_load_programs_to_df_reads_the_file_it_is_given(tmp_path):
 def test_load_programs_to_df_reports_a_directory_without_database(tmp_path, capsys):
     assert load_programs_to_df(str(tmp_path), verbose=False) is None
     assert "Database file not found" in capsys.readouterr().out
+
+
+# -- Hydra presets ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("preset", ["island_small", "island_medium", "island_large"])
+def test_hydra_presets_accept_a_db_path_override(preset):
+    with config_root() as configs:
+        with initialize_config_dir(version_base=None, config_dir=str(configs)):
+            default = compose(config_name="config", overrides=[f"database@_global_={preset}"])
+            custom = compose(
+                config_name="config",
+                overrides=[f"database@_global_={preset}", "db_config.db_path=custom.sqlite"],
+            )
+
+    assert default.db_config.db_path is None
+    assert custom.db_config.db_path == "custom.sqlite"

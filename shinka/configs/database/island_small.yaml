@@ -10,3 +10,5 @@ db_config:
   migration_interval: 10
   migration_rate: 0.1
   island_elitism: true
+  # File name of the run database inside results_dir; null: programs.sqlite
+  db_path: null
