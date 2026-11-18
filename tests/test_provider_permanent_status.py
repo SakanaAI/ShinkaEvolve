@@ -26,8 +26,8 @@ from shinka.llm.providers.local_openai import (
 from shinka.llm.providers.openai import query_openai, query_openai_async
 from shinka.llm.providers.retry import is_permanent_status_error
 
-PERMANENT_STATUSES = [400, 401, 403, 404, 413, 422]
-ENDPOINT_STATUSES = {401, 403, 404}
+PERMANENT_STATUSES = [400, 401, 402, 403, 404, 413, 422]
+ENDPOINT_STATUSES = {401, 402, 403, 404}
 TRANSIENT_STATUSES = [408, 409, 429, 500, 503]
 
 
@@ -36,9 +36,12 @@ def _http_response(status: int, headers: dict[str, str] | None = None):
     return httpx.Response(status, request=request, headers=headers)
 
 
-def _openai_error(status: int, headers: dict[str, str] | None = None):
+def _openai_error(
+    status: int, headers: dict[str, str] | None = None, code: str | None = None
+):
+    body = {"message": "rejected", "code": code} if code else None
     return openai.APIStatusError(
-        "rejected", response=_http_response(status, headers), body=None
+        "rejected", response=_http_response(status, headers), body=body
     )
 
 
@@ -50,8 +53,16 @@ def _anthropic_error(status: int, headers: dict[str, str] | None = None):
     )
 
 
-def _gemini_error(status: int, headers: dict[str, str] | None = None):
-    payload = {"error": {"code": status, "message": "rejected", "status": "REJECTED"}}
+def _gemini_error(
+    status: int, headers: dict[str, str] | None = None, reason: str | None = None
+):
+    payload: dict[str, Any] = {
+        "error": {"code": status, "message": "rejected", "status": "REJECTED"}
+    }
+    if reason:
+        payload["error"]["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}
+        ]
     error_type = genai_errors.ClientError if status < 500 else genai_errors.ServerError
     return error_type(status, payload, _http_response(status, headers))
 
@@ -178,6 +189,46 @@ def test_server_retry_directive_overrides_the_status_code():
         is True
     )
     assert is_permanent_status_error(RuntimeError("no status")) is False
+
+
+@pytest.mark.parametrize(
+    "provider,error,expected_status,expected_code",
+    [
+        # Google reports a bad or expired key as 400, like a malformed request.
+        ("gemini", _gemini_error(400, reason="API_KEY_INVALID"), 400, "API_KEY_INVALID"),
+        # OpenAI reports an exhausted quota as 429, like a rate limit.
+        ("openai", _openai_error(429, code="insufficient_quota"), 429, "insufficient_quota"),
+        (
+            "openai",
+            _openai_error(429, {"x-should-retry": "true"}, "insufficient_quota"),
+            429,
+            "insufficient_quota",
+        ),
+        ("deepseek", _openai_error(400, code="invalid_api_key"), 400, "invalid_api_key"),
+    ],
+)
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_account_wide_failure_is_an_endpoint_error_whatever_its_status(
+    asynchronous, provider, error, expected_status, expected_code
+):
+    client = _FailingClient([error], asynchronous)
+
+    with pytest.raises(LLMEndpointError) as raised:
+        _run_query(provider, client)
+
+    assert client.calls == 1
+    assert raised.value.status_code == expected_status
+    assert raised.value.code == expected_code
+
+
+def test_request_errors_sharing_those_statuses_keep_their_class():
+    assert is_permanent_status_error(_openai_error(429, code="rate_limit_exceeded")) is False
+    rejected = _FailingClient([_gemini_error(400, reason="INVALID_ARGUMENT")], False)
+
+    with pytest.raises(RequestRejectedError):
+        _run_query("gemini", rejected)
+
+    assert rejected.calls == 1
 
 
 @pytest.mark.parametrize("status", sorted(ENDPOINT_STATUSES))
