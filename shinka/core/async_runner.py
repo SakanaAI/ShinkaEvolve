@@ -1452,17 +1452,19 @@ class ShinkaEvolveRunner:
             self.should_stop.set()
             for task in (*tasks, *self.active_proposal_tasks.values()):
                 task.cancel()
-            if tasks:  # Only gather if there are tasks
-                await asyncio.gather(*tasks, return_exceptions=True)
-            await self._cancel_completed_job_batches()
-            await self._cancel_background_side_effect_worker()
-            await self._cleanup_async()
+            await finish_cost_recording(self._drain_and_cleanup_async(tasks))
 
         if billing_error := getattr(self, "_billing_error", None):
             raise billing_error
 
         # Print final summary
         await self._print_final_summary()
+
+    async def _drain_and_cleanup_async(self, tasks: list[asyncio.Task]) -> None:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await self._cancel_completed_job_batches()
+        await self._cancel_background_side_effect_worker()
+        await self._cleanup_async()
 
     async def _setup_async(self):
         """Setup initial program (results directory already created)."""

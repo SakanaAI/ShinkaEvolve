@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import openai
@@ -123,6 +123,62 @@ def test_run_cancellation_closes_paid_admission_before_draining(runner, monkeypa
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+    asyncio.run(run())
+
+
+def test_repeated_run_cancellation_still_flushes_pending_charge(runner):
+    async def run():
+        runner.pricing_snapshot = get_catalog()
+        runner.finalization_complete = asyncio.Event()
+        runner.should_stop = asyncio.Event()
+        runner._completed_job_batch_tasks = set()
+        runner.meta_summarizer = None
+        runner.scheduler = SimpleNamespace(shutdown=Mock())
+        runner._setup_async = AsyncMock()
+        runner._verify_database_ready = AsyncMock()
+        runner._finish_wandb_logging = AsyncMock()
+        runner.async_db.close_async = AsyncMock()
+        started = asyncio.Event()
+        writing = asyncio.Event()
+        release = asyncio.Event()
+        record = runner.async_db.record_attempt_event_async
+        charge_ids = []
+
+        async def delayed_write(**kwargs):
+            charge_ids.append(kwargs["details"]["api_charge_id"])
+            if len(charge_ids) <= 2:
+                writing.set()
+                await release.wait()
+                raise OSError("temporary journal outage")
+            await record(**kwargs)
+
+        async def monitor():
+            started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                await runner._record_unattached_cost(1.0, "meta", 0)
+                raise
+
+        runner.async_db.record_attempt_event_async = delayed_write
+        runner._job_monitor_task = monitor
+        runner._proposal_coordinator_task = asyncio.Event().wait
+        task = asyncio.create_task(runner._run_async())
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            task.cancel()
+            await asyncio.wait_for(writing.wait(), 2)
+            task.cancel()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+
+        assert await runner._get_total_api_costs() == pytest.approx(1.0)
+        assert len(charge_ids) == 3 and len(set(charge_ids)) == 1
+        runner.async_db.close_async.assert_awaited_once()
+        runner.scheduler.shutdown.assert_called_once()
 
     asyncio.run(run())
 
