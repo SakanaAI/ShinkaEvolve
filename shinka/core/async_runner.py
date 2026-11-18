@@ -4446,7 +4446,8 @@ class ShinkaEvolveRunner:
 
     @staticmethod
     def _retry_queue_key(job: AsyncRunningJob) -> str:
-        return str(job.job_id)
+        """Key that keeps jobs sharing a scheduler handle apart in the retry queue."""
+        return ShinkaEvolveRunner._source_job_key(job)
 
     async def _record_job_out_of_retries(self, job: AsyncRunningJob) -> bool:
         """Store a failed row for a job that no retry could persist.

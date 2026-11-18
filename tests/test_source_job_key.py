@@ -87,6 +87,36 @@ def test_retry_of_one_job_still_reuses_its_row(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_jobs_sharing_a_handle_each_keep_their_place_in_the_retry_queue(
+    tmp_path: Path,
+) -> None:
+    """A PID reused while an earlier job still waits for a retry must not evict it."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            stale = OSError("stale file handle")
+            runner = make_runner(
+                async_db, StaticScheduler(stale, stale, good_results()), max_retries=3
+            )
+            runner._update_completed_generations = lambda: asyncio.sleep(0)
+            runner._log_wandb_population_progress = lambda: None
+            runner._record_progress = lambda: None
+            runner.slot_available = asyncio.Event()
+            earlier = make_job(job_id=LocalHandle(500), generation=3)
+            later = make_job(job_id=LocalHandle(500), generation=7)
+
+            await runner._process_completed_jobs_safely([earlier, later])
+
+            assert list(runner.failed_jobs_for_retry.values()) == [earlier, later]
+
+            await runner._retry_failed_db_jobs()
+
+            assert sorted(child.generation for child in children(sync_db)) == [3, 7]
+            assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
 def test_key_separates_jobs_and_is_stable_for_one_job() -> None:
     job = make_job(job_id=LocalHandle(500), generation=3)
     same_handle_later = make_job(
@@ -151,6 +181,6 @@ def test_row_of_another_generation_is_never_reused() -> None:
         job = make_job(job_id="job-7", generation=2)
 
         assert not await runner._process_single_job_safely(job)
-        assert runner.failed_jobs_for_retry == {"job-7": job}
+        assert list(runner.failed_jobs_for_retry.values()) == [job]
 
     asyncio.run(run())

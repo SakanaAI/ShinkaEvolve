@@ -686,7 +686,7 @@ def test_process_single_job_safely_reuses_initial_eval_finish_time_on_retry():
         assert first_ok is False
         assert first_finished_at is not None
         assert runner.evaluation_slot_pool.in_use == 0
-        assert "job-retry" in runner.failed_jobs_for_retry
+        assert job in runner.failed_jobs_for_retry.values()
 
         await asyncio.sleep(0.02)
         second_ok = await runner._process_single_job_safely(job)

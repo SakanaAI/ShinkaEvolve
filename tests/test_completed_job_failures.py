@@ -57,7 +57,7 @@ def test_slow_results_are_picked_up_from_the_same_read(tmp_path: Path) -> None:
             await runner._retry_failed_db_jobs()
 
             assert children(sync_db) == []
-            assert runner.failed_jobs_for_retry == {"job-1": job}
+            assert list(runner.failed_jobs_for_retry.values()) == [job]
             assert job.db_retry_count == 0  # waiting is not a failed attempt
             assert scheduler.calls == 1
 
@@ -120,7 +120,7 @@ def test_stuck_results_read_holds_up_only_the_first_pass(tmp_path: Path) -> None
             )
 
             assert children(sync_db) == []
-            assert runner.failed_jobs_for_retry == {"job-1": job}
+            assert list(runner.failed_jobs_for_retry.values()) == [job]
             assert job.db_retry_count == 0
             assert scheduler.calls == 1
             runner._result_reads.pop(runner._source_job_key(job)).cancel()
@@ -265,7 +265,7 @@ def test_failed_maintenance_is_retried_on_the_stored_row(tmp_path: Path) -> None
             (child,) = children(sync_db)
             assert child.metadata["postprocess_db_maintenance_applied"] is False
             assert sync_db.get_best_program().id != child.id
-            assert runner.failed_jobs_for_retry == {"job-1": job}
+            assert list(runner.failed_jobs_for_retry.values()) == [job]
 
             await runner._retry_failed_db_jobs()
 
@@ -362,7 +362,7 @@ def test_unexpected_persistence_error_queues_a_retry(tmp_path: Path) -> None:
             await runner._process_completed_jobs_safely([job])
 
             assert children(sync_db) == []
-            assert runner.failed_jobs_for_retry == {"job-1": job}
+            assert list(runner.failed_jobs_for_retry.values()) == [job]
 
             await runner._retry_failed_db_jobs()
 
@@ -515,6 +515,6 @@ def test_exception_escaping_job_processing_queues_a_retry() -> None:
 
         await runner._process_completed_jobs_safely([job])
 
-        assert runner.failed_jobs_for_retry == {"job-1": job}
+        assert list(runner.failed_jobs_for_retry.values()) == [job]
 
     asyncio.run(run())
