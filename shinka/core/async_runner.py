@@ -1492,8 +1492,8 @@ class ShinkaEvolveRunner:
         # Local import: this method is the only runner region that needs it.
         from shinka.database.run_db_path import resolve_run_db_path
 
-        # Runs store their programs in programs.sqlite. A run directory from
-        # before that name was fixed is continued in the database it has.
+        # <results_dir>/<file name of db_path>, programs.sqlite by default. A
+        # directory that already holds programs under another name keeps them.
         db_path = resolve_run_db_path(self.results_dir, self.db_config.db_path)
 
         # Update database config with results directory path

@@ -3,7 +3,6 @@
 from contextlib import closing
 
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
-from shinka.database.run_db_path import resolve_run_db_path
 from shinka.edit.apply_diff import write_git_diff
 from shinka.utils import get_path_to_best_node, load_programs_to_df, store_best_path
 
@@ -48,7 +47,7 @@ def test_best_path_has_the_seed_code_and_one_patch_per_step(tmp_path):
     _write_run(run_dir / "programs.sqlite", tmp_path, num_children=11)
 
     # The steps of shinka/plots/code_path_anim.py before it renders.
-    df = load_programs_to_df(str(resolve_run_db_path(run_dir, None)), verbose=False)
+    df = load_programs_to_df(str(run_dir), verbose=False)
     best_path = get_path_to_best_node(df)
     store_best_path(best_path, str(run_dir))
 
@@ -67,7 +66,7 @@ def test_best_path_has_the_seed_code_and_one_patch_per_step(tmp_path):
 def test_best_path_is_read_from_a_legacy_database_file(tmp_path):
     _write_run(tmp_path / "evolution_db.sqlite", tmp_path, num_children=1)
 
-    df = load_programs_to_df(str(resolve_run_db_path(tmp_path, None)), verbose=False)
+    df = load_programs_to_df(str(tmp_path), verbose=False)
 
     assert df is not None
     assert list(df["id"]) == ["g0", "g1"]

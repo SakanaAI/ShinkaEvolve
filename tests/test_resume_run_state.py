@@ -94,17 +94,61 @@ def test_resume_continues_in_a_legacy_database_file(tmp_path, configured):
     assert not (tmp_path / "programs.sqlite").exists()
 
 
-def test_new_run_ignores_a_custom_db_path(tmp_path, caplog):
-    runner = _resume_runner(tmp_path, "evolution_db.sqlite")
+def test_new_run_stores_programs_under_a_custom_db_path(tmp_path, caplog):
+    runner = _resume_runner(tmp_path, "custom.sqlite")
 
     with caplog.at_level(logging.WARNING, logger="shinka.database.run_db_path"):
         _setup(runner)
 
-    assert runner.db_config.db_path == str(tmp_path / "programs.sqlite")
-    assert (tmp_path / "programs.sqlite").exists()
-    assert not (tmp_path / "evolution_db.sqlite").exists()
-    assert any("is ignored" in record.getMessage() for record in caplog.records)
+    assert runner.db_config.db_path == str(tmp_path / "custom.sqlite")
+    assert (tmp_path / "custom.sqlite").exists()
+    assert not (tmp_path / "programs.sqlite").exists()
+    assert caplog.records == []
     runner._generate_initial_program.assert_awaited_once()
+
+
+def test_new_run_without_db_path_stores_programs_in_programs_sqlite(tmp_path):
+    runner = _resume_runner(tmp_path, None)
+
+    _setup(runner)
+
+    assert runner.db_config.db_path == str(tmp_path / "programs.sqlite")
+    assert [path.name for path in tmp_path.glob("*.sqlite")] == ["programs.sqlite"]
+
+
+@pytest.mark.parametrize("configured", ["custom.sqlite", None, "renamed.sqlite"])
+def test_resume_continues_in_a_custom_database_file(tmp_path, caplog, configured):
+    """Also after db_path was dropped from the config or changed."""
+    _write_run(tmp_path / "custom.sqlite", [1.0, 2.0, 3.0])
+    runner = _resume_runner(tmp_path, configured)
+
+    def check():
+        assert runner.db_config.db_path == str(tmp_path / "custom.sqlite")
+        assert runner.completed_generations == 3
+        assert {p.id for p in runner.db.get_all_programs()} == {"g0", "g1", "g2"}
+        runner._generate_initial_program.assert_not_awaited()
+
+    with caplog.at_level(logging.WARNING, logger="shinka.database.run_db_path"):
+        _setup(runner, check)
+
+    assert [path.name for path in tmp_path.glob("*.sqlite")] == ["custom.sqlite"]
+    warned = any("already holds the programs" in r.getMessage() for r in caplog.records)
+    assert warned == (configured != "custom.sqlite")
+
+
+def test_config_reused_for_a_second_run_keeps_the_custom_name(tmp_path):
+    """Setup writes the resolved path back into the config object."""
+    first = _resume_runner(tmp_path / "run1", "custom.sqlite")
+    (tmp_path / "run1").mkdir()
+    _setup(first)
+    second = _resume_runner(tmp_path / "run2", None)
+    (tmp_path / "run2").mkdir()
+    second.db_config = first.db_config
+
+    _setup(second)
+
+    assert second.db_config.db_path == str(tmp_path / "run2" / "custom.sqlite")
+    second._generate_initial_program.assert_awaited_once()
 
 
 # -- bandit baseline -----------------------------------------------------------

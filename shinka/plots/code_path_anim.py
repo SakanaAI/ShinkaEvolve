@@ -11,7 +11,6 @@ import difflib
 
 from moviepy import VideoClip
 import numpy as np
-from shinka.database.run_db_path import resolve_run_db_path
 from shinka.utils import load_programs_to_df, get_path_to_best_node, store_best_path
 import argparse
 
@@ -25,8 +24,7 @@ args = parser.parse_args()
 
 results_dir = args.results_dir
 
-# programs.sqlite, or the database file an older run directory already has
-df = load_programs_to_df(str(resolve_run_db_path(results_dir, None)))
+df = load_programs_to_df(results_dir)
 print(df.head())
 best_path = get_path_to_best_node(df)
 store_best_path(best_path, results_dir)

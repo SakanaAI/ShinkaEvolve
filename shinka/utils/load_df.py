@@ -18,7 +18,9 @@ def load_programs_to_df(
 
     Args:
         db_path_str: The path to the SQLite database file or results directory.
-        default_db_name: Default database filename if db_path_str is a directory.
+        default_db_name: Database filename tried first if db_path_str is a
+            directory. If that file has no programs, the database of the
+            directory that does is loaded (a run with a custom `db_path`).
         verbose: Whether to print summary statistics.
         include_prompts: If True, also loads the prompt evolution database and
             returns a tuple of (programs_df, prompts_df).
@@ -31,12 +33,13 @@ def load_programs_to_df(
         The 'metrics' JSON string is parsed and its key-value pairs are added
         as columns to the DataFrame.
     """
-    db_file = Path(db_path_str)
+    # Local import: keeps shinka.utils importable without the database package.
+    from shinka.database.run_db_path import find_run_db_path
 
     if db_path_str.endswith(".sqlite") or db_path_str.endswith(".db"):
         db_file = Path(db_path_str)
     else:
-        db_file = Path(f"{db_path_str}/{default_db_name}")
+        db_file = find_run_db_path(db_path_str, default_db_name)
 
     if not db_file.exists():
         print(f"Error: Database file not found at {db_path_str}")
