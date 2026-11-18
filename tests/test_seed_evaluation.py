@@ -14,7 +14,13 @@ from shinka.database import (
     Program,
     ProgramDatabase,
 )
-from shinka.launch import JobScheduler, LocalJobConfig, local
+from shinka.launch import (
+    JobScheduler,
+    LocalJobConfig,
+    SlurmCondaJobConfig,
+    SlurmDockerJobConfig,
+    local,
+)
 from shinka.prompts.prompts_base import construct_individual_program_msg
 from shinka.utils import load_results
 
@@ -23,7 +29,11 @@ SEED = "def approximate(x):\n    return x\n"
 
 
 def _run_seed(
-    tmp_path: Path, config: LocalJobConfig, code: str = SEED
+    tmp_path: Path,
+    config: LocalJobConfig,
+    code: str = SEED,
+    *,
+    scheduler: JobScheduler | None = None,
 ) -> tuple[Program, bool, Mock]:
     db_config = DatabaseConfig(db_path=str(tmp_path / "programs.db"), num_islands=1)
     db = ProgramDatabase(db_config)
@@ -41,7 +51,7 @@ def _run_seed(
     runner.llm_selection = Mock()
     runner.stuck_detection_count = 0
     runner.wandb_logger = None
-    runner.scheduler = JobScheduler("local", config)
+    runner.scheduler = scheduler or JobScheduler("local", config)
     runner.async_db = AsyncProgramDatabase(db)
 
     async def setup() -> None:
@@ -118,6 +128,42 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
     assert "evaluator stdout" in seed.metadata["stdout_log"]
     assert "evaluator stderr" in seed.metadata["stderr_log"]
     baseline.assert_called_once_with(0.0)
+
+
+@pytest.mark.parametrize("backend", ["slurm_conda", "slurm_docker"])
+@pytest.mark.parametrize("state", ["FAILED", "TIMEOUT", "COMPLETED"])
+def test_slurm_seed_requires_successful_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, state: str
+) -> None:
+    import subprocess
+
+    def submit(results_dir, *args, **kwargs):
+        path = Path(results_dir)
+        (path / "correct.json").write_text('{"correct": true}')
+        (path / "metrics.json").write_text('{"combined_score": 42}')
+        (path / "job_log.err").write_text("evaluator stderr")
+        return "123"
+
+    def run(cmd, **kwargs):
+        output = "" if cmd[0] == "squeue" else f"123|{state}|0:0"
+        return subprocess.CompletedProcess(cmd, 0, stdout=output)
+
+    monkeypatch.setattr(f"shinka.launch.scheduler.submit_{backend}", submit)
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", run)
+    config = (
+        SlurmCondaJobConfig() if backend == "slurm_conda" else SlurmDockerJobConfig()
+    )
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(), scheduler=JobScheduler(backend, config)
+    )
+
+    assert bool(seed.correct) is (state == "COMPLETED")
+    assert needs_fix is (state != "COMPLETED")
+    assert seed.combined_score == (42.0 if state == "COMPLETED" else 0.0)
+    if state != "COMPLETED":
+        assert seed.metadata["evaluation_failed"]
+        assert state in seed.metadata["stderr_log"]
+        assert "evaluator stderr" in seed.metadata["stderr_log"]
 
 
 def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:

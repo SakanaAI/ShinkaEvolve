@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
+from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
 from .slurm import (
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
@@ -278,7 +279,7 @@ class JobScheduler:
             raise ValueError(f"Unknown job type: {self.job_type}")
 
         if isinstance(job_id, str):
-            results = monitor_slurm(job_id, results_dir_t)
+            results = monitor_slurm_evaluation(job_id, results_dir_t)
         else:
             results = monitor_local(job_id, results_dir_t, timeout=timeout)
             if job_id.returncode:

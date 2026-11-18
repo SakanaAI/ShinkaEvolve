@@ -234,6 +234,15 @@ complete CLI configuration.
 
 `conda_env` and `activate_script` are mutually exclusive.
 
+Generation-zero Slurm evaluations require a matching `sacct` allocation record
+with `State=COMPLETED` and `ExitCode=0:0` before accepting result files. Once the
+job leaves `squeue`, accounting is queried up to six times, ten seconds apart,
+to allow delayed records to appear. Missing, inaccessible, or ambiguous records
+fail the seed evaluation with a diagnostic; partial artifacts from failed jobs
+are not accepted. This requires job accounting to be enabled and readable.
+Slurm local fallback jobs instead use the actual subprocess exit status.
+Ordinary asynchronous result retrieval retains its existing contract.
+
 ---
 
 ## Hydra Presets
