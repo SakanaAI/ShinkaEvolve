@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from shinka.core.async_summarizer import AsyncMetaSummarizer
 from shinka.core.summarizer import META_STATE_FILENAME, MetaSummarizer
 from shinka.database import Program
@@ -220,3 +222,66 @@ def test_sync_update_persists_its_result(tmp_path):
     assert resumed.meta_recommendations == "1. sync recommendation"
     assert resumed.total_programs_processed == 1
     assert resumed.evaluated_since_last_meta == []
+
+
+# -- damaged files ------------------------------------------------------------
+
+
+def _old_session_output(results_dir: Path) -> AsyncMetaSummarizer:
+    """A session of a release without the state file: only meta/meta_2.txt."""
+    first = _summarizer(results_dir)
+    first.add_evaluated_program(_program("a", 1))
+    first.add_evaluated_program(_program("b", 2))
+    _run_update(first, results_dir)
+    (results_dir / META_STATE_FILENAME).unlink()
+    return first
+
+
+def test_meta_output_cut_inside_a_character_is_still_restored(tmp_path):
+    """The output file is not written atomically; a kill can cut it anywhere."""
+    first = _old_session_output(tmp_path)
+    output = tmp_path / "meta" / "meta_2.txt"
+    output.write_bytes(output.read_bytes() + "é".encode()[:1])
+
+    resumed = _resumed(tmp_path)
+
+    assert resumed.total_programs_processed == 2
+    assert resumed.meta_summary == first.meta_summary
+    assert resumed.meta_scratch_pad == "insights (update 1)"
+
+
+def test_files_that_only_look_like_meta_output_are_ignored(tmp_path):
+    _old_session_output(tmp_path)
+    (tmp_path / "meta" / "meta_²3.txt").write_text("not a count")
+    (tmp_path / "meta" / "meta_final.txt").write_text("not a count")
+
+    assert _resumed(tmp_path).total_programs_processed == 2
+
+
+@pytest.mark.parametrize("stored_total", [None, "2", "many"])
+def test_state_file_with_an_unusable_program_count_is_restored(tmp_path, stored_total):
+    first = _summarizer(tmp_path)
+    first.add_evaluated_program(_program("a", 1))
+    first.add_evaluated_program(_program("b", 2))
+    _run_update(first, tmp_path)
+    state_path = tmp_path / META_STATE_FILENAME
+    state = json.loads(state_path.read_text())
+    state["total_programs_meta_processed"] = stored_total
+    state_path.write_text(json.dumps(state))
+
+    resumed = _resumed(tmp_path)
+
+    # The count is taken from the meta output when the state file has none.
+    assert resumed.total_programs_processed == 2
+    assert resumed.meta_recommendations == "1. recommendation (update 1)"
+
+
+def test_unreadable_meta_output_does_not_stop_a_resume(tmp_path):
+    _old_session_output(tmp_path)
+    output = tmp_path / "meta" / "meta_2.txt"
+    output.unlink()
+    output.mkdir()
+
+    summarizer = _summarizer(tmp_path)
+
+    assert not summarizer.restore_persisted_state()

@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 import logging
 import json
 import random
@@ -42,6 +42,14 @@ _META_OUTPUT_SECTIONS = (
         "program generations:",
     ),
 )
+
+
+def _as_count(value: Any) -> int:
+    """A stored program count as an int; 0 when it is missing or unusable."""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class MetaSummarizer:
@@ -90,7 +98,13 @@ class MetaSummarizer:
         if self._state_path is None:
             return False
         loaded = self.load_meta_state(str(self._state_path))
-        restored = self._restore_from_meta_output(self._state_path.parent / "meta")
+        meta_dir = self._state_path.parent / "meta"
+        try:
+            restored = self._restore_from_meta_output(meta_dir)
+        except Exception as e:
+            # Meta state is an aid; a damaged file must not stop the resume.
+            logger.warning(f"Failed to restore meta state from {meta_dir}: {e}")
+            restored = False
         return loaded or restored
 
     def _restore_from_meta_output(self, meta_dir: Path) -> bool:
@@ -108,14 +122,18 @@ class MetaSummarizer:
         outputs = {}
         for path in meta_dir.glob("meta_*.txt"):
             processed = path.stem.removeprefix("meta_")
-            if processed.isdigit():
+            if processed.isdecimal():
                 outputs[int(processed)] = path
         if not outputs or max(outputs) <= self.total_programs_processed:
             return False
 
         total_processed = max(outputs)
         try:
-            text = outputs[total_processed].read_text(encoding="utf-8")
+            # The file is not written atomically: a killed session can leave it
+            # cut inside a character.
+            text = outputs[total_processed].read_text(
+                encoding="utf-8", errors="replace"
+            )
         except OSError as e:
             logger.warning(f"Failed to read {outputs[total_processed]}: {e}")
             return False
@@ -784,8 +802,8 @@ class MetaSummarizer:
             self.meta_recommendations_history = meta_data.get(
                 "meta_recommendations_history", []
             )
-            self.total_programs_processed = meta_data.get(
-                "total_programs_meta_processed", 0
+            self.total_programs_processed = _as_count(
+                meta_data.get("total_programs_meta_processed")
             )
 
             # Debug logging for meta recommendations
