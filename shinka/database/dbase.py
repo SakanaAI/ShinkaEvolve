@@ -721,7 +721,7 @@ class ProgramDatabase:
                         (program.combined_score or 0.0) == state.best_score_ever
                         and (
                             program.id == state.best_program_id
-                            or program.generation == state.best_score_generation
+                            or program.generation <= state.best_score_generation
                         )
                     )
                 )
@@ -788,7 +788,7 @@ class ProgramDatabase:
                     else min(generation, earliest_unscored)
                 )
                 if published.best_score_ever == 0.0 and (
-                    best is None or generation == published.best_score_generation
+                    best is None or generation <= published.best_score_generation
                 ):
                     self._record_repair_score(state, 0.0, generation)
             else:

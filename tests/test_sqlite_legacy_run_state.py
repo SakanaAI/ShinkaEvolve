@@ -353,19 +353,61 @@ def test_preview_repair_upgrades_once_across_two_reopens(
         assert scans == [best.id]
 
 
-def test_preview_repair_preserves_markerless_tied_incumbent_watermark(config):
+@pytest.mark.parametrize("watermark", [5, 7])
+def test_preview_repair_preserves_markerless_tied_incumbent_watermark(config, watermark):
+    config.enable_dynamic_islands = True
+    config.stagnation_threshold = 2
+    config.island_spawn_strategy = "best"
     first, best = _program(5, 10.0), _program(8, 10.0)
     with closing(_open_db(config)) as writer:
         writer.add(first)
+        if watermark == 7:
+            assert writer.check_and_spawn_island_if_stagnant(watermark)
+        config.stagnation_threshold = 4
         writer.add(best)
         with writer.conn:
-            writer.conn.execute("UPDATE programs SET metadata = '{}'")
-        _write_legacy_run_state(writer, best, marker=first.generation)
+            writer.conn.execute(
+                "UPDATE programs SET metadata = '{}' WHERE id IN (?, ?)",
+                (first.id, best.id),
+            )
+        assert writer.best_score_generation == watermark
+        _write_legacy_run_state(writer, best, marker=watermark)
         writer._update_metadata_in_db("run_state_reconciled_v1", "1")
 
     with closing(_open_db(config)) as repaired:
         assert repaired.best_program_id == best.id
-        assert (repaired.best_score_ever, repaired.best_score_generation) == (10.0, 5)
+        assert (repaired.best_score_ever, repaired.best_score_generation) == (
+            10.0,
+            watermark,
+        )
+        assert repaired.check_and_spawn_island_if_stagnant(watermark + 4)
+
+
+def test_preview_repair_keeps_reset_after_markerless_unscored_incumbent(config):
+    config.enable_dynamic_islands = True
+    config.stagnation_threshold = 2
+    config.island_spawn_strategy = "best"
+    seed, unscored, best = _program(0, -3.0), _program(5, None), _program(8, 0.0)
+    with closing(_open_db(config)) as writer:
+        writer.add(seed, defer_maintenance=True)
+        writer.add(unscored)
+        writer.run_post_add_maintenance(seed)
+        writer.add(_program(7, -4.0))
+        writer.add(best)
+        assert (writer.best_score_ever, writer.best_score_generation) == (0.0, 7)
+        assert writer.island_manager.get_island_populations() == {0: 4, 1: 1}
+        with writer.conn:
+            writer.conn.execute(
+                "UPDATE programs SET metadata = '{}' WHERE id IN (?, ?)",
+                (unscored.id, best.id),
+            )
+        _write_legacy_run_state(writer, best, marker=7)
+        writer._update_metadata_in_db("run_state_reconciled_v1", "1")
+
+    with closing(_open_db(config)) as repaired:
+        assert repaired.best_program_id == best.id
+        assert repaired.best_score_generation == 7
+        assert repaired.check_and_spawn_island_if_stagnant(9)
 
 
 def test_preview_repair_preserves_deferred_maintenance_on_reopen(config):
