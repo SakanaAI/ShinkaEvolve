@@ -4585,6 +4585,18 @@ class ShinkaEvolveRunner:
             return None
 
     @staticmethod
+    def _source_job_key(job: AsyncRunningJob) -> str:
+        """Identify one submitted job across sessions and across its own retries.
+
+        A scheduler handle alone repeats: a local job is named by its PID, which a
+        later session can be handed again.
+        """
+        return (
+            f"{job.job_id}|gen={job.generation}"
+            f"|submitted={job.evaluation_submitted_at!r}"
+        )
+
+    @staticmethod
     def _evaluator_exit_status(job: AsyncRunningJob) -> Optional[int]:
         """Exit status of a finished local evaluator. Slurm handles carry none."""
         exit_status = getattr(job.job_id, "returncode", None)
@@ -4595,7 +4607,7 @@ class ShinkaEvolveRunner:
     ) -> CompletedJobPersistResult:
         """Persist a completed evaluation job without blocking on slower side effects."""
         postprocess_worker_id = None
-        source_job_id = str(job.job_id)
+        source_job_id = self._source_job_key(job)
         try:
             logger.info(
                 f"🔄 SAFE PROCESSING: Starting job {job.job_id} (gen {job.generation})"
@@ -4764,6 +4776,20 @@ class ShinkaEvolveRunner:
                                 source_job_id
                             )
                         )
+                    if (
+                        existing_program is not None
+                        and existing_program.generation != job.generation
+                    ):
+                        # Never let another generation's row stand in for this job.
+                        logger.error(
+                            "Ignoring program %s (gen %s) as the persisted row of "
+                            "job %s (gen %s)",
+                            existing_program.id,
+                            existing_program.generation,
+                            job.job_id,
+                            job.generation,
+                        )
+                        existing_program = None
 
                     if existing_program is None:
                         self._queue_failed_db_job(

@@ -529,6 +529,9 @@ def test_process_single_job_safely_reuses_existing_row_when_duplicate_matches():
             running_eval_jobs_at_submit=1,
             meta_patch_data={"patch_name": "dup_patch"},
         )
+        source_job_key = runner._source_job_key(job)
+        existing_program.metadata["source_job_id"] = source_job_key
+        runner.async_db.seen_source_job_ids.add(source_job_key)
 
         ok = await runner._process_single_job_safely(job)
 
@@ -615,6 +618,9 @@ def test_process_single_job_safely_ignores_duplicate_marker_on_existing_row():
             running_eval_jobs_at_submit=1,
             meta_patch_data={"patch_name": "dup_patch"},
         )
+        source_job_key = runner._source_job_key(job)
+        existing_program.metadata["source_job_id"] = source_job_key
+        runner.async_db.seen_source_job_ids.add(source_job_key)
 
         ok = await runner._process_single_job_safely(job)
 
