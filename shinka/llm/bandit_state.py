@@ -1,40 +1,27 @@
 """Bandit state persistence that never executes what the state file contains.
 
 States are written as JSON. Runs saved before this format hold a pickle at the
-same path; it is still read, through an unpickler that can only rebuild NumPy
-arrays and scalars, so resuming never imports or calls anything else a
-results directory may name.
+same path; its values are still read, by `bandit_state_legacy`, without
+unpickling it.
 """
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
-import pickle
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from .bandit_state_legacy import read_legacy_state
+
 logger = logging.getLogger(__name__)
 
 STATE_FORMAT = "shinka-bandit-state"
 STATE_VERSION = 1
-
-# What NumPy 1.x and 2.x pickles of float arrays and scalars reference.
-_LEGACY_PICKLE_GLOBALS = frozenset(
-    (module, name)
-    for package in ("numpy.core", "numpy._core")
-    for module, name in (
-        (f"{package}.multiarray", "_reconstruct"),
-        (f"{package}.multiarray", "scalar"),
-        (f"{package}.numeric", "_frombuffer"),
-    )
-) | {("numpy", "ndarray"), ("numpy", "dtype")}
-
 
 class BanditStateError(ValueError):
     """The bandit state file cannot be read as bandit state."""
@@ -94,25 +81,12 @@ def _state_from_json(data: bytes) -> dict[str, Any]:
     return {key: _plain(key, value) for key, value in document["state"].items()}
 
 
-class _ArrayOnlyUnpickler(pickle.Unpickler):
-    """Rebuilds NumPy arrays and scalars; refuses every other global."""
-
-    def find_class(self, module: str, name: str) -> Any:
-        if (module, name) in _LEGACY_PICKLE_GLOBALS:
-            return super().find_class(module, name)
-        raise pickle.UnpicklingError(
-            f"bandit state pickle references {module}.{name}, which is not allowed"
-        )
-
-
 def _state_from_legacy_pickle(data: bytes) -> dict[str, Any]:
     try:
-        state = _ArrayOnlyUnpickler(io.BytesIO(data)).load()
-    except Exception as exc:  # noqa: BLE001 - unpickling fails in many ways
+        state = read_legacy_state(data)
+    except Exception as exc:  # noqa: BLE001 - malformed pickles fail in many ways
         raise BanditStateError(f"cannot read legacy bandit state: {exc}") from exc
-    if not isinstance(state, dict):
-        raise BanditStateError("legacy bandit state is not a dictionary")
-    return {str(key): _plain(str(key), value) for key, value in state.items()}
+    return {key: _plain(key, value) for key, value in state.items()}
 
 
 def _plain(key: str, value: Any) -> Any:

@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import pickle
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -189,6 +191,140 @@ def test_pickle_that_would_run_code_is_refused(tmp_path):
 
     assert not marker.exists()
     _assert_same_state(bandit.get_state(), untouched)
+
+
+class _Reduced:
+    """Pickles as a call of `function(*arguments)`, then `__setstate__(state)`."""
+
+    def __init__(self, function, arguments, state=None):
+        self.reduced = (function, arguments, *(() if state is None else (state,)))
+
+    def __reduce__(self):
+        return self.reduced
+
+
+def _numpy_pickles_that_read_foreign_memory() -> dict[str, object]:
+    """Arrays whose bytes NumPy would follow as object pointers, or read past.
+
+    Every one is built from the constructors a real array pickle names, so an
+    unpickler that only restricts which globals may be called still runs them.
+    """
+    from numpy._core import multiarray, numeric
+
+    pointer = b"\x41" * 8
+    from_buffer = getattr(numeric, "_frombuffer")  # private; what protocol 5 names
+    empty_array = (np.ndarray, (0,), b"b")
+
+    def object_field_dtype(offset=0):
+        fields = {"a": (np.dtype("O") if offset == 0 else np.dtype("f8"), offset)}
+        return _Reduced(
+            np.dtype, ("V8", False, True), (3, "|", None, ("a",), fields, 8, 1, 0)
+        )
+
+    def rebuilt(dtype, data=pointer):
+        return _Reduced(
+            multiarray._reconstruct, empty_array, (1, (1,), dtype, False, data)
+        )
+
+    return {
+        "object array over raw bytes": _Reduced(np.ndarray, ((1,), "O", pointer)),
+        "object array as a shape": _Reduced(
+            np.ndarray, (_Reduced(np.ndarray, ((1,), "O", pointer)), "f8")
+        ),
+        "object dtype in array state": rebuilt(np.dtype("O")),
+        "object field in array state": rebuilt(np.dtype([("a", "O")])),
+        "hidden object field": rebuilt(object_field_dtype()),
+        "hidden object field from a buffer": _Reduced(
+            from_buffer, (pointer, object_field_dtype(), (1,), "C")
+        ),
+        "hidden object field in a scalar": _Reduced(
+            multiarray.scalar, (object_field_dtype(), pointer)
+        ),
+        "field beyond the item": rebuilt(object_field_dtype(offset=1 << 30)),
+        "shape larger than the data": rebuilt(np.dtype("f8"), b"\x00" * 4),
+    }
+
+
+def test_crafted_numpy_pickles_are_refused_without_touching_their_memory(tmp_path):
+    """Run in a child process: reading such an array used to end in a segfault."""
+    paths = []
+    for index, value in enumerate(_numpy_pickles_that_read_foreign_memory().values()):
+        path = tmp_path / f"crafted_{index}.pkl"
+        path.write_bytes(pickle.dumps({"s": value}, protocol=4))
+        paths.append(str(path))
+    reader = (
+        "import sys\n"
+        "from shinka.llm.bandit_state import BanditStateError, read_bandit_state\n"
+        "from pathlib import Path\n"
+        "for path in sys.argv[1:]:\n"
+        "    try:\n"
+        "        read_bandit_state(Path(path))\n"
+        "        print('loaded')\n"
+        "    except BanditStateError:\n"
+        "        print('refused')\n"
+    )
+
+    child = subprocess.run(
+        [sys.executable, "-c", reader, *paths],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert child.returncode == 0, child.stderr[-2000:]
+    assert child.stdout.split() == ["refused"] * len(paths)
+
+
+@pytest.mark.parametrize("protocol", range(3, pickle.HIGHEST_PROTOCOL + 1))
+def test_legacy_reader_returns_what_the_pickle_held(protocol, tmp_path):
+    state = {
+        "arm_names": ["model-a", "model-b"],
+        "s": np.array([0.5, -np.inf, 1e300]),
+        "counts": np.arange(3),
+        "flags": np.array([True, False]),
+        "small": np.array([1.5, 2.5], dtype=np.float32),
+        "empty": np.zeros(0),
+        "baseline": np.float64(0.25),
+        "single": np.float32(1.5),
+        "seen": np.int64(7),
+        "active": np.bool_(True),
+        "obs_max": float("-inf"),
+        "plain_int": 3,
+        "large_int": 2**40,
+        "plain_bool": False,
+        "missing": None,
+    }
+    path = tmp_path / "bandit_state.pkl"
+    path.write_bytes(pickle.dumps(state, protocol=protocol))
+
+    restored = read_bandit_state(path)
+
+    assert restored.keys() == state.keys()
+    for key, value in state.items():
+        expected = value.tolist() if isinstance(value, (np.generic, np.ndarray)) else value
+        assert restored[key] == expected, key
+        assert type(restored[key]) is type(expected), key
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"s": np.zeros((2, 2))},
+        {"s": np.zeros(2, dtype=">f8")},
+        {"s": np.zeros(2, dtype="c16")},
+        {"s": np.array(["a"])},
+        {"s": {"nested": 1.0}},
+        {1: np.zeros(2)},
+    ],
+    ids=["matrix", "big-endian", "complex", "strings", "nested-dict", "int-key"],
+)
+def test_legacy_reader_refuses_shapes_a_bandit_state_never_has(state, tmp_path):
+    path = tmp_path / "bandit_state.pkl"
+    path.write_bytes(pickle.dumps(state, protocol=4))
+
+    with pytest.raises(BanditStateError):
+        read_bandit_state(path)
 
 
 @pytest.mark.parametrize(
