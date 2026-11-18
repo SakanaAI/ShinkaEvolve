@@ -1,6 +1,8 @@
+import asyncio
 import backoff
 import openai
 import time
+from shinka.api_budget import check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .errors import EmptyResponseError
 from .pricing import calculate_cost, model_exists
@@ -100,19 +102,29 @@ def _extract_reasoning_summary(response) -> str:
     return "\n".join(summaries)
 
 
-def backoff_handler(details):
+def _extra_backoff_delay(details) -> float:
     exc = details.get("exception")
-    if exc:
-        retry_after = _retry_after_seconds(exc)
-        if retry_after is not None and retry_after > details["wait"]:
-            logger.warning(
-                "OpenAI - server requested retry_after=%ss; sleeping before retry.",
-                retry_after,
-            )
-            time.sleep(retry_after - details["wait"])
-        logger.warning(
-            f"OpenAI - Retry {details['tries']} due to error: {exc}. Waiting {details['wait']:0.1f}s..."
-        )
+    if not exc:
+        return 0.0
+    retry_after = _retry_after_seconds(exc) or 0.0
+    delay = max(details["wait"], retry_after)
+    logger.warning(
+        "OpenAI - Retry %s due to error: %s. Waiting %.1fs...",
+        details["tries"], exc, delay,
+    )
+    return delay - details["wait"]
+
+
+def backoff_handler(details):
+    extra = _extra_backoff_delay(details)
+    if extra:
+        time.sleep(extra)
+
+
+async def async_backoff_handler(details):
+    extra = _extra_backoff_delay(details)
+    if extra:
+        await asyncio.sleep(extra)
 
 
 def _retry_after_seconds(exc) -> int | None:
@@ -227,10 +239,9 @@ def query_openai(
             **kwargs,
         )
         content, cost_results = _extract_billed_parsed(response, model)
-        new_content = ""
-        for i in content:
-            new_content += i[0] + ":" + i[1] + "\n"
-        new_msg_history.append({"role": "assistant", "content": new_content})
+        new_msg_history.append(
+            {"role": "assistant", "content": content.model_dump_json()}
+        )
 
     # Collect all results
     result = QueryResult(
@@ -258,7 +269,7 @@ def query_openai(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
-    on_backoff=backoff_handler,
+    on_backoff=[mark_provider_retry_wait, async_backoff_handler],
 )
 async def query_openai_async(
     client,
@@ -271,6 +282,8 @@ async def query_openai_async(
     **kwargs,
 ) -> QueryResult:
     """Query OpenAI model asynchronously."""
+    if check_provider_attempt():
+        client = client.with_options(max_retries=0)
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
     thought = ""
     if output_model is None:
@@ -296,10 +309,9 @@ async def query_openai_async(
             **kwargs,
         )
         content, cost_results = _extract_billed_parsed(response, model)
-        new_content = ""
-        for i in content:
-            new_content += i[0] + ":" + i[1] + "\n"
-        new_msg_history.append({"role": "assistant", "content": new_content})
+        new_msg_history.append(
+            {"role": "assistant", "content": content.model_dump_json()}
+        )
     result = QueryResult(
         content=content,
         msg=msg,

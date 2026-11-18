@@ -2,6 +2,7 @@ import backoff
 import logging
 from typing import Any, cast
 from google.genai import types
+from shinka.api_budget import APIBudgetExceeded, check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import (
     BACKOFF_MAX_TIME,
     BACKOFF_MAX_TRIES,
@@ -25,7 +26,7 @@ GeminiStructuredOutputError = StructuredOutputNotSupportedError
 
 
 def _giveup_gemini(exc: Exception) -> bool:
-    return isinstance(exc, NonRetryableLLMError)
+    return isinstance(exc, (NonRetryableLLMError, APIBudgetExceeded))
 
 
 def build_gemini_thinking_config(thinking_budget: int):
@@ -193,22 +194,17 @@ def gemini_extract_thoughts_and_content(response):
     content_parts = []
 
     # Access the first candidate's content parts
-    if hasattr(response, "candidates") and response.candidates:
-        candidate = response.candidates[0]
-        has_content = hasattr(candidate, "content")
-        has_parts = has_content and hasattr(candidate.content, "parts")
-        if has_parts:
-            for part in candidate.content.parts:
-                # Check if part has text
-                part_text = getattr(part, "text", "")
-                if not part_text:
-                    continue
-
-                # Check if this part is a thought
-                if getattr(part, "thought", False):
-                    thoughts.append(part_text)
-                else:
-                    content_parts.append(part_text)
+    candidates = getattr(response, "candidates", None)
+    if candidates:
+        parts = getattr(getattr(candidates[0], "content", None), "parts", None)
+        for part in parts or ():
+            part_text = getattr(part, "text", "")
+            if not part_text:
+                continue
+            if getattr(part, "thought", False):
+                thoughts.append(part_text)
+            else:
+                content_parts.append(part_text)
 
     # Combine thoughts and content
     thought = "\n".join(thoughts) if thoughts else ""
@@ -305,7 +301,7 @@ def query_gemini(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
-    on_backoff=backoff_handler,
+    on_backoff=[mark_provider_retry_wait, backoff_handler],
     giveup=_giveup_gemini,
 )
 async def query_gemini_async(
@@ -344,6 +340,10 @@ async def query_gemini_async(
         thinking_level=kwargs.get("thinking_level"),
     )
 
+    if check_provider_attempt():
+        generation_config.http_options = types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=1)
+        )
     response = await client.aio.models.generate_content(
         model=model,
         contents=contents,

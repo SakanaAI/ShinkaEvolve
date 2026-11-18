@@ -2,6 +2,34 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## TBD
+
+### Fixed
+
+- Bound Slurm cancellation waits and retain evaluations submitted during a
+  hung-job cancellation so their results persist and their slots are released
+  in PR #219.
+- Isolate seed attempts from stale artifacts, validate results, and enforce
+  local deadlines from launch in PR #220. Verify the submitted Slurm job's
+  identity and successful completion, including when accounting data is
+  temporarily unavailable. Bound cold-cache Docker image preparation for
+  synchronous Slurm submissions. Make seed result publishing safe under
+  cancellation and isolate artifacts from requeued jobs.
+- Serialize SQLite run-state updates and repair legacy run metadata in PR #221.
+  Keep legacy state deferred across upgrades until maintenance completes.
+  Preserve valid best-score watermarks and restore best-program selection with
+  the normal ranking rules.
+- Stop fresh paid requests and retries at the known budget in PR #222. Recover
+  charges for partial and cancelled work once and retry failed accounting writes.
+  Save the paid seed receipt before diagnostic writes so resume can reuse it.
+  Resume deferred generations when budget is available and interrupt retry sleeps
+  while draining active requests.
+- Resume missing generations and preserve interrupted artifacts in PR #223.
+  Repair legacy failed seeds and replay deferred seed and child maintenance.
+  Recover terminal charges once and rebuild the selected best export while
+  preserving a valid export if staging fails. If no correct winner exists,
+  retain the invalid historical export outside the public best path.
+
 ## 0.0.8 - 2026-11-13
 
 ### Added

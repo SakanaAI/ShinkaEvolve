@@ -1,10 +1,18 @@
+import asyncio
 import logging
 from typing import Union, List, Optional, Tuple
 
 import numpy as np
+import openai
 import pandas as pd
 
 from shinka.google_genai import google_genai_auth_mode
+from shinka.api_budget import (
+    APIBudgetExceeded,
+    check_provider_attempt,
+    mark_provider_retry_wait,
+    run_request,
+)
 from .client import (
     get_async_client_embed,
     get_client_embed,
@@ -44,7 +52,14 @@ def _get_google_embeddings_and_cost(
                 exc,
             )
 
-        result = client.models.embed_content(model=model, contents=text)
+        request_options = {}
+        if check_provider_attempt():
+            request_options["config"] = {
+                "http_options": {"retry_options": {"attempts": 1}}
+            }
+        result = client.models.embed_content(
+            model=model, contents=text, **request_options
+        )
         embeddings.append(result.embeddings[0].values)
 
         if token_count is None:
@@ -63,6 +78,34 @@ def _get_embedding_cost(response, model_name: str) -> float:
         )
         return 0.0
     return response.usage.total_tokens * get_model_price(model_name)
+
+
+def _retryable_embedding_error(exc: openai.APIError) -> bool:
+    if isinstance(exc, openai.APIConnectionError):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        directive = exc.response.headers.get("x-should-retry")
+        if directive in {"true", "false"}:
+            return directive == "true"
+        return exc.status_code in {408, 409, 429} or exc.status_code >= 500
+    return False
+
+
+async def _create_openai_embedding(client, model: str, code: list[str]):
+    request = {"model": model, "input": code, "encoding_format": "float"}
+    if not check_provider_attempt():
+        return await client.embeddings.create(**request)
+    max_retries = max(client.max_retries, 0)
+    client = client.with_options(max_retries=0)
+    for attempt in range(max_retries + 1):
+        check_provider_attempt()
+        try:
+            return await client.embeddings.create(**request)
+        except openai.APIError as exc:
+            if attempt == max_retries or not _retryable_embedding_error(exc):
+                raise
+            mark_provider_retry_wait()
+            await asyncio.sleep(0.5 * 2 ** min(attempt, 4))
 
 
 def count_tokens(
@@ -419,42 +462,55 @@ class AsyncEmbeddingClient:
 
         # Handle Gemini models (no async API yet, use thread pool)
         if self.provider == "google":
-            import asyncio
-
+            cost = 0.0
             try:
-                embeddings, cost = await asyncio.to_thread(
-                    _get_google_embeddings_and_cost,
-                    client=self.async_client,
-                    model_name=self.model,
-                    texts=code,
-                )
+                embeddings = []
+                for text in code:
+                    vectors, charge = await run_request(
+                        lambda: asyncio.to_thread(
+                            _get_google_embeddings_and_cost,
+                            client=self.async_client,
+                            model_name=self.model,
+                            texts=[text],
+                        ),
+                        lambda reply: reply[1],
+                        self.model_name,
+                        "embedding",
+                        cancellation="drain",
+                    )
+                    embeddings.extend(vectors)
+                    cost += charge
                 if single_code:
                     return embeddings[0] if embeddings else [], cost
                 else:
                     return embeddings, cost
+            except APIBudgetExceeded:
+                return ([] if single_code else [[]]), cost
             except Exception as e:
                 logger.error(f"Error getting Gemini embedding: {e}")
-                if single_code:
-                    return [], 0.0
-                else:
-                    return [[]], 0.0
+                return ([] if single_code else [[]]), cost
 
         # Handle OpenAI and Azure models (true async)
-        try:
-            response = await self.async_client.embeddings.create(
-                model=self.model, input=code, encoding_format="float"
+        async def embed():
+            response = await _create_openai_embedding(
+                self.async_client, self.model, code
             )
-            cost = _get_embedding_cost(response, self.model_name)
+            return response, _get_embedding_cost(response, self.model_name)
+
+        cost = 0.0
+        try:
+            response, cost = await run_request(
+                embed, lambda reply: reply[1], self.model_name, "embedding"
+            )
             if single_code:
                 return response.data[0].embedding, cost
             else:
                 return [d.embedding for d in response.data], cost
+        except APIBudgetExceeded:
+            return ([] if single_code else [[]]), cost
         except Exception as e:
             logger.error(f"Error getting embedding: {e}")
-            if single_code:
-                return [], 0.0
-            else:
-                return [[]], 0.0
+            return ([] if single_code else [[]]), cost
 
     def get_embedding(
         self, code: Union[str, List[str]]

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import shinka.llm.llm as llm_module
+from shinka.api_budget import ApiCostScope, cost_scope
 from shinka.core import EvolutionConfig
 from shinka.core.async_runner import (
     AsyncRunningJob,
@@ -20,6 +22,222 @@ from shinka.database.prompt_dbase import (
     SystemPromptDatabase,
     create_system_prompt,
 )
+from shinka.llm import AsyncLLMClient
+from shinka.llm.providers import QueryResult
+from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
+
+
+def test_meta_batch_keeps_billed_sibling_when_request_fails(monkeypatch):
+    async def provider(msg, **kwargs):
+        if "first" in msg:
+            raise LLMEndpointError(401, "unauthorized")
+        return QueryResult("summary", msg, "sys", [], "gpt-5-mini", {}, 1, 1, cost=0.8)
+
+    monkeypatch.setattr(llm_module, "query_async", provider)
+    sync = MetaSummarizer()
+    for generation, label in enumerate(["first", "second"]):
+        sync.add_evaluated_program(
+            Program(
+                id=label,
+                code=label,
+                generation=generation,
+                metadata={"patch_name": label},
+            )
+        )
+    summarizer = AsyncMetaSummarizer(
+        sync, AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
+    )
+
+    assert asyncio.run(summarizer.update_meta_memory_async()) == (None, 0.8)
+
+
+def test_meta_keeps_budget_skipped_inputs_pending(tmp_path, monkeypatch):
+    local = "local/test@http://127.0.0.1:1234/v1"
+    choices = iter(["gpt-5-mini", local, local, local])
+    monkeypatch.setattr(
+        llm_module, "sample_model_kwargs", lambda **kw: {"model_name": next(choices)}
+    )
+    sync = MetaSummarizer()
+    for index, name in enumerate(["skipped", "summarized", "arrived"], start=1):
+        program = Program(
+            id=name, code="pass", generation=index, metadata={"patch_name": name}
+        )
+        if name == "arrived":
+            new_program = program
+        else:
+            sync.add_evaluated_program(program)
+
+    async def provider(msg, system_msg, model_name, **kwargs):
+        assert model_name == local
+        if "summarized" in msg:
+            sync.add_evaluated_program(new_program)
+        return QueryResult("summary", msg, system_msg, [], model_name, {}, 1, 1)
+
+    monkeypatch.setattr(llm_module, "query_async", provider)
+    summarizer = AsyncMetaSummarizer(
+        sync, AsyncLLMClient(model_names=[local, "gpt-5-mini"], verbose=False)
+    )
+    token = cost_scope.set(ApiCostScope(lambda: True))
+    try:
+        assert asyncio.run(summarizer.perform_final_summary_async(str(tmp_path))) == (
+            True, 0.0
+        )
+    finally:
+        cost_scope.reset(token)
+    assert sync.total_programs_processed == 1
+    assert [program.id for program in sync.evaluated_since_last_meta] == [
+        "skipped", "arrived"
+    ]
+
+
+def test_final_meta_persists_billed_sibling_on_batch_cancellation(
+    tmp_path, monkeypatch
+):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1)
+    )
+
+    async def run():
+        started = asyncio.Event()
+
+        async def provider(msg, system_msg, model_name, **kwargs):
+            if "second" in msg:
+                started.set()
+                await asyncio.Event().wait()
+            return QueryResult(
+                "summary", msg, system_msg, [], model_name, {}, 1, 1, cost=0.8
+            )
+
+        monkeypatch.setattr(llm_module, "query_async", provider)
+        sync = MetaSummarizer()
+        best = Program(
+            id="first", generation=1, code="first", metadata={"patch_name": "first"}
+        )
+        db.add(best)
+        sync.add_evaluated_program(best)
+        sync.add_evaluated_program(
+            Program(
+                id="second",
+                generation=2,
+                code="second",
+                metadata={"patch_name": "second"},
+            )
+        )
+        summarizer = AsyncMetaSummarizer(
+            sync, AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
+        )
+        task = asyncio.create_task(
+            summarizer.perform_final_summary_async(str(tmp_path), best, db.config)
+        )
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(BilledCancellationError) as cancelled:
+            await task
+        assert cancelled.value.cost == pytest.approx(0.8)
+        assert db.get(best.id).metadata["meta_cost"] == pytest.approx(0.8)
+
+    try:
+        asyncio.run(run())
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("initial_spend", "model", "calls", "new_cost"),
+    [
+        (0.0, "gpt-5-mini", 1, 1.0),
+        (1.0, "gpt-5-mini", 0, 0.0),
+        (1.0, "local/test@http://127.0.0.1:1234/v1", 3, 0.0),
+    ],
+)
+def test_final_meta_admits_each_paid_stage(
+    tmp_path, monkeypatch, initial_spend, model, calls, new_cost
+):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1)
+    )
+    requests = []
+
+    async def provider(msg, system_msg, model_name, **kwargs):
+        requests.append(msg)
+        cost = 0.0 if model_name.startswith("local/") else 1.0
+        return QueryResult(
+            "summary", msg, system_msg, [], model_name, {}, 1, 1, cost=cost
+        )
+
+    monkeypatch.setattr(llm_module, "query_async", provider)
+    try:
+        program = Program(
+            id="best",
+            code="pass",
+            generation=1,
+            metadata={"patch_name": "best", "api_costs": initial_spend},
+        )
+        db.add(program)
+        sync = MetaSummarizer()
+        sync.add_evaluated_program(program)
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.db = db
+        runner.prompt_db = None
+        runner.evo_config = EvolutionConfig(max_api_costs=1.0)
+        runner.total_api_cost = initial_spend
+        runner.results_dir = tmp_path
+        runner.async_db = SimpleNamespace()
+        runner.meta_summarizer = AsyncMetaSummarizer(
+            sync, AsyncLLMClient(model_names=model, verbose=False)
+        )
+
+        assert asyncio.run(runner._perform_final_meta_summary(program)) == (
+            calls == 3,
+            new_cost,
+        )
+        assert len(requests) == calls
+        assert runner.total_api_cost == pytest.approx(initial_spend + new_cost)
+        assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(
+            initial_spend + new_cost
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("commit_before_error", [False, True])
+def test_meta_metadata_write_failure_keeps_bill_once(tmp_path, commit_before_error):
+    db = ProgramDatabase(
+        DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1)
+    )
+    try:
+        runner = object.__new__(ShinkaEvolveRunner)
+        runner.db = db
+        runner.prompt_db = None
+        runner.total_api_cost = 0.0
+        program = Program(id="best", code="pass", generation=1)
+        db.add(program)
+
+        async def update(program_id, metadata):
+            if commit_before_error:
+                db.conn.execute(
+                    "UPDATE programs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata), program_id),
+                )
+                db.conn.commit()
+            raise OSError("metadata write failed")
+
+        async def record(**kwargs):
+            db.record_attempt_event(**kwargs)
+
+        runner.async_db = SimpleNamespace(
+            update_program_metadata_async=update, record_attempt_event_async=record
+        )
+        with pytest.raises(OSError, match="metadata write failed"):
+            asyncio.run(runner._record_meta_cost(program, 0.80))
+
+        assert runner.total_api_cost == pytest.approx(0.80)
+        assert asyncio.run(runner._get_total_api_costs()) == pytest.approx(0.80)
+        assert (program.metadata or {}).get("meta_cost", 0.0) == (
+            0.80 if commit_before_error else 0.0
+        )
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize("recommendations", [None, "recommendation"])

@@ -48,7 +48,7 @@ def test_output_exhaustion_stops_proposal_retries(
 
     async def record(**kwargs):
         failures.append(kwargs)
-        runner.total_api_cost += kwargs["api_costs"]
+        runner._post_api_cost(kwargs["api_costs"])
 
     runner._save_patch_attempt_async = save
     runner._record_terminal_failed_proposal = record

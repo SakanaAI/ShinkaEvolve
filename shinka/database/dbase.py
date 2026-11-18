@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import math
+from .attempt_log import insert_attempt_event
 from .complexity import analyze_code_metrics
 from .parents import CombinedParentSelector
 from .inspirations import CombinedContextSelector
@@ -1022,19 +1023,9 @@ class ProgramDatabase:
         if not self.cursor or not self.conn:
             raise ConnectionError("DB not connected.")
 
-        payload = None
-        if details is not None:
-            payload = json.dumps(clean_nan_values(details), sort_keys=True)
-
-        self.cursor.execute(
-            """
-            INSERT INTO attempt_log (
-                generation, stage, status, details, created_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (generation, stage, status, payload, time.time()),
+        insert_attempt_event(
+            self.conn, generation, stage, status, clean_nan_values(details)
         )
-        self.conn.commit()
 
     @db_retry()
     def _count_programs_in_db(self) -> int:

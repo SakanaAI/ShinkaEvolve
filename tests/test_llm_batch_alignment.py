@@ -75,11 +75,12 @@ def test_meta_summaries_keep_metadata_and_generation_order(batch_client, failure
         ),
     ]
     if isinstance(client, AsyncLLMClient):
-        summary, cost = asyncio.run(
+        summary, cost, indices = asyncio.run(
             AsyncMetaSummarizer(
                 MetaSummarizer(), client
             )._step1_individual_summaries_async(programs)
         )
+        assert indices == {1, 2}
     else:
         summary, cost = MetaSummarizer(client)._step1_individual_summaries(programs)
 

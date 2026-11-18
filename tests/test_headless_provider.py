@@ -6,12 +6,15 @@ import stat
 import sys
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from shinka.cli import run as cli_run
 from shinka.llm.client import get_async_client_llm, get_client_llm
 from shinka.llm.kwargs import sample_model_kwargs
+from shinka.llm.providers import headless
+from shinka.llm.providers.errors import EmptyResponseError
 from shinka.llm.providers.headless import (
     parse_headless_model,
     query_headless,
@@ -235,6 +238,25 @@ def test_query_headless_accepts_nested_cost_usage(tmp_path, monkeypatch):
     assert result.input_tokens == 1
     assert result.output_tokens == 2
     assert result.thinking_tokens == 3
+
+
+def test_headless_usage_only_result_retains_charge(tmp_path, monkeypatch):
+    async def complete(**kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"usage":{"inputTokens":11,"cost":{"total":0.6}}}\n',
+        )
+
+    monkeypatch.setattr(headless, "_run_headless_command_async", complete)
+    with pytest.raises(EmptyResponseError) as caught:
+        asyncio.run(
+            query_headless_async(
+                None, "headless/codex", "msg", "sys", [], None,
+                headless_work_dir=str(tmp_path),
+            )
+        )
+    assert caught.value.cost == pytest.approx(0.6)
+    assert caught.value.cost_results["input_tokens"] == 11
 
 
 def test_query_headless_serializes_claude_async_calls(tmp_path, monkeypatch):

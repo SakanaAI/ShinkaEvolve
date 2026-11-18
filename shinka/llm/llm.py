@@ -1,11 +1,12 @@
 import logging
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Coroutine, Dict, List, Optional, Sequence, Tuple, Union
 import re
 import json
 import multiprocessing as mp
 import asyncio
 from pydantic import BaseModel
 import time
+from shinka.api_budget import APIBudgetExceeded, run_request
 from .query import query, query_async
 from .kwargs import sample_model_kwargs
 from .providers import QueryResult
@@ -91,6 +92,64 @@ def _stop_after_empty_reply(exc: Exception, unanswered: _UnansweredReplies) -> b
         )
         return True
     return False
+
+
+async def _collect_async_batch(
+    queries: List[Coroutine[None, None, Tuple[int, Optional[QueryResult]]]],
+) -> List[Tuple[int, QueryResult]]:
+    async def capture(query):
+        try:
+            return await query
+        except (Exception, asyncio.CancelledError) as error:
+            # A task's cancelled state can consume the original exception.
+            return error
+
+    tasks = [asyncio.create_task(capture(query)) for query in queries]
+    batch = asyncio.gather(*tasks, return_exceptions=True)
+    cancellation = None
+    while True:
+        try:
+            outcomes = await asyncio.shield(batch)
+            break
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+                for task in tasks:
+                    task.cancel()
+
+    for task, coroutine in zip(tasks, queries):
+        if task.cancelled():
+            coroutine.close()  # The wrapper was cancelled before it entered the query.
+
+    results = []
+    permanent_error = None
+    total_cost = 0.0
+    for index, outcome in enumerate(outcomes):
+        if isinstance(outcome, asyncio.CancelledError):
+            cancellation = cancellation or outcome
+            if isinstance(outcome, BilledCancellationError):
+                total_cost += outcome.cost
+        elif isinstance(outcome, NonRetryableLLMError):
+            permanent_error = permanent_error or outcome
+            total_cost += outcome.cost
+        elif isinstance(outcome, APIBudgetExceeded):
+            continue
+        elif isinstance(outcome, Exception):
+            logger.info("Error in batch query task %s: %s", index, outcome)
+        else:
+            request_index, response = outcome
+            if response is not None:
+                results.append((request_index, response))
+                total_cost += response.cost or 0.0
+
+    if cancellation is not None:
+        if total_cost > 0:
+            raise BilledCancellationError({"cost": total_cost}) from cancellation
+        raise cancellation
+    if permanent_error is not None:
+        permanent_error.cost = total_cost
+        raise permanent_error
+    return results
 
 
 def _validate_structured_output_models(
@@ -559,18 +618,7 @@ class AsyncLLMClient:
                 )
             )
 
-        # Execute all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results and filter out exceptions
-        final_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, NonRetryableLLMError):
-                raise result
-            if isinstance(result, Exception):
-                logger.info(f"Error in batch query task {i}: {str(result)}")
-            elif result is not None and len(result) > 1 and result[1] is not None:
-                final_results.append(result[1])
+        final_results = [response for _, response in await _collect_async_batch(tasks)]
 
         # Print batch total cost
         if self.verbose:
@@ -667,18 +715,7 @@ class AsyncLLMClient:
                 )
             )
 
-        # Execute all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results and filter out exceptions
-        indexed_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, NonRetryableLLMError):
-                raise result
-            if isinstance(result, Exception):
-                logger.info(f"Error in batch query task {i}: {str(result)}")
-            elif result is not None and len(result) > 1 and result[1] is not None:
-                indexed_results.append((result[0], result[1]))
+        indexed_results = await _collect_async_batch(tasks)
 
         # Print batch total cost
         if self.verbose:
@@ -792,20 +829,30 @@ class AsyncLLMClient:
         try:
             while try_count < MAX_RETRIES:
                 try:
-                    result = await query_async(
-                        msg=msg,
-                        system_msg=system_msg,
-                        msg_history=msg_history,
-                        output_model=self.output_model,
-                        model_posteriors=model_posteriors,
-                        **llm_kwargs,
+                    result = await run_request(
+                        lambda: query_async(
+                            msg=msg,
+                            system_msg=system_msg,
+                            msg_history=msg_history,
+                            output_model=self.output_model,
+                            model_posteriors=model_posteriors,
+                            **llm_kwargs,
+                        ),
+                        lambda reply: (reply.cost or 0.0) if reply is not None else 0.0,
+                        llm_kwargs["model_name"],
                     )
                     unanswered.add_costs_to(result)
                     if self.verbose and hasattr(result, "cost") and result.cost is not None:
                         logger.info(f"==> QUERY: API cost: ${result.cost:.4f}")
                     return result
-                except NonRetryableLLMError:
+                except NonRetryableLLMError as exc:
+                    exc.cost += unanswered.totals["cost"]
                     raise
+                except APIBudgetExceeded:
+                    if not unanswered.count:
+                        raise
+                    unanswered.incomplete_reason = APIBudgetExceeded.incomplete_reason
+                    break
                 except Exception as e:
                     logger.info(f"{try_count + 1}/{MAX_RETRIES} Error in query: {str(e)}")
                     if _stop_after_empty_reply(e, unanswered):
@@ -815,9 +862,15 @@ class AsyncLLMClient:
                         await asyncio.sleep(1)
         except asyncio.CancelledError as exc:
             if unanswered.count:
+                current = getattr(exc, "cost_results", {})
                 raise BilledCancellationError({
-                    **unanswered.totals,
-                    "num_total_queries": unanswered.count,
+                    **{
+                        field: amount + (current.get(field) or 0.0)
+                        for field, amount in unanswered.totals.items()
+                    },
+                    "num_total_queries": unanswered.count + (
+                        current.get("num_total_queries") or 0
+                    ),
                 }) from exc
             raise
         return unanswered.as_result(

@@ -15,8 +15,10 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel
 
+from shinka.api_budget import check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import TIMEOUT
 
+from .errors import EmptyResponseError
 from .result import QueryResult
 
 DEFAULT_HEADLESS_COMMAND = "npx -y @roberttlange/headless"
@@ -243,6 +245,7 @@ async def _run_headless_command_async(
 ):
     attempts = _CLAUDE_TRANSIENT_RETRIES + 1
     for attempt in range(attempts):
+        check_provider_attempt()
         if _uses_shell_invocation(model):
             process = await asyncio.create_subprocess_shell(
                 shlex.join(command),
@@ -276,6 +279,7 @@ async def _run_headless_command_async(
         if not _is_transient_claude_credit_error(model=model, completed=completed):
             return completed
         if attempt < attempts - 1:
+            mark_provider_retry_wait()
             await asyncio.sleep(_CLAUDE_TRANSIENT_BACKOFF_SECONDS * (attempt + 1))
     return completed
 
@@ -341,9 +345,6 @@ def _parse_stdout(stdout: str) -> tuple[str, dict[str, Any]]:
         raise ValueError("Headless usage JSON must contain a top-level usage object.")
 
     content = "\n".join(lines[:-1]).strip()
-    if not content:
-        raise ValueError("Headless assistant content was empty.")
-
     return content, usage
 
 
@@ -374,13 +375,7 @@ def _query_result(
     if cost == 0.0:
         cost = input_cost + output_cost
 
-    return QueryResult(
-        content=content,
-        msg=msg,
-        system_msg=system_msg,
-        new_msg_history=new_msg_history,
-        model_name=model,
-        kwargs=kwargs,
+    cost_results = dict(
         input_tokens=_usage_int(usage, "input_tokens", "prompt_tokens", "inputTokens"),
         output_tokens=_usage_int(
             usage, "output_tokens", "completion_tokens", "outputTokens"
@@ -394,8 +389,21 @@ def _query_result(
         cost=cost,
         input_cost=input_cost,
         output_cost=output_cost,
-        model_posteriors=model_posteriors,
         num_total_queries=_usage_int(usage, "num_total_queries", "total_queries") or 1,
+    )
+    if not content:
+        raise EmptyResponseError(
+            "Headless assistant content was empty.", cost_results=cost_results
+        )
+    return QueryResult(
+        content=content,
+        msg=msg,
+        system_msg=system_msg,
+        new_msg_history=new_msg_history,
+        model_name=model,
+        kwargs=kwargs,
+        model_posteriors=model_posteriors,
+        **cost_results,
     )
 
 

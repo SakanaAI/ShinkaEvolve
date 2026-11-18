@@ -1,6 +1,7 @@
 """Billed empty replies retain failure context and complete usage totals."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -137,8 +138,9 @@ def test_structured_empty_reply_preserves_billing_and_termination(mode):
 def test_structured_success_preserves_parsed_model_and_cost(mode):
     class Answer(BaseModel):
         answer: str
+        count: int
 
-    parsed = Answer(answer="OK")
+    parsed = Answer(answer="OK", count=3)
     response = SimpleNamespace(
         output_parsed=parsed,
         usage=SimpleNamespace(
@@ -165,4 +167,6 @@ def test_structured_success_preserves_parsed_model_and_cost(mode):
         )
     assert result.content is parsed
     assert result.cost == 0.5
-    assert result.new_msg_history[-1] == {"role": "assistant", "content": "answer:OK\n"}
+    history = result.new_msg_history[-1]
+    assert history["role"] == "assistant"
+    assert json.loads(history["content"]) == {"answer": "OK", "count": 3}

@@ -8,6 +8,30 @@ from google.genai import types
 from shinka.llm.providers import gemini
 
 
+def test_safety_filtered_reply_with_missing_parts_retains_usage():
+    response = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                finish_reason=types.FinishReason.SAFETY, content=types.Content()
+            )
+        ],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(prompt_token_count=100),
+    )
+
+    async def generate_content(**kwargs):
+        return response
+
+    client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    )
+    result = asyncio.run(
+        gemini.query_gemini_async(client, "gemini-2.5-flash", "msg", "sys", [], None)
+    )
+    assert not result.content
+    assert result.input_tokens == 100
+    assert result.cost > 0.0
+
+
 def test_build_gemini_thinking_config_omits_budget_when_not_supported(monkeypatch):
     captured = {}
 

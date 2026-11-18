@@ -1,8 +1,12 @@
 import asyncio
 from types import SimpleNamespace
 
+import httpx
+import openai
 import pytest
 
+from shinka.api_budget import ApiCostScope, cost_scope, run_request
+from shinka.llm.providers import openai as openai_provider
 from shinka.llm.providers.errors import EmptyResponseError
 from shinka.llm.providers.openai import (
     _retry_after_seconds,
@@ -82,6 +86,99 @@ def test_retry_after_seconds_prefers_response_header():
     )
 
     assert _retry_after_seconds(exc) == 30
+
+
+def test_async_openai_retry_after_uses_nonblocking_sleep(monkeypatch):
+    waits = []
+    attempts = []
+    request = httpx.Request("POST", "https://example.test")
+
+    async def create(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise openai.RateLimitError(
+                "mock rate limit",
+                response=httpx.Response(429, request=request, headers={"retry-after": "60"}),
+                body=None,
+            )
+        return _response(output_text="ok")
+
+    async def async_sleep(delay):
+        waits.append(delay)
+
+    def sync_sleep(delay):
+        pytest.fail("async OpenAI retry blocked the event loop")
+
+    monkeypatch.setattr(openai_provider.time, "sleep", sync_sleep)
+    monkeypatch.setattr(openai_provider.asyncio, "sleep", async_sleep)
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    result = asyncio.run(query_openai_async(client, "gpt-5-mini", "msg", "sys", [], None))
+    assert result.content == "ok"
+    assert sum(waits) == pytest.approx(60)
+
+
+@pytest.mark.parametrize("cancel_at", ["retry_after", "retry_wakes", "active_error", "active_reply"])
+def test_paid_openai_cancellation_drains_transport_without_waiting_to_retry(monkeypatch, cancel_at):
+    async def run():
+        started, release_reply = asyncio.Event(), asyncio.Event()
+        sleeping, release_sleep = asyncio.Event(), asyncio.Event()
+        attempts = []
+        request = httpx.Request("POST", "https://example.test")
+        response = _response(output_text="ok")
+        active_transport = cancel_at.startswith("active_")
+
+        async def create(**kwargs):
+            attempts.append(kwargs)
+            started.set()
+            if active_transport:
+                await release_reply.wait()
+            if cancel_at == "active_reply":
+                return response
+            raise openai.RateLimitError(
+                "mock rate limit",
+                response=httpx.Response(429, request=request, headers={"retry-after": "300"}),
+                body=None,
+            )
+
+        async def pause_retry(delay):
+            sleeping.set()
+            await release_sleep.wait()
+
+        monkeypatch.setattr(openai_provider.asyncio, "sleep", pause_retry)
+        client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        client.with_options = lambda **kwargs: client
+        model = "gpt-5-mini"
+        scope = ApiCostScope(exhausted=lambda: False)
+        token = cost_scope.set(scope)
+        task = asyncio.create_task(run_request(
+            lambda: query_openai_async(client, model, "msg", "sys", [], None),
+            lambda reply: reply.cost,
+            model,
+        ))
+        try:
+            boundary = started if active_transport else sleeping
+            await asyncio.wait_for(boundary.wait(), 2)
+            if cancel_at == "retry_wakes":
+                release_sleep.set()
+            task.cancel()
+            if active_transport:
+                done, _ = await asyncio.wait({task}, timeout=0.01)
+                assert not done
+                release_reply.set()
+            done, _ = await asyncio.wait({task}, timeout=0.15)
+            assert task in done
+        finally:
+            release_reply.set()
+            release_sleep.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            cost_scope.reset(token)
+
+        assert len(attempts) == 1
+        expected_cost = get_openai_costs(response, model)["cost"] if cancel_at == "active_reply" else 0.0
+        assert scope.pending == pytest.approx(expected_cost)
+
+    asyncio.run(run())
 
 
 class _FakeOpenAIClient:

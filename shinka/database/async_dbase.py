@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from typing import List, Optional, Tuple, Dict, Any, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
+from .attempt_log import insert_attempt_event
+from .dbase import clean_nan_values
 from .complexity import analyze_code_metrics
 from .dbase import Program, ProgramDatabase, db_retry
 
@@ -925,20 +927,9 @@ class AsyncProgramDatabase:
                     )
                     conn.execute("PRAGMA journal_mode = WAL;")
                     conn.execute("PRAGMA busy_timeout = 60000;")
-                    payload = None
-                    if details is not None:
-                        import json
-
-                        payload = json.dumps(details, sort_keys=True)
-                    conn.execute(
-                        """
-                        INSERT INTO attempt_log (
-                            generation, stage, status, details, created_at
-                        ) VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (generation, stage, status, payload, time.time()),
+                    insert_attempt_event(
+                        conn, generation, stage, status, clean_nan_values(details)
                     )
-                    conn.commit()
                 finally:
                     if conn is not None:
                         conn.close()

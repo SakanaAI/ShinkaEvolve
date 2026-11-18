@@ -1,5 +1,6 @@
 import backoff
 import openai
+from shinka.api_budget import check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
@@ -129,7 +130,7 @@ def query_deepseek(
     max_tries=MAX_TRIES,
     max_value=MAX_VALUE,
     max_time=MAX_TIME,
-    on_backoff=backoff_handler,
+    on_backoff=[mark_provider_retry_wait, backoff_handler],
 )
 async def query_deepseek_async(
     client,
@@ -144,6 +145,8 @@ async def query_deepseek_async(
     """Query DeepSeek model asynchronously."""
     if output_model is not None:
         raise NotImplementedError("Structured output not supported for DeepSeek.")
+    if check_provider_attempt():
+        client = client.with_options(max_retries=0)
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
     response = await client.chat.completions.create(
         model=model,

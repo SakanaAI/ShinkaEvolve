@@ -6,7 +6,33 @@ import pytest
 
 import shinka.llm.llm as llm_module
 from shinka.llm.llm import AsyncLLMClient
+from shinka.llm.providers import QueryResult
 from shinka.llm.providers.errors import BilledCancellationError, EmptyResponseError
+
+
+def test_cancelled_batch_counts_success_and_billed_cancellation(monkeypatch):
+    async def run():
+        second_started = asyncio.Event()
+
+        async def provider(msg, **kwargs):
+            if msg == "success":
+                return QueryResult("ok", msg, "sys", [], "gpt-5-mini", {}, 1, 1, cost=0.8)
+            second_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                raise BilledCancellationError({"cost": 0.5}) from exc
+
+        monkeypatch.setattr(llm_module, "query_async", provider)
+        client = AsyncLLMClient("gpt-5-mini", verbose=False)
+        task = asyncio.create_task(client.batch_kwargs_query(2, ["success", "billed"], "sys"))
+        await asyncio.wait_for(second_started.wait(), 2)
+        task.cancel()
+        with pytest.raises(BilledCancellationError) as caught:
+            await task
+        assert caught.value.cost == pytest.approx(1.3)
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("boundary", ["retry_delay", "next_request"])

@@ -265,7 +265,7 @@ class SystemPromptDatabase:
                     raise FileNotFoundError(
                         f"Prompt database file not found for read-only connection: {db_file}"
                     )
-                db_uri = f"file:{db_file}?mode=ro"
+                db_uri = f"{db_file.as_uri()}?mode=ro"
                 self.conn = sqlite3.connect(db_uri, uri=True, timeout=30.0)
                 logger.debug(
                     "Connected to SystemPrompt SQLite database in read-only mode: %s",
