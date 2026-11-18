@@ -248,16 +248,22 @@ def test_legacy_marker_preserves_higher_historical_score(config):
         assert (repaired.best_score_ever, repaired.best_score_generation) == (20.0, 1)
 
 
-@pytest.mark.parametrize("legacy_score", [-2.0, 0.0])
 @pytest.mark.parametrize("legacy_marker, expected_marker", [(0, 1), (6, 6)])
+@pytest.mark.parametrize("insert_scored_first", [False, True])
 def test_legacy_unscored_improvement_is_independent_of_negative_ranked_winner(
-    config, legacy_score, legacy_marker, expected_marker
+    config, legacy_marker, expected_marker, insert_scored_first
 ):
     with closing(_open_db(config)) as writer:
         unscored, best = _program(1, None), _program(8, -2.0)
-        writer.add(unscored, defer_maintenance=True)
-        writer.add(best, defer_maintenance=True)
-        _write_legacy_run_state(writer, best, marker=legacy_marker, score=legacy_score)
+        if insert_scored_first:
+            writer.add(best, defer_maintenance=True)
+        writer.add(unscored)
+        if insert_scored_first:
+            writer.run_post_add_maintenance(best)
+        else:
+            writer.add(best)
+        assert (writer.best_score_ever, writer.best_score_generation) == (0.0, 1)
+        _write_legacy_run_state(writer, best, marker=legacy_marker, score=0.0)
 
     with closing(_open_db(config)) as repaired:
         assert repaired.get_best_program().id == best.id
@@ -265,6 +271,38 @@ def test_legacy_unscored_improvement_is_independent_of_negative_ranked_winner(
             0.0,
             expected_marker,
         )
+
+
+@pytest.mark.parametrize("insert_unscored_first", [False, True])
+@pytest.mark.parametrize("replay_scored_maintenance", [False, True])
+def test_legacy_negative_record_ignores_unscored_challenger(
+    config, insert_unscored_first, replay_scored_maintenance
+):
+    config.enable_dynamic_islands = True
+    config.stagnation_threshold = 5
+    seed, challenger = _program(0, -3.0), _program(2, None)
+    with closing(_open_db(config)) as writer:
+        if insert_unscored_first:
+            writer.add(challenger, defer_maintenance=True)
+        writer.add(seed)
+        if insert_unscored_first:
+            writer.run_post_add_maintenance(challenger)
+        else:
+            writer.add(challenger)
+        if replay_scored_maintenance:
+            writer.run_post_add_maintenance(seed)
+        assert (writer.best_score_ever, writer.best_score_generation) == (-3.0, 0)
+        _write_legacy_run_state(writer, seed, marker=0)
+
+    with closing(_open_db(config)) as repaired:
+        assert repaired.best_program_id == seed.id
+        assert (repaired.best_score_ever, repaired.best_score_generation) == (-3.0, 0)
+        repaired.add(_program(7, -2.0))
+        assert repaired.island_manager.get_island_populations() == {0: 3}
+
+    with closing(_open_db(config)) as reopened:
+        assert reopened.best_program_id == "g7"
+        assert (reopened.best_score_ever, reopened.best_score_generation) == (-2.0, 7)
 
 
 @pytest.mark.parametrize("preview_marker, expected_marker", [(1, 8), (12, 12)])
@@ -289,9 +327,9 @@ def test_preview_repair_upgrades_once_across_two_reopens(
     scans = []
     scan_originals = ProgramDatabase._scan_original_run_programs
 
-    def track_scan(db, tracked_best_id, programs):
-        scans.append(tracked_best_id)
-        return scan_originals(db, tracked_best_id, programs)
+    def track_scan(db, published, programs):
+        scans.append(published.best_program_id)
+        return scan_originals(db, published, programs)
 
     monkeypatch.setattr(ProgramDatabase, "_scan_original_run_programs", track_scan)
     with closing(ProgramDatabase(config, read_only=True)) as reader:

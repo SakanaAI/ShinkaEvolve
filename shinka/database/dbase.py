@@ -725,7 +725,7 @@ class ProgramDatabase:
                         )
                     )
                 )
-            original = self._scan_original_run_programs(state.best_program_id, programs)
+            original = self._scan_original_run_programs(state, programs)
             self._repair_legacy_best_score(state, original)
             if not preview_repaired:
                 self._advance_last_iteration(state, original.last_iteration)
@@ -762,7 +762,7 @@ class ProgramDatabase:
                 yield program
 
     def _scan_original_run_programs(
-        self, tracked_best_id: Optional[str], programs: Iterator[Program]
+        self, published: _RunState, programs: Iterator[Program]
     ) -> _RunState:
         state = _RunState(
             last_iteration=0,
@@ -771,25 +771,51 @@ class ProgramDatabase:
             best_score_ever=None,
         )
         best = None
+        earliest_unscored = None
         for program in programs:
             state.last_iteration = max(state.last_iteration, program.generation)
             if not program.correct:
                 continue
-            score = program.combined_score or 0.0
-            if state.best_score_ever is None or score > state.best_score_ever:
-                state.best_score_ever = score
-                state.best_score_generation = program.generation
-            elif score == state.best_score_ever:
-                state.best_score_generation = min(
-                    state.best_score_generation, program.generation
+            if program.combined_score is None:
+                generation = program.generation
+                earliest_unscored = (
+                    generation
+                    if earliest_unscored is None
+                    else min(generation, earliest_unscored)
+                )
+                if published.best_score_ever == 0.0 and (
+                    best is None or generation == published.best_score_generation
+                ):
+                    self._record_repair_score(state, 0.0, generation)
+            else:
+                self._record_repair_score(
+                    state, program.combined_score, program.generation
                 )
             if best is None or self._is_better(program, best):
                 best = program
-            elif program.id == tracked_best_id and not self._is_better(best, program):
+            elif program.id == published.best_program_id and not self._is_better(
+                best, program
+            ):
                 # Keep the incumbent if the original ranking cannot break the tie.
                 best = program
+        # Insertion order can differ from maintenance order, and replay rewrites
+        # maintenance timestamps. Only infer zero from unscored rows when every
+        # candidate is unscored or the durable score independently confirms it.
+        if earliest_unscored is not None and (
+            state.best_score_ever is None
+            or (published.best_score_ever == 0.0 and state.best_score_ever < 0.0)
+        ):
+            self._record_repair_score(state, 0.0, earliest_unscored)
         state.best_program_id = best.id if best else None
         return state
+
+    @staticmethod
+    def _record_repair_score(state: _RunState, score: float, generation: int) -> None:
+        if state.best_score_ever is None or score > state.best_score_ever:
+            state.best_score_ever = score
+            state.best_score_generation = generation
+        elif score == state.best_score_ever:
+            state.best_score_generation = min(state.best_score_generation, generation)
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
