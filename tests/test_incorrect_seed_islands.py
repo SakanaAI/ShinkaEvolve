@@ -111,7 +111,8 @@ def test_correct_seed_is_copied_once_per_island(db):
     }
 
 
-def test_database_stuck_on_an_incorrect_seed_recovers(config):
+@pytest.mark.parametrize("sample_method", ["sample", "sample_with_fix_mode"])
+def test_database_stuck_on_an_incorrect_seed_recovers(config, sample_method):
     """A run written before the fix has correct children on one island only."""
     with closing(ProgramDatabase(config, embedding_model="")) as db:
         db.add(_seed())
@@ -122,8 +123,10 @@ def test_database_stuck_on_an_incorrect_seed_recovers(config):
     # The runner samples through read-only connections.
     with closing(ProgramDatabase(config, read_only=True)) as reader:
         for _ in range(40):
-            parent, _, _, needs_fix = reader.sample_with_fix_mode()
-            assert (parent.correct, parent.island_idx, needs_fix) == (True, 0, False)
+            sampled = getattr(reader, sample_method)()
+            assert (sampled[0].correct, sampled[0].island_idx) == (True, 0)
+            if sample_method == "sample_with_fix_mode":
+                assert sampled[3] is False
 
     with closing(ProgramDatabase(config, embedding_model="")) as db:
         db.add(_child(4))

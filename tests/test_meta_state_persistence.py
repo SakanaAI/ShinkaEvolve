@@ -118,6 +118,21 @@ def test_update_results_survive_an_interrupted_session(tmp_path):
     assert [p.id for p in resumed.evaluated_since_last_meta] == ["c"]
 
 
+def test_async_update_is_saved_before_any_meta_output_is_written(tmp_path):
+    """A session killed right after an update has no meta_<N>.txt to fall back on."""
+    summarizer = _summarizer(tmp_path)
+    summarizer.add_evaluated_program(_program("a", 1))
+    summarizer.add_evaluated_program(_program("b", 2))
+
+    asyncio.run(summarizer.update_meta_memory_async())
+
+    assert not (tmp_path / "meta").exists()
+    state = json.loads((tmp_path / META_STATE_FILENAME).read_text())
+    assert state["unprocessed_programs"] == []
+    assert state["meta_recommendations"] == "1. recommendation (update 1)"
+    assert state["total_programs_meta_processed"] == 2
+
+
 def test_resumed_session_does_not_overwrite_earlier_meta_output(tmp_path):
     first = _summarizer(tmp_path)
     first.add_evaluated_program(_program("a", 1))
