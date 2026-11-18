@@ -153,7 +153,7 @@ with a rate-limited warning; population and final snapshots remain authoritative
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `db_path` | `Optional[str]` | `None` | SQLite file for a `ProgramDatabase` you open yourself. Leave it unset for runs: see the note below. |
+| `db_path` | `Optional[str]` | `None` | File name of the run database inside `results_dir`; `programs.sqlite` when unset. See the note below. |
 | `num_islands` | `int` | `2` | Number of islands. |
 | `archive_size` | `int` | `40` | Global archive size cap. |
 | `max_stdout_log_chars` | `Optional[int]` | `None` | Keep only the last N characters of an evaluation's stdout in the program metadata. `None` stores it in full; the complete log always stays on disk. |
@@ -179,11 +179,30 @@ with a rate-limited warning; population and final snapshots remain authoritative
 | `archive_selection_strategy` | `str` | `'fitness'` | Archive replacement strategy: `fitness` or `crowding`. |
 | `archive_criteria` | `Dict[str, float]` | `{'combined_score': 1.0}` | Weighted criteria for fitness archive scoring. |
 
-A run always stores its programs in `<results_dir>/programs.sqlite`. The runner
-ignores `db_path` and logs a warning when it is set to anything else. The one
-exception is a run directory written by the first releases, which stored the
-database as `<results_dir>/<db_path>` (`evolution_db.sqlite` in the presets of
-that time): resuming such a directory continues in the file it already has.
+A run stores its programs in `<results_dir>/<db_path>`, or in
+`<results_dir>/programs.sqlite` when `db_path` is unset, as in the shipped
+presets and examples. Rules for `db_path` in a run:
+
+- Only the file name counts. The database always sits directly in
+  `results_dir`, because the prompt database, the meta files, the web UI and
+  the analysis helpers look next to it. An absolute path or a path with
+  directories is reduced to its file name and the runner logs a warning: set
+  `results_dir` to move a run.
+- Give the name a `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
+  and the resume rule below recognise database files by it; the runner warns
+  about any other name.
+- Existing programs win over the configured name. If the configured file has no
+  programs but another database in `results_dir` does, the run resumes in that
+  one and logs a warning, so adding, changing or removing `db_path` cannot
+  restart a run at generation 0. This also covers run directories of the first
+  releases (`evolution_db.sqlite`). Use a new `results_dir` to start over.
+- If several databases other than `programs.sqlite` and `evolution_db.sqlite`
+  hold programs and none has the configured name, the runner stops with an
+  error instead of guessing: set `db_path` to the one to continue.
+
+`load_programs_to_df(results_dir)` and `python -m shinka.plots.code_path_anim`
+find the database of a run directory by the same rules. A `ProgramDatabase` you
+open yourself uses `db_path` as the full file path.
 
 `island_selection_strategy` picks the island a parent is sampled from. `uniform`
 treats all islands alike and `equal` picks the island with the fewest correct
