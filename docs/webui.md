@@ -243,8 +243,14 @@ path relative to the root directory, as returned by `/list_databases`.
 | `GET /get_program_count?db_path=` | Count and latest timestamp, for change detection |
 | `GET /get_meta_files?db_path=` | Available meta-scratchpad updates |
 | `GET /get_meta_content?db_path=&processed_count=` | One meta-scratchpad update |
+| `GET /download_meta_pdf?db_path=&processed_count=` | The same update as a PDF (needs `wkhtmltopdf` or `pandoc` on the server; plain text otherwise) |
 | `GET /get_system_prompts?db_path=` | Evolved system prompts |
 | `GET /get_plots?db_path=&generation=&program_id=` | Plot images saved by a program's evaluation |
+| `GET /plot_file/<path>` | One of those images, by its path relative to the root directory (`.png`, `.jpg`, `.jpeg`, `.gif` only) |
+
+`processed_count` and `generation` are non-negative integers; anything else is
+answered with `400`. A `db_path` or plot path outside the root directory gets
+`403`.
 
 ### Embedding in Jupyter
 
