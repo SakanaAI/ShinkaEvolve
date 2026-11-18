@@ -1303,6 +1303,10 @@ class ProgramDatabase:
         if self.island_manager.needs_island_copies(program):
             self.island_manager.copy_program_to_islands(program)
             metadata.pop("_needs_island_copies", None)
+        if program.correct:
+            # An incorrect seed leaves its copies' islands without a correct
+            # program; start them from the first one that works instead.
+            self.island_manager.seed_uninitialized_islands(program)
         self.check_and_spawn_island_if_stagnant(
             program.generation, maintenance_program_id=program.id
         )
@@ -1599,6 +1603,13 @@ class ProgramDatabase:
 
         return ancestors
 
+    def _initialized_islands_for_sampling(self) -> Optional[List[int]]:
+        """Islands a parent can be sampled from, or None while bootstrapping."""
+        initialized_islands = self.island_manager.get_initialized_islands()
+        if initialized_islands or self.island_manager.are_all_islands_initialized():
+            return initialized_islands
+        return None
+
     @db_retry()
     def sample(
         self,
@@ -1611,8 +1622,10 @@ class ProgramDatabase:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
-        # Check if all islands are initialized
-        if not self.island_manager.are_all_islands_initialized():
+        # Until an island holds a correct program there is nothing to select
+        # from, so start from the initial program.
+        initialized_islands = self._initialized_islands_for_sampling()
+        if initialized_islands is None:
             # Get initial program (first program in database)
             self.cursor.execute("SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1")
             row = self.cursor.fetchone()
@@ -1624,7 +1637,7 @@ class ProgramDatabase:
                 raise RuntimeError("Failed to load initial program")
 
             logger.info(
-                f"Not all islands initialized. Using initial program {parent.id} "
+                f"No island initialized. Using initial program {parent.id} "
                 "without inspirations."
             )
 
@@ -1642,8 +1655,7 @@ class ProgramDatabase:
 
             return parent, [], []
 
-        # All islands initialized - sample island + constrain parents
-        initialized_islands = self.island_manager.get_initialized_islands()
+        # Sample among the islands that hold a correct program + constrain parents
         sampled_island = self.island_sampler.sample_island(initialized_islands)
 
         logger.debug(f"Sampling from island {sampled_island}")
@@ -1733,8 +1745,11 @@ class ProgramDatabase:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
-        # Check if all islands are initialized
-        if not self.island_manager.are_all_islands_initialized():
+        # Until an island holds a correct program there is nothing to select
+        # from. Islands that are still empty must not hold the run back: their
+        # only program can be an incorrect seed copy that nothing ever replaces.
+        initialized_islands = self._initialized_islands_for_sampling()
+        if initialized_islands is None:
             # Check if there are any correct programs at all
             self.cursor.execute(
                 "SELECT COUNT(*) as cnt FROM programs WHERE correct = 1"
@@ -1826,8 +1841,7 @@ class ProgramDatabase:
                 )
                 return parent, [], [], needs_fix
 
-        # All islands initialized - sample island + constrain parents
-        initialized_islands = self.island_manager.get_initialized_islands()
+        # Sample among the islands that hold a correct program + constrain parents
         sampled_island = self.island_sampler.sample_island(initialized_islands)
 
         logger.debug(f"Sampling from island {sampled_island}")

@@ -649,12 +649,47 @@ class CombinedIslandManager:
             ):
                 existing_islands.add(island)
 
-        created_ids = []
         # Create copies for islands 1 through num_islands-1
         # (original program is already on island 0)
-        for island_idx in range(1, num_islands):
-            if island_idx in existing_islands:
-                continue
+        created_ids = self._insert_copies(
+            program,
+            [i for i in range(1, num_islands) if i not in existing_islands],
+        )
+        logger.info(
+            f"Created {len(created_ids)} copies of program "
+            f"{program.id[:8]}... for islands 1-{num_islands - 1}"
+        )
+        return created_ids
+
+    def seed_uninitialized_islands(self, program: Any) -> List[str]:
+        """
+        Copy a correct program to configured islands without a correct program.
+
+        The seed is copied to every island when it is added, so an incorrect
+        seed leaves all but one island with nothing to select from. Children
+        stay on their parent's island, which means those islands would never
+        initialize on their own.
+        Returns a list of new program IDs that were created.
+        """
+        num_islands = getattr(self.config, "num_islands", 0)
+        if num_islands <= 1 or not program.correct:
+            return []
+        with write_transaction(self.conn):
+            initialized = set(self.get_initialized_islands())
+            created_ids = self._insert_copies(
+                program, [i for i in range(num_islands) if i not in initialized]
+            )
+        if created_ids:
+            logger.info(
+                f"Seeded {len(created_ids)} uninitialized islands with correct "
+                f"program {program.id[:8]}..."
+            )
+        return created_ids
+
+    def _insert_copies(self, program: Any, islands: List[int]) -> List[str]:
+        """Insert a copy of the program into each of the given islands."""
+        created_ids = []
+        for island_idx in islands:
             # Create a new program ID
             new_id = str(uuid.uuid4())
             # Copy all program data but change the ID and island_idx
@@ -735,10 +770,6 @@ class CombinedIslandManager:
                 )
                 logger.debug(f"Added copy {new_id[:8]}... to archive (correct program)")
 
-        logger.info(
-            f"Created {len(created_ids)} copies of program "
-            f"{program.id[:8]}... for islands 1-{num_islands - 1}"
-        )
         return created_ids
 
     def needs_island_copies(self, program: Any) -> bool:
