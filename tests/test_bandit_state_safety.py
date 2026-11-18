@@ -133,6 +133,28 @@ def test_state_round_trips_as_json(cls, mode, tmp_path):
     _assert_same_state(target.get_state(), source.get_state())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_saved_state_keeps_the_permissions_a_plain_write_would_give(tmp_path):
+    """Another user of a shared results directory must still be able to resume."""
+    bandit = _trained(AsymmetricUCB)
+    umask = os.umask(0)
+    os.umask(umask)
+    new_path = tmp_path / "bandit_state.pkl"
+    existing_path = tmp_path / "group_writable.pkl"
+    existing_path.write_bytes(b"")
+    existing_path.chmod(0o664)
+
+    bandit.save_state(new_path)
+    bandit.save_state(existing_path)
+
+    assert new_path.stat().st_mode & 0o777 == 0o666 & ~umask
+    assert existing_path.stat().st_mode & 0o777 == 0o664
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "bandit_state.pkl",
+        "group_writable.pkl",
+    ]
+
+
 # Python 3 has only ever defaulted to pickle protocols 3 and above.
 @pytest.mark.parametrize("protocol", range(3, pickle.HIGHEST_PROTOCOL + 1))
 @pytest.mark.parametrize("cls", ALL_BANDITS)
@@ -335,6 +357,10 @@ def test_legacy_reader_refuses_shapes_a_bandit_state_never_has(state, tmp_path):
         b'{"format": "something-else", "version": 1, "state": {}}',
         b'{"format": "shinka-bandit-state", "version": 1, "state": {"s": [[1.0]]}}',
         b'{"format": "shinka-bandit-state", "version": 1, "state": {"s": {"a": 1}}}',
+        b'{"format": "shinka-bandit-state", "version": 1, "state": {"s": '
+        + b"[" * 200_000
+        + b"]" * 200_000
+        + b"}}",
         pickle.dumps(["not", "a", "dict"]),
         pickle.dumps({"s": np.array([object()], dtype=object)}),
     ],

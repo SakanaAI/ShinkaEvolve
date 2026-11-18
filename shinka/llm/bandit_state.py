@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
+import stat
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -35,21 +36,21 @@ def write_bandit_state(path: Path, state: dict[str, Any]) -> None:
         "state": {key: _plain(key, value) for key, value in state.items()},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, delete=False
-        ) as handle:
-            temp_path = Path(handle.name)
+        # A plain exclusive create, not a private temporary file: the state
+        # keeps the permissions the umask grants, as a direct write would.
+        with open(temp_path, "x", encoding="utf-8") as handle:
             # Infinity and NaN are valid state (log-space zeros, empty ranges);
             # Python's JSON dialect round-trips them.
             json.dump(document, handle)
             handle.flush()
             os.fsync(handle.fileno())
+        if path.exists():
+            os.chmod(temp_path, stat.S_IMODE(path.stat().st_mode))
         os.replace(temp_path, path)
     finally:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink()
+        temp_path.unlink(missing_ok=True)
 
 
 def read_bandit_state(path: Path) -> dict[str, Any]:
@@ -69,7 +70,7 @@ def read_bandit_state(path: Path) -> dict[str, Any]:
 def _state_from_json(data: bytes) -> dict[str, Any]:
     try:
         document = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise BanditStateError(f"bandit state is not valid JSON: {exc}") from exc
     if (
         not isinstance(document, dict)
