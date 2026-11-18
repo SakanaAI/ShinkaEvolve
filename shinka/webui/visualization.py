@@ -10,7 +10,6 @@ import argparse
 import base64
 import http.server
 import json
-import markdown
 import os
 import re
 import socket
@@ -29,6 +28,7 @@ from typing import Any, Dict, FrozenSet, Optional, Sequence, Tuple
 
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database import SystemPromptConfig, SystemPromptDatabase
+from shinka.webui.note_html import render_note_html
 from shinka.webui.security import (
     DEFAULT_HOST,
     IMAGE_CONTENT_TYPES,
@@ -1489,19 +1489,9 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             # Preprocess content to fix line break issues
             processed_content = self._fix_line_breaks(content)
 
-            # Convert markdown to HTML with better line break handling
-            try:
-                html_content = markdown.markdown(
-                    processed_content,
-                    extensions=["extra", "nl2br"],  # nl2br: newlines to <br>
-                )
-            except Exception:
-                # Fallback if nl2br extension is not available
-                html_content = markdown.markdown(
-                    processed_content, extensions=["extra"]
-                )
-                # Manually convert remaining single line breaks to <br>
-                html_content = html_content.replace("\n", "<br>\n")
+            # A note is model output and the PDF tools fetch whatever the
+            # HTML refers to, so render it as text, structure and links only.
+            html_content = render_note_html(processed_content)
 
             # Add boxes around program summaries after markdown conversion
             print(

@@ -265,6 +265,9 @@ The WebUI has no login. It is built for one person looking at their own runs:
   website open in your browser cannot read your runs.
 - Program names, descriptions and meta notes are written by the model. The UI
   shows them as text and never runs markup they contain.
+- The PDF export of a meta note renders formatting and links only. HTML in a
+  note is printed as text and images are replaced by their description, so
+  the export fetches nothing a note points to.
 - Third-party scripts load from public CDNs pinned to exact versions with
   integrity hashes, so the UI needs internet access in the browser.
 

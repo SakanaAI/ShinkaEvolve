@@ -224,11 +224,6 @@ def test_meta_pdf_renderer_runs_without_scripts_or_local_file_access(monkeypatch
         return SimpleNamespace(returncode=1, stdout="", stderr="stub")
 
     monkeypatch.setattr(visualization.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        visualization,
-        "markdown",
-        SimpleNamespace(markdown=lambda text, extensions=None: text),
-    )
     handler = visualization.DatabaseRequestHandler.__new__(
         visualization.DatabaseRequestHandler
     )
