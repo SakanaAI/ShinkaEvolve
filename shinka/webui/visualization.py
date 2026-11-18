@@ -508,6 +508,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     if f.lower().endswith((".db", ".sqlite")):
                         full_path = os.path.join(root, f)
                         client_path = os.path.relpath(full_path, self.search_root)
+                        if resolve_under_root(self.search_root, full_path) is None:
+                            print(
+                                f"[SERVER] Not listing {client_path}: it links "
+                                "to a file outside the served directory"
+                            )
+                            continue
 
                         # Parse path components
                         path_parts = client_path.split(os.sep)

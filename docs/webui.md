@@ -85,6 +85,10 @@ shinka_visualize --db results_20241201_120000/programs.sqlite --open
 `--db` must lie inside `root_directory`. Given without a root directory, a
 database outside the current directory makes its own folder the root.
 
+Symlinks are followed only while they stay inside the root. A database that
+links to a file outside it is left out of the list, and the server log says
+so; point `root_directory` (or `--db`) at the real location instead.
+
 ---
 
 ## Features

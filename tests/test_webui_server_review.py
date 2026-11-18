@@ -475,3 +475,30 @@ def test_allowed_names_leave_out_addresses_and_reverse_lookup_names(
 
     assert allowed == {"localhost", "node17", "node17.local", "alias"}
     assert security.is_allowed_host("10.1.2.3:8000", allowed)
+
+
+# --- the list of databases ------------------------------------------------------
+
+
+def test_database_linked_out_of_root_is_left_out_of_the_list(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Every other endpoint refuses such a file, so listing it only leads to
+    # a row that never loads.
+    root = tree / "results"
+    (root / "run_out").mkdir()
+    (root / "run_out" / "programs.sqlite").symlink_to(
+        tree / "private" / "programs.sqlite"
+    )
+    (root / "run_in").mkdir()
+    (root / "run_in" / "programs.sqlite").symlink_to(root / "run_a" / "programs.sqlite")
+
+    with serve(root) as port:
+        status, _, body = request(port, "/list_databases")
+
+    assert status == 200
+    assert sorted(db["path"] for db in json.loads(body)) == [
+        "run_a/programs.sqlite",
+        "run_in/programs.sqlite",
+    ]
+    assert "run_out/programs.sqlite" in capsys.readouterr().out
