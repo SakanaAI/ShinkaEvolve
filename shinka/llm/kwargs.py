@@ -1,4 +1,4 @@
-from typing import Any, List, Union, Optional
+from typing import Any, Iterable, List, Union, Optional
 import random
 from .providers.pricing import (
     is_reasoning_model,
@@ -18,11 +18,34 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Every effort a config may name. Each provider branch below maps all of them.
+# "min" is Shinka's lowest tier; "minimal" is OpenAI's named level, passed
+# through where the API has it and treated as "min" elsewhere. "disabled" asks
+# for no reasoning where the model allows that; "none" is the same except on
+# legacy OpenAI reasoning models, which receive the literal effort "none".
+REASONING_EFFORTS = (
+    "disabled",
+    "none",
+    "min",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
+# "" is the sampling default and "auto" was the client default before the
+# provider split; both mean that no reasoning is requested.
+_REASONING_EFFORT_ALIASES = {"": "disabled", "auto": "disabled"}
+_warned_about_auto_effort = False
+
 THINKING_TOKENS = {
     "min": 1024,
+    "minimal": 1024,
     "low": 2048,
     "medium": 4096,
     "high": 8192,
+    "xhigh": 12288,
     "max": 16384,
 }
 
@@ -35,13 +58,45 @@ NO_TEMPERATURE_MODELS = {
 }
 
 
+def normalize_reasoning_effort(effort: Optional[str]) -> str:
+    """Return the canonical name of a configured reasoning effort, or raise."""
+    name = "" if effort is None else str(effort).strip().lower()
+    if name == "auto":
+        _warn_about_auto_effort()
+    name = _REASONING_EFFORT_ALIASES.get(name, name)
+    if name not in REASONING_EFFORTS:
+        raise NonRetryableLLMError(
+            f"Unsupported reasoning effort: {effort!r}. "
+            f"Use one of: {', '.join(REASONING_EFFORTS)}."
+        )
+    return name
+
+
+def _warn_about_auto_effort() -> None:
+    global _warned_about_auto_effort
+    if not _warned_about_auto_effort:
+        _warned_about_auto_effort = True
+        logger.warning(
+            'Reasoning effort "auto" is deprecated and treated as "disabled"; '
+            "name an effort explicitly."
+        )
+
+
+def normalize_reasoning_efforts(
+    efforts: Union[Iterable[Optional[str]], str, None],
+) -> List[str]:
+    """Validate every configured effort up front, not only the one sampled."""
+    if efforts is None or isinstance(efforts, str):
+        efforts = [efforts]
+    return [normalize_reasoning_effort(effort) for effort in efforts]
+
+
 def _current_reasoning_effort(effort: str) -> str:
-    if effort in ("", "disabled", "none"):
+    """Map a normalised effort onto the levels of the current native APIs."""
+    if effort in ("disabled", "none"):
         return "none"
     if effort in ("min", "minimal"):
         return "low"
-    if effort not in ("low", "medium", "high", "xhigh", "max"):
-        raise NonRetryableLLMError(f"Unsupported reasoning effort: {effort}")
     return effort
 
 
@@ -113,12 +168,11 @@ def sample_model_kwargs(
     # Make all inputs lists
     if isinstance(model_names, str):
         model_names = [model_names]
-    if isinstance(temperatures, float):
+    if isinstance(temperatures, (int, float)):
         temperatures = [temperatures]
     if isinstance(max_tokens, int):
         max_tokens = [max_tokens]
-    if isinstance(reasoning_efforts, str):
-        reasoning_efforts = [reasoning_efforts]
+    reasoning_efforts = normalize_reasoning_efforts(reasoning_efforts)
 
     kwargs_dict: dict[str, Any] = {}
 
@@ -176,6 +230,9 @@ def sample_model_kwargs(
         r_effort = random.choice(reasoning_efforts)
     else:
         r_effort = "disabled"
+    # Only the OpenAI Responses API has a literal "none" effort.
+    if r_effort == "none" and provider not in ("openai", "openrouter", "azure_openai"):
+        r_effort = "disabled"
 
     # Some opennrouter models only support running with reasoning effort
     if requires_reasoning(model_name) and r_effort == "disabled":
@@ -204,12 +261,11 @@ def sample_model_kwargs(
         kwargs_dict["max_output_tokens"] = random.choice(max_tokens)
         if r_effort == "disabled":
             kwargs_dict["reasoning"] = {"effort": None}
-        elif r_effort == "min":
-            kwargs_dict["reasoning"] = {"effort": "low"}
-        elif r_effort == "max":
-            kwargs_dict["reasoning"] = {"effort": "high"}
         else:
-            kwargs_dict["reasoning"] = {"effort": r_effort}
+            # "none", "minimal" and "xhigh" exist only on some of these models.
+            kwargs_dict["reasoning"] = {
+                "effort": {"min": "low", "max": "high"}.get(r_effort, r_effort)
+            }
 
         # 4.b.1) SET: auto-summarization for OpenAI reasoning effort
         if provider == "openai" and r_effort != "disabled":
@@ -219,7 +275,7 @@ def sample_model_kwargs(
     elif provider == "google" and is_reasoning_model(model_name):
         kwargs_dict["max_tokens"] = random.choice(max_tokens)
         if api_model_name in GEMINI_THINKING_LEVEL_MODELS:
-            if r_effort not in ("", "disabled", "none"):
+            if r_effort != "disabled":
                 kwargs_dict["thinking_level"] = (
                     "MINIMAL"
                     if api_model_name == "gemini-3.5-flash-lite"

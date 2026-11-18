@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import time
 from shinka.api_budget import APIBudgetExceeded, run_request
 from .query import query, query_async
-from .kwargs import sample_model_kwargs
+from .kwargs import normalize_reasoning_efforts, sample_model_kwargs
 from .providers import QueryResult
 from .providers.errors import (
     BilledCancellationError,
@@ -195,6 +195,8 @@ class LLMClient:
         if isinstance(model_names, str):
             model_names = [model_names]
         self.model_names = model_names
+        # Reject a misspelt effort at construction, not on the query that samples it.
+        normalize_reasoning_efforts(reasoning_efforts)
         self.reasoning_efforts = reasoning_efforts
         self.model_sample_probs = model_sample_probs
         self.output_model = output_model
@@ -559,6 +561,8 @@ class AsyncLLMClient:
         if isinstance(model_names, str):
             model_names = [model_names]
         self.model_names = model_names
+        # Reject a misspelt effort at construction, not on the query that samples it.
+        normalize_reasoning_efforts(reasoning_efforts)
         self.reasoning_efforts = reasoning_efforts
         self.model_sample_probs = model_sample_probs
         self.output_model = output_model
