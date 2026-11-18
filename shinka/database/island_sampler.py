@@ -1,6 +1,7 @@
 """Island sampling strategies for parent selection."""
 
 import logging
+import math
 import random
 import sqlite3
 from abc import ABC, abstractmethod
@@ -89,6 +90,19 @@ class IslandSampler(ABC):
 
         return fitness
 
+    def _best_fitness_values(self, island_indices: List[int]) -> np.ndarray:
+        """Best fitness per island, in the order given, as finite floats.
+
+        Islands whose best program has no usable score count as 0.0.
+        """
+        fitness = self._get_island_best_fitness(island_indices)
+        values = []
+        for island_idx in island_indices:
+            value = fitness.get(island_idx)
+            usable = isinstance(value, (int, float)) and math.isfinite(value)
+            values.append(float(value) if usable else 0.0)
+        return np.array(values, dtype=float)
+
 
 class UniformIslandSampler(IslandSampler):
     """Uniformly sample from initialized islands (default behavior)."""
@@ -137,26 +151,28 @@ class ProportionalIslandSampler(IslandSampler):
         super().__init__(cursor, conn, config)
         self.temperature = temperature
 
+    def island_probabilities(self, initialized_islands: List[int]) -> np.ndarray:
+        """Boltzmann probabilities over the islands, in the order given."""
+        fitness_values = self._best_fitness_values(initialized_islands)
+
+        # Boltzmann distribution: exp(fitness / temperature). It only depends
+        # on score differences, so subtract the maximum first: every exponent
+        # is then <= 0 and large scores cannot overflow.
+        scaled = fitness_values / self.temperature
+        exp_values = np.exp(scaled - np.max(scaled))
+        return exp_values / np.sum(exp_values)
+
     def sample_island(self, initialized_islands: List[int]) -> int:
         """Sample island proportional to best fitness."""
-        fitness_dict = self._get_island_best_fitness(initialized_islands)
-
-        # Extract fitness values in the same order as initialized_islands
-        fitness_values = np.array(
-            [fitness_dict.get(island_idx, 0.0) for island_idx in initialized_islands]
-        )
-
-        # Apply Boltzmann distribution: exp(fitness / temperature)
-        exp_values = np.exp(fitness_values / self.temperature)
-        probabilities = exp_values / np.sum(exp_values)
+        probabilities = self.island_probabilities(initialized_islands)
 
         # Sample according to probabilities
         sampled_idx = np.random.choice(len(initialized_islands), p=probabilities)
         sampled_island = initialized_islands[sampled_idx]
 
         logger.debug(
-            f"ProportionalIslandSampler: fitness = {fitness_dict}, "
-            f"probabilities = {probabilities}, sampled = {sampled_island}"
+            f"ProportionalIslandSampler: probabilities = {probabilities}, "
+            f"sampled = {sampled_island}"
         )
         return sampled_island
 
@@ -166,6 +182,12 @@ class WeightedIslandSampler(IslandSampler):
 
     More programs -> lower probability
     Higher fitness -> higher probability
+
+    The fitness term is the island's best score while every island's best
+    score is non-negative. A power of a negative score is not a usable weight,
+    so once any best score is negative the scores are shifted to
+    ``score - worst + (best - worst)``: the best island then weighs twice the
+    worst one, and the order of the islands is kept.
     """
 
     def __init__(
@@ -180,37 +202,40 @@ class WeightedIslandSampler(IslandSampler):
         self.fitness_weight = fitness_weight
         self.count_weight = count_weight
 
-    def sample_island(self, initialized_islands: List[int]) -> int:
-        """Sample island using weighted combination of fitness and inverse count."""
+    def island_probabilities(self, initialized_islands: List[int]) -> np.ndarray:
+        """Sampling probabilities over the islands, in the order given."""
         counts = self._get_island_program_counts(initialized_islands)
-        fitness_dict = self._get_island_best_fitness(initialized_islands)
+        count_values = np.array(
+            [max(counts.get(island_idx, 1), 1) for island_idx in initialized_islands],
+            dtype=float,
+        )
+        fitness_values = self._best_fitness_values(initialized_islands)
+        worst = np.min(fitness_values)
+        if worst < 0:
+            span = np.max(fitness_values) - worst
+            fitness_values = fitness_values - worst + (span if span > 0 else 1.0)
 
-        # Calculate weights for each island
-        weights = []
-        for island_idx in initialized_islands:
-            count = counts.get(island_idx, 1)
-            fitness = fitness_dict.get(island_idx, 0.0)
-
-            # Weight = fitness^fitness_weight / count^count_weight
-            # More fitness -> higher weight, more programs -> lower weight
-            weight = (fitness**self.fitness_weight) / (count**self.count_weight)
-            weights.append(weight)
+        # Weight = fitness^fitness_weight / count^count_weight
+        # More fitness -> higher weight, more programs -> lower weight
+        weights = fitness_values**self.fitness_weight / count_values**self.count_weight
 
         # Normalize to probabilities
-        weights = np.array(weights)
-        if np.sum(weights) == 0:
-            # Fallback to uniform if all weights are zero
-            probabilities = np.ones(len(weights)) / len(weights)
-        else:
-            probabilities = weights / np.sum(weights)
+        total = np.sum(weights)
+        if total <= 0 or not np.isfinite(total):
+            # Fallback to uniform if the weights carry no preference
+            return np.ones(len(weights)) / len(weights)
+        return weights / total
+
+    def sample_island(self, initialized_islands: List[int]) -> int:
+        """Sample island using weighted combination of fitness and inverse count."""
+        probabilities = self.island_probabilities(initialized_islands)
 
         # Sample according to probabilities
         sampled_idx = np.random.choice(len(initialized_islands), p=probabilities)
         sampled_island = initialized_islands[sampled_idx]
 
         logger.debug(
-            f"WeightedIslandSampler: counts = {counts}, fitness = {fitness_dict}, "
-            f"weights = {weights}, probabilities = {probabilities}, "
+            f"WeightedIslandSampler: probabilities = {probabilities}, "
             f"sampled = {sampled_island}"
         )
         return sampled_island
