@@ -1224,8 +1224,20 @@ class AsyncProgramDatabase:
             return result
         except Exception as e:
             self._debug_track_end(op_id, success=False)
-            logger.error(f"Error loading generation IDs: {e}")
+            logger.error(f"Error querying programs: {e}")
             raise
+
+    async def get_best_export_program_ref_async(self) -> Optional[Tuple[str, int]]:
+        """Read the correct winner's ID and generation, propagating query failures."""
+        rows = await self._query_generation_rows_async(
+            """
+            SELECT id, generation FROM programs WHERE correct = 1
+            ORDER BY combined_score DESC,
+                     CASE WHEN combined_score IS NULL THEN timestamp END DESC
+            LIMIT 1
+            """
+        )
+        return rows[0] if rows else None
 
     async def get_top_programs_async(
         self, n: int = 10, correct_only: bool = True

@@ -5,6 +5,7 @@ Provides fully asynchronous evolution pipeline with concurrent LLM sampling.
 
 import json
 import asyncio
+import contextlib
 import hashlib
 import logging
 import shutil
@@ -6563,25 +6564,27 @@ class ShinkaEvolveRunner:
             self._best_solution_lock = best_lock
 
         async with best_lock:
-            best_programs = await self.async_db.get_top_programs_async(
-                n=1, correct_only=True
-            )
-            if not best_programs:
-                if self.verbose:
-                    logger.info(
-                        "No correct programs found yet, cannot determine best solution."
-                    )
+            best_dir = Path(self.results_dir) / "best"
+            winner = await self.async_db.get_best_export_program_ref_async()
+            if winner is None:
+                await asyncio.to_thread(self._retire_best_export, best_dir)
+                self.best_program_id = None
                 return
 
-            best_program = best_programs[0]
+            best_id, generation = winner
+            if best_id == self.best_program_id:
+                return
 
-            if best_program.id == self.best_program_id:
-                return  # No change
-
-            best_dir = Path(self.results_dir) / "best"
             generation_programs = await self.async_db.get_programs_by_generation_async(
-                best_program.generation
+                generation
             )
+            best_program = next(
+                (p for p in generation_programs if p.id == best_id and p.correct), None
+            )
+            if best_program is None:
+                raise RuntimeError(
+                    f"Could not read correct best program {best_id} for export"
+                )
             await asyncio.to_thread(
                 self._export_best_solution, best_program, generation_programs, best_dir
             )
@@ -6593,6 +6596,20 @@ class ShinkaEvolveRunner:
                     f"id {best_program.id[:6]}... "
                     f"Copied to {best_dir}"
                 )
+
+    @staticmethod
+    def _retire_best_export(best_dir: Path) -> None:
+        if not best_dir.exists() and not best_dir.is_symlink():
+            return
+
+        archive = Path(mkdtemp(prefix=".retired-best-", dir=best_dir.parent))
+        try:
+            destination = best_dir.rename(archive / best_dir.name)
+        except OSError:
+            with contextlib.suppress(OSError):
+                archive.rmdir()
+            raise
+        logger.info("Archived previous best export at %s", destination)
 
     def _export_best_solution(
         self, program: Program, generation_programs: List[Program], best_dir: Path

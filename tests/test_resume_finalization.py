@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -28,7 +29,96 @@ def _settled_runner(results_dir: Path, budget: int) -> ShinkaEvolveRunner:
     )
 
 
-def test_settled_resume_rebuilds_best_after_interrupted_export(tmp_path):
+def test_settled_resume_archives_best_when_legacy_seed_is_invalid(tmp_path):
+    async def run():
+        config = DatabaseConfig(
+            db_path=str(tmp_path / "programs.sqlite"), num_islands=2
+        )
+        db = ProgramDatabase(config)
+        seed = Program(
+            id="legacy-seed",
+            code="raise RuntimeError('failed')\n",
+            generation=0,
+            correct=True,
+            metadata={"evaluation_failed": True, "api_costs": 0.25},
+        )
+        db.add(seed)
+        db.close()
+
+        best = tmp_path / "best"
+        best.mkdir()
+        (best / "main.py").write_text(seed.code)
+        (best / "diagnostics.txt").write_text("legacy evaluation failed")
+
+        for _ in range(2):
+            runner = _settled_runner(tmp_path, budget=1)
+            runner.db_config.num_islands = 2
+            try:
+                await asyncio.wait_for(runner.run_async(), timeout=10)
+                seeds = runner.db.get_programs_by_generation(0)
+                assert len(seeds) == 2 and all(not program.correct for program in seeds)
+                assert runner.completed_generations == 1
+                assert runner.total_proposals_generated == 0
+                assert runner.total_api_cost == pytest.approx(0.25)
+                assert not best.exists()
+                (archived,) = tmp_path.glob(".retired-best-*/best")
+                assert (archived / "main.py").read_text() == seed.code
+                assert (
+                    archived / "diagnostics.txt"
+                ).read_text() == "legacy evaluation failed"
+            finally:
+                runner.db.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("owner", "reader", "error"),
+    [
+        (sqlite3, "connect", sqlite3.OperationalError),
+        (ProgramDatabase, "get_programs_by_generation_thread_safe", RuntimeError),
+    ],
+)
+def test_best_export_preserves_previous_artifacts_on_failed_read(
+    tmp_path, monkeypatch, owner, reader, error
+):
+    async def run():
+        config = DatabaseConfig(
+            db_path=str(tmp_path / "programs.sqlite"), num_islands=1
+        )
+        db = ProgramDatabase(config)
+        db.add(Program(id="seed", code="pass\n", generation=0, correct=True))
+        db.close()
+
+        best = tmp_path / "best"
+        best.mkdir()
+        (best / "main.py").write_text("pass\n")
+        (best / "diagnostics.txt").write_text("valid diagnostics")
+
+        runner = _settled_runner(tmp_path, budget=1)
+        try:
+            await runner._setup_async()
+
+            def fail_read(*args, **kwargs):
+                raise sqlite3.OperationalError("export read failed")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(owner, reader, fail_read)
+                with pytest.raises(error):
+                    await runner._update_best_solution_async()
+
+            assert (best / "main.py").read_text() == "pass\n"
+            assert (best / "diagnostics.txt").read_text() == "valid diagnostics"
+            assert not list(tmp_path.glob(".retired-best-*"))
+        finally:
+            await runner.async_db.close_async()
+            runner.db.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("unscored", [False, True])
+def test_settled_resume_rebuilds_best_after_interrupted_export(tmp_path, unscored):
     async def run():
         config = DatabaseConfig(
             db_path=str(tmp_path / "programs.sqlite"), num_islands=1
@@ -43,6 +133,9 @@ def test_settled_resume_rebuilds_best_after_interrupted_export(tmp_path):
             combined_score=10.0,
         )
         db.add(winner)
+        if unscored:
+            db.conn.execute("UPDATE programs SET combined_score = NULL")
+            db.conn.commit()
         db.close()
 
         source = tmp_path / "gen_1"
