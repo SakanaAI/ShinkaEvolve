@@ -1127,6 +1127,12 @@ class ShinkaEvolveRunner:
                     return_exceptions=True,
                 )
 
+            # A settled resume has no evaluation side effects to publish the best.
+            try:
+                await self._update_best_solution_async()
+            except Exception:
+                logger.warning("Could not publish the final best solution", exc_info=True)
+
             # Perform final operations before cleanup
             if self.verbose:
                 logger.info(
