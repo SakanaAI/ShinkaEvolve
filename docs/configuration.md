@@ -234,6 +234,39 @@ complete CLI configuration.
 
 `conda_env` and `activate_script` are mutually exclusive.
 
+Generation-zero Slurm evaluations require a verified terminal state of
+`COMPLETED` and `ExitCode=0:0` before accepting result files. Verification
+matches the numeric job ID and the unique name set at submission, so a
+retained record from an earlier allocation with the same ID cannot validate it.
+Each requeued execution writes in its own directory. Result loading also
+requires the latest execution's completion receipt, so earlier files cannot
+validate a restart that produced no results. Verification remembers the latest
+restart count seen in Slurm and waits for its receipt within the retry window.
+Once `squeue` reports a terminal or absent job, `sacct` checks the allocation.
+If accounting cannot verify it, `scontrol --oneliner show job` checks the
+controller's retained job record in the same attempt. After a requeue, the
+controller can identify the current execution by its restart count when
+accounting still describes an earlier execution. A terminal failure verified
+for the current execution is rejected. This supports clusters without
+accounting while the controller still retains the completed job. Missing,
+inaccessible, ambiguous,
+or otherwise unverified status from both sources fails the seed with a
+diagnostic; partial artifacts are never evidence of successful completion.
+Slurm local fallback jobs instead use the actual subprocess exit status.
+Ordinary asynchronous result retrieval retains its existing contract.
+
+Synchronous Slurm evaluations limit each `sbatch`, `squeue`, `sacct`, and `scontrol`
+command to 30 seconds. Three consecutive status lookup errors fail the seed;
+a successful lookup resets that counter. Pending, running, and suspended jobs
+continue waiting in the queue. Slurm applies the `time` setting to job execution.
+Docker image preparation for synchronous submission also limits each cold-cache
+`docker pull` and `docker save` to 30 seconds. If either times out, the batch job
+uses its existing image-load or pull path.
+The `squeue` error `Invalid job id specified` triggers terminal verification
+through accounting or the controller. Verification allows six rounds, ten
+seconds apart, with at most one accounting and one
+controller command per round, including command errors and timeouts.
+
 ---
 
 ## Hydra Presets

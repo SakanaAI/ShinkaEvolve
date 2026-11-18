@@ -1,12 +1,14 @@
 import json
 import logging
 import sqlite3
+import threading
 import time
-from dataclasses import asdict, dataclass, field
+from contextlib import closing, contextmanager
+from dataclasses import asdict, dataclass, field, replace
 from functools import wraps
 from pathlib import Path
 import numpy as np
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import math
 from .complexity import analyze_code_metrics
 from .parents import CombinedParentSelector
@@ -19,6 +21,9 @@ from shinka.defaults import default_archive_criteria
 from .write_transaction import write_transaction
 
 logger = logging.getLogger(__name__)
+_PREVIEW_RUN_STATE_REPAIR_KEYS = ("run_state_reconciled_v1", "run_state_reconciled_v2")
+_RUN_STATE_REPAIR_KEY = "run_state_reconciled_v3"
+_MAINTENANCE_APPLIED_KEY = "postprocess_db_maintenance_applied"
 
 
 def clean_nan_values(obj: Any) -> Any:
@@ -280,6 +285,21 @@ class Program:
         return cls(**filtered_data)
 
 
+@dataclass
+class _RunState:
+    last_iteration: int
+    best_program_id: Optional[str]
+    best_score_generation: int
+    best_score_ever: Optional[float]
+
+
+@dataclass
+class _PendingPreviewRecord:
+    best: Optional[Program] = None
+    score: Optional[float] = None
+    watermark_matches_pending: bool = False
+
+
 class ProgramDatabase:
     """
     SQLite-backed database for storing and managing programs during an
@@ -308,6 +328,7 @@ class ProgramDatabase:
 
         self.last_iteration: int = 0
         self.best_program_id: Optional[str] = None
+        self._run_state_lock = threading.Lock()
         self.beam_search_parent_id: Optional[str] = None
         # For deferring expensive operations
         self._schedule_migration: bool = False
@@ -527,6 +548,7 @@ class ProgramDatabase:
 
         # Run any necessary migrations
         self._run_migrations()
+        self._repair_legacy_run_state()
 
         logger.debug("Database tables and indices ensured to exist.")
 
@@ -611,74 +633,358 @@ class ProgramDatabase:
 
     @db_retry()
     def _load_metadata_from_db(self):
-        if not self.cursor:
-            raise ConnectionError("DB cursor not available.")
-
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'last_iteration'"
-        )
-        row = self.cursor.fetchone()
-        self.last_iteration = (
-            int(row["value"]) if row and row["value"] is not None else 0
-        )
-        if not row or row["value"] is not None:  # Initialize in DB if first time
-            if not self.read_only:
-                self._update_metadata_in_db("last_iteration", str(self.last_iteration))
-
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_program_id'"
-        )
-        row = self.cursor.fetchone()
-        self.best_program_id = (
-            str(row["value"])
-            if row and row["value"] is not None and row["value"] != "None"
-            else None
-        )
-        if (
-            not row or row["value"] is None or row["value"] == "None"
-        ):  # Initialize or clear if stored as 'None' string
-            if not self.read_only:
-                self._update_metadata_in_db("best_program_id", None)
-
+        self._refresh_run_state()
         self.cursor.execute(
             "SELECT value FROM metadata_store WHERE key = 'beam_search_parent_id'"
         )
         row = self.cursor.fetchone()
-        self.beam_search_parent_id = (
-            str(row["value"])
-            if row and row["value"] is not None and row["value"] != "None"
-            else None
-        )
-        if not row or row["value"] is None or row["value"] == "None":
-            if not self.read_only:
-                self._update_metadata_in_db("beam_search_parent_id", None)
+        value = row["value"] if row else None
+        self.beam_search_parent_id = value if value != "None" else None
 
-        # Load stagnation tracking for dynamic island spawning
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_score_generation'"
+    def _read_run_state(self, cursor: Optional[sqlite3.Cursor] = None) -> _RunState:
+        cursor = cursor or self.cursor
+        if not cursor:
+            raise ConnectionError("DB cursor not available.")
+
+        values = dict(
+            cursor.execute("""
+                SELECT key, value FROM metadata_store
+                WHERE key IN ('last_iteration', 'best_program_id',
+                              'best_score_generation', 'best_score_ever')
+                """).fetchall()
         )
-        row = self.cursor.fetchone()
-        self.best_score_generation = (
-            int(row["value"]) if row and row["value"] is not None else 0
+        best_id = values.get("best_program_id")
+        best_score = values.get("best_score_ever")
+        return _RunState(
+            last_iteration=int(values.get("last_iteration") or 0),
+            best_program_id=best_id if best_id != "None" else None,
+            best_score_generation=int(values.get("best_score_generation") or 0),
+            best_score_ever=float(best_score) if best_score is not None else None,
         )
 
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_score_ever'"
+    def _cache_run_state(self, state: _RunState) -> None:
+        self.last_iteration = state.last_iteration
+        self.best_program_id = state.best_program_id
+        self.best_score_generation = state.best_score_generation
+        self.best_score_ever = state.best_score_ever
+
+    def _refresh_run_state(self, reader: Optional["ProgramDatabase"] = None) -> None:
+        with self._run_state_lock:
+            self._cache_run_state((reader or self)._read_run_state())
+
+    @contextmanager
+    def _run_state_transaction(self) -> Iterator[_RunState]:
+        if not self.conn:
+            raise ConnectionError("DB not connected.")
+        # Publish the committed snapshot before another thread refreshes this cache.
+        with self._run_state_lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            with self.conn:
+                state = self._read_run_state()
+                yield state
+            self._cache_run_state(state)
+
+    def _advance_last_iteration(self, state: _RunState, generation: int) -> None:
+        """Advance the latest iteration inside the caller's write transaction."""
+        if generation > state.last_iteration:
+            self._write_metadata("last_iteration", str(generation))
+            state.last_iteration = generation
+
+    def _advance_best_score(self, state: _RunState, program: Program) -> None:
+        score = program.combined_score or 0.0
+        if state.best_score_ever is None or score > state.best_score_ever:
+            state.best_score_ever = score
+            # An improvement can arrive after a later generation was processed.
+            self._advance_best_score_generation(state, program.generation)
+            self._write_metadata("best_score_ever", str(score))
+
+    def _advance_best_score_generation(self, state: _RunState, generation: int) -> None:
+        state.best_score_generation = max(state.best_score_generation, generation)
+        self._write_metadata("best_score_generation", str(state.best_score_generation))
+
+    def _has_run_state_repair(self, key: str) -> bool:
+        row = self.cursor.execute(
+            "SELECT 1 FROM metadata_store WHERE key = ?", (key,)
+        ).fetchone()
+        return row is not None
+
+    @db_retry()
+    def _repair_legacy_run_state(self) -> None:
+        if self._has_run_state_repair(_RUN_STATE_REPAIR_KEY):
+            return
+        with self._run_state_transaction() as state:
+            # A different connection may have repaired the database while we waited.
+            if self._has_run_state_repair(_RUN_STATE_REPAIR_KEY):
+                return
+            preview_repaired = any(
+                self._has_run_state_repair(key)
+                for key in _PREVIEW_RUN_STATE_REPAIR_KEYS
+            )
+            pending = (
+                self._pending_preview_record(state)
+                if preview_repaired
+                else _PendingPreviewRecord()
+            )
+            trusted = (
+                replace(state, best_score_ever=None)
+                if pending.score is not None
+                else state
+            )
+            programs = self._run_state_repair_candidates(
+                trusted if preview_repaired else None
+            )
+            original, has_spawn_history = self._scan_original_run_programs(
+                trusted, programs
+            )
+            if has_spawn_history:
+                # Older copies record the source generation, so they cannot rule
+                # out a real spawn reset at the same generation as the pending row.
+                pending.watermark_matches_pending = False
+            self._repair_legacy_best_score(state, original, pending)
+            self._advance_last_iteration(state, original.last_iteration)
+            if (
+                not preview_repaired or pending.best is not None
+            ) and original.best_program_id != state.best_program_id:
+                self._write_metadata("best_program_id", original.best_program_id)
+                state.best_program_id = original.best_program_id
+            self._write_metadata(_RUN_STATE_REPAIR_KEY, "1")
+
+    def _pending_preview_record(self, state: _RunState) -> _PendingPreviewRecord:
+        pending = _PendingPreviewRecord()
+        best = self._get_tracked_best(state)
+        if best is not None and self._is_original_program(best):
+            if self._has_pending_run_maintenance(best):
+                pending.best = best
+            elif (best.combined_score or 0.0) == state.best_score_ever:
+                # A supported score can coincide with a pending tie at a reset.
+                return pending
+        if state.best_score_ever is None:
+            return pending
+
+        generation = state.best_score_generation
+        # A tied or unscored row could set the score watermark while a different
+        # candidate won the program ranking.
+        source = self._pending_preview_score_source(state, pending.best)
+        if source is not None:
+            pending.watermark_matches_pending = source == generation
+            pending.score = state.best_score_ever
+        elif (
+            pending.best is not None
+            and generation >= pending.best.generation
+            and (pending.best.combined_score or 0.0) == state.best_score_ever
+        ):
+            pending.score = state.best_score_ever
+        return pending
+
+    def _pending_preview_score_source(
+        self, state: _RunState, best: Optional[Program]
+    ) -> Optional[int]:
+        watermark = state.best_score_generation
+        earliest = watermark
+        # A later reset can hide the generation of an unscored pending row
+        # when the preview ranked a different, negative-scored pending row.
+        if (
+            state.best_score_ever == 0.0
+            and best is not None
+            and best.combined_score is not None
+            and best.combined_score < 0.0
+        ):
+            earliest = 0
+        for row in self.cursor.execute(
+            """
+            SELECT id, '' AS code, generation, combined_score, correct, metadata
+            FROM programs
+            WHERE generation BETWEEN ? AND ? AND correct = 1
+              AND COALESCE(combined_score, 0.0) = ?
+              AND (generation = ? OR combined_score IS NULL)
+            ORDER BY generation DESC
+            """,
+            (earliest, watermark, state.best_score_ever, watermark),
+        ):
+            program = self._program_from_row(row)
+            if (
+                program is not None
+                and self._is_original_program(program)
+                and self._has_pending_run_maintenance(program)
+            ):
+                return program.generation
+        return None
+
+    def _repair_legacy_best_score(
+        self, state: _RunState, original: _RunState, pending: _PendingPreviewRecord
+    ) -> None:
+        score = original.best_score_ever
+        published_score = state.best_score_ever
+        if score is None or (published_score is not None and score < published_score):
+            if pending.score is None:
+                return
+            if pending.watermark_matches_pending:
+                state.best_score_generation = original.best_score_generation
+        # Ties do not reset stagnation. Without maintenance order, only advance
+        # to the earliest supporting generation and preserve any later reset.
+        self._advance_best_score_generation(state, original.best_score_generation)
+        if score != published_score:
+            state.best_score_ever = score
+            self._write_metadata(
+                "best_score_ever", str(score) if score is not None else None
+            )
+
+    def _run_state_repair_candidates(
+        self, preview: Optional[_RunState]
+    ) -> Iterator[tuple[Program, bool]]:
+        for row in self.cursor.execute("""
+            SELECT p.id, '' AS code, p.generation, p.timestamp, p.combined_score,
+                   p.public_metrics, p.correct, p.metadata,
+                   a.program_id IS NOT NULL AS archived
+            FROM programs AS p LEFT JOIN archive AS a ON a.program_id = p.id
+            ORDER BY p.rowid
+            """):
+            program = self._program_from_row(row)
+            if program is None:
+                continue
+            eligible = not self._has_pending_run_maintenance(program) and (
+                preview is None
+                or row["archived"]
+                or program.metadata.get(_MAINTENANCE_APPLIED_KEY) is True
+                or program.metadata.get("postprocess_side_effects_applied") is True
+                or (
+                    (program.combined_score or 0.0) == preview.best_score_ever
+                    and (
+                        program.id == preview.best_program_id
+                        or program.generation <= preview.best_score_generation
+                    )
+                )
+            )
+            yield program, eligible
+
+    @staticmethod
+    def _has_pending_run_maintenance(program: Program) -> bool:
+        metadata = program.metadata
+        if metadata.get("postprocess_side_effects_applied") is True:
+            return False
+        if _MAINTENANCE_APPLIED_KEY in metadata:
+            return metadata[_MAINTENANCE_APPLIED_KEY] is False
+        # Older deferred runner writes have timing and scheduler provenance.
+        job_id = metadata.get("source_job_id")
+        return (
+            program.generation > 0
+            and metadata.get("safe_processing") is True
+            and metadata.get("source_generation") == program.generation
+            and isinstance(job_id, str)
+            and bool(job_id)
+            and type(metadata.get("pipeline_accounted_seconds")) in (int, float)
         )
-        row = self.cursor.fetchone()
-        self.best_score_ever = (
-            float(row["value"]) if row and row["value"] is not None else None
+
+    @staticmethod
+    def _is_original_program(program: Program) -> bool:
+        return not (
+            program.metadata.get("_is_island_copy")
+            or program.metadata.get("_spawned_island")
         )
+
+    def _scan_original_run_programs(
+        self, published: _RunState, programs: Iterator[tuple[Program, bool]]
+    ) -> tuple[_RunState, bool]:
+        state = _RunState(
+            last_iteration=0,
+            best_program_id=None,
+            best_score_generation=0,
+            best_score_ever=None,
+        )
+        best = None
+        earliest_unscored = None
+        unscored_seed_finished_at = None
+        earliest_scored_started_at = math.inf
+        has_spawn_history = False
+        for program, eligible in programs:
+            if not self._is_original_program(program):
+                if program.metadata.get("_spawned_island"):
+                    has_spawn_history = True
+                continue
+            state.last_iteration = max(state.last_iteration, program.generation)
+            if not eligible or not program.correct:
+                continue
+            if program.combined_score is None:
+                generation = program.generation
+                earliest_unscored = (
+                    generation
+                    if earliest_unscored is None
+                    else min(generation, earliest_unscored)
+                )
+                if published.best_score_ever == 0.0 and (
+                    best is None or generation <= published.best_score_generation
+                ):
+                    self._record_repair_score(state, 0.0, generation)
+                if generation == 0 and best is None:
+                    unscored_seed_finished_at = self._maintenance_time(
+                        program, "finished"
+                    )
+            else:
+                started_at = self._maintenance_time(program, "started")
+                earliest_scored_started_at = min(
+                    earliest_scored_started_at,
+                    started_at if started_at is not None else -math.inf,
+                )
+                self._record_repair_score(
+                    state, program.combined_score, program.generation
+                )
+            if best is None or self._is_better(program, best):
+                best = program
+            elif program.id == published.best_program_id and not self._is_better(
+                best, program
+            ):
+                # Keep the incumbent if the original ranking cannot break the tie.
+                best = program
+        # Insertion order can differ from maintenance order, and replay rewrites
+        # maintenance timestamps. A completed original seed that precedes all
+        # known scored maintenance can also explain a zero record lost in preview.
+        if (
+            published.best_score_ever is None
+            and unscored_seed_finished_at is not None
+            and unscored_seed_finished_at <= earliest_scored_started_at
+        ):
+            self._record_repair_score(state, 0.0, 0)
+        elif earliest_unscored is not None and (
+            state.best_score_ever is None
+            or (published.best_score_ever == 0.0 and state.best_score_ever < 0.0)
+        ):
+            self._record_repair_score(state, 0.0, earliest_unscored)
+        state.best_program_id = best.id if best else None
+        return state, has_spawn_history
+
+    @staticmethod
+    def _maintenance_time(program: Program, stage: str) -> Optional[float]:
+        value = program.metadata.get(f"postprocess_db_maintenance_{stage}_at")
+        if (
+            program.metadata.get(_MAINTENANCE_APPLIED_KEY) is True
+            and type(value) in (int, float)
+            and math.isfinite(value)
+        ):
+            return float(value)
+        return None
+
+    @staticmethod
+    def _record_repair_score(state: _RunState, score: float, generation: int) -> None:
+        if state.best_score_ever is None or score > state.best_score_ever:
+            state.best_score_ever = score
+            state.best_score_generation = generation
+        elif score == state.best_score_ever:
+            state.best_score_generation = min(state.best_score_generation, generation)
 
     @db_retry()
     def _update_metadata_in_db(self, key: str, value: Optional[str]):
-        if not self.cursor or not self.conn:
+        if not self.conn:
             raise ConnectionError("DB not connected.")
+        with self.conn:
+            self._write_metadata(key, value)
+
+    def _write_metadata(self, key: str, value: Optional[str]) -> None:
+        if not self.cursor:
+            raise ConnectionError("DB cursor not available.")
         self.cursor.execute(
             "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
-            (key, value),  # SQLite handles None as NULL
+            (key, value),
         )
-        self.conn.commit()
 
     @db_retry()
     def record_generation_event(
@@ -772,7 +1078,6 @@ class ProgramDatabase:
         row = self.cursor.fetchone()
         return self._program_from_row(row) if row else None
 
-    @db_retry()
     def add(
         self,
         program: Program,
@@ -786,6 +1091,9 @@ class ProgramDatabase:
         to improve performance with large databases. After adding a program,
         you should call check_scheduled_operations() to run any deferred
         operations like migrations.
+
+        The insert commits before maintenance. If maintenance fails, use
+        run_post_add_maintenance() to retry it for the inserted program.
 
         Example:
             db.add(program)  # Fast add
@@ -831,6 +1139,20 @@ class ProgramDatabase:
             )
             program.embedding = []
 
+        self._insert_program(program)
+        if not defer_maintenance:
+            self.run_post_add_maintenance(
+                program,
+                verbose=verbose,
+                recompute_embeddings=True,
+            )
+        return program.id
+
+    @db_retry()
+    def _insert_program(self, program: Program) -> None:
+        if not self.conn or not self.cursor:
+            raise ConnectionError("DB not connected.")
+
         # Pre-serialize all JSON data once
         public_metrics_json = json.dumps(program.public_metrics or {})
         private_metrics_json = json.dumps(program.private_metrics or {})
@@ -852,10 +1174,7 @@ class ProgramDatabase:
         else:
             text_feedback_str = str(text_feedback_str)
 
-        # Begin transaction - this improves performance by batching operations
-        self.conn.execute("BEGIN TRANSACTION")
-
-        try:
+        with self._run_state_transaction() as state:
             # Insert the program in a single operation
             self.cursor.execute(
                 """
@@ -906,37 +1225,13 @@ class ProgramDatabase:
                     (program.parent_id,),
                 )
 
-            # Commit the main program insertion and related operations
-            self.conn.commit()
-            logger.info(
-                "Program %s added to DB - score: %s.",
-                program.id,
-                program.combined_score,
-            )
+            self._advance_last_iteration(state, program.generation)
 
-        except sqlite3.IntegrityError as e:
-            self.conn.rollback()
-            logger.error(f"IntegrityError for program {program.id}: {e}")
-            raise
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Error adding program {program.id}: {e}")
-            raise
-
-        # Update generation tracking
-        if program.generation > self.last_iteration:
-            self.last_iteration = program.generation
-            self._update_metadata_in_db("last_iteration", str(self.last_iteration))
-
-        if defer_maintenance:
-            return program.id
-
-        self.run_post_add_maintenance(
-            program,
-            verbose=verbose,
-            recompute_embeddings=True,
+        logger.info(
+            "Program %s added to DB - score: %s.",
+            program.id,
+            program.combined_score,
         )
-        return program.id
 
     def run_post_add_maintenance(
         self,
@@ -1117,6 +1412,13 @@ class ProgramDatabase:
             and bool(job_id)
             and type(metadata.get("pipeline_accounted_seconds")) in (int, float)
         )
+
+    def _persist_program_metadata(self, program: Program) -> None:
+        with self.conn:
+            self.cursor.execute(
+                "UPDATE programs SET metadata = ? WHERE id = ?",
+                (json.dumps(program.metadata), program.id),
+            )
 
     def _program_from_row(self, row: sqlite3.Row) -> Optional[Program]:
         """Helper to create a Program object from a database row."""
@@ -1652,22 +1954,51 @@ class ProgramDatabase:
         metric: Optional[str] = None,
         island_idx: Optional[int] = None,
     ) -> Optional[Program]:
+        if metric is not None or island_idx is not None:
+            return self._find_best_program(metric, island_idx)
+
+        with self._run_state_lock:
+            program = self._get_tracked_best(self._read_run_state())
+            if program is not None:
+                return program
+            if self.read_only:
+                program = self._find_best_program()
+                self.best_program_id = self._maintained_best_id(program)
+                return program
+        return self._repair_tracked_best()
+
+    def _get_tracked_best(self, state: _RunState) -> Optional[Program]:
+        program = self.get(state.best_program_id) if state.best_program_id else None
+        return program if program and program.correct else None
+
+    def _repair_tracked_best(self) -> Optional[Program]:
+        with self._run_state_transaction() as state:
+            # Another worker may have published a best while we waited to write.
+            program = self._get_tracked_best(state)
+            if program is None:
+                program = self._find_best_program()
+                best_id = self._maintained_best_id(program)
+                if best_id != state.best_program_id:
+                    self._write_metadata("best_program_id", best_id)
+                    state.best_program_id = best_id
+        return program
+
+    def _maintained_best_id(self, program: Optional[Program]) -> Optional[str]:
+        if (
+            program is not None
+            and program.metadata.get(_MAINTENANCE_APPLIED_KEY)
+            and self._is_original_program(program)
+        ):
+            return program.id
+        return None
+
+    def _find_best_program(
+        self,
+        metric: Optional[str] = None,
+        island_idx: Optional[int] = None,
+    ) -> Optional[Program]:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
-
-        # Attempt to use tracked best_program_id first if no specific metric
-        if metric is None and island_idx is None and self.best_program_id:
-            program = self.get(self.best_program_id)
-            if program and program.correct:  # Ensure best program is correct
-                return program
-            else:  # Stale ID or incorrect program
-                logger.warning(
-                    f"Tracked best_program_id '{self.best_program_id}' "
-                    "not found or incorrect. Re-evaluating."
-                )
-                if not self.read_only:
-                    self._update_metadata_in_db("best_program_id", None)
-                self.best_program_id = None
 
         # Fetch only correct programs and sort in Python.
         if island_idx is not None:
@@ -1691,64 +2022,32 @@ class ProgramDatabase:
         if not programs:
             return None
 
-        sorted_p: List[Program] = []
-        log_key = "average metrics"
-
         if metric:
-            progs_with_metric = [
-                p for p in programs if p.public_metrics and metric in p.public_metrics
-            ]
-            sorted_p = sorted(
-                progs_with_metric,
-                key=lambda p_item: p_item.public_metrics.get(metric, -float("inf")),
-                reverse=True,
-            )
-            log_key = f"metric '{metric}'"
-        elif island_idx is not None:
-            best_program = programs[0]
-            for candidate in programs[1:]:
-                if self._is_better(candidate, best_program):
-                    best_program = candidate
-            sorted_p = [best_program]
-            log_key = "program ranking"
-        elif any(p.combined_score is not None for p in programs):
-            progs_with_cs = [p for p in programs if p.combined_score is not None]
-            sorted_p = sorted(
-                progs_with_cs,
-                key=lambda p_item: p_item.combined_score,
-                reverse=True,
-            )
-            log_key = "combined_score"
-        else:
-            progs_with_metrics = [p for p in programs if p.public_metrics]
-            sorted_p = sorted(
-                progs_with_metrics,
-                key=lambda p_item: (
-                    sum(p_item.public_metrics.values()) / len(p_item.public_metrics)
-                    if p_item.public_metrics
-                    else -float("inf")
+            return max(
+                (
+                    program
+                    for program in programs
+                    if program.public_metrics and metric in program.public_metrics
                 ),
-                reverse=True,
+                key=lambda program: program.public_metrics[metric],
+                default=None,
             )
-
-        if not sorted_p:
-            logger.debug("No correct programs matched criteria for get_best_program.")
-            return None
-
-        best_overall = sorted_p[0]
-        logger.debug(f"Best correct program by {log_key}: {best_overall.id}")
-
-        if (
-            island_idx is None and self.best_program_id != best_overall.id
-        ):  # Update ID if different
-            logger.info(
-                "Updating tracked best program from "
-                f"'{self.best_program_id}' to '{best_overall.id}'."
-            )
-            self.best_program_id = best_overall.id
-            if not self.read_only:
-                self._update_metadata_in_db("best_program_id", self.best_program_id)
-        return best_overall
+        if island_idx is None and metric is None:
+            originals = [
+                program for program in programs if self._is_original_program(program)
+            ]
+            maintained = [
+                program
+                for program in originals
+                if program.metadata.get(_MAINTENANCE_APPLIED_KEY)
+            ]
+            # A run with no maintained best can still return a provisional lookup.
+            programs = maintained or originals or programs
+        best_program = programs[0]
+        for candidate in programs[1:]:
+            if self._is_better(candidate, best_program):
+                best_program = candidate
+        return best_program
 
     @db_retry()
     def get_population_telemetry(self) -> List[Dict[str, Any]]:
@@ -2186,6 +2485,7 @@ class ProgramDatabase:
 
         return []
 
+    @db_retry()
     def save(self, path: Optional[str] = None) -> None:
         if not self.conn or not self.cursor:
             logger.warning("No DB connection, skipping save.")
@@ -2207,13 +2507,38 @@ class ProgramDatabase:
                 "in-memory instance."
             )
 
-        self._update_metadata_in_db("last_iteration", str(self.last_iteration))
-
-        self.conn.commit()  # Commit any pending transactions
+        with self._run_state_lock, self._committed_run_state_cursor() as reader:
+            committed = self._read_run_state(reader)
+            if self.last_iteration > committed.last_iteration:
+                if not self.conn.in_transaction and not self.read_only:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                with self.conn:
+                    state = self._read_run_state()
+                    self._advance_last_iteration(state, self.last_iteration)
+            else:
+                self.conn.commit()
+            self._cache_run_state(self._read_run_state(reader))
         logger.info(
             f"Database state committed. Last iteration: "
             f"{self.last_iteration}. Best: {self.best_program_id}"
         )
+
+    @contextmanager
+    def _committed_run_state_cursor(self) -> Iterator[sqlite3.Cursor]:
+        # Caller cursors can keep the connection on an older WAL snapshot even
+        # after commit. Read the active file through an independent connection.
+        main_file = self.conn.execute(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'"
+        ).fetchone()["file"]
+        if not main_file:
+            yield self.cursor
+            return
+        with closing(
+            sqlite3.connect(
+                f"{Path(main_file).as_uri()}?mode=ro", uri=True, timeout=60.0
+            )
+        ) as reader:
+            yield reader.cursor()
 
     def load(self, path: str) -> None:
         logger.info(f"Loading database from '{path}'...")
@@ -2645,47 +2970,29 @@ class ProgramDatabase:
 
     @db_retry()
     def _update_best_program(self, program: Program) -> None:
-        # Only consider correct programs for best program tracking
         if not program.correct:
-            logger.debug(f"Program {program.id} not considered for best (not correct).")
+            self._refresh_run_state()
             return
 
-        current_best_p = None
-        if self.best_program_id:
-            current_best_p = self.get(self.best_program_id)
+        with self._run_state_transaction() as state:
+            current_best = self._get_tracked_best(state)
+            improved = current_best is None or self._is_better(program, current_best)
+            if improved:
+                self._write_metadata("best_program_id", program.id)
+                state.best_program_id = program.id
 
-        if current_best_p is None or self._is_better(program, current_best_p):
-            self.best_program_id = program.id
-            self._update_metadata_in_db("best_program_id", self.best_program_id)
+            # A lookup may already have recovered this ID before maintenance ran.
+            if state.best_program_id == program.id:
+                self._advance_best_score(state, program)
 
-            # Update stagnation tracking - new best found
-            program_score = program.combined_score or 0.0
-            if self.best_score_ever is None or program_score > self.best_score_ever:
-                self.best_score_ever = program_score
-                self.best_score_generation = program.generation
-                self._update_metadata_in_db(
-                    "best_score_generation", str(self.best_score_generation)
-                )
-                self._update_metadata_in_db(
-                    "best_score_ever", str(self.best_score_ever)
-                )
-
-            log_msg = f"New best program: {program.id}"
-            if current_best_p:
-                p1_score = program.combined_score or 0.0
-                p2_score = current_best_p.combined_score or 0.0
-                log_msg += (
-                    f" (gen: {current_best_p.generation} → {program.generation}, "
-                    f"score: {p2_score:.4f} → {p1_score:.4f}, "
-                    f"island: {current_best_p.island_idx} → {program.island_idx})"
-                )
-            else:
-                score = program.combined_score or 0.0
-                log_msg += (
-                    f" (gen: {program.generation}, score: {score:.4f}, initialized "
-                    f"island: {program.island_idx})."
-                )
-            logger.info(log_msg)
+        if improved:
+            logger.info(
+                "New best program: %s (gen: %s, score: %s, island: %s)",
+                program.id,
+                program.generation,
+                program.combined_score,
+                program.island_idx,
+            )
 
     def print_summary(
         self, console=None, total_program_target: Optional[int] = None
@@ -2744,6 +3051,7 @@ class ProgramDatabase:
             self.island_manager.perform_migration(self.last_iteration)
             self._schedule_migration = False
 
+    @db_retry()
     def is_stagnant(self, current_generation: int) -> bool:
         """Check if evolution is stagnant based on generations without improvement.
 
@@ -2757,7 +3065,9 @@ class ProgramDatabase:
             return False
 
         threshold = getattr(self.config, "stagnation_threshold", 100)
-        gens_since_improvement = current_generation - self.best_score_generation
+        gens_since_improvement = (
+            current_generation - self._read_run_state().best_score_generation
+        )
 
         return gens_since_improvement >= threshold
 
@@ -2775,6 +3085,7 @@ class ProgramDatabase:
         if not self.read_only:
             self._update_metadata_in_db(key, value)
 
+    @db_retry()
     def check_and_spawn_island_if_stagnant(
         self, current_generation: int, *, maintenance_program_id: Optional[str] = None
     ) -> bool:
@@ -2793,22 +3104,26 @@ class ProgramDatabase:
             logger.warning("Cannot spawn island: no island manager configured")
             return False
 
-        with write_transaction(self.conn):
+        with self._run_state_transaction() as state:
             if maintenance_program_id is not None and not self._claim_maintenance_step(
                 maintenance_program_id, "spawn"
             ):
                 return False
-            if not self.is_stagnant(current_generation):
-                return False
-            gens_stagnant = current_generation - self.best_score_generation
-            spawned = self.island_manager.insert_spawned_island()
+            threshold = getattr(self.config, "stagnation_threshold", 100)
+            gens_stagnant = current_generation - state.best_score_generation
+            spawned = (
+                gens_stagnant >= threshold
+                and self.island_manager.insert_spawned_island()
+            )
             if spawned:
-                self.cursor.execute(
-                    "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, ?)",
-                    ("best_score_generation", str(current_generation)),
+                state.best_score_generation = max(
+                    state.best_score_generation, current_generation
                 )
+                self._write_metadata(
+                    "best_score_generation", str(state.best_score_generation)
+                )
+
         if spawned:
-            self.best_score_generation = current_generation
             logger.info(
                 f"🏝️ Spawned new island due to stagnation "
                 f"(no improvement for {gens_stagnant} generations)"

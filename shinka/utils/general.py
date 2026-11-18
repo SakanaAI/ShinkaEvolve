@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import logging
-from typing import Optional
+from typing import Any, Optional
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -42,32 +42,41 @@ def load_configs_from_yaml(config_path: str):
     return evo_cfg, db_cfg
 
 
-def load_results(results_dir: str):
+def load_result_logs(results_dir: str) -> dict[str, str]:
+    """Read evaluator logs even when its result files cannot be loaded."""
+    logs = {}
+    for stream, filename in (
+        ("stdout_log", "job_log.out"),
+        ("stderr_log", "job_log.err"),
+    ):
+        path = Path(results_dir) / filename
+        try:
+            logs[stream] = path.read_text(errors="replace")
+        except FileNotFoundError:
+            logs[stream] = ""
+        except OSError as exc:
+            logger.warning("Could not read evaluator log %s: %s", path, exc)
+            logs[stream] = ""
+    return logs
+
+
+def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str, Any]:
     """
     Loads results from the specified directory.
 
     Args:
         results_dir: The directory containing the results.
+        log_dir: The directory containing the evaluator logs, if separate.
 
     Returns:
         dict: A dictionary containing the loaded results.
     """
-    loaded_results = {"correct": {"correct": False}, "metrics": {}}
+    loaded_results = {
+        "correct": {"correct": False},
+        "metrics": {},
+        **load_result_logs(results_dir if log_dir is None else log_dir),
+    }
     results_dir_path = Path(results_dir)
-
-    stdout_log_path = results_dir_path / "job_log.out"
-    if stdout_log_path.exists():
-        with open(stdout_log_path, "r") as f:
-            loaded_results["stdout_log"] = f.read()
-    else:
-        loaded_results["stdout_log"] = ""
-
-    stderr_log_path = results_dir_path / "job_log.err"
-    if stderr_log_path.exists():
-        with open(stderr_log_path, "r") as f:
-            loaded_results["stderr_log"] = f.read()
-    else:
-        loaded_results["stderr_log"] = ""
 
     metrics_file_path = results_dir_path / "metrics.json"
     if metrics_file_path.exists():
@@ -78,19 +87,20 @@ def load_results(results_dir: str):
                 file_path_str = str(metrics_file_path)
                 warning_msg = f"Could not decode JSON from {file_path_str}"
                 logger.warning(warning_msg)
-                loaded_results["metrics"] = {}
+                loaded_results["evaluation_error"] = warning_msg
     else:
-        file_path_str = str(metrics_file_path)
-        warning_msg = f"Metrics file not found at {file_path_str}"
+        warning_msg = f"Metrics file not found at {metrics_file_path}"
         logger.warning(warning_msg)
-        loaded_results["metrics"] = {}
+        loaded_results["evaluation_error"] = warning_msg
 
     correct_file_path = results_dir_path / "correct.json"
     if correct_file_path.exists():
         with open(correct_file_path, "r") as f:
             loaded_results["correct"] = json.load(f)
     else:
-        loaded_results["correct"] = {"correct": False}
+        loaded_results["evaluation_error"] = (
+            f"Correctness file not found at {correct_file_path}"
+        )
 
     return loaded_results
 

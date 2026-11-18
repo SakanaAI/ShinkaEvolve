@@ -1,7 +1,9 @@
+from contextlib import ExitStack
 import subprocess
 import time
 import threading
 import os
+import signal
 from pathlib import Path
 from typing import Optional, Tuple, TextIO, Dict
 from shinka.utils import load_results, parse_time_to_seconds
@@ -18,10 +20,15 @@ class ProcessWithLogging:
         process: subprocess.Popen,
         log_files: Tuple[TextIO, TextIO],
         log_threads: Tuple[threading.Thread, threading.Thread],
+        *,
+        process_group_id: Optional[int] = None,
+        launched_at: Optional[float] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
+        self._process_group_id = process_group_id
+        self.launched_at = time.monotonic() if launched_at is None else launched_at
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -35,6 +42,10 @@ class ProcessWithLogging:
         """Return a detailed string representation."""
         return f"ProcessWithLogging(PID: {self.process.pid}, returncode: {self.process.returncode})"
 
+    def kill_for_timeout(self) -> None:
+        """Kill the evaluator's isolated group when available and reap the root."""
+        _kill_and_reap(self.process, self._process_group_id)
+
     def cleanup_logging(self):
         """Clean up logging threads and files."""
         # Wait for logging threads to finish
@@ -47,6 +58,17 @@ class ProcessWithLogging:
                 file_handle.close()
             except Exception as e:
                 logger.error(f"Error closing log file: {e}")
+
+
+def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
+    try:
+        if group_id is None:
+            process.kill()
+        else:
+            os.killpg(group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 def _stream_output(pipe, file_handle, verbose_prefix=None):
@@ -71,11 +93,42 @@ def _stream_output(pipe, file_handle, verbose_prefix=None):
         pipe.close()
 
 
+def _start_log_threads(
+    process: subprocess.Popen,
+    files: Tuple[TextIO, TextIO],
+    verbose: bool,
+    group_id: Optional[int],
+) -> Tuple[threading.Thread, threading.Thread]:
+    stdout, stderr = process.stdout, process.stderr
+    assert stdout is not None and stderr is not None
+    pipes = (stdout, stderr)
+    threads: list[threading.Thread] = []
+    try:
+        for pipe, file, prefix in zip(pipes, files, ("STDOUT", "STDERR")):
+            thread = threading.Thread(
+                target=_stream_output,
+                args=(pipe, file, prefix if verbose else None),
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+    except BaseException:
+        _kill_and_reap(process, group_id)
+        for thread in threads:
+            thread.join(timeout=1.0)
+        for pipe in pipes[len(threads) :]:
+            pipe.close()
+        raise
+    return threads[0], threads[1]
+
+
 def submit(
     log_dir: str,
     cmd: list[str],
     verbose: bool = False,
     env_overrides: Optional[Dict[str, str]] = None,
+    *,
+    timeout: Optional[str] = None,
 ):
     """
     Submits a command for local execution with real-time logging.
@@ -84,6 +137,7 @@ def submit(
         log_dir: The directory to store logs.
         cmd: The command and its arguments as a list of strings.
         verbose: Whether to enable verbose logging.
+        timeout: Set for evaluations that will be monitored with a timeout.
 
     Returns:
         ProcessWithLogging: Wrapper containing the Popen object and logging.
@@ -101,40 +155,28 @@ def submit(
     if env_overrides:
         env.update(env_overrides)
 
-    # Use PIPE to capture output and redirect to files in real-time
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # Line buffered
-        universal_newlines=True,
-        env=env,
-    )
-
-    # Open log files for writing with line buffering
-    stdout_file = open(stdout_path, "w", buffering=1)
-    stderr_file = open(stderr_path, "w", buffering=1)
-
-    # Start threads to stream output to files in real-time
-    stdout_thread = threading.Thread(
-        target=_stream_output,
-        args=(process.stdout, stdout_file, "STDOUT" if verbose else None),
-        daemon=True,
-    )
-    stderr_thread = threading.Thread(
-        target=_stream_output,
-        args=(process.stderr, stderr_file, "STDERR" if verbose else None),
-        daemon=True,
-    )
-
-    stdout_thread.start()
-    stderr_thread.start()
-
-    # Create wrapper with logging capabilities
-    wrapped_process = ProcessWithLogging(
-        process, (stdout_file, stderr_file), (stdout_thread, stderr_thread)
-    )
+    start_new_session = os.name == "posix" and timeout is not None
+    with ExitStack() as cleanup:
+        files = (
+            cleanup.enter_context(open(stdout_path, "w", buffering=1)),
+            cleanup.enter_context(open(stderr_path, "w", buffering=1)),
+        )
+        launched_at = time.monotonic()
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            start_new_session=start_new_session,
+        )
+        group_id = process.pid if start_new_session else None
+        threads = _start_log_threads(process, files, verbose, group_id)
+        wrapped_process = ProcessWithLogging(
+            process, files, threads, process_group_id=group_id, launched_at=launched_at
+        )
+        cleanup.pop_all()
 
     if verbose:
         logger.info(f"Submitted local process with PID: {process.pid}")
@@ -149,43 +191,53 @@ def monitor(
     verbose: bool = False,
     timeout: Optional[str] = None,
 ):
-    """
-    Monitors a local subprocess until completion and loads its results.
+    """Monitor an ordinary Local job and load any available results."""
+    _wait_for_completion(process, poll_interval, verbose, timeout)
+    return load_results(results_dir)
 
-    Args:
-        process: The ProcessWithLogging object to monitor.
-        results_dir: The directory where results will be stored.
-        poll_interval: Time in seconds between status checks.
-        verbose: Whether to enable verbose logging.
-        timeout: Optional timeout in `hh:mm:ss` format.
 
-    Returns:
-        dict: Dictionary containing job results.
-    """
+def monitor_evaluation(
+    process: ProcessWithLogging, results_dir: str, *, timeout: Optional[str]
+) -> dict:
+    """Load seed artifacts only after the evaluator exits successfully."""
+    _wait_for_completion(process, timeout=timeout)
+    if process.returncode:
+        raise RuntimeError(f"Local evaluator exited with status {process.returncode}")
+    return load_results(results_dir)
+
+
+def _wait_for_completion(
+    process: ProcessWithLogging,
+    poll_interval: float = 0.5,
+    verbose: bool = False,
+    timeout: Optional[str] = None,
+) -> None:
     if verbose:
         logger.info(f"Monitoring local process with PID: {process.pid}...")
 
-    start_time = time.time()
     timeout_seconds = parse_time_to_seconds(timeout) if timeout is not None else None
 
-    while process.poll() is None:
-        if timeout_seconds and (time.time() - start_time) > timeout_seconds:
-            if verbose:
-                logger.info(
-                    f"Process {process.pid} exceeded timeout of {timeout}. Killing."
-                )
-            process.kill()
-            break
-
-        if verbose:
-            logger.info(f"Process {process.pid} is still running...")
-        time.sleep(poll_interval)
-
-    # Clean up logging resources
-    process.cleanup_logging()
+    try:
+        if timeout_seconds is None:
+            while process.poll() is None:
+                if verbose:
+                    logger.info(f"Process {process.pid} is still running...")
+                time.sleep(poll_interval)
+        elif process.returncode is None:
+            deadline = process.launched_at + timeout_seconds
+            try:
+                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                expired = True
+            else:
+                # A wait can observe an exit after its timeout if it wakes late.
+                expired = time.monotonic() > deadline
+            if expired:
+                process.kill_for_timeout()
+                raise TimeoutError(f"Local evaluator exceeded timeout of {timeout}")
+    finally:
+        process.cleanup_logging()
 
     return_code = process.returncode
     if verbose:
         logger.info(f"Process {process.pid} completed with return code: {return_code}")
-
-    return load_results(results_dir)

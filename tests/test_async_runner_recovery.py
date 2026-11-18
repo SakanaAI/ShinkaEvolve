@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import threading
 import time
 from collections import deque
@@ -16,6 +17,7 @@ from shinka.core.async_runner import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.launch.scheduler import JobScheduler, SlurmCondaJobConfig
 from shinka.llm.providers import QueryResult
 
 
@@ -1517,6 +1519,215 @@ def test_job_monitor_preserves_jobs_added_during_status_poll():
         await runner._job_monitor_task()
 
         assert runner.running_jobs == [first_job, second_job]
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "cancelled, remove_completed_job",
+    [(True, False), (False, False), (True, True)],
+    ids=["cancelled", "kept-running", "concurrent-removal"],
+)
+def test_job_monitor_preserves_evaluation_registered_during_hung_job_cancellation(
+    cancelled, remove_completed_job
+):
+    async def _run():
+        cancellation_started = asyncio.Event()
+        allow_cancellation = asyncio.Event()
+        cancellation_requests = []
+        status_polls = []
+
+        async def check_status(jobs):
+            status_polls.append(jobs)
+            return [job.generation == 1 for job in jobs]
+
+        async def cancel_job(job_id):
+            cancellation_requests.append(job_id)
+            cancellation_started.set()
+            await allow_cancellation.wait()
+            return cancelled
+
+        async def sample_parent(**kwargs):
+            return SimpleNamespace(id="parent"), [], [], False
+
+        async def run_patch(*args, **kwargs):
+            return "diff", {}, True
+
+        async def get_embedding(exec_fname):
+            return [], 0.0
+
+        scheduler = _FakeScheduler()
+        runner = _build_runner(
+            scheduler=SimpleNamespace(
+                batch_check_status_async=check_status,
+                cancel_job_async=cancel_job,
+                submit_async_nonblocking=scheduler.submit_async_nonblocking,
+            ),
+            async_db=SimpleNamespace(sample_with_fix_mode_async=sample_parent),
+            evo_config=SimpleNamespace(
+                num_generations=10,
+                max_api_costs=None,
+                max_novelty_attempts=1,
+                max_patch_resamples=1,
+            ),
+            job_config=SimpleNamespace(time="00:01:00"),
+            evaluation_slot_pool=LogicalSlotPool(3, "evaluation"),
+            processing_lock=asyncio.Lock(),
+        )
+        runner.novelty_judge = None
+        runner._run_patch_async = run_patch
+        runner._get_code_embedding_async = get_embedding
+        runner._mark_surplus_completed_jobs_for_discard = lambda jobs: None
+        runner._update_completed_generations = lambda: asyncio.sleep(0)
+        runner._log_wandb_population_progress = lambda: None
+        runner._record_progress = lambda: None
+        processed_jobs = []
+
+        async def process_job(job):
+            processed_jobs.append(job)
+            await runner._release_evaluation_slot_once(job)
+            if job.generation == 2:
+                runner.should_stop.set()
+            return True
+
+        runner._process_single_job_safely = process_job
+
+        async def submit_proposal(generation):
+            job = await runner._generate_evolved_proposal(
+                generation=generation,
+                task_id=f"proposal_{generation}",
+                exec_fname=f"program_{generation}.py",
+                results_dir=f"results_{generation}",
+                meta_recs=None,
+                meta_summary=None,
+                meta_scratch=None,
+                proposal_started_at=time.time(),
+                sampling_worker_id=None,
+                active_proposals_at_start=1,
+            )
+            assert job is not None
+            return job
+
+        completed_job = await submit_proposal(3) if remove_completed_job else None
+        hung_job = await submit_proposal(1)
+        hung_job.evaluation_started_at = time.time() - 120
+        monitor_task = asyncio.create_task(runner._job_monitor_task())
+        try:
+            await asyncio.wait_for(cancellation_started.wait(), timeout=2)
+            if completed_job is not None:
+                runner.running_jobs.remove(completed_job)
+                runner.submitted_jobs.pop(str(completed_job.job_id))
+                await runner._release_evaluation_slot_once(completed_job)
+            new_job = await asyncio.wait_for(submit_proposal(2), timeout=2)
+            assert runner.running_jobs == [hung_job, new_job]
+            assert runner.evaluation_slot_pool.in_use == 2
+            allow_cancellation.set()
+            await asyncio.wait_for(monitor_task, timeout=2)
+        finally:
+            if not monitor_task.done():
+                runner.should_stop.set()
+                allow_cancellation.set()
+                await asyncio.wait_for(monitor_task, timeout=2)
+
+        expected_running_jobs = [] if cancelled else [hung_job]
+        assert len(status_polls) == 2
+        assert status_polls[1] == [*expected_running_jobs, new_job]
+        assert cancellation_requests == [hung_job.job_id] * (1 if cancelled else 2)
+        assert processed_jobs == ([hung_job, new_job] if cancelled else [new_job])
+        assert new_job.evaluation_slot_released
+        assert runner.evaluation_slot_pool.in_use == len(expected_running_jobs)
+        assert runner.submitted_jobs == {
+            str(job.job_id): job for job in expected_running_jobs
+        }
+        assert runner.running_jobs == expected_running_jobs
+
+    asyncio.run(_run())
+
+
+def test_job_monitor_releases_unrelated_slots_after_slurm_cancel_timeout(monkeypatch):
+    async def _run():
+        loop = asyncio.get_running_loop()
+        cancellation_started = asyncio.Event()
+        new_job_registered = threading.Event()
+        release_command = threading.Event()
+        cancel_timeouts = []
+        polls = []
+        processed = []
+
+        def run_scancel(args, *, timeout=None, **kwargs):
+            assert args == ["scancel", "101"]
+            cancel_timeouts.append(timeout)
+            loop.call_soon_threadsafe(cancellation_started.set)
+            if timeout is not None:
+                new_job_registered.wait()
+                raise subprocess.TimeoutExpired(args, timeout)
+            release_command.wait()
+            return subprocess.CompletedProcess(args, returncode=1)
+
+        async def check_status(jobs):
+            polls.append([job.job_id for job in jobs])
+            return [len(polls) == 1 and job.job_id == "101" for job in jobs]
+
+        monkeypatch.setattr(subprocess, "run", run_scancel)
+        monkeypatch.setattr("shinka.launch.scheduler.SLURM_CANCEL_TIMEOUT_SECONDS", 0.5)
+        scheduler = JobScheduler("slurm_conda", SlurmCondaJobConfig())
+        scheduler.batch_check_status_async = check_status
+        runner = _build_runner(
+            scheduler=scheduler,
+            evo_config=SimpleNamespace(num_generations=10, max_api_costs=None),
+            job_config=SimpleNamespace(time="00:01:00"),
+            evaluation_slot_pool=LogicalSlotPool(3, "evaluation"),
+            processing_lock=asyncio.Lock(),
+        )
+        runner._mark_surplus_completed_jobs_for_discard = lambda jobs: None
+        runner._update_completed_generations = lambda: asyncio.sleep(0)
+        runner._log_wandb_population_progress = lambda: None
+        runner._record_progress = lambda: None
+
+        async def register(job_id, generation, started_at):
+            job = AsyncRunningJob(
+                job_id=job_id,
+                exec_fname=f"program_{generation}.py",
+                results_dir=f"results_{generation}",
+                start_time=started_at,
+                proposal_started_at=started_at,
+                evaluation_submitted_at=started_at,
+                generation=generation,
+                evaluation_worker_id=await runner.evaluation_slot_pool.acquire(),
+            )
+            runner.running_jobs.append(job)
+            runner.submitted_jobs[job_id] = job
+            return job
+
+        async def process_job(job):
+            processed.append(job.job_id)
+            await runner._release_evaluation_slot_once(job)
+            if job.job_id == "103":
+                runner.should_stop.set()
+            return True
+
+        runner._process_single_job_safely = process_job
+        completed = await register("102", 2, time.time())
+        hung = await register("101", 1, time.time() - 120)
+        monitor = asyncio.create_task(runner._job_monitor_task())
+        try:
+            await asyncio.wait_for(cancellation_started.wait(), timeout=2)
+            added = await register("103", 3, time.time())
+            assert runner.evaluation_slot_pool.in_use == 3
+            new_job_registered.set()
+            await asyncio.wait_for(monitor, timeout=2)
+        finally:
+            new_job_registered.set()
+            release_command.set()
+            scheduler.shutdown()
+
+        assert cancel_timeouts == [0.5]
+        assert polls == [["102", "101"], ["101", "103"]]
+        assert processed == ["102", "101", "103"]
+        assert all(job.evaluation_slot_released for job in (completed, hung, added))
+        assert runner.evaluation_slot_pool.in_use == 0
+        assert runner.running_jobs == []
+        assert runner.submitted_jobs == {}
 
     asyncio.run(_run())
 
