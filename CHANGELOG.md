@@ -2,6 +2,32 @@
 
 All notable changes to `shinka-evolve` are documented in this file.
 
+## TBD
+
+### Fixed
+
+- Fixed evaluations disappearing when submitted during hung-job cancellation
+  in PR #219. Reconcile the live job list after awaited cancellations so new
+  evaluations are processed once and their worker slots are released.
+- Fixed generation-zero evaluation failures and timeouts in PR #220. Enforce
+  local deadlines, terminate timed-out evaluator process groups, preserve
+  diagnostics, and validate seed correctness and scores. Slurm terminal-state
+  checks reject failed or unverified results and bound status lookups.
+- Fixed stale SQLite run metadata in PR #221. Serialize generation, best-program,
+  archive, and stagnation updates across connections, publish committed cache
+  state in order, and repair legacy run metadata and stagnation markers on open.
+- Fixed fresh paid API requests continuing after known charges reach the budget
+  in PR #222, including retries and auxiliary stages. Preserve billed partial
+  replies and cancelled work, journal proposal and generated-seed charges before
+  evaluation, and transfer them to persisted programs once. Retry unresolved
+  meta and prompt billing reconciliation after transient storage failures.
+  Prevent cancelled metadata re-saves from counting the same bill twice.
+- Fixed resuming unfinished generation budgets in PR #223. Reuse stored seeds,
+  finish pending seed maintenance, fill missing generation IDs, exclude island
+  copies from completion counts, and preserve orphan artifacts across repeated
+  interruptions. Recover terminal failure charges once and export the selected
+  best program's source without replacing a valid export on staging failure.
+
 ## 0.0.8 - 2026-11-13
 
 ### Added
