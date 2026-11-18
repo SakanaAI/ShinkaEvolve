@@ -42,9 +42,17 @@ def resolve_under_root(root: str, candidate: Optional[str]) -> Optional[str]:
     outside it is rejected. Returns the real path, or ``None`` when the
     candidate is empty, malformed, or escapes the root.
     """
+    return resolve_under_real_root(os.path.realpath(root), candidate)
+
+
+def resolve_under_real_root(real_root: str, candidate: Optional[str]) -> Optional[str]:
+    """:func:`resolve_under_root` for a root whose symlinks are already resolved.
+
+    For callers that confine many paths to one root: resolving the root costs
+    a file-system call per path component, every time.
+    """
     if not candidate or "\x00" in candidate:
         return None
-    real_root = os.path.realpath(root)
     real_path = _fully_resolved(os.path.join(real_root, candidate))
     if real_path is None:
         return None

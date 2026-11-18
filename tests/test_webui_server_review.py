@@ -4,6 +4,7 @@ Each test drives a real server bound to an ephemeral loopback port.
 """
 
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -502,3 +503,32 @@ def test_database_linked_out_of_root_is_left_out_of_the_list(
         "run_in/programs.sqlite",
     ]
     assert "run_out/programs.sqlite" in capsys.readouterr().out
+
+
+# --- cost of confinement --------------------------------------------------------
+
+
+def test_confining_many_paths_does_not_resolve_the_root_each_time(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A poll confines one path per failed proposal; resolving the root again
+    # for each of them doubled its file-system calls.
+    root = str(tree / "results")
+    handler = visualization.DatabaseRequestHandler.__new__(
+        visualization.DatabaseRequestHandler
+    )
+    handler.search_root = root
+    handler._real_root = root
+    resolved: List[str] = []
+    realpath = os.path.realpath
+
+    def recording_realpath(path, **kwargs):
+        resolved.append(str(path))
+        return realpath(path, **kwargs)
+
+    monkeypatch.setattr(security.os.path, "realpath", recording_realpath)
+
+    for _ in range(3):
+        assert handler._confine("run_a/programs.sqlite") is not None
+
+    assert resolved == [root + "/run_a/programs.sqlite"] * 3

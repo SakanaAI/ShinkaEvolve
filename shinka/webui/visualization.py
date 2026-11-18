@@ -36,6 +36,7 @@ from shinka.webui.security import (
     build_allowed_hosts,
     is_allowed_host,
     is_loopback_host,
+    resolve_under_real_root,
     resolve_under_root,
 )
 
@@ -67,8 +68,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     # Hostnames accepted in the Host header; set per server by the factory.
     allowed_hosts: FrozenSet[str] = build_allowed_hosts(DEFAULT_HOST)
 
+    # Real path of the search root, resolved once per request in __init__.
+    _real_root: Optional[str] = None
+
     def __init__(self, *args, search_root=None, allowed_hosts=None, **kwargs):
         self.search_root = search_root or os.getcwd()
+        self._real_root = os.path.realpath(self.search_root)
         if allowed_hosts is not None:
             self.allowed_hosts = allowed_hosts
         super().__init__(*args, directory=WEBUI_DIR, **kwargs)
@@ -160,7 +165,11 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         return self._serve_static(target[0], head_only=True)
 
     def _root(self) -> str:
-        return os.path.realpath(self.search_root)
+        return self._real_root or os.path.realpath(self.search_root)
+
+    def _confine(self, candidate: Optional[str]) -> Optional[str]:
+        """Real path of ``candidate`` if it lies inside the search root."""
+        return resolve_under_real_root(self._root(), candidate)
 
     def _resolve_artifact_path(self, artifact_path: Any) -> Optional[Path]:
         """Resolve a path recorded in the DB or a failure JSON under the root.
@@ -170,7 +179,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         """
         if not isinstance(artifact_path, str):
             return None
-        resolved = resolve_under_root(self.search_root, artifact_path)
+        resolved = self._confine(artifact_path)
         return Path(resolved) if resolved is not None else None
 
     def _generated_code_path(
@@ -508,7 +517,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                     if f.lower().endswith((".db", ".sqlite")):
                         full_path = os.path.join(root, f)
                         client_path = os.path.relpath(full_path, self.search_root)
-                        if resolve_under_root(self.search_root, full_path) is None:
+                        if self._confine(full_path) is None:
                             print(
                                 f"[SERVER] Not listing {client_path}: it links "
                                 "to a file outside the served directory"
@@ -581,9 +590,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         through here, and they all work from the file's own directory, so a
         directory here would shift them one level up.
         """
-        abs_db_path = resolve_under_root(
-            self.search_root, self._get_actual_db_path(db_path)
-        )
+        abs_db_path = self._confine(self._get_actual_db_path(db_path))
         if abs_db_path is None:
             self.send_error(403, "Database path is outside the served directory")
             return None
@@ -594,8 +601,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def _prompts_db_path(self, abs_db_path: str) -> Optional[str]:
         """The ``prompts.sqlite`` beside a program DB, if it is inside the root."""
-        prompts_db_path = resolve_under_root(
-            self.search_root,
+        prompts_db_path = self._confine(
             os.path.join(os.path.dirname(abs_db_path), "prompts.sqlite"),
         )
         if prompts_db_path is None or not os.path.isfile(prompts_db_path):
@@ -619,7 +625,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             os.path.join(db_dir, "meta", meta_filename),
             os.path.join(db_dir, meta_filename),
         ):
-            meta_file_path = resolve_under_root(self.search_root, candidate)
+            meta_file_path = self._confine(candidate)
             if meta_file_path is not None and os.path.isfile(meta_file_path):
                 return meta_file_path
         self.send_error(404, f"Meta file not found: {meta_filename}")
@@ -988,9 +994,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             print("[SERVER] Meta subdirectory not found, checking DB directory")
             meta_dir = db_dir
 
-        if resolve_under_root(self.search_root, meta_dir) is None or not os.path.isdir(
-            meta_dir
-        ):
+        if self._confine(meta_dir) is None or not os.path.isdir(meta_dir):
             self.send_error(404, "Meta directory not found")
             return
 
@@ -1124,8 +1128,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # Construct the plots directory path
         # Structure: db_dir/gen_X/results/plots/
-        plots_dir = resolve_under_root(
-            self.search_root,
+        plots_dir = self._confine(
             os.path.join(db_dir, f"gen_{generation}", "results", "plots"),
         )
 
@@ -1160,7 +1163,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Only images, and only from inside the search root. Both checks come
         # before the existence check so the endpoint cannot be used to probe
         # for files it will not serve.
-        abs_path = resolve_under_root(self.search_root, rel_path)
+        abs_path = self._confine(rel_path)
         content_type = IMAGE_CONTENT_TYPES.get(
             os.path.splitext(abs_path or "")[1].lower()
         )
