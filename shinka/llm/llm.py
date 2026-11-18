@@ -14,6 +14,7 @@ from .providers.errors import (
     BilledCancellationError,
     EmptyResponseError,
     NonRetryableLLMError,
+    RequestRejectedError,
     StructuredOutputNotSupportedError,
 )
 from .providers.model_resolver import resolve_model_backend
@@ -129,6 +130,9 @@ async def _collect_async_batch(
             cancellation = cancellation or outcome
             if isinstance(outcome, BilledCancellationError):
                 total_cost += outcome.cost
+        elif isinstance(outcome, RequestRejectedError):
+            # One refused request does not doom the rest of the batch.
+            logger.info("Batch query task %s was rejected: %s", index, outcome)
         elif isinstance(outcome, NonRetryableLLMError):
             permanent_error = permanent_error or outcome
             total_cost += outcome.cost
@@ -270,6 +274,9 @@ class LLMClient:
                 try:
                     idx, result = async_result.get()
                     results.append((idx, result))
+                except RequestRejectedError as e:
+                    # One refused request does not doom the rest of the batch.
+                    logger.error(f"Error in batch query: {str(e)}")
                 except NonRetryableLLMError:
                     raise
                 except Exception as e:
@@ -392,6 +399,9 @@ class LLMClient:
                 try:
                     idx, result = async_result.get()
                     results.append((idx, result))
+                except RequestRejectedError as e:
+                    # One refused request does not doom the rest of the batch.
+                    logger.error(f"Error in batch query: {str(e)}")
                 except NonRetryableLLMError:
                     raise
                 except Exception as e:

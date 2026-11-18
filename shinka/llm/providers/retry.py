@@ -4,7 +4,7 @@ import functools
 import inspect
 from typing import Optional
 
-from .errors import LLMEndpointError, NonRetryableLLMError
+from .errors import LLMEndpointError, NonRetryableLLMError, RequestRejectedError
 
 # 4xx statuses that describe a transient condition and are worth retrying.
 RETRYABLE_CLIENT_STATUS_CODES = frozenset({408, 409, 429})
@@ -45,6 +45,8 @@ def is_permanent_status_error(exc: Exception) -> bool:
     status_code = _status_code(exc)
     if status_code is None:
         return False
+    if status_code in ENDPOINT_FAILURE_STATUS_CODES:
+        return True
     directive = _server_retry_directive(exc)
     if directive is not None:
         return not directive
@@ -63,7 +65,7 @@ def permanent_status_error(
     if status_code in ENDPOINT_FAILURE_STATUS_CODES:
         # Do not persist headers, credentials, request URLs or raw response bodies.
         return LLMEndpointError(status_code, code)
-    return NonRetryableLLMError(
+    return RequestRejectedError(
         f"{provider} rejected the request with HTTP {status_code} ({code}): {exc}"
     )
 

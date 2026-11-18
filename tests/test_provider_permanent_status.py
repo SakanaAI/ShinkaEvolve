@@ -13,7 +13,11 @@ from google.genai import errors as genai_errors
 from shinka.llm.llm import AsyncLLMClient
 from shinka.llm.providers.anthropic import query_anthropic, query_anthropic_async
 from shinka.llm.providers.deepseek import query_deepseek, query_deepseek_async
-from shinka.llm.providers.errors import LLMEndpointError, NonRetryableLLMError
+from shinka.llm.providers.errors import (
+    LLMEndpointError,
+    NonRetryableLLMError,
+    RequestRejectedError,
+)
 from shinka.llm.providers.gemini import query_gemini, query_gemini_async
 from shinka.llm.providers.local_openai import (
     query_local_openai,
@@ -128,7 +132,7 @@ def test_permanent_status_is_raised_after_one_attempt(provider, asynchronous, st
         assert isinstance(error, LLMEndpointError)
         assert error.status_code == status
     else:
-        assert not isinstance(error, LLMEndpointError)
+        assert isinstance(error, RequestRejectedError)
 
 
 @pytest.mark.parametrize("status", TRANSIENT_STATUSES)
@@ -174,6 +178,17 @@ def test_server_retry_directive_overrides_the_status_code():
         is True
     )
     assert is_permanent_status_error(RuntimeError("no status")) is False
+
+
+@pytest.mark.parametrize("status", sorted(ENDPOINT_STATUSES))
+def test_endpoint_failures_are_permanent_whatever_the_server_directive(status):
+    error = _openai_error(status, {"x-should-retry": "true"})
+    client = _FailingClient([error], asynchronous=False)
+
+    with pytest.raises(LLMEndpointError, match=str(status)):
+        _run_query("local_openai", client)
+
+    assert client.calls == 1
 
 
 @pytest.mark.parametrize(
