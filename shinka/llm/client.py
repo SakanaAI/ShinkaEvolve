@@ -61,10 +61,14 @@ class _ClientSpec:
     constructor_kwargs: tuple[tuple[str, Any], ...]
     ambient_environment: tuple[str | None, ...]
     cacheable: bool
+    endpoint_digest: str = ""
 
 
 ClientBuilder = Callable[[_ClientSpec], Any]
-ClientCacheKey = tuple[str, bool, Any, str]
+# provider, structured output, endpoint digest, builder identity, identity digest
+ClientCacheKey = tuple[str, bool, str, Any, str]
+# The leading fields name one cache slot; a new identity in a slot replaces the old.
+_CACHE_SLOT_FIELDS = 3
 
 _SYNC_CLIENT_CACHE: dict[ClientCacheKey, Any] = {}
 _SYNC_CLIENT_LOCK = threading.Lock()
@@ -120,6 +124,18 @@ def _identity_digest(spec: _ClientSpec) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _endpoint_digest(provider: str, resolved: ResolvedModel) -> str:
+    """Identify the endpoint a client talks to without retaining its URL.
+
+    A model pool may name several local endpoints, and each needs its own
+    cached client. Every other provider has a single endpoint per process.
+    """
+    if provider != "local_openai":
+        return ""
+    endpoint = json.dumps([resolved.base_url, resolved.api_key_env_name])
+    return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+
+
 def _sync_constructors() -> dict[str, Any]:
     return {
         "anthropic": anthropic.Anthropic,
@@ -167,6 +183,7 @@ def _resolve_client_spec(
         constructor_kwargs=tuple(kwargs.items()),
         ambient_environment=_ambient_environment(provider),
         cacheable=cacheable,
+        endpoint_digest=_endpoint_digest(provider, resolved),
     )
 
 
@@ -292,14 +309,20 @@ def _client_cache_key(
     if not spec.cacheable:
         return None
     builder_identity = builder, spec.constructor
-    return spec.provider, spec.structured_output, builder_identity, _identity_digest(spec)
+    return (
+        spec.provider,
+        spec.structured_output,
+        spec.endpoint_digest,
+        builder_identity,
+        _identity_digest(spec),
+    )
 
 
 def _store_cached_client(
     cache: dict[ClientCacheKey, Any], key: ClientCacheKey, client: Any
 ) -> None:
     for existing_key in tuple(cache):
-        if existing_key[:2] == key[:2]:
+        if existing_key[:_CACHE_SLOT_FIELDS] == key[:_CACHE_SLOT_FIELDS]:
             cache.pop(existing_key)
     cache[key] = client
 
