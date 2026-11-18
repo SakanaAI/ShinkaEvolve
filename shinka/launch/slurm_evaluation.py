@@ -11,6 +11,7 @@ from typing import Any
 from shinka.utils import load_results
 from . import slurm
 from .slurm_results import latest_execution, require_completed_execution
+from .slurm_status import is_unknown_job_error
 
 
 TERMINAL_STATUS_ATTEMPTS = 6
@@ -87,7 +88,7 @@ def _queue_status(job_id: str, job_name: str) -> tuple[str, int | None]:
     except subprocess.CalledProcessError as exc:
         # The controller may have purged a finished job before our next poll.
         # Absence is only a cue to verify terminal status, never proof of success.
-        if (exc.stderr or "").strip().endswith("Invalid job id specified"):
+        if is_unknown_job_error(exc.stderr):
             return "", None
         raise
     state, _, restart = result.stdout.strip().partition("|")

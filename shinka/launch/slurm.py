@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import time
@@ -18,8 +19,12 @@ from .slurm_script import (
     _render_env_docker_flags,
     _render_env_exports,
 )
+from .slurm_status import STATUS_COMMAND_TIMEOUT_SECONDS, is_unknown_job_error
 
 logger = logging.getLogger(__name__)
+
+# Failed status lookups in a row before an unbounded ``monitor`` gives up.
+MONITOR_STATUS_ERROR_LIMIT = 3
 
 
 # Configuration for Docker image caching
@@ -402,8 +407,8 @@ def submit_local_docker(
         f"else docker pull {image_name}; fi; "
         f"docker run --rm {docker_env_flags} "
         f"{docker_flags} {image_name} "
-        f"{' '.join(cmd)} >> {log_dir}/job_log.out "
-        f"2>> {log_dir}/job_log.err"
+        f"{shlex.join(cmd)} >> {shlex.quote(f'{log_dir}/job_log.out')} "
+        f"2>> {shlex.quote(f'{log_dir}/job_log.err')}"
     )
     launch_local_subprocess(job_id, ["bash", "-lc", full], gpus)
     if verbose:
@@ -437,15 +442,15 @@ def submit_local_conda(
         activate_script=activate_script,
         separator="; ",
     )
-    env_exports = "; ".join(f"export {k}={v}" for k, v in (eval_env or {}).items())
+    logs = (shlex.quote(f"{log_dir}/job_log.out"), shlex.quote(f"{log_dir}/job_log.err"))
     full_cmd = "; ".join(
         segment
         for segment in [
             "module --quiet purge",
             loads,
             activation_commands,
-            env_exports,
-            f"{' '.join(cmd)} >> {log_dir}/job_log.out 2>> {log_dir}/job_log.err",
+            _render_env_exports(eval_env, separator="; "),
+            f"{shlex.join(cmd)} >> {logs[0]} 2>> {logs[1]}",
         ]
         if segment
     )
@@ -455,8 +460,14 @@ def submit_local_conda(
     return job_id
 
 
-def get_job_status(job_id: str) -> Optional[str]:
-    """Get status for Slurm or local jobs."""
+def get_job_status(
+    job_id: str, *, timeout: Optional[float] = STATUS_COMMAND_TIMEOUT_SECONDS
+) -> Optional[str]:
+    """Get status for Slurm or local jobs.
+
+    Returns the queue entry of an active job, ``""`` once the job has left the
+    queue, and ``None`` when the status could not be determined.
+    """
     if job_id.startswith("local-"):
         job = LOCAL_JOBS.get(job_id)
         if not job:
@@ -471,19 +482,38 @@ def get_job_status(job_id: str) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=timeout,
         )
         return result.stdout.strip()
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as error:
+        # The controller purges a finished job after MinJobAge.
+        if is_unknown_job_error(error.stderr):
+            return ""
+        logger.warning("squeue failed for job %s: %s", job_id, error.stderr or error)
+        return None
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logger.warning("squeue failed for job %s: %s", job_id, error)
         return None
 
 
-def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
+def monitor(
+    job_id,
+    results_dir=None,
+    poll_interval=10,
+    verbose: bool = False,
+    *,
+    max_wait: Optional[float] = None,
+):
     """
     Monitor a Slurm job until completion and load its results.
 
     Args:
         job_id: The Slurm job ID to monitor
         poll_interval: Time in seconds between status checks
+        max_wait: Stop waiting after this many seconds, or as soon as the
+            status cannot be determined, and load whatever results exist.
+            Without it, the wait ends when the job leaves the queue; several
+            failed status lookups in a row raise ``RuntimeError``.
 
     Returns:
         dict: Dictionary containing job results and metrics
@@ -491,17 +521,42 @@ def monitor(job_id, results_dir=None, poll_interval=10, verbose: bool = False):
     if verbose:
         logger.info(f"Monitoring job {job_id}...")
 
-    # Monitor job status
+    deadline = None if max_wait is None else time.monotonic() + max_wait
+    consecutive_errors = 0
     while True:
-        status = get_job_status(job_id)
+        status = get_job_status(job_id, timeout=_status_timeout(deadline))
         if status == "":
             if verbose:
                 logger.info("Job completed!")
             break
 
         if verbose:
-            logger.info(f"\rJob status: {status}", end="", flush=True)
-        time.sleep(poll_interval)
+            logger.info(f"Job {job_id} status: {status}")
+        if deadline is None:
+            consecutive_errors = consecutive_errors + 1 if status is None else 0
+            if consecutive_errors >= MONITOR_STATUS_ERROR_LIMIT:
+                raise RuntimeError(
+                    f"Slurm status lookup for {job_id} failed "
+                    f"{consecutive_errors} consecutive times"
+                )
+            pause = poll_interval
+        else:
+            pause = min(poll_interval, deadline - time.monotonic())
+            if status is None or pause <= 0:
+                logger.warning(
+                    "Could not confirm that job %s left the queue; loading the "
+                    "results it has",
+                    job_id,
+                )
+                break
+        time.sleep(pause)
 
     if results_dir is not None:
         return load_results(results_dir)
+
+
+def _status_timeout(deadline: Optional[float]) -> float:
+    if deadline is None:
+        return STATUS_COMMAND_TIMEOUT_SECONDS
+    remaining = deadline - time.monotonic()
+    return max(1.0, min(STATUS_COMMAND_TIMEOUT_SECONDS, remaining))

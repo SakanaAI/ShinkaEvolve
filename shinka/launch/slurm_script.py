@@ -1,20 +1,23 @@
 """Text of the batch scripts submitted to Slurm."""
 
+import shlex
 from typing import Dict, Optional
 
 
-def _render_env_exports(eval_env: Optional[Dict[str, str]]) -> str:
-    """Render an env dict as newline-joined ``export K=V`` lines for a script."""
+def _render_env_exports(eval_env: Optional[Dict[str, str]], separator: str = "\n") -> str:
+    """Render an env dict as ``export K=V`` statements for a shell script."""
     if not eval_env:
         return ""
-    return "\n".join(f"export {k}={v}" for k, v in eval_env.items())
+    return separator.join(
+        f"export {k}={shlex.quote(str(v))}" for k, v in eval_env.items()
+    )
 
 
 def _render_env_docker_flags(eval_env: Optional[Dict[str, str]]) -> str:
     """Render an env dict as space-joined ``-e K=V`` flags for ``docker run``."""
     if not eval_env:
         return ""
-    return " ".join(f"-e {k}={v}" for k, v in eval_env.items())
+    return " ".join(f"-e {k}={shlex.quote(str(v))}" for k, v in eval_env.items())
 
 
 def _has_value(value: Optional[str]) -> bool:
