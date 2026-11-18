@@ -87,6 +87,10 @@ from shinka.core.prompt_evolver import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.core.seed_results import SeedResultAttempt
+from shinka.core.evaluation_results import (
+    failed_evaluation,
+    validate_evaluation_results,
+)
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
 from shinka.pricing.catalog import (
@@ -1974,8 +1978,6 @@ class ShinkaEvolveRunner:
         await write_file_async(exec_fname, code)
 
         evaluation_started_at = time.time()
-        evaluation_diagnostic = None
-        evaluation_failed = False
         seed_attempt = SeedResultAttempt(results_dir)
         try:
             if self.verbose:
@@ -1987,55 +1989,18 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Initial program evaluation completed in {rtime:.2f}s")
 
-            if results.get("evaluation_error"):
-                raise ValueError(results["evaluation_error"])
-            correctness = results.get("correct")
-            if not isinstance(correctness, dict) or not isinstance(
-                correctness.get("correct"), bool
-            ):
-                raise ValueError("correct.json must contain a boolean 'correct' field")
-            correct_val = correctness["correct"]
-            metrics = results.get("metrics", {})
-            if not isinstance(metrics, dict):
-                raise ValueError("metrics.json must contain a JSON object")
-            combined_score = metrics.get("combined_score", 0.0)
-            if type(combined_score) not in (int, float):
-                raise ValueError("metrics.json 'combined_score' must be numeric")
-            combined_score = float(combined_score)
-            if not math.isfinite(combined_score):
-                if correct_val:
-                    raise ValueError(
-                        "metrics.json 'combined_score' must be finite for a correct program"
-                    )
-                evaluation_diagnostic = (
-                    f"Incorrect seed reported a non-finite combined_score ({combined_score}). "
-                    "Using 0.0."
-                )
-                combined_score = 0.0
-
-            feedback = metrics.get("text_feedback")
-            if not correct_val and not feedback:
-                feedback = correctness.get("error")
-            if isinstance(feedback, list):
-                text_feedback = "\n".join(str(item) for item in feedback)
-            else:
-                text_feedback = "" if feedback is None else str(feedback)
+            evaluation = validate_evaluation_results(results, subject="seed")
         except Exception as exc:
-            evaluation_failed = True
-            evaluation_diagnostic = (
+            evaluation = failed_evaluation(
                 f"Initial program evaluation failed ({type(exc).__name__}): {exc}"
             )
             results = load_result_logs(str(seed_attempt.path))
-            correct_val = False
-            combined_score = 0.0
-            metrics = {}
-            text_feedback = evaluation_diagnostic
 
         stderr_log = results.get("stderr_log", "")
-        if evaluation_diagnostic is not None:
-            logger.warning("%s", evaluation_diagnostic)
+        if evaluation.diagnostic is not None:
+            logger.warning("%s", evaluation.diagnostic)
             stderr_log = "\n".join(
-                filter(None, (stderr_log.rstrip(), evaluation_diagnostic))
+                filter(None, (stderr_log.rstrip(), evaluation.diagnostic))
             )
 
         evaluation_finished_at = time.time()
@@ -2070,7 +2035,7 @@ class ShinkaEvolveRunner:
                 "patch_description": patch_description or "Initial program setup",
             }
         )
-        if evaluation_failed:
+        if evaluation.failed:
             base_metadata["evaluation_failed"] = True
 
         base_metadata = with_pipeline_timing(
@@ -2088,11 +2053,11 @@ class ShinkaEvolveRunner:
             id=str(uuid.uuid4()),
             code=code,
             generation=0,
-            correct=correct_val,
-            combined_score=combined_score,
-            public_metrics=metrics.get("public", {}),
-            private_metrics=metrics.get("private", {}),
-            text_feedback=text_feedback,
+            correct=evaluation.correct,
+            combined_score=evaluation.combined_score,
+            public_metrics=evaluation.public_metrics,
+            private_metrics=evaluation.private_metrics,
+            text_feedback=evaluation.text_feedback,
             timestamp=datetime.now().timestamp(),
             embedding=code_embedding,
             metadata=base_metadata,
@@ -4619,6 +4584,12 @@ class ShinkaEvolveRunner:
             )
             return None
 
+    @staticmethod
+    def _evaluator_exit_status(job: AsyncRunningJob) -> Optional[int]:
+        """Exit status of a finished local evaluator. Slurm handles carry none."""
+        exit_status = getattr(job.job_id, "returncode", None)
+        return exit_status if type(exit_status) is int else None
+
     async def _persist_completed_job(
         self, job: AsyncRunningJob
     ) -> CompletedJobPersistResult:
@@ -4667,35 +4638,39 @@ class ShinkaEvolveRunner:
 
             # Always create a program entry, even if results are missing
             if results:
-                # Extract metrics properly like the sync version
-                correct_val = results.get("correct", {}).get("correct", False)
-                metrics_val = results.get("metrics", {})
-                combined_score = metrics_val.get("combined_score", 0.0)
-                public_metrics = metrics_val.get("public", {})
-                private_metrics = metrics_val.get("private", {})
-                text_feedback = metrics_val.get("text_feedback", "")
+                try:
+                    evaluation = validate_evaluation_results(
+                        results, exit_status=self._evaluator_exit_status(job)
+                    )
+                except ValueError as exc:
+                    evaluation = failed_evaluation(f"Program evaluation failed: {exc}")
                 stdout_log = truncate_log_tail(
                     results.get("stdout_log", ""),
                     self.db_config.max_stdout_log_chars,
                 )
                 stderr_log = results.get("stderr_log", "")
-
-                logger.info(
-                    f"✅ VALID RESULTS: {job.job_id} has valid results - correct={correct_val}, score={combined_score}"
-                )
             else:
                 # Handle missing results - don't lose the job!
-                logger.warning(
-                    f"⚠️  NO RESULTS: {job.job_id} (gen {job.generation}) has no results. "
-                    f"Creating program entry with default values to avoid job loss."
+                evaluation = failed_evaluation(
+                    "Program evaluation failed: results could not be retrieved"
                 )
-                correct_val = False
-                combined_score = 0.0
-                public_metrics = {}
-                private_metrics = {}
-                text_feedback = "Job completed but results could not be retrieved"
                 stdout_log = ""
-                stderr_log = "Results retrieval failed"
+                stderr_log = ""
+
+            if evaluation.diagnostic is not None:
+                logger.warning(
+                    "⚠️  %s (gen %s): %s",
+                    job.job_id,
+                    job.generation,
+                    evaluation.diagnostic,
+                )
+                stderr_log = "\n".join(
+                    filter(None, (stderr_log.rstrip(), evaluation.diagnostic))
+                )
+            logger.info(
+                f"📊 RESULTS: {job.job_id} correct={evaluation.correct}, "
+                f"score={evaluation.combined_score}"
+            )
 
             # Extract system_prompt_id from meta_patch_data
             system_prompt_id = None
@@ -4710,11 +4685,11 @@ class ShinkaEvolveRunner:
                 id=str(uuid.uuid4()),
                 code=await self._read_file_async(job.exec_fname) or "",
                 generation=job.generation,
-                correct=correct_val,
-                combined_score=combined_score,
-                public_metrics=public_metrics,
-                private_metrics=private_metrics,
-                text_feedback=text_feedback,
+                correct=evaluation.correct,
+                combined_score=evaluation.combined_score,
+                public_metrics=evaluation.public_metrics,
+                private_metrics=evaluation.private_metrics,
+                text_feedback=evaluation.text_feedback,
                 timestamp=datetime.now().timestamp(),
                 parent_id=job.parent_id,
                 archive_inspiration_ids=job.archive_insp_ids,
@@ -4729,7 +4704,8 @@ class ShinkaEvolveRunner:
                         "novelty_cost": job.novelty_cost,
                         "stdout_log": stdout_log,
                         "stderr_log": stderr_log,
-                        "results_missing": results is None,
+                        "results_missing": not results,
+                        **({"evaluation_failed": True} if evaluation.failed else {}),
                         "safe_processing": True,
                         "postprocess_db_maintenance_applied": False,
                         "source_job_id": source_job_id,
