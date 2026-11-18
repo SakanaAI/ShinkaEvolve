@@ -46,6 +46,11 @@ CACHE_EXPIRATION_SECONDS = 5  # Cache data for 5 seconds
 db_cache: Dict[str, Tuple[float, Any]] = {}
 
 
+def _printable(text: str) -> str:
+    """Replace control and other non-printable characters with spaces."""
+    return "".join(ch if ch.isprintable() else " " for ch in text)
+
+
 class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     # Hostnames accepted in the Host header; set per server by the factory.
     allowed_hosts: FrozenSet[str] = build_allowed_hosts(DEFAULT_HOST)
@@ -59,8 +64,12 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         """Disable browser caching for local HTML shells to avoid stale embedded JS."""
         self.send_header("X-Content-Type-Options", "nosniff")
-        parsed_url = urllib.parse.urlparse(self.path)
-        if parsed_url.path in ("/", "/index.html", "/viz_tree.html", "/compare.html"):
+        # A request the base class rejected while parsing has no usable path.
+        try:
+            served_path = urllib.parse.urlparse(getattr(self, "path", "")).path
+        except ValueError:
+            served_path = ""
+        if served_path in ("/", "/index.html", "/viz_tree.html", "/compare.html"):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
@@ -68,18 +77,39 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Override to provide more detailed logging."""
-        print(f"\n[SERVER] {format % args}")
+        print(f"\n[SERVER] {_printable(format % args)}")
 
     def send_error(self, code, message=None, explain=None):
         """Send an error whose reason phrase cannot carry injected headers.
 
         Messages echo request values (paths, ids). The base class writes the
         message into the status line verbatim, so a CR/LF in it would start a
-        new header or body.
+        new header or body, and the status line must encode as Latin-1.
         """
         if message is not None:
-            message = "".join(ch if ch.isprintable() else " " for ch in str(message))
+            message = _printable(str(message))
+            message = message.encode("latin-1", "replace").decode("latin-1")
         super().send_error(code, message, explain)
+
+    def _parse_target(self) -> Optional[Tuple[str, Dict[str, list]]]:
+        """Split the request target into path and query, or send 400.
+
+        Decoded control characters are refused here, once, so no handler can
+        pass them on to a log line, a header or a file name.
+        """
+        try:
+            parsed_url = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed_url.query)
+            decoded = [urllib.parse.unquote(parsed_url.path)]
+        except ValueError:
+            self.send_error(400, "Malformed request target")
+            return None
+        for values in query.values():
+            decoded.extend(values)
+        if not all(text.isprintable() for text in decoded):
+            self.send_error(400, "Control characters in request")
+            return None
+        return parsed_url.path, query
 
     def _reject_foreign_host(self) -> bool:
         """Send 403 and return True unless the Host header names this server."""
@@ -94,14 +124,17 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         )
         return True
 
-    def _serve_static(self, head_only: bool = False):
+    def _serve_static(self, path: str, head_only: bool = False):
         """Serve one of the UI's own files; nothing else in the package dir."""
-        path = urllib.parse.urlparse(self.path).path
         if path == "/":
-            self.path = path = "/index.html"
+            path = "/index.html"
         if path not in STATIC_FILES:
             self.send_error(404, "File not found")
             return
+        # The base class maps self.path to a file with its own parsing, which
+        # reads `;params` and `..` differently from the check above. Hand it
+        # exactly the allowlisted name.
+        self.path = path
         if head_only:
             return http.server.SimpleHTTPRequestHandler.do_HEAD(self)
         return http.server.SimpleHTTPRequestHandler.do_GET(self)
@@ -109,15 +142,46 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self):
         if self._reject_foreign_host():
             return
-        return self._serve_static(head_only=True)
+        target = self._parse_target()
+        if target is None:
+            return
+        return self._serve_static(target[0], head_only=True)
 
     def _root(self) -> str:
         return os.path.realpath(self.search_root)
 
-    def _resolve_artifact_path(self, artifact_path: Optional[str]) -> Optional[Path]:
-        """Resolve a path recorded in the DB or a failure JSON under the root."""
+    def _resolve_artifact_path(self, artifact_path: Any) -> Optional[Path]:
+        """Resolve a path recorded in the DB or a failure JSON under the root.
+
+        The value is whatever the row or file held, so anything but a string
+        is treated as absent.
+        """
+        if not isinstance(artifact_path, str):
+            return None
         resolved = resolve_under_root(self.search_root, artifact_path)
         return Path(resolved) if resolved is not None else None
+
+    def _generated_code_path(
+        self, failure_payload: Optional[Dict[str, Any]]
+    ) -> Optional[str]:
+        artifacts = (failure_payload or {}).get("artifacts")
+        path = (
+            artifacts.get("generated_code_path")
+            if isinstance(artifacts, dict)
+            else None
+        )
+        return path if isinstance(path, str) and path else None
+
+    def _sibling_main_files(self, failure_path: Path) -> list[Path]:
+        """``main.*`` files next to a failure JSON that stay inside the root."""
+        directory = self._resolve_artifact_path(str(failure_path.parent))
+        if directory is None:
+            return []
+        return [
+            candidate
+            for candidate in sorted(directory.glob("main.*"))
+            if self._resolve_artifact_path(str(candidate)) is not None
+        ]
 
     def _make_failed_node_id(self, generation: int) -> str:
         return f"failed:proposal:{generation}"
@@ -136,9 +200,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     ) -> Optional[Dict[str, Any]]:
         try:
             failure_path = self._resolve_artifact_path(failure_json_path)
-            if failure_path is None or not failure_path.exists():
+            if failure_path is None or not failure_path.is_file():
                 return None
-            return json.loads(failure_path.read_text(encoding="utf-8"))
+            payload = json.loads(failure_path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else None
         except Exception:
             return None
 
@@ -170,15 +235,13 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             if language:
                 return str(language)
 
-        generated_code_path = ((failure_payload or {}).get("artifacts", {}) or {}).get(
-            "generated_code_path"
-        )
+        generated_code_path = self._generated_code_path(failure_payload)
         if generated_code_path:
             return self._language_from_suffix(Path(generated_code_path).suffix)
 
         failure_path = self._resolve_artifact_path(details.get("failure_json_path"))
         if failure_path is not None:
-            candidates = sorted(failure_path.parent.glob("main.*"))
+            candidates = self._sibling_main_files(failure_path)
             if candidates:
                 return self._language_from_suffix(candidates[0].suffix)
 
@@ -189,11 +252,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         details: Dict[str, Any],
         failure_payload: Optional[Dict[str, Any]],
     ) -> Optional[Path]:
-        generated_code_path = ((failure_payload or {}).get("artifacts", {}) or {}).get(
-            "generated_code_path"
+        code_path = self._resolve_artifact_path(
+            self._generated_code_path(failure_payload)
         )
-        code_path = self._resolve_artifact_path(generated_code_path)
-        if code_path is not None and code_path.exists():
+        if code_path is not None and code_path.is_file():
             return code_path
 
         failure_path = self._resolve_artifact_path(details.get("failure_json_path"))
@@ -211,12 +273,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             "verilog": ".sv",
             "fortran": ".f90",
         }.get(language)
-        if preferred_suffix:
-            preferred_path = failure_path.parent / f"main{preferred_suffix}"
-            if preferred_path.exists():
-                return preferred_path
-
-        candidates = sorted(failure_path.parent.glob("main.*"))
+        candidates = self._sibling_main_files(failure_path)
+        for candidate in candidates:
+            if preferred_suffix and candidate.name == f"main{preferred_suffix}":
+                return candidate
         return candidates[0] if candidates else None
 
     def _build_failed_node_dict(
@@ -339,12 +399,13 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             conn.close()
 
     def do_GET(self):
-        print(f"\n[SERVER] Received GET request for: {self.path}")
+        print(f"\n[SERVER] Received GET request for: {_printable(self.path)}")
         if self._reject_foreign_host():
             return
-        parsed_url = urllib.parse.urlparse(self.path)
-        path = parsed_url.path
-        query = urllib.parse.parse_qs(parsed_url.query)
+        target = self._parse_target()
+        if target is None:
+            return
+        path, query = target
 
         if path == "/list_databases":
             return self.handle_list_databases()
@@ -400,7 +461,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             return self.handle_get_plots(db_path, generation, program_id)
 
         if path.startswith("/plot_file/"):
-            return self.handle_serve_plot_file()
+            rel_path = urllib.parse.unquote(path[len("/plot_file/") :])
+            return self.handle_serve_plot_file(rel_path)
 
         if path == "/get_system_prompts" and "db_path" in query:
             db_path = query["db_path"][0]
@@ -410,7 +472,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
             db_path = query["db_path"][0]
             return self.handle_get_database_stats(db_path)
 
-        return self._serve_static()
+        return self._serve_static(path)
 
     def handle_list_databases(self):
         """Scan the search root directory for .db files."""
@@ -496,15 +558,31 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
     def _resolve_db_path(self, db_path: str) -> Optional[str]:
         """Absolute path of a client-supplied DB path inside the search root.
 
-        Sends 403 and returns None when the path escapes the root. Every
-        handler that takes ``db_path`` goes through here.
+        Sends an error and returns None when the path escapes the root (403)
+        or names a directory (404). Every handler that takes ``db_path`` goes
+        through here, and they all work from the file's own directory, so a
+        directory here would shift them one level up.
         """
         abs_db_path = resolve_under_root(
             self.search_root, self._get_actual_db_path(db_path)
         )
         if abs_db_path is None:
             self.send_error(403, "Database path is outside the served directory")
+            return None
+        if os.path.isdir(abs_db_path):
+            self.send_error(404, f"Database file not found: {db_path}")
+            return None
         return abs_db_path
+
+    def _prompts_db_path(self, abs_db_path: str) -> Optional[str]:
+        """The ``prompts.sqlite`` beside a program DB, if it is inside the root."""
+        prompts_db_path = resolve_under_root(
+            self.search_root,
+            os.path.join(os.path.dirname(abs_db_path), "prompts.sqlite"),
+        )
+        if prompts_db_path is None or not os.path.isfile(prompts_db_path):
+            return None
+        return prompts_db_path
 
     def _resolve_meta_file(
         self, abs_db_path: str, processed_count: str
@@ -1059,12 +1137,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         self.send_json_response(plot_files)
 
-    def handle_serve_plot_file(self):
+    def handle_serve_plot_file(self, rel_path: str):
         """Serve a plot file from the search root."""
-        # Extract the file path from the URL (after /plot_file/)
-        parsed_url = urllib.parse.urlparse(self.path)
-        rel_path = urllib.parse.unquote(parsed_url.path[11:])  # Remove /plot_file/
-
         # Only images, and only from inside the search root. Both checks come
         # before the existence check so the endpoint cannot be used to probe
         # for files it will not serve.
@@ -1104,11 +1178,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         abs_db_path = self._resolve_db_path(db_path)
         if abs_db_path is None:
             return
-        db_dir = os.path.dirname(abs_db_path)
-        prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
+        prompts_db_path = self._prompts_db_path(abs_db_path)
 
-        if not os.path.exists(prompts_db_path):
-            print(f"[SERVER] Prompts database not found: {prompts_db_path}")
+        if prompts_db_path is None:
+            print(f"[SERVER] No prompts database beside: {abs_db_path}")
             # Return empty list if no prompts database exists
             self.send_json_response([])
             return
@@ -1318,9 +1391,8 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 }
 
                 # Check for prompts.db in the same directory
-                db_dir = os.path.dirname(abs_db_path)
-                prompts_db_path = os.path.join(db_dir, "prompts.sqlite")
-                if os.path.exists(prompts_db_path):
+                prompts_db_path = self._prompts_db_path(abs_db_path)
+                if prompts_db_path is not None:
                     try:
                         pconn = sqlite3.connect(
                             prompts_db_path, timeout=2.0, isolation_level=None

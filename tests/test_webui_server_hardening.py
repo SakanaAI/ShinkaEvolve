@@ -4,6 +4,7 @@ Each test drives a real server bound to an ephemeral loopback port.
 """
 
 import http.client
+import io
 import json
 import sqlite3
 import threading
@@ -359,13 +360,29 @@ def test_allowed_hosts_cover_bind_name_and_extras():
     assert not security.is_allowed_host("", allowed)
 
 
-def test_error_message_cannot_inject_response_headers(server: int):
+def test_request_text_cannot_inject_response_headers(server: int):
     target = "/get_programs?db_path=" + "nope%0d%0aX-Injected:%20yes%0d%0a%0d%0abody"
 
     status, headers, _ = _request(server, target)
 
-    assert status == 404
+    assert status == 400
     assert "x-injected" not in headers
+
+
+def test_error_message_is_flattened_to_one_latin1_status_line():
+    handler = DatabaseRequestHandler.__new__(DatabaseRequestHandler)
+    handler.wfile = io.BytesIO()
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = "GET / HTTP/1.1"
+    handler.command = "GET"
+    handler.path = "/"
+    handler.client_address = ("127.0.0.1", 0)
+
+    handler.send_error(404, "missing \u20ac\r\nX-Injected: yes")
+
+    head = handler.wfile.getvalue().split(b"\r\n\r\n", 1)[0]
+    assert head.startswith(b"HTTP/1.0 404 missing ?  X-Injected: yes\r\n")
+    assert not any(line.startswith(b"X-Injected") for line in head.split(b"\r\n"))
 
 
 # --- finding 6: DBs written before attempt_log existed -----------------------
