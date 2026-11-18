@@ -18,6 +18,7 @@ import pytest
 from shinka.database import DatabaseConfig, ProgramDatabase
 from shinka.database.dbase import Program
 from shinka.webui.visualization import make_server
+from webui_test_utils import write_prompts_db
 
 Response = Tuple[int, Dict[str, str], bytes]
 
@@ -26,14 +27,6 @@ def _write_program_db(db_path: Path) -> None:
     db = ProgramDatabase(DatabaseConfig(db_path=str(db_path)))
     db.add(Program(id="p0", code="x = 1\n", generation=0, correct=True))
     db.close()
-
-
-def _write_prompts_db(db_path: Path, marker: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE system_prompts (id TEXT PRIMARY KEY, prompt_text TEXT)")
-    conn.execute("INSERT INTO system_prompts VALUES ('sp0', ?)", (marker,))
-    conn.commit()
-    conn.close()
 
 
 def _log_failed_proposal(db_path: Path, generation: int, details: dict) -> None:
@@ -56,7 +49,7 @@ def tree(tmp_path: Path) -> Path:
     _write_program_db(run / "programs.sqlite")
     (base / "outside.py").write_text("OUTSIDE = 1\n", encoding="utf-8")
     (base / "main.go").write_text("package outside\n", encoding="utf-8")
-    _write_prompts_db(base / "prompts.sqlite", "PARENT_PROMPT_SECRET")
+    write_prompts_db(base / "prompts.sqlite", "PARENT_PROMPT_SECRET")
     return base
 
 

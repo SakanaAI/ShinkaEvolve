@@ -639,9 +639,10 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
         if abs_db_path is None:
             return
 
-        # Check cache first
-        if db_path in db_cache:
-            last_fetch_time, cached_data = db_cache[db_path]
+        # Check cache first, by the file's real path: the path as requested
+        # can name the same file in several ways.
+        if abs_db_path in db_cache:
+            last_fetch_time, cached_data = db_cache[abs_db_path]
             if time.time() - last_fetch_time < CACHE_EXPIRATION_SECONDS:
                 print(f"[SERVER] Serving from cache for DB: {db_path}")
                 self.send_json_response(cached_data)
@@ -681,7 +682,7 @@ class DatabaseRequestHandler(http.server.SimpleHTTPRequestHandler):
                 )
 
                 # Update cache
-                db_cache[db_path] = (time.time(), programs_dict)
+                db_cache[abs_db_path] = (time.time(), programs_dict)
 
                 self.send_json_response(programs_dict)
                 success_msg = (

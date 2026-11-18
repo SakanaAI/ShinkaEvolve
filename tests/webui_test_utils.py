@@ -9,8 +9,14 @@ import urllib.parse
 from pathlib import Path
 from typing import Dict, Iterator, Optional, Sequence, Tuple
 
-from shinka.database import DatabaseConfig, ProgramDatabase
+from shinka.database import (
+    DatabaseConfig,
+    ProgramDatabase,
+    SystemPromptConfig,
+    SystemPromptDatabase,
+)
 from shinka.database.dbase import Program
+from shinka.database.prompt_dbase import SystemPrompt
 from shinka.webui.visualization import make_server
 
 PNG_BYTES = bytes.fromhex(
@@ -32,6 +38,13 @@ def write_program_db(db_path: Path, program_id: str = "p0") -> None:
             combined_score=1.0,
         )
     )
+    db.close()
+
+
+def write_prompts_db(db_path: Path, prompt_text: str) -> None:
+    """A prompt database the server can read, holding one prompt."""
+    db = SystemPromptDatabase(SystemPromptConfig(db_path=str(db_path)))
+    db.add(SystemPrompt(id="sp0", prompt_text=prompt_text))
     db.close()
 
 

@@ -22,6 +22,7 @@ from shinka.webui.visualization import (
     make_server,
     resolve_cli_paths,
 )
+from webui_test_utils import write_prompts_db
 
 PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -78,6 +79,13 @@ def tree(tmp_path: Path) -> Path:
     (private / "secret.png").write_bytes(PNG_BYTES)
     (private / "meta_1.txt").write_text("sibling meta", encoding="utf-8")
     (private / "meta_abc.txt").write_text("sibling non-int meta", encoding="utf-8")
+    # Readable databases and a plot, so that a request reaching them shows
+    # "sibling" in its response rather than a 404 that looks like a refusal.
+    _write_program_db(private / "programs.sqlite", "sibling_program")
+    write_prompts_db(private / "prompts.sqlite", "sibling prompt")
+    sibling_plots = private / "gen_1" / "results" / "plots"
+    sibling_plots.mkdir(parents=True)
+    (sibling_plots / "sibling.png").write_bytes(PNG_BYTES)
     (base / "outside.py").write_text("OUTSIDE = 1\n", encoding="utf-8")
     (root / "link_out").symlink_to(private)
     return base
