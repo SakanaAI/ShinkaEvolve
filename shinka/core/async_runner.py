@@ -19,7 +19,7 @@ from contextvars import Token
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
+from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable, Callable
 from dataclasses import dataclass, field
 from rich.console import Console
 from rich.table import Table
@@ -775,8 +775,10 @@ class ShinkaEvolveRunner:
                 raise error from exc
             else:
                 del self._unwritten_charges[key]
-                if not self._unwritten_charges and not getattr(
-                    self, "_billing_error", None
+                if not (
+                    self._unwritten_charges
+                    or getattr(self, "_pending_cost_reconciliations", None)
+                    or getattr(self, "_billing_error", None)
                 ):
                     self._billing_writes_blocked = False
                 return
@@ -793,6 +795,11 @@ class ShinkaEvolveRunner:
 
     async def _flush_unwritten_charges(self) -> None:
         error = None
+        for reconciliation_key in tuple(getattr(self, "_pending_cost_reconciliations", ())):
+            try:
+                await finish_cost_recording(self._reconcile_pending_cost(reconciliation_key))
+            except BillingPersistenceError as exc:
+                error = exc
         for key in tuple(getattr(self, "_unwritten_charges", ())):
             try:
                 await finish_cost_recording(self._write_pending_charge(key))
@@ -800,6 +807,41 @@ class ShinkaEvolveRunner:
                 error = exc
         if error is not None:
             raise error
+
+    async def _reconcile_cost(
+        self,
+        stage: str,
+        record_id: str,
+        generation: int,
+        read_missing_cost: Callable[[], float],
+    ) -> None:
+        key = (stage, record_id, str(uuid.uuid4()))
+        if not hasattr(self, "_pending_cost_reconciliations"):
+            self._pending_cost_reconciliations: dict[
+                tuple[str, str, str], tuple[int, Callable[[], float]]
+            ] = {}
+        self._pending_cost_reconciliations[key] = (generation, read_missing_cost)
+        await finish_cost_recording(self._reconcile_pending_cost(key))
+
+    async def _reconcile_pending_cost(self, key: tuple[str, str, str]) -> None:
+        stage, _, charge_id = key
+        generation, read_missing_cost = self._pending_cost_reconciliations[key]
+        try:
+            missing_cost = read_missing_cost()
+        except Exception as exc:
+            raise self._fail_billing(f"Could not reconcile {stage} charge") from exc
+        # Once the read succeeds, ownership moves to the idempotent journal
+        # writer before its first suspension. A failed read keeps this work queued.
+        del self._pending_cost_reconciliations[key]
+        if missing_cost > 0.0:
+            await self._record_attempt_event(
+                generation, stage, "failed",
+                {
+                    "node_kind": "unattached_cost",
+                    "api_costs": missing_cost,
+                    "api_charge_id": charge_id,
+                },
+            )
 
     async def _record_unattached_cost(self, cost: float, stage: str, generation: int) -> None:
         """Persist failed charges without manufacturing a program or prompt."""
@@ -892,25 +934,22 @@ class ShinkaEvolveRunner:
         previous_cost = program.metadata.get("meta_cost") or 0.0
         program.metadata["meta_cost"] = previous_cost + cost
 
+        def read_missing_cost():
+            stored = self.db.get(program.id)
+            metadata = (stored.metadata or {}) if stored else {}
+            stored_cost = metadata.get("meta_cost") or 0.0
+            missing_cost = max(cost - max(stored_cost - previous_cost, 0.0), 0.0)
+            if missing_cost:
+                program.metadata["meta_cost"] = stored_cost
+            return missing_cost
+
         async def persist():
             try:
                 await self._persist_program_metadata_async(program)
             except Exception:
-                # A write can report an error after committing. Reuse the bill
-                # on the stored row when present and journal any missing charge.
-                try:
-                    stored = self.db.get(program.id)
-                except Exception as exc:
-                    raise self._fail_billing("Could not reconcile meta charge") from exc
-                metadata = (stored.metadata or {}) if stored else {}
-                stored_cost = metadata.get("meta_cost") or 0.0
-                if stored_cost < program.metadata["meta_cost"]:
-                    program.metadata["meta_cost"] = stored_cost
-                    await self._record_unattached_cost(
-                        cost - max(stored_cost - previous_cost, 0.0),
-                        "meta",
-                        program.generation,
-                    )
+                await self._reconcile_cost(
+                    "meta", program.id, program.generation, read_missing_cost
+                )
                 raise
 
         await finish_cost_recording(persist())
@@ -1802,14 +1841,10 @@ class ShinkaEvolveRunner:
                 try:
                     self.prompt_db.add(new_prompt, verbose=self.verbose)
                 except Exception:
-                    try:
-                        stored = self.prompt_db.get(new_prompt.id)
-                    except Exception as exc:
-                        raise self._fail_billing("Could not reconcile prompt charge") from exc
-                    if stored is None:
-                        await self._record_unattached_cost(
-                            cost, "prompt_evolution", current_program_generation
-                        )
+                    await self._reconcile_cost(
+                        "prompt_evolution", new_prompt.id, current_program_generation,
+                        lambda: cost if self.prompt_db.get(new_prompt.id) is None else 0.0,
+                    )
                     raise
                 logger.info(
                     f"Evolved new prompt {new_prompt.id[:8]}... "
@@ -4309,6 +4344,10 @@ class ShinkaEvolveRunner:
         """Persist updated program metadata using a thread-local DB handle."""
         if not program.metadata:
             return
+
+        for key in tuple(getattr(self, "_pending_cost_reconciliations", ())):
+            if key[:2] == ("meta", program.id):
+                await finish_cost_recording(self._reconcile_pending_cost(key))
 
         if hasattr(self.async_db, "update_program_metadata_async"):
             await self.async_db.update_program_metadata_async(
