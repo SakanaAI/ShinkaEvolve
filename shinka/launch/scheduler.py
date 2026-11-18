@@ -3,13 +3,20 @@ import time
 import asyncio
 import shlex
 import sys
-from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
 from .local import monitor_evaluation as monitor_local_evaluation
 from .local import ProcessWithLogging
+from .job_config import (
+    JobConfig,
+    LocalJobConfig,
+    SlurmCondaJobConfig,
+    SlurmDockerJobConfig,
+    SlurmEnvJobConfig,
+    _has_value,
+)
 from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
 from .slurm_evaluation import CONTROL_COMMAND_TIMEOUT_SECONDS
 from .slurm import (
@@ -21,18 +28,6 @@ from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
 SLURM_CANCEL_TIMEOUT_SECONDS = 30
-
-
-def _has_value(value: Optional[str]) -> bool:
-    return value is not None and value.strip() != ""
-
-
-def _validate_activation_config(
-    conda_env: Optional[str],
-    activate_script: Optional[str],
-) -> None:
-    if _has_value(conda_env) and _has_value(activate_script):
-        raise ValueError("conda_env and activate_script are mutually exclusive")
 
 
 def _numeric_thread_env(numeric_threads: Optional[int]) -> Dict[str, str]:
@@ -57,72 +52,6 @@ def _numeric_thread_env(numeric_threads: Optional[int]) -> Dict[str, str]:
         "BLIS_NUM_THREADS": thread_value,
         "GOTO_NUM_THREADS": thread_value,
     }
-
-
-@dataclass
-class JobConfig:
-    """Base job configuration"""
-
-    eval_program_path: Optional[str] = "evaluate.py"
-    extra_cmd_args: Dict[str, Any] = field(default_factory=dict)
-    eval_verbose: bool = True  # emit per-run eval banners to stdout
-    # Cap numeric-library threads (OMP/BLAS/MKL/...) per eval subprocess.
-    # None = leave unset. Applied for both local and SLURM jobs.
-    numeric_threads_per_job: Optional[int] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary representation"""
-        job_to_dict = asdict(self)
-        return {k: v for k, v in job_to_dict.items() if v is not None}
-
-
-@dataclass
-class LocalJobConfig(JobConfig):
-    """Configuration for local jobs"""
-
-    time: Optional[str] = None
-    conda_env: Optional[str] = None
-    activate_script: Optional[str] = None
-    python_executable: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        _validate_activation_config(self.conda_env, self.activate_script)
-
-
-@dataclass
-class SlurmDockerJobConfig(JobConfig):
-    """Configuration for SLURM jobs using Docker"""
-
-    image: str = "ubuntu:latest"
-    image_tar_path: Optional[str] = None
-    docker_flags: str = ""
-    partition: str = "gpu"
-    time: str = "01:00:00"
-    cpus: int = 1
-    gpus: int = 1
-    mem: Optional[str] = "8G"
-
-
-@dataclass
-class SlurmCondaJobConfig(JobConfig):
-    """Configuration for SLURM jobs using Conda environment"""
-
-    conda_env: str = ""
-    activate_script: Optional[str] = None
-    modules: Optional[List[str]] = None
-    partition: str = "gpu"
-    time: str = "01:00:00"
-    cpus: int = 1
-    gpus: int = 1
-    mem: Optional[str] = "8G"
-
-    def __post_init__(self):
-        _validate_activation_config(self.conda_env, self.activate_script)
-        if self.modules is None:
-            self.modules = []
-
-
-SlurmEnvJobConfig = SlurmCondaJobConfig
 
 
 class JobScheduler:
