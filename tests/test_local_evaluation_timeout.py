@@ -1,5 +1,6 @@
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -96,7 +97,7 @@ def test_local_timeout_kills_evaluator_descendants_and_reaps_root(
 def test_local_monitor_accepts_only_completion_observed_by_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finished_at: float
 ) -> None:
-    elapsed = 0.0
+    elapsed = 0.25
 
     def advance_clock(seconds: float) -> None:
         nonlocal elapsed
@@ -104,7 +105,7 @@ def test_local_monitor_accepts_only_completion_observed_by_deadline(
 
     def wait(*, timeout: float) -> int:
         nonlocal elapsed
-        assert timeout == pytest.approx(1.0)
+        assert timeout == pytest.approx(0.75)
         # Simulate a wait that observes an exit despite waking after its deadline.
         elapsed = finished_at
         return 0
@@ -118,7 +119,7 @@ def test_local_monitor_accepts_only_completion_observed_by_deadline(
     )
     (tmp_path / "correct.json").write_text('{"correct": true}')
     (tmp_path / "metrics.json").write_text('{"combined_score": 42}')
-    process = Mock(returncode=None)
+    process = Mock(returncode=None, launched_at=0.0)
     process.poll.side_effect = lambda: 0 if elapsed >= finished_at else None
     process.wait.side_effect = wait
 
@@ -133,3 +134,63 @@ def test_local_monitor_accepts_only_completion_observed_by_deadline(
             local.monitor(process, str(tmp_path), poll_interval=2.0, timeout="00:00:01")
         process.kill_for_timeout.assert_called_once_with()
     process.cleanup_logging.assert_called_once_with()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+@pytest.mark.parametrize("failing_thread", [1, 2])
+def test_logging_start_failure_reaps_local_evaluator_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_thread: int
+) -> None:
+    launched: list[subprocess.Popen] = []
+    popen = subprocess.Popen
+    start_thread = local.threading.Thread.start
+    started = 0
+    pid_file = tmp_path / "started"
+
+    def record_launch(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        launched.append(process)
+        return process
+
+    def fail_logging_start(thread):
+        nonlocal started
+        started += 1
+        if started == failing_thread:
+            assert _wait_until(pid_file.exists)
+            raise RuntimeError("could not start log thread")
+        start_thread(thread)
+
+    monkeypatch.setattr(local.subprocess, "Popen", record_launch)
+    monkeypatch.setattr(local.threading.Thread, "start", fail_logging_start)
+    command = [
+        sys.executable,
+        "-c",
+        "import subprocess, sys, time; from pathlib import Path; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); "
+        "marker = Path(sys.argv[1]); pending = marker.with_suffix('.tmp'); "
+        "pending.write_text(str(child.pid)); pending.rename(marker); time.sleep(8)",
+        str(pid_file),
+    ]
+
+    try:
+        with pytest.raises(RuntimeError, match="could not start log thread"):
+            local.submit(str(tmp_path), command, timeout="00:00:01")
+
+        (root,) = launched
+        assert root.returncode == -signal.SIGKILL
+        with pytest.raises(ChildProcessError):
+            os.waitpid(root.pid, os.WNOHANG)
+        child_pid = int(pid_file.read_text())
+
+        def child_finished() -> bool:
+            try:
+                return not _is_alive(psutil.Process(child_pid))
+            except psutil.NoSuchProcess:
+                return True
+
+        assert _wait_until(child_finished)
+    finally:
+        for process in launched:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)

@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 import subprocess
 import time
 import threading
@@ -21,11 +22,13 @@ class ProcessWithLogging:
         log_threads: Tuple[threading.Thread, threading.Thread],
         *,
         process_group_id: Optional[int] = None,
+        launched_at: Optional[float] = None,
     ):
         self.process = process
         self.log_files = log_files
         self.log_threads = log_threads
         self._process_group_id = process_group_id
+        self.launched_at = time.monotonic() if launched_at is None else launched_at
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped process."""
@@ -41,14 +44,7 @@ class ProcessWithLogging:
 
     def kill_for_timeout(self) -> None:
         """Kill the evaluator's isolated group when available and reap the root."""
-        if self._process_group_id is None:
-            self.process.kill()
-        else:
-            try:
-                os.killpg(self._process_group_id, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        self.process.wait()
+        _kill_and_reap(self.process, self._process_group_id)
 
     def cleanup_logging(self):
         """Clean up logging threads and files."""
@@ -62,6 +58,17 @@ class ProcessWithLogging:
                 file_handle.close()
             except Exception as e:
                 logger.error(f"Error closing log file: {e}")
+
+
+def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
+    try:
+        if group_id is None:
+            process.kill()
+        else:
+            os.killpg(group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 def _stream_output(pipe, file_handle, verbose_prefix=None):
@@ -84,6 +91,35 @@ def _stream_output(pipe, file_handle, verbose_prefix=None):
         logger.error(f"Error in stream output thread: {e}")
     finally:
         pipe.close()
+
+
+def _start_log_threads(
+    process: subprocess.Popen,
+    files: Tuple[TextIO, TextIO],
+    verbose: bool,
+    group_id: Optional[int],
+) -> Tuple[threading.Thread, threading.Thread]:
+    stdout, stderr = process.stdout, process.stderr
+    assert stdout is not None and stderr is not None
+    pipes = (stdout, stderr)
+    threads: list[threading.Thread] = []
+    try:
+        for pipe, file, prefix in zip(pipes, files, ("STDOUT", "STDERR")):
+            thread = threading.Thread(
+                target=_stream_output,
+                args=(pipe, file, prefix if verbose else None),
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+    except BaseException:
+        _kill_and_reap(process, group_id)
+        for thread in threads:
+            thread.join(timeout=1.0)
+        for pipe in pipes[len(threads) :]:
+            pipe.close()
+        raise
+    return threads[0], threads[1]
 
 
 def submit(
@@ -120,44 +156,27 @@ def submit(
         env.update(env_overrides)
 
     start_new_session = os.name == "posix" and timeout is not None
-    # Use PIPE to capture output and redirect to files in real-time
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # Line buffered
-        universal_newlines=True,
-        env=env,
-        start_new_session=start_new_session,
-    )
-
-    # Open log files for writing with line buffering
-    stdout_file = open(stdout_path, "w", buffering=1)
-    stderr_file = open(stderr_path, "w", buffering=1)
-
-    # Start threads to stream output to files in real-time
-    stdout_thread = threading.Thread(
-        target=_stream_output,
-        args=(process.stdout, stdout_file, "STDOUT" if verbose else None),
-        daemon=True,
-    )
-    stderr_thread = threading.Thread(
-        target=_stream_output,
-        args=(process.stderr, stderr_file, "STDERR" if verbose else None),
-        daemon=True,
-    )
-
-    stdout_thread.start()
-    stderr_thread.start()
-
-    # Create wrapper with logging capabilities
-    wrapped_process = ProcessWithLogging(
-        process,
-        (stdout_file, stderr_file),
-        (stdout_thread, stderr_thread),
-        process_group_id=process.pid if start_new_session else None,
-    )
+    with ExitStack() as cleanup:
+        files = (
+            cleanup.enter_context(open(stdout_path, "w", buffering=1)),
+            cleanup.enter_context(open(stderr_path, "w", buffering=1)),
+        )
+        launched_at = time.monotonic()
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            start_new_session=start_new_session,
+        )
+        group_id = process.pid if start_new_session else None
+        threads = _start_log_threads(process, files, verbose, group_id)
+        wrapped_process = ProcessWithLogging(
+            process, files, threads, process_group_id=group_id, launched_at=launched_at
+        )
+        cleanup.pop_all()
 
     if verbose:
         logger.info(f"Submitted local process with PID: {process.pid}")
@@ -200,7 +219,7 @@ def monitor(
                     logger.info(f"Process {process.pid} is still running...")
                 time.sleep(poll_interval)
         elif process.returncode is None:
-            deadline = time.monotonic() + timeout_seconds
+            deadline = process.launched_at + timeout_seconds
             try:
                 process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
