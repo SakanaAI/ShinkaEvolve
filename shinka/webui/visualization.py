@@ -35,6 +35,7 @@ from shinka.webui.security import (
     STATIC_FILES,
     build_allowed_hosts,
     is_allowed_host,
+    is_loopback_host,
     resolve_under_root,
 )
 
@@ -1877,8 +1878,23 @@ def create_handler_factory(search_root, allowed_hosts=None):
     return handler_factory
 
 
-def _is_loopback_host(host: str) -> bool:
-    return host == "localhost" or host == "::1" or host.startswith("127.")
+class VisualizationServer(socketserver.TCPServer):
+    """The UI's HTTP server; knows which Host names its handlers accept."""
+
+    allow_reuse_address = True  # so a restart can take the same port at once
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        search_root: str,
+        allowed_hosts: FrozenSet[str],
+    ):
+        self.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        self.allowed_hosts = allowed_hosts
+        super().__init__(
+            (host, port), create_handler_factory(search_root, allowed_hosts)
+        )
 
 
 def make_server(
@@ -1886,38 +1902,36 @@ def make_server(
     search_root: str,
     host: str = DEFAULT_HOST,
     allowed_hosts: Sequence[str] = (),
-) -> socketserver.TCPServer:
+) -> VisualizationServer:
     """Bind the visualization server without starting to serve."""
     if not os.path.exists(WEBUI_DIR):
         raise FileNotFoundError(f"Webui directory not found: {WEBUI_DIR}")
 
-    handler_factory = create_handler_factory(
-        search_root, build_allowed_hosts(host, allowed_hosts)
+    return VisualizationServer(
+        host, port, search_root, build_allowed_hosts(host, allowed_hosts)
     )
-
-    # Reuse the socket so you can restart quickly
-    class ReusableTCPServer(socketserver.TCPServer):
-        allow_reuse_address = True
-        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
-
-    return ReusableTCPServer((host, port), handler_factory)
 
 
 def _url_host(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
-def _print_banner(httpd: socketserver.TCPServer, host: str, search_root: str) -> None:
+def _print_banner(httpd: VisualizationServer, host: str, search_root: str) -> None:
     port = httpd.server_address[1]
     print(f"[DEBUG] Server root directory: {WEBUI_DIR}")
     print(f"[DEBUG] Search root directory: {search_root}")
     print(f"\n[*] Serving http://{_url_host(host)}:{port}  (Ctrl+C to stop)")
-    if not _is_loopback_host(host):
+    if not is_loopback_host(host):
         print(
             "[!] Listening beyond localhost with no authentication: anyone "
             f"who can reach {host}:{port} can read the run data under "
             f"{search_root}."
         )
+    names = ", ".join(sorted(httpd.allowed_hosts))
+    print(
+        f"[*] Answering requests addressed to: {names}, or any IP address. "
+        "Add a name with --allowed-host."
+    )
 
 
 def start_server(
@@ -2019,7 +2033,9 @@ def main():
         help=(
             "Extra hostname browsers may use to reach the server, e.g. a DNS "
             "alias or reverse-proxy name. Repeatable. localhost, IP addresses "
-            "and this machine's hostname are always accepted."
+            "and this machine's hostname are always accepted; a server that "
+            "listens beyond localhost also accepts the machine's full and "
+            ".local names. The accepted names are printed at start-up."
         ),
     )
     parser.add_argument(

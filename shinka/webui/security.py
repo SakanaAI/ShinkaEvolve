@@ -8,7 +8,7 @@ whose ``Host`` header names this machine.
 import ipaddress
 import os
 import socket
-from typing import FrozenSet, Iterable, Optional
+from typing import FrozenSet, Iterable, Optional, Set
 
 DEFAULT_HOST = "127.0.0.1"
 
@@ -105,24 +105,51 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
+def is_loopback_host(host: str) -> bool:
+    """Whether a bind address is reachable from this machine only."""
+    return host in ("localhost", "::1") or host.startswith("127.")
+
+
+def _network_names(hostname: str) -> Set[str]:
+    """Other names machines on the network use for this one.
+
+    The short name, the ``.local`` name mDNS announces, and the full name the
+    resolver gives.
+    """
+    short_name = hostname.split(".")[0]
+    names = {short_name, f"{short_name}.local"}
+    full_name = socket.getfqdn(hostname)
+    # Without a reverse record some resolvers answer with the lookup name.
+    if not full_name.endswith(".arpa"):
+        names.add(full_name)
+    return names
+
+
 def build_allowed_hosts(
     bind_host: str, extra_hosts: Iterable[str] = ()
 ) -> FrozenSet[str]:
     """Hostnames a request may address the server by.
 
     Loopback names, this machine's hostname, the bind address when it is a
-    name, and any explicitly allowed extras. IP literals are always accepted
-    by :func:`is_allowed_host` and need not be listed.
+    name, and any explicitly allowed extras. A server that listens beyond
+    loopback also answers to the machine's network names; a loopback server
+    does not, because the full name comes from the network's resolver and
+    nothing reaches such a server by it. IP literals are always accepted by
+    :func:`is_allowed_host` and need not be listed.
     """
     names = set(LOOPBACK_HOSTNAMES)
     try:
-        names.add(socket.gethostname())
+        hostname = socket.gethostname()
     except OSError:
-        pass
+        hostname = ""
+    if hostname:
+        names.add(hostname)
+        if not is_loopback_host(bind_host):
+            names.update(_network_names(hostname))
     names.add(bind_host)
     names.update(extra_hosts)
     cleaned = (hostname_from_host_header(name) for name in names if name)
-    return frozenset(name for name in cleaned if name)
+    return frozenset(name for name in cleaned if name and not _is_ip_literal(name))
 
 
 def is_allowed_host(host_header: Optional[str], allowed_hosts: FrozenSet[str]) -> bool:

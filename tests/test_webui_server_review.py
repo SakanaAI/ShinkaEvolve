@@ -275,6 +275,7 @@ class _IdleServer:
     """Stands in for a bound server: ``main`` returns once serving ends."""
 
     server_address = ("127.0.0.1", 4321)
+    allowed_hosts = frozenset({"localhost"})
 
     def serve_forever(self) -> None:
         return None
@@ -373,3 +374,104 @@ def test_cli_exits_when_the_port_is_taken(
 )
 def test_printed_url_names_an_address_the_server_answers_on(host: str, url: str):
     assert visualization.browser_url(host, 8888) == url
+
+
+# --- names a server on the network answers to ----------------------------------
+
+
+@pytest.fixture
+def node17(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A machine called ``node17`` whose resolver knows its full name."""
+    monkeypatch.setattr(security.socket, "gethostname", lambda: "node17")
+    monkeypatch.setattr(
+        security.socket, "getfqdn", lambda name="": "node17.cluster.example.org"
+    )
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "node17:8888",
+        "node17.cluster.example.org:8888",
+        "node17.local:8888",
+        "NODE17.Local.",
+        "localhost:8888",
+    ],
+)
+def test_network_server_answers_to_the_machine_names(node17: None, host: str):
+    allowed = security.build_allowed_hosts("0.0.0.0")
+
+    assert security.is_allowed_host(host, allowed)
+
+
+@pytest.mark.parametrize(
+    "host", ["node17.evil.example", "cluster.example.org", "local", "node170.local"]
+)
+def test_network_server_refuses_other_names(node17: None, host: str):
+    allowed = security.build_allowed_hosts("0.0.0.0")
+
+    assert not security.is_allowed_host(host, allowed)
+
+
+def test_full_name_of_the_machine_also_covers_its_short_names(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    full_name = "node17.cluster.example.org"
+    monkeypatch.setattr(security.socket, "gethostname", lambda: full_name)
+    monkeypatch.setattr(security.socket, "getfqdn", lambda name="": full_name)
+
+    allowed = security.build_allowed_hosts("0.0.0.0")
+
+    assert {"node17", "node17.local", full_name} <= allowed
+
+
+@pytest.mark.parametrize("bind_host", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_server_does_not_ask_the_resolver_for_names(
+    monkeypatch: pytest.MonkeyPatch, bind_host: str
+):
+    # The full name comes from the network's resolver. A server only this
+    # machine can reach has no use for it, and trusting it would let that
+    # resolver choose a name the Host check accepts.
+    def no_lookup(name: str = "") -> str:
+        raise AssertionError("resolver consulted for a loopback server")
+
+    monkeypatch.setattr(security.socket, "gethostname", lambda: "node17")
+    monkeypatch.setattr(security.socket, "getfqdn", no_lookup)
+
+    allowed = security.build_allowed_hosts(bind_host)
+
+    assert security.is_allowed_host("node17:8000", allowed)
+    assert not security.is_allowed_host("node17.local:8000", allowed)
+
+
+def test_start_up_lists_the_names_the_server_answers_to(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+):
+    httpd = visualization.make_server(
+        0, str(tree / "results"), "127.0.0.1", ["viz.example.org"]
+    )
+    try:
+        visualization._print_banner(httpd, "127.0.0.1", str(tree / "results"))
+    finally:
+        httpd.server_close()
+
+    names_line = next(
+        line for line in capsys.readouterr().out.splitlines() if "Answering" in line
+    )
+    assert "localhost" in names_line
+    assert "viz.example.org" in names_line
+    assert "--allowed-host" in names_line
+
+
+def test_allowed_names_leave_out_addresses_and_reverse_lookup_names(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(security.socket, "gethostname", lambda: "node17")
+    monkeypatch.setattr(
+        security.socket, "getfqdn", lambda name="": "75.0.168.192.in-addr.arpa"
+    )
+
+    allowed = security.build_allowed_hosts("0.0.0.0", ["10.1.2.3", "alias"])
+
+    assert allowed == {"localhost", "node17", "node17.local", "alias"}
+    assert security.is_allowed_host("10.1.2.3:8000", allowed)
