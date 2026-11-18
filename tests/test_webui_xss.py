@@ -245,3 +245,30 @@ def test_download_names_cannot_carry_path_separators():
     assert run_js([source], "safeFilenamePart(7)") == "7"
     assert "gen${gen}" not in VIZ_TREE
     assert ".${extension}" not in VIZ_TREE
+
+
+# What each CDN script provides. A script whose global the page never touches
+# is attack surface and a download for nothing.
+LIBRARY_GLOBALS = {
+    r"/chart\.js@": "Chart",
+    r"/d3@": "d3",
+    r"/marked@": "marked",
+    r"/dompurify@": "DOMPurify",
+    r"/highlight\.js/": "hljs",
+    r"/diff@": "Diff",
+    r"/plotly-": "Plotly",
+    r"/jszip/": "JSZip",
+}
+
+
+@pytest.mark.parametrize("page", PAGE_NAMES)
+def test_every_loaded_library_is_used(page: str):
+    html = re.sub(r"<!--.*?-->", "", PAGES[page], flags=re.DOTALL)
+    own_code = "".join(re.findall(r"<script>(.*?)</script>", html, re.DOTALL))
+
+    for url in re.findall(r"<script\b[^>]*\bsrc=\"(https?://[^\"]+)\"", html):
+        provided = [
+            name for key, name in LIBRARY_GLOBALS.items() if re.search(key, url)
+        ]
+        assert len(provided) == 1, f"unknown library, add it to LIBRARY_GLOBALS: {url}"
+        assert re.search(rf"\b{provided[0]}\b\s*[.(]", own_code), f"never used: {url}"
