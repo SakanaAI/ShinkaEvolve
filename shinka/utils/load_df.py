@@ -34,12 +34,21 @@ def load_programs_to_df(
         as columns to the DataFrame.
     """
     # Local import: keeps shinka.utils importable without the database package.
-    from shinka.database.run_db_path import find_run_db_path
+    from shinka.database.run_db_path import (
+        AmbiguousRunDatabaseError,
+        find_run_db_path,
+    )
 
     if db_path_str.endswith(".sqlite") or db_path_str.endswith(".db"):
         db_file = Path(db_path_str)
     else:
-        db_file = find_run_db_path(db_path_str, default_db_name)
+        try:
+            db_file = find_run_db_path(db_path_str, default_db_name)
+        except AmbiguousRunDatabaseError as e:
+            print(f"Error: {e}")
+            return None
+        if db_file.name != default_db_name:
+            print(f"Loading {db_file.name}: {default_db_name} holds no programs.")
 
     if not db_file.exists():
         print(f"Error: Database file not found at {db_path_str}")

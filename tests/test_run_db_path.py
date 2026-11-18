@@ -287,6 +287,28 @@ def test_load_programs_to_df_reads_a_run_directory(tmp_path, db_name):
     assert sorted(frame["id"]) == ["p0", "p1", "p2"]
 
 
+def test_load_programs_to_df_names_the_file_it_loaded_instead(tmp_path, capsys):
+    _write_db(tmp_path / "custom.sqlite")
+
+    assert load_programs_to_df(str(tmp_path), verbose=False) is not None
+    assert "Loading custom.sqlite" in capsys.readouterr().out
+
+    _write_db(tmp_path / "programs.sqlite")
+
+    assert load_programs_to_df(str(tmp_path), verbose=False) is not None
+    assert "Loading" not in capsys.readouterr().out
+
+
+def test_load_programs_to_df_reports_databases_it_cannot_choose_between(
+    tmp_path, capsys
+):
+    _write_db(tmp_path / "a.sqlite")
+    _write_db(tmp_path / "b.sqlite")
+
+    assert load_programs_to_df(str(tmp_path), verbose=False) is None
+    assert "several program databases (a.sqlite, b.sqlite)" in capsys.readouterr().out
+
+
 def test_load_programs_to_df_reads_the_file_it_is_given(tmp_path):
     _write_db(tmp_path / "programs.sqlite", num_programs=3)
     _write_db(tmp_path / "other.sqlite", num_programs=1)
