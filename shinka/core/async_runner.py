@@ -225,6 +225,7 @@ class AsyncRunningJob:
     db_retry_count: int = 0  # Track number of DB write retry attempts
     last_persist_error: Optional[str] = None
     results_retrieved_at: Optional[float] = None
+    results_wait_deadline: Optional[float] = None  # monotonic clock
     completion_detected_at: Optional[float] = None
     discard_if_completed: bool = False
     evaluation_slot_released: bool = False
@@ -4749,6 +4750,16 @@ class ShinkaEvolveRunner:
             )
         return reads[source_job_id]
 
+    def _is_waiting_for_results(self, job: AsyncRunningJob) -> bool:
+        """Whether the job's results read is still running and still given time."""
+        read = getattr(self, "_result_reads", {}).get(self._source_job_key(job))
+        return (
+            read is not None
+            and not read.done()
+            and job.results_wait_deadline is not None
+            and time.monotonic() < job.results_wait_deadline
+        )
+
     async def _persist_completed_job(
         self, job: AsyncRunningJob
     ) -> CompletedJobPersistResult:
@@ -4772,45 +4783,62 @@ class ShinkaEvolveRunner:
             if job.completion_detected_at is None:
                 job.completion_detected_at = time.time()
 
-            # Get job results with timeout to prevent hanging
+            # Get job results with timeout to prevent hanging. Only the pass
+            # that starts a read waits for it: a read that outlasts the wait
+            # keeps running and later passes look in on it, so one stuck read
+            # cannot hold up the monitor again.
             results = None
             retrieval_failure = None
+            starts_read = source_job_id not in getattr(self, "_result_reads", ())
             read = self._result_read(job, source_job_id)
+            read_timeout = self._RESULTS_READ_TIMEOUT_SECONDS
+            read_patience = read_timeout * self.MAX_DB_RETRY_ATTEMPTS
+            if starts_read:
+                job.results_wait_deadline = time.monotonic() + read_patience
             try:
                 results = await asyncio.wait_for(
-                    asyncio.shield(read), timeout=self._RESULTS_READ_TIMEOUT_SECONDS
+                    asyncio.shield(read), timeout=read_timeout if starts_read else 0
                 )
                 logger.info(
                     f"📂 RESULTS: Got results for {job.job_id}: {results is not None}"
                 )
             except Exception as exc:
+                # The evaluation itself may be fine, so give the read another
+                # chance first. After that the generation is recorded as failed.
                 if read.done():
                     retrieval_failure = f"failed ({type(exc).__name__}): {exc}"
-                else:
-                    retrieval_failure = (
-                        f"timed out after {self._RESULTS_READ_TIMEOUT_SECONDS:g}s"
+                    self._queue_failed_db_job(
+                        job,
+                        log_prefix="❌ RESULTS ERROR:",
+                        error_message=(
+                            f"Getting results for {job.job_id} {retrieval_failure}"
+                        ),
                     )
-                    await self._record_generation_event(
-                        generation=job.generation,
-                        status="results_timeout",
-                        source_job_id=job.job_id,
-                    )
-            if retrieval_failure is not None:
-                # The evaluation itself may be fine, so retry the read first. Once
-                # retries run out the generation is recorded as failed below.
-                self._queue_failed_db_job(
-                    job,
-                    log_prefix="❌ RESULTS ERROR:",
-                    error_message=(
-                        f"Getting results for {job.job_id} {retrieval_failure}"
-                    ),
-                )
-                if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
-                    if read.done():
-                        # A failed read is started afresh by the next attempt.
+                    if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+                        # The next attempt starts the read afresh.
                         self._result_reads.pop(source_job_id, None)
+                        return CompletedJobPersistResult(job=job, success=False)
+                elif self._is_waiting_for_results(job):
+                    if starts_read:
+                        logger.error(
+                            f"❌ RESULTS ERROR: No results for {job.job_id} (gen "
+                            f"{job.generation}) after {read_timeout:g}s; waiting "
+                            f"up to {read_patience:g}s in all"
+                        )
+                        await self._record_generation_event(
+                            generation=job.generation,
+                            status="results_timeout",
+                            source_job_id=job.job_id,
+                        )
+                    self.failed_jobs_for_retry[self._retry_queue_key(job)] = job
                     return CompletedJobPersistResult(job=job, success=False)
-                read.cancel()  # Out of retries: stop waiting for it.
+                else:
+                    retrieval_failure = f"timed out after {read_patience:g}s"
+                    logger.error(
+                        f"❌ RESULTS ERROR: Getting results for {job.job_id} (gen "
+                        f"{job.generation}) {retrieval_failure}; giving up"
+                    )
+                    read.cancel()
             self._result_reads.pop(source_job_id, None)
             if job.results_retrieved_at is None:
                 job.results_retrieved_at = time.time()
@@ -5715,11 +5743,15 @@ class ShinkaEvolveRunner:
         successfully but failed to write to the database due to timeouts
         or errors.
         """
-        if not self.failed_jobs_for_retry:
+        # Take a snapshot of jobs to retry (avoid modification during iter). A
+        # job whose results read is still running has nothing to retry yet.
+        jobs_to_retry = [
+            (queue_key, job)
+            for queue_key, job in self.failed_jobs_for_retry.items()
+            if not self._is_waiting_for_results(job)
+        ]
+        if not jobs_to_retry:
             return
-
-        # Take a snapshot of jobs to retry (avoid modification during iter)
-        jobs_to_retry = list(self.failed_jobs_for_retry.items())
 
         logger.info(
             f"🔄 RETRY: Attempting to retry {len(jobs_to_retry)} failed DB jobs"

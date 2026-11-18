@@ -27,8 +27,17 @@ def _enable_retry_loop(runner: ShinkaEvolveRunner) -> None:
     runner.slot_available = asyncio.Event()
 
 
-def test_results_timeout_is_retried_on_the_same_read(tmp_path: Path) -> None:
-    """A retry waits for the slow read: it must not tie up another scheduler thread."""
+async def _retry_until_settled(runner: ShinkaEvolveRunner) -> None:
+    """Run retry passes, as the job monitor does, until the queue is empty."""
+    give_up_at = time.monotonic() + 10.0
+    while runner.failed_jobs_for_retry:
+        assert time.monotonic() < give_up_at, "retry queue never emptied"
+        await asyncio.sleep(0.01)
+        await runner._retry_failed_db_jobs()
+
+
+def test_slow_results_are_picked_up_from_the_same_read(tmp_path: Path) -> None:
+    """A retry looks in on the slow read: it must not tie up another scheduler thread."""
 
     async def run() -> None:
         async with open_database(tmp_path) as (sync_db, async_db):
@@ -39,7 +48,7 @@ def test_results_timeout_is_retried_on_the_same_read(tmp_path: Path) -> None:
                 return good_results(2.5)
 
             scheduler = StaticScheduler(slow_read)
-            runner = make_runner(async_db, scheduler, max_retries=5)
+            runner = make_runner(async_db, scheduler, max_retries=100)
             runner._RESULTS_READ_TIMEOUT_SECONDS = 0.05
             _enable_retry_loop(runner)
             job = make_job()
@@ -49,11 +58,11 @@ def test_results_timeout_is_retried_on_the_same_read(tmp_path: Path) -> None:
 
             assert children(sync_db) == []
             assert runner.failed_jobs_for_retry == {"job-1": job}
-            assert job.db_retry_count == 2
+            assert job.db_retry_count == 0  # waiting is not a failed attempt
             assert scheduler.calls == 1
 
             results_ready.set()
-            await runner._retry_failed_db_jobs()
+            await _retry_until_settled(runner)
 
             (child,) = children(sync_db)
             assert child.correct == 1 and child.combined_score == 2.5
@@ -75,15 +84,46 @@ def test_results_that_never_arrive_become_a_failed_row(tmp_path: Path) -> None:
             job = make_job(generation=6)
 
             await runner._process_completed_jobs_safely([job])
-            await runner._retry_failed_db_jobs()
+            assert children(sync_db) == []
+            await _retry_until_settled(runner)
 
             (child,) = children(sync_db)
             assert child.generation == 6 and child.correct == 0
             assert child.metadata["results_missing"] is True
-            assert "timed out after 0.05s" in child.text_feedback
+            assert "timed out after 0.1s" in child.text_feedback
             assert runner.failed_jobs_for_retry == {}
             assert scheduler.calls == 1
             assert runner._result_reads == {}  # the abandoned read is let go
+
+    asyncio.run(run())
+
+
+def test_stuck_results_read_holds_up_only_the_first_pass(tmp_path: Path) -> None:
+    """While a pass waits, the monitor polls no job and handles no completion."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            never = asyncio.Event()
+            scheduler = StaticScheduler(never.wait)
+            runner = make_runner(async_db, scheduler, max_retries=100)
+            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.05
+            _enable_retry_loop(runner)
+            job = make_job()
+
+            await runner._process_completed_jobs_safely([job])
+            # Any wait from here on would be a full read timeout.
+            runner._RESULTS_READ_TIMEOUT_SECONDS = 30.0
+            for _ in range(10):
+                await asyncio.wait_for(runner._retry_failed_db_jobs(), timeout=1.0)
+            assert not await asyncio.wait_for(
+                runner._process_single_job_safely(job), timeout=1.0
+            )
+
+            assert children(sync_db) == []
+            assert runner.failed_jobs_for_retry == {"job-1": job}
+            assert job.db_retry_count == 0
+            assert scheduler.calls == 1
+            runner._result_reads.pop(runner._source_job_key(job)).cancel()
 
     asyncio.run(run())
 
@@ -166,9 +206,9 @@ def test_waiting_for_results_is_not_booked_as_evaluation_time(tmp_path: Path) ->
 
             await runner._process_completed_jobs_safely([job])
             first_pass_ended_at = time.time()
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
             results_ready.set()
-            await runner._retry_failed_db_jobs()
+            await _retry_until_settled(runner)
 
             (child,) = children(sync_db)
             assert child.metadata["evaluation_finished_at"] < first_pass_ended_at
@@ -454,7 +494,7 @@ def test_job_out_of_retries_counts_as_in_flight_until_its_row_is_written(
             async_db.add_program_async = observing_add
 
             await runner._process_completed_jobs_safely([make_job()])
-            await runner._retry_failed_db_jobs()
+            await _retry_until_settled(runner)
 
             assert len(children(sync_db)) == 1
             assert in_flight_during_write == [1]
