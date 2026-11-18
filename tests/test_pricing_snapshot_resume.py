@@ -10,9 +10,12 @@ from shinka.pricing.catalog import (
     CatalogSnapshot,
     ModelPrice,
     PricingCatalog,
+    PricingConfig,
+    PricingMode,
     _catalog_digest,
     catalog_from_models_dev_payload,
     load_run_pricing_snapshot,
+    refresh_model_catalog,
     write_run_pricing_snapshot,
 )
 
@@ -28,6 +31,15 @@ MODELS_DEV_PAYLOAD = {
         }
     }
 }
+
+
+@pytest.fixture(autouse=True)
+def _restore_bundled_catalog(tmp_path: Path):
+    """Loading a snapshot activates it process-wide; later tests need the default."""
+    yield
+    refresh_model_catalog(
+        PricingConfig(mode=PricingMode.OFFLINE, cache_dir=tmp_path / "restore-cache")
+    )
 
 
 def _snapshot(catalog: PricingCatalog) -> CatalogSnapshot:
