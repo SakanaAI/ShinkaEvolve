@@ -104,6 +104,92 @@ def test_incorrect_child_with_non_finite_score_is_stored_with_zero(
     asyncio.run(run())
 
 
+UNUSABLE_METRICS_OF_INCORRECT_CHILD = {
+    "null-score": (
+        {"combined_score": None, "public": {"stage": "compile"}},
+        0.0,
+        {"stage": "compile"},
+        "non-numeric 'combined_score'",
+    ),
+    "string-score": ({"combined_score": "n/a"}, 0.0, {}, "non-numeric"),
+    "public-not-object": (
+        {"combined_score": 0.1, "public": [1, 2]},
+        0.1,
+        {},
+        "'public' that is not a JSON object",
+    ),
+    "metrics-not-object": ([1.0], 0.0, {}, "is not a JSON object"),
+}
+
+
+@pytest.mark.parametrize(
+    ("metrics", "score", "public", "diagnostic"),
+    UNUSABLE_METRICS_OF_INCORRECT_CHILD.values(),
+    ids=UNUSABLE_METRICS_OF_INCORRECT_CHILD.keys(),
+)
+def test_incorrect_child_keeps_its_feedback_whatever_its_metrics(
+    tmp_path: Path, metrics: Any, score: float, public: dict[str, Any], diagnostic: str
+) -> None:
+    """The evaluator's feedback is what the next proposal has to go on."""
+    results = _results({"correct": False, "error": "compile error at line 3"}, metrics)
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(results))
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 0
+            assert child.combined_score == score
+            assert child.public_metrics == public
+            assert child.text_feedback == "compile error at line 3"
+            assert diagnostic in child.metadata["stderr_log"]
+            assert "evaluation_failed" not in child.metadata
+
+    asyncio.run(run())
+
+
+REJECTED_RESULTS_WITH_FEEDBACK = {
+    "integer-verdict": _results(
+        {"correct": 0},
+        {"combined_score": 0.3, "text_feedback": "wrong answer on case 7"},
+    ),
+    "metrics-missing": _results(
+        {"correct": False, "error": "wrong answer on case 7"},
+        {},
+        evaluation_error="Metrics file not found at results/metrics.json",
+    ),
+    "infinite-score": _results(
+        {"correct": True},
+        {"combined_score": math.inf, "text_feedback": ["wrong answer", "on case 7"]},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "results",
+    REJECTED_RESULTS_WITH_FEEDBACK.values(),
+    ids=REJECTED_RESULTS_WITH_FEEDBACK.keys(),
+)
+def test_rejected_child_results_keep_the_evaluators_feedback(
+    tmp_path: Path, results: dict[str, Any]
+) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(results))
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 0 and child.combined_score == 0.0
+            assert child.metadata["evaluation_failed"] is True
+            assert child.text_feedback.startswith("Program evaluation failed: ")
+            assert "on case 7" in child.text_feedback
+
+    asyncio.run(run())
+
+
 def test_valid_child_results_are_stored_as_reported(tmp_path: Path) -> None:
     async def run() -> None:
         async with open_database(tmp_path) as (sync_db, async_db):

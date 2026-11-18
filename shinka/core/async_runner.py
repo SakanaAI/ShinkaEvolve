@@ -4698,7 +4698,9 @@ class ShinkaEvolveRunner:
                         results, exit_status=self._evaluator_exit_status(job)
                     )
                 except ValueError as exc:
-                    evaluation = failed_evaluation(f"Program evaluation failed: {exc}")
+                    evaluation = failed_evaluation(
+                        f"Program evaluation failed: {exc}", results
+                    )
                 stdout_log = truncate_log_tail(
                     results.get("stdout_log", ""),
                     self.db_config.max_stdout_log_chars,

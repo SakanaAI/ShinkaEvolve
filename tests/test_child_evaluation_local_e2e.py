@@ -63,7 +63,7 @@ CASES = {
         """,
         False,
         0.0,
-        "must be finite",
+        "non-finite 'combined_score'",
     ),
     "string-verdict": (
         """
