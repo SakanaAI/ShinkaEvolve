@@ -12,7 +12,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Isolate seed attempts from stale artifacts, validate results, and enforce
   local deadlines from launch in PR #220. Verify the submitted Slurm job's
   identity and successful completion, including when accounting data is
-  temporarily unavailable.
+  temporarily unavailable. Bound cold-cache Docker image preparation for
+  synchronous Slurm submissions.
 - Serialize SQLite run-state updates and repair legacy run metadata in PR #221.
   Preserve deferred maintenance and valid best-score watermarks during upgrades,
   and restore best-program selection with the normal ranking rules.
