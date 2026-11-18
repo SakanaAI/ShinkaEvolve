@@ -53,6 +53,10 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
+from shinka.core.endpoint_failures import (
+    endpoint_failures_before_stop,
+    probabilities_without,
+)
 from shinka.embed import AsyncEmbeddingClient
 from shinka.launch import JobScheduler, JobConfig, LocalJobConfig
 from shinka.edit.async_apply import (
@@ -287,6 +291,11 @@ def _validate_evo_config_model_env_access(evo_config: EvolutionConfig) -> None:
 
 class ShinkaEvolveRunner:
     """Fully async evolution runner with concurrent proposal generation."""
+
+    # Proposals in a row that found no working LLM endpoint, and the failure
+    # that stopped the run once there were too many.
+    _consecutive_endpoint_failures = 0
+    _endpoint_stop: Optional[Dict[str, Any]] = None
 
     def __init__(
         self,
@@ -2826,6 +2835,22 @@ class ShinkaEvolveRunner:
         """Coordinate proposal generation to keep evaluation queue full."""
         while not self.should_stop.is_set():
             try:
+                if self._endpoint_stop is not None:
+                    # Let submitted evaluations finish, then end the run.
+                    await self._cleanup_completed_proposal_tasks()
+                    if self._get_in_flight_work_count() == 0:
+                        await self._record_generation_event(
+                            generation=self._endpoint_stop["generation"],
+                            status="stopped_llm_endpoint_error",
+                            details=self._endpoint_stop,
+                        )
+                        self.should_stop.set()
+                        self.slot_available.set()
+                        self.finalization_complete.set()
+                        break
+                    await self._wait_for_slot_or_stop(timeout=5.0)
+                    continue
+
                 # Check for stuck system before normal processing
                 if self._is_system_stuck():
                     recovery_success = await self._handle_stuck_system()
@@ -3146,6 +3171,7 @@ class ShinkaEvolveRunner:
             model_posterior = None
             if getattr(self, "llm_selection", None) is not None:
                 model_sample_probs, model_posterior = self.llm_selection.select_llm()
+            failed_models: Set[Optional[str]] = set()
 
             for attempt in range(self.evo_config.max_novelty_attempts):
                 for resample in range(self.evo_config.max_patch_resamples):
@@ -3214,6 +3240,9 @@ class ShinkaEvolveRunner:
 
                         code_diff, meta_patch_data, success = patch_result
                         api_costs += meta_patch_data.get("api_costs", 0.0)
+                        endpoint_failed = bool(meta_patch_data.get("endpoint_error"))
+                        if not endpoint_failed:
+                            self._consecutive_endpoint_failures = 0
 
                         if not success:
                             last_failure_stage = "proposal"
@@ -3222,6 +3251,15 @@ class ShinkaEvolveRunner:
                                 or meta_patch_data.get("error_attempt")
                                 or "Patch generation failed before evaluation"
                             )
+                            if endpoint_failed:
+                                # Another model of the pool may still be reachable.
+                                failed_models.add(meta_patch_data.get("model_name"))
+                                other_models = self._other_model_probs(
+                                    failed_models, model_posterior
+                                )
+                                if other_models is not None:
+                                    model_sample_probs = other_models
+                                    continue
                             if meta_patch_data.get("non_retryable"):
                                 break
                             continue
@@ -3453,6 +3491,21 @@ class ShinkaEvolveRunner:
                     )
                     return None
 
+            endpoint_error = meta_patch_data.get("endpoint_error")
+            if endpoint_error and self._endpoint_failure_stops_run(
+                generation, endpoint_error
+            ):
+                # Not settled: a resumed run proposes this generation again.
+                pending_cost = max(
+                    api_costs + embed_cost + novelty_total_cost, scope.pending
+                )
+                self._post_api_cost(pending_cost)
+                costs_transferred = True
+                await self._record_unattached_cost(
+                    pending_cost, "proposal_endpoint_failure", generation
+                )
+                return None
+
             logger.warning(
                 f"Failed to generate proposal for generation {generation} after all attempts"
             )
@@ -3571,6 +3624,43 @@ class ShinkaEvolveRunner:
 
         metadata_file = attempt_dir / "metadata.json"
         await write_file_async(str(metadata_file), json.dumps(metadata, indent=2))
+
+    def _other_model_probs(
+        self,
+        failed_models: Set[Optional[str]],
+        model_posterior: Optional[List[float]],
+    ) -> Optional[List[float]]:
+        """Sampling probabilities over the pool's models whose endpoint has not failed."""
+        if None in failed_models:
+            return None  # The failing model is unknown, so none can be ruled out.
+        weights = (
+            model_posterior
+            if model_posterior is not None
+            else self.llm.model_sample_probs
+        )
+        return probabilities_without(self.llm.model_names, failed_models, weights)
+
+    def _endpoint_failure_stops_run(
+        self, generation: int, endpoint_error: Dict[str, Any]
+    ) -> bool:
+        """Count a proposal that found no working endpoint; True once the run stops."""
+        self._consecutive_endpoint_failures += 1
+        if self._endpoint_stop is not None:
+            return True
+        limit = endpoint_failures_before_stop(len(self.llm.model_names))
+        if self._consecutive_endpoint_failures < limit:
+            return False
+        self._endpoint_stop = {"generation": generation, **endpoint_error}
+        logger.error(
+            "Stopping the run: the LLM endpoint answered HTTP %s (%s) for generation "
+            "%s and no model of the pool is reachable. Check the credentials, "
+            "model access and endpoint, then resume; the generation was not consumed.",
+            endpoint_error.get("status_code"),
+            endpoint_error.get("code"),
+            generation,
+        )
+        self.slot_available.set()  # Wake the coordinator.
+        return True
 
     def _classify_failed_proposal(
         self,
@@ -3908,6 +3998,7 @@ class ShinkaEvolveRunner:
         """
         output_limit_error = None
         total_costs = 0.0
+        llm_kwargs: Dict[str, Any] = {}
         try:
             # Generate fix prompt with ancestor inspirations
             patch_sys, patch_msg, patch_type = self.prompt_sampler.sample_fix(
@@ -4117,6 +4208,7 @@ class ShinkaEvolveRunner:
                 "error_attempt": str(exc),
                 "non_retryable": True,
                 "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
+                "model_name": llm_kwargs.get("model_name"),
             }
             return None, metadata, False
 
@@ -4147,6 +4239,7 @@ class ShinkaEvolveRunner:
         original_task_sys_msg = self.prompt_sampler.task_sys_msg
         output_limit_error = None
         total_costs = 0.0
+        llm_kwargs: Dict[str, Any] = {}
 
         try:
             # Get system prompt (potentially evolved)
@@ -4384,6 +4477,7 @@ class ShinkaEvolveRunner:
                 "error_attempt": str(exc),
                 "non_retryable": True,
                 "endpoint_error": {"status_code": exc.status_code, "code": exc.code},
+                "model_name": llm_kwargs.get("model_name"),
             }
             return None, metadata, False
 
@@ -6514,10 +6608,17 @@ class ShinkaEvolveRunner:
             if p.generation > 0 and not is_island_copy(p)
             and (p.metadata or {}).get("node_kind") != "failed_proposal"
         ] if self.db else []
-        self.evolution_failed = (
+        self.evolution_failed = self._endpoint_stop is not None or (
             self.evo_config.num_generations > 1 and not evolved_programs
         )
-        if self.evolution_failed:
+        if self._endpoint_stop is not None:
+            logger.error(
+                "ASYNC EVOLUTION STOPPED: no LLM endpoint was reachable (HTTP %s, %s). "
+                "Resume the run once the endpoint works again.",
+                self._endpoint_stop.get("status_code"),
+                self._endpoint_stop.get("code"),
+            )
+        elif self.evolution_failed:
             logger.error(
                 "ASYNC EVOLUTION FAILED: no evolved program was produced; "
                 "seed programs do not count as evolution success"
