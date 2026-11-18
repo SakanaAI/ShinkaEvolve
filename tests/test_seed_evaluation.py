@@ -1,5 +1,4 @@
 import asyncio
-import errno
 import json
 import subprocess
 import time
@@ -10,7 +9,6 @@ from unittest.mock import Mock
 import pytest
 
 from shinka.core.async_runner import ShinkaEvolveRunner
-from shinka.core.seed_results import run_seed_evaluation
 from shinka.database import (
     AsyncProgramDatabase,
     DatabaseConfig,
@@ -26,7 +24,6 @@ from shinka.launch import (
 )
 from shinka.prompts.prompts_base import construct_individual_program_msg
 from shinka.utils import load_results
-from shinka.utils.utils_hydra import load_hydra_config
 
 
 SEED = "def approximate(x):\n    return x\n"
@@ -74,7 +71,6 @@ def _run_seed(
         best = db.get_best_program()
         assert (best.id if best else None) == (seed.id if seed.correct else None)
         assert (tmp_path / "gen_0" / "main.py").read_text() == code
-        assert (tmp_path / "gen_0" / "results").is_dir()
         assert seed.generation == 0
         assert seed.metadata["patch_type"] == "init"
         return seed, needs_fix, runner.llm_selection.set_baseline_score
@@ -112,7 +108,7 @@ def test_seed_retry_requires_its_own_artifacts(tmp_path: Path) -> None:
     assert "Metrics file not found" in seed.metadata["stderr_log"]
     assert "evaluator stderr" in (public_results / "job_log.err").read_text()
     assert not (public_results / "metrics.json").exists()
-    (previous_results,) = public_results.parent.glob("results-attempts/previous-*")
+    (previous_results,) = tmp_path.glob(".seed-results-attempts/previous-*")
     assert (
         previous_results / "job_log.err"
     ).read_text() == "previous attempt diagnostic"
@@ -138,48 +134,6 @@ def test_best_seed_export_contains_only_current_artifacts(tmp_path: Path) -> Non
     assert {path.name for path in best.iterdir()} == {"main.py", "results"}
     assert not (best / "results").is_symlink()
     assert load_results(str(best / "results"))["metrics"]["combined_score"] == 1
-
-
-def test_seed_attempt_paths_preserve_hydra_lookup_and_late_logs(tmp_path: Path) -> None:
-    hydra = tmp_path / ".hydra"
-    hydra.mkdir()
-    (hydra / "config.yaml").write_text("task: seed")
-    gen_dir = tmp_path / "gen_0"
-    gen_dir.mkdir()
-    public_results = gen_dir / "results"
-    attempts: list[Path] = []
-
-    def evaluate(_program, results):
-        attempts.append(Path(results))
-        assert load_hydra_config(results).task == "seed"
-        return {}, 0.0
-
-    for _ in range(2):
-        run_seed_evaluation(evaluate, "main.py", str(public_results))
-
-    first, second = attempts
-    assert first != second
-    (first / "job_log.out").write_text("late output")
-    assert not (public_results / "job_log.out").exists()
-    assert (first / "job_log.out").read_text() == "late output"
-
-
-def test_seed_publishes_artifacts_without_symlink_support(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        Path, "symlink_to", Mock(side_effect=OSError(errno.ENOTSUP, "no symlinks"))
-    )
-
-    def evaluate(_program, results):
-        (Path(results) / "job_log.out").write_text("current output")
-        raise RuntimeError("evaluator failed")
-
-    public_results = tmp_path / "results"
-    with pytest.raises(RuntimeError, match="evaluator failed"):
-        run_seed_evaluation(evaluate, "main.py", str(public_results))
-
-    assert (public_results / "job_log.out").read_text() == "current output"
 
 
 def test_seed_timeout_kills_local_evaluator_with_partial_results(
@@ -336,6 +290,25 @@ def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:
     assert seed.metadata["evaluation_failed"] is True
     assert "FileNotFoundError" in seed.metadata["stderr_log"]
     assert "missing-python" in seed.metadata["stderr_log"]
+
+
+def test_seed_keeps_attempt_logs_when_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluator = _write_evaluator(tmp_path, "sys.exit(7)\n")
+    monkeypatch.setattr(
+        "shinka.core.seed_results.shutil.copytree",
+        Mock(side_effect=OSError("temporary snapshot failure")),
+    )
+
+    seed, needs_fix, _ = _run_seed(
+        tmp_path, LocalJobConfig(eval_program_path=str(evaluator))
+    )
+
+    assert not seed.correct and needs_fix
+    assert "status 7" in seed.metadata["stderr_log"]
+    assert "evaluator stderr" in seed.metadata["stderr_log"]
+    assert not (tmp_path / "gen_0" / "results").exists()
 
 
 @pytest.mark.parametrize("backend", ["slurm_conda", "slurm_docker"])

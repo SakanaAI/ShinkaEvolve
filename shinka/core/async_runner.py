@@ -68,7 +68,7 @@ from shinka.core.prompt_evolver import (
     AsyncSystemPromptEvolver,
 )
 from shinka.core.runtime_slots import LogicalSlotPool
-from shinka.core.seed_results import copy_seed_generation, run_seed_evaluation
+from shinka.core.seed_results import SeedResultAttempt
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
 from shinka.pricing.catalog import (
@@ -1672,13 +1672,14 @@ class ShinkaEvolveRunner:
         evaluation_started_at = time.time()
         evaluation_diagnostic = None
         evaluation_failed = False
+        seed_attempt = SeedResultAttempt(results_dir)
         try:
             if self.verbose:
                 logger.info(f"Starting initial program evaluation: {exec_fname}")
 
             # Run the evaluation synchronously for generation 0
             results, rtime = await asyncio.get_running_loop().run_in_executor(
-                None, run_seed_evaluation, self.scheduler.run, exec_fname, results_dir
+                None, seed_attempt.run, self.scheduler.run, exec_fname
             )
 
             if self.verbose:
@@ -1718,7 +1719,7 @@ class ShinkaEvolveRunner:
             evaluation_diagnostic = (
                 f"Initial program evaluation failed ({type(exc).__name__}): {exc}"
             )
-            results = load_result_logs(results_dir)
+            results = load_result_logs(str(seed_attempt.path))
             correct_val = False
             combined_score = 0.0
             metrics = {}
@@ -6361,10 +6362,7 @@ class ShinkaEvolveRunner:
                 """Synchronous file operations to run in executor."""
                 if best_dir.exists():
                     shutil.rmtree(best_dir)
-                if best_program.generation == 0:
-                    copy_seed_generation(Path(source_dir), best_dir)
-                else:
-                    shutil.copytree(source_dir, best_dir)
+                shutil.copytree(source_dir, best_dir)
 
             await loop.run_in_executor(None, sync_file_operations)
 
