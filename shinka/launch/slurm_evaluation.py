@@ -29,22 +29,22 @@ FAILED_STATES = {
 
 
 def monitor_evaluation(
-    job_id: str, results_dir: str, poll_interval: float = 10
+    job_id: str, results_dir: str, *, job_name: str, poll_interval: float = 10
 ) -> dict[str, Any]:
     """Load artifacts only after the evaluator has verifiably succeeded."""
     if job_id.startswith("local-"):
         _wait_for_local_success(job_id, poll_interval)
     else:
-        _wait_for_queue_exit(job_id, poll_interval)
-        _require_terminal_success(job_id)
+        _wait_for_queue_exit(job_id, job_name, poll_interval)
+        _require_terminal_success(job_id, job_name)
     return load_results(results_dir)
 
 
-def _wait_for_queue_exit(job_id: str, poll_interval: float) -> None:
+def _wait_for_queue_exit(job_id: str, job_name: str, poll_interval: float) -> None:
     consecutive_errors = 0
     while True:
         try:
-            status = _queue_status(job_id)
+            status = _queue_status(job_id, job_name)
         except (OSError, subprocess.SubprocessError) as exc:
             consecutive_errors += 1
             if consecutive_errors >= STATUS_ERROR_LIMIT:
@@ -59,10 +59,18 @@ def _wait_for_queue_exit(job_id: str, poll_interval: float) -> None:
         time.sleep(poll_interval)
 
 
-def _queue_status(job_id: str) -> str:
+def _queue_status(job_id: str, job_name: str) -> str:
     try:
         result = subprocess.run(
-            ["squeue", "-j", job_id, "--noheader", "--states=all", "--format=%T"],
+            [
+                "squeue",
+                "-j",
+                job_id,
+                f"--name={job_name}",
+                "--noheader",
+                "--states=all",
+                "--format=%T",
+            ],
             capture_output=True,
             text=True,
             check=True,
@@ -95,7 +103,7 @@ def _wait_for_local_success(job_id: str, poll_interval: float) -> None:
         time.sleep(poll_interval)
 
 
-def _require_terminal_success(job_id: str) -> None:
+def _require_terminal_success(job_id: str, job_name: str) -> None:
     details = {}
     for attempt in range(TERMINAL_STATUS_ATTEMPTS):
         for source, read_status in (
@@ -103,7 +111,7 @@ def _require_terminal_success(job_id: str) -> None:
             ("controller", _read_controller),
         ):
             try:
-                record = read_status(job_id)
+                record = read_status(job_id, job_name)
             except (OSError, subprocess.SubprocessError) as exc:
                 details[source] = str(exc)
                 continue
@@ -126,7 +134,7 @@ def _require_terminal_success(job_id: str) -> None:
     )
 
 
-def _read_accounting(job_id: str) -> tuple[str, str] | None:
+def _read_accounting(job_id: str, job_name: str) -> tuple[str, str] | None:
     # Allocation-only output prevents a successful batch/extern step from
     # masking a failed job. Widen State to avoid Slurm's truncated labels.
     result = subprocess.run(
@@ -137,7 +145,7 @@ def _read_accounting(job_id: str) -> tuple[str, str] | None:
             "--allocations",
             "--noheader",
             "--parsable2",
-            "--format=JobIDRaw,State%40,ExitCode",
+            "--format=JobIDRaw,JobName%80,State%40,ExitCode",
         ],
         capture_output=True,
         text=True,
@@ -148,13 +156,17 @@ def _read_accounting(job_id: str) -> tuple[str, str] | None:
         [field.strip() for field in line.split("|")]
         for line in result.stdout.splitlines()
     ]
-    matches = [record for record in records if len(record) == 3 and record[0] == job_id]
-    if len(matches) != 1 or not matches[0][1] or not matches[0][2]:
+    matches = [
+        record
+        for record in records
+        if len(record) == 4 and record[:2] == [job_id, job_name]
+    ]
+    if len(matches) != 1 or not matches[0][2] or not matches[0][3]:
         return None
-    return matches[0][1], matches[0][2]
+    return matches[0][2], matches[0][3]
 
 
-def _read_controller(job_id: str) -> tuple[str, str] | None:
+def _read_controller(job_id: str, job_name: str) -> tuple[str, str] | None:
     result = subprocess.run(
         ["scontrol", "--oneliner", "show", "job", job_id],
         capture_output=True,
@@ -165,13 +177,18 @@ def _read_controller(job_id: str) -> tuple[str, str] | None:
     records = [line for line in result.stdout.splitlines() if line.strip()]
     if len(records) != 1:
         return None
-    fields: dict[str, list[str]] = {"JobId": [], "JobState": [], "ExitCode": []}
+    fields: dict[str, list[str]] = {
+        "JobId": [],
+        "JobName": [],
+        "JobState": [],
+        "ExitCode": [],
+    }
     for token in records[0].split():
         name, _, value = token.partition("=")
         if name in fields:
             fields[name].append(value)
     if any(len(values) != 1 or not values[0] for values in fields.values()):
         return None
-    if fields["JobId"][0] != job_id:
+    if fields["JobId"][0] != job_id or fields["JobName"][0] != job_name:
         return None
     return fields["JobState"][0], fields["ExitCode"][0]

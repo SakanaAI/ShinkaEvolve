@@ -186,6 +186,13 @@ exit $?
 """
 
 
+def _sbatch_command(sbatch_path: str, job_name: Optional[str]) -> list[str]:
+    # The CLI option takes precedence over SBATCH_JOB_NAME.
+    if job_name is not None:
+        return ["sbatch", f"--job-name={job_name}", sbatch_path]
+    return ["sbatch", sbatch_path]
+
+
 def submit_docker(
     log_dir: str,
     cmd: list[str],
@@ -202,6 +209,7 @@ def submit_docker(
     local: bool = False,
     *,
     command_timeout: Optional[float] = None,
+    job_name: Optional[str] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -220,7 +228,6 @@ def submit_docker(
             eval_env=eval_env,
             **sbatch_kwargs,
         )
-    job_name = f"docker-{uuid.uuid4().hex[:6]}"
     log_dir = os.path.abspath(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
@@ -261,7 +268,7 @@ fi
         additional_sbatch_params += f"#SBATCH --{k}={v}"
 
     sbatch_script = SBATCH_DOCKER_TEMPLATE.format(
-        job_name=job_name,
+        job_name=job_name or f"docker-{uuid.uuid4().hex[:6]}",
         log_dir=log_dir,
         time=time,
         partition=partition,
@@ -280,7 +287,7 @@ fi
         sbatch_path = f.name
 
     result = subprocess.run(
-        ["sbatch", sbatch_path],
+        _sbatch_command(sbatch_path, job_name),
         stdout=subprocess.PIPE,
         check=True,
         text=True,
@@ -309,6 +316,7 @@ def submit_conda(
     local: bool = False,
     *,
     command_timeout: Optional[float] = None,
+    job_name: Optional[str] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -327,7 +335,6 @@ def submit_conda(
             eval_env=eval_env,
             **sbatch_kwargs,
         )
-    job_name = f"conda-{uuid.uuid4().hex[:6]}"
     log_dir = os.path.abspath(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
@@ -348,7 +355,7 @@ def submit_conda(
         additional_sbatch_params += f"#SBATCH --{k}={v}"
 
     sbatch_script = SBATCH_CONDA_TEMPLATE.format(
-        job_name=job_name,
+        job_name=job_name or f"conda-{uuid.uuid4().hex[:6]}",
         log_dir=log_dir,
         time=time,
         partition=partition,
@@ -367,7 +374,7 @@ def submit_conda(
 
     try:
         result = subprocess.run(
-            ["sbatch", sbatch_path],
+            _sbatch_command(sbatch_path, job_name),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,

@@ -230,7 +230,11 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
 def test_slurm_seed_requires_successful_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, state: str
 ) -> None:
+    job_name = ""
+
     def submit(results_dir, *args, **kwargs):
+        nonlocal job_name
+        job_name = kwargs["job_name"]
         path = Path(results_dir)
         (path / "correct.json").write_text('{"correct": true}')
         (path / "metrics.json").write_text('{"combined_score": 42}')
@@ -238,7 +242,7 @@ def test_slurm_seed_requires_successful_job(
         return "123"
 
     def run(cmd, **kwargs):
-        output = "" if cmd[0] == "squeue" else f"123|{state}|0:0"
+        output = "" if cmd[0] == "squeue" else f"123|{job_name}|{state}|0:0"
         return subprocess.CompletedProcess(cmd, 0, stdout=output)
 
     monkeypatch.setattr(f"shinka.launch.scheduler.submit_{backend}", submit)
@@ -285,7 +289,7 @@ def test_slurm_control_failures_enter_seed_fix_mode(
         if cmd[0] == "sbatch":
             line = next(
                 line
-                for line in Path(cmd[1]).read_text().splitlines()
+                for line in Path(cmd[-1]).read_text().splitlines()
                 if line.startswith("#SBATCH --error=")
             )
             results_dir = Path(line.split("=", 1)[1]).parent
@@ -339,7 +343,11 @@ def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:
 def test_slurm_seed_without_accounting_uses_controller_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, state: str
 ) -> None:
+    job_name = ""
+
     def submit(results_dir, *args, **kwargs):
+        nonlocal job_name
+        job_name = kwargs["job_name"]
         path = Path(results_dir)
         (path / "correct.json").write_text('{"correct": true}')
         (path / "metrics.json").write_text('{"combined_score": 42}')
@@ -348,7 +356,9 @@ def test_slurm_seed_without_accounting_uses_controller_status(
 
     def run(cmd, **kwargs):
         output = (
-            f"JobId=123 JobState={state} ExitCode=0:0" if cmd[0] == "scontrol" else ""
+            f"JobId=123 JobName={job_name} JobState={state} ExitCode=0:0"
+            if cmd[0] == "scontrol"
+            else ""
         )
         return subprocess.CompletedProcess(cmd, 0, stdout=output)
 

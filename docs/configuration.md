@@ -235,7 +235,9 @@ complete CLI configuration.
 `conda_env` and `activate_script` are mutually exclusive.
 
 Generation-zero Slurm evaluations require a verified terminal state of
-`COMPLETED` and `ExitCode=0:0` for the exact job before accepting result files.
+`COMPLETED` and `ExitCode=0:0` before accepting result files. Verification
+matches the numeric job ID and the unique name set at submission, so a
+retained record from an earlier allocation with the same ID cannot validate it.
 Once `squeue` reports a terminal or absent job, `sacct` checks the allocation.
 If accounting cannot verify it, `scontrol --oneliner show job` checks the
 controller's retained job record in the same attempt. A confirmed terminal

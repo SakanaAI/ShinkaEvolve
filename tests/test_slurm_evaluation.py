@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 
@@ -9,9 +10,13 @@ from shinka.launch import slurm
 from shinka.launch.slurm_evaluation import monitor_evaluation
 
 
+JOB_NAME = f"shinka-seed-{UUID(int=0).hex}"
+
+
 @pytest.fixture(params=["slurm_conda", "slurm_docker"])
 def scheduler(request, monkeypatch: pytest.MonkeyPatch):
     backend = request.param
+    monkeypatch.setattr("shinka.launch.scheduler.uuid4", lambda: UUID(int=0))
     config = (
         SlurmCondaJobConfig() if backend == "slurm_conda" else SlurmDockerJobConfig()
     )
@@ -50,7 +55,12 @@ def mock_commands(monkeypatch: pytest.MonkeyPatch, accounting: list[str]) -> Moc
 
 @pytest.mark.parametrize(
     "record",
-    ["123|FAILED|1:0", "123|TIMEOUT|0:15", "123|COMPLETED|1:0", "123|COMPLETED|0:9"],
+    [
+        f"123|{JOB_NAME}|FAILED|1:0",
+        f"123|{JOB_NAME}|TIMEOUT|0:15",
+        f"123|{JOB_NAME}|COMPLETED|1:0",
+        f"123|{JOB_NAME}|COMPLETED|0:9",
+    ],
 )
 def test_sync_slurm_rejects_partial_artifacts(
     scheduler: JobScheduler,
@@ -67,7 +77,7 @@ def test_sync_slurm_rejects_partial_artifacts(
 def test_sync_slurm_accepts_successful_allocation(
     scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    command = mock_commands(monkeypatch, ["123|COMPLETED|0:0\n"])
+    command = mock_commands(monkeypatch, [f"123|{JOB_NAME}|COMPLETED|0:0\n"])
 
     results, _ = scheduler.run("main.py", str(artifacts))
 
@@ -79,7 +89,10 @@ def test_sync_slurm_accepts_successful_allocation(
 def test_sync_slurm_waits_for_accounting_visibility(
     scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    command = mock_commands(monkeypatch, ["", "123|RUNNING|0:0", "123|COMPLETED|0:0"])
+    command = mock_commands(
+        monkeypatch,
+        ["", f"123|{JOB_NAME}|RUNNING|0:0", f"123|{JOB_NAME}|COMPLETED|0:0"],
+    )
 
     results, _ = scheduler.run("main.py", str(artifacts))
 
@@ -91,12 +104,12 @@ def test_sync_slurm_waits_for_accounting_visibility(
     "record",
     [
         "",
-        "123.batch|COMPLETED|0:0",
-        "456|COMPLETED|0:0",
-        "123|COMPLETED",
-        "123|COMPLETED|0:0\n123|FAILED|1:0",
-        "123||0:0",
-        "123|RUNNING|0:0",
+        f"123.batch|{JOB_NAME}|COMPLETED|0:0",
+        f"456|{JOB_NAME}|COMPLETED|0:0",
+        f"123|{JOB_NAME}|COMPLETED",
+        f"123|{JOB_NAME}|COMPLETED|0:0\n123|{JOB_NAME}|FAILED|1:0",
+        f"123|{JOB_NAME}||0:0",
+        f"123|{JOB_NAME}|RUNNING|0:0",
     ],
 )
 def test_sync_slurm_requires_matching_accounting_record(
@@ -139,21 +152,21 @@ def test_local_fallback_uses_actual_exit_status(
 
     if exit_code == 0:
         assert (
-            monitor_evaluation("local-test", str(artifacts))["metrics"][
-                "combined_score"
-            ]
+            monitor_evaluation("local-test", str(artifacts), job_name=JOB_NAME)[
+                "metrics"
+            ]["combined_score"]
             == 42
         )
     else:
         with pytest.raises(RuntimeError, match=f"status {exit_code}"):
-            monitor_evaluation("local-test", str(artifacts))
+            monitor_evaluation("local-test", str(artifacts), job_name=JOB_NAME)
     assert sleep.call_count == 2
     command.assert_not_called()
 
 
 def test_unknown_local_fallback_fails_closed(artifacts: Path) -> None:
     with pytest.raises(RuntimeError, match="Unknown local fallback"):
-        monitor_evaluation("local-unknown", str(artifacts))
+        monitor_evaluation("local-unknown", str(artifacts), job_name=JOB_NAME)
 
 
 def test_unavailable_accounting_has_finite_retries(
@@ -228,7 +241,7 @@ def test_retired_job_reaches_authoritative_accounting(
                 1, cmd, stderr="slurm_load_jobs error: Invalid job id specified\n"
             )
         assert cmd[0] == "sacct"
-        return subprocess.CompletedProcess(cmd, 0, stdout=f"123|{state}|0:0")
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"123|{JOB_NAME}|{state}|0:0")
 
     monkeypatch.setattr(slurm.subprocess, "run", run)
     monkeypatch.setattr(slurm.time, "sleep", Mock())
@@ -261,7 +274,7 @@ def test_active_jobs_reset_lookup_errors_without_a_queue_deadline(
             failure,
             running,
             subprocess.CompletedProcess([], 0, stdout=""),
-            subprocess.CompletedProcess([], 0, stdout="123|COMPLETED|0:0"),
+            subprocess.CompletedProcess([], 0, stdout=f"123|{JOB_NAME}|COMPLETED|0:0"),
         ]
     )
     sleep = Mock()
@@ -278,7 +291,7 @@ def test_active_jobs_reset_lookup_errors_without_a_queue_deadline(
 def test_status_and_accounting_commands_have_execution_deadlines(
     scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    command = mock_commands(monkeypatch, ["123|COMPLETED|0:0"])
+    command = mock_commands(monkeypatch, [f"123|{JOB_NAME}|COMPLETED|0:0"])
 
     scheduler.run("main.py", str(artifacts))
 
@@ -312,6 +325,7 @@ def test_sync_slurm_submission_has_execution_deadline(
 ) -> None:
     command = Mock(side_effect=subprocess.TimeoutExpired("sbatch", 30))
     monkeypatch.setattr(slurm.subprocess, "run", command)
+    monkeypatch.setattr("shinka.launch.scheduler.uuid4", lambda: UUID(int=0))
     config = (
         SlurmCondaJobConfig()
         if backend == "slurm_conda"
@@ -325,7 +339,7 @@ def test_sync_slurm_submission_has_execution_deadline(
         instance.shutdown()
 
     command.assert_called_once()
-    assert command.call_args.args[0][0] == "sbatch"
+    assert command.call_args.args[0][:2] == ["sbatch", f"--job-name={JOB_NAME}"]
     assert command.call_args.kwargs.get("timeout") == 30
 
 
@@ -349,6 +363,7 @@ def test_async_submission_keeps_existing_timeout_contract(
         assert instance.submit_async("main.py", str(tmp_path)) == "123"
     finally:
         instance.shutdown()
+    assert len(command.call_args.args[0]) == 2
     assert command.call_args.kwargs.get("timeout") is None
 
 
@@ -368,7 +383,9 @@ def test_suspended_job_waits_until_terminal_state(
             assert "--states=all" in cmd
             assert "--format=%T" in cmd
             return subprocess.CompletedProcess(cmd, 0, stdout=next(states))
-        return subprocess.CompletedProcess(cmd, 0, stdout=f"123|{terminal_state}|0:0")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=f"123|{JOB_NAME}|{terminal_state}|0:0"
+        )
 
     sleep = Mock()
     monkeypatch.setattr(slurm.subprocess, "run", run)

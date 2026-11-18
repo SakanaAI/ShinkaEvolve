@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
 from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
@@ -230,6 +231,7 @@ class JobScheduler:
         cmd = self._build_command(exec_fname_t, results_dir_t)
         start_time = time.time()
         timeout = None
+        job_name = f"shinka-seed-{uuid4().hex}"
 
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
@@ -260,6 +262,7 @@ class JobScheduler:
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
                 command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
+                job_name=job_name,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -277,12 +280,13 @@ class JobScheduler:
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
                 command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
+                job_name=job_name,
             )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
 
         if isinstance(job_id, str):
-            results = monitor_slurm_evaluation(job_id, results_dir_t)
+            results = monitor_slurm_evaluation(job_id, results_dir_t, job_name=job_name)
         else:
             results = monitor_local(job_id, results_dir_t, timeout=timeout)
             if job_id.returncode:

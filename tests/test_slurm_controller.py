@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 
@@ -8,9 +9,13 @@ from shinka.launch import JobScheduler, SlurmCondaJobConfig, SlurmDockerJobConfi
 from shinka.launch import slurm
 
 
+JOB_NAME = f"shinka-seed-{UUID(int=0).hex}"
+
+
 @pytest.fixture(params=["slurm_conda", "slurm_docker"])
 def scheduler(request, monkeypatch: pytest.MonkeyPatch):
     backend = request.param
+    monkeypatch.setattr("shinka.launch.scheduler.uuid4", lambda: UUID(int=0))
     config = (
         SlurmCondaJobConfig() if backend == "slurm_conda" else SlurmDockerJobConfig()
     )
@@ -59,7 +64,7 @@ def mock_status(
     "accounting",
     [
         "",
-        "123|RUNNING|0:0",
+        f"123|{JOB_NAME}|RUNNING|0:0",
         FileNotFoundError("sacct unavailable"),
         subprocess.TimeoutExpired("sacct", 30),
         subprocess.CalledProcessError(1, "sacct", stderr="Accounting disabled"),
@@ -74,7 +79,7 @@ def test_nonaccounting_cluster_accepts_verified_controller_success(
     command = mock_status(
         monkeypatch,
         accounting,
-        "JobId=123 JobName=seed UserId=user(1000) JobState=COMPLETED "
+        f"JobId=123 JobName={JOB_NAME} UserId=user(1000) JobState=COMPLETED "
         "Reason=None ExitCode=0:0 WorkDir=/tmp/work\n",
     )
 
@@ -92,10 +97,10 @@ def test_nonaccounting_cluster_accepts_verified_controller_success(
 @pytest.mark.parametrize(
     "record",
     [
-        "JobId=123 JobState=FAILED ExitCode=1:0",
-        "JobId=123 JobState=TIMEOUT ExitCode=0:15",
-        "JobId=123 JobState=COMPLETED ExitCode=1:0",
-        "JobId=123 JobState=COMPLETED ExitCode=0:9",
+        f"JobId=123 JobName={JOB_NAME} JobState=FAILED ExitCode=1:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=TIMEOUT ExitCode=0:15",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=1:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:9",
     ],
 )
 def test_controller_failure_rejects_partial_artifacts(
@@ -115,17 +120,19 @@ def test_controller_failure_rejects_partial_artifacts(
     "record",
     [
         "",
-        "JobId=456 JobState=COMPLETED ExitCode=0:0",
-        "JobId=123.batch JobState=COMPLETED ExitCode=0:0",
-        "JobId=123 JobState=COMPLETED",
+        f"JobId=456 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0",
+        "JobId=123 JobName=previous-allocation JobState=COMPLETED ExitCode=0:0",
+        "JobId=123 JobState=COMPLETED ExitCode=0:0",
+        f"JobId=123.batch JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED",
         "JobState=COMPLETED ExitCode=0:0",
-        "JobId=123 JobState=COMPLETED ExitCode=",
-        "JobId=123 JobState= ExitCode=0:0",
-        "JobId=123 JobState=RUNNING ExitCode=0:0",
-        "JobId=123 JobState=COMPLETED ExitCode=0:0\nJobId=123 JobState=FAILED ExitCode=1:0",
-        "JobId=123 JobState=FAILED JobState=COMPLETED ExitCode=0:0",
-        "JobId=123 JobId=456 JobState=COMPLETED ExitCode=0:0",
-        "JobId=123 JobState=COMPLETED ExitCode=1:0 ExitCode=0:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=",
+        f"JobId=123 JobName={JOB_NAME} JobState= ExitCode=0:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=RUNNING ExitCode=0:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0\nJobId=123 JobName={JOB_NAME} JobState=FAILED ExitCode=1:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=FAILED JobState=COMPLETED ExitCode=0:0",
+        f"JobId=123 JobId=456 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=1:0 ExitCode=0:0",
     ],
 )
 def test_unverified_controller_status_fails_closed(
@@ -170,8 +177,8 @@ def test_controller_cannot_override_confirmed_accounting_failure(
 ) -> None:
     command = mock_status(
         monkeypatch,
-        f"123|{state}|1:0",
-        "JobId=123 JobState=COMPLETED ExitCode=0:0",
+        f"123|{JOB_NAME}|{state}|1:0",
+        f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0",
     )
 
     with pytest.raises(RuntimeError, match=state):
@@ -189,7 +196,9 @@ def test_controller_can_recover_within_terminal_status_grace(
             subprocess.TimeoutExpired("scontrol", 30),
             subprocess.CompletedProcess([], 0, stdout=""),
             subprocess.CompletedProcess(
-                [], 0, stdout="JobId=123 JobState=COMPLETED ExitCode=0:0"
+                [],
+                0,
+                stdout=f"JobId=123 JobName={JOB_NAME} JobState=COMPLETED ExitCode=0:0",
             ),
         ]
     )
@@ -202,3 +211,80 @@ def test_controller_can_recover_within_terminal_status_grace(
     assert results["metrics"]["combined_score"] == 42
     sleep.assert_called_once_with(10)
     assert command.call_count == 5
+
+
+def test_recycled_job_id_uses_current_controller_failure(
+    scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    submit = getattr(slurm, "submit_" + scheduler.job_type.removeprefix("slurm_"))
+    mocked_submit = Mock(spec=submit, return_value="123")
+    monkeypatch.setattr(
+        f"shinka.launch.scheduler.submit_{scheduler.job_type}", mocked_submit
+    )
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "squeue":
+            stdout = "FAILED"
+        elif cmd[0] == "sacct":
+            stdout = (
+                "123|previous-allocation|COMPLETED|0:0"
+                if "JobName" in cmd[-1]
+                else "123|COMPLETED|0:0"
+            )
+        else:
+            assert cmd[0] == "scontrol"
+            current_name = mocked_submit.call_args.kwargs["job_name"]
+            stdout = f"JobId=123 JobName={current_name} JobState=FAILED ExitCode=1:0"
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout)
+
+    monkeypatch.setattr(slurm.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="controller.*FAILED"):
+        scheduler.run("main.py", str(artifacts))
+
+
+def test_recycled_job_id_waits_for_current_accounting(
+    scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=""),
+            subprocess.CompletedProcess(
+                [], 0, stdout="123|previous-allocation|COMPLETED|0:0"
+            ),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout="JobId=123 JobName=previous-allocation JobState=COMPLETED ExitCode=0:0",
+            ),
+            subprocess.CompletedProcess([], 0, stdout=f"123|{JOB_NAME}|COMPLETED|0:0"),
+        ]
+    )
+    monkeypatch.setattr(slurm.subprocess, "run", command)
+    sleep = Mock()
+    monkeypatch.setattr(slurm.time, "sleep", sleep)
+
+    results, _ = scheduler.run("main.py", str(artifacts))
+
+    assert results["metrics"]["combined_score"] == 42
+    assert [call.args[0][0] for call in command.call_args_list] == [
+        "squeue",
+        "sacct",
+        "scontrol",
+        "sacct",
+    ]
+    sleep.assert_called_once_with(10)
+
+
+def test_recycled_queue_id_filters_by_submitted_name(
+    scheduler: JobScheduler, artifacts: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command = mock_status(monkeypatch, f"123|{JOB_NAME}|COMPLETED|0:0", "")
+
+    scheduler.run("main.py", str(artifacts))
+
+    assert command.call_args_list[0].args[0][:4] == [
+        "squeue",
+        "-j",
+        "123",
+        f"--name={JOB_NAME}",
+    ]
