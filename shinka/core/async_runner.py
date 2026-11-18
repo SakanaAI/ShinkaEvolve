@@ -4745,6 +4745,11 @@ class ShinkaEvolveRunner:
                 )
                 return CompletedJobPersistResult(job=job, success=True)
 
+            # The evaluation ended when it was first seen finished, however long
+            # reading and storing its results goes on to take.
+            if job.completion_detected_at is None:
+                job.completion_detected_at = time.time()
+
             # Get job results with timeout to prevent hanging
             results = None
             retrieval_failure = None
@@ -4768,8 +4773,6 @@ class ShinkaEvolveRunner:
                         status="results_timeout",
                         source_job_id=job.job_id,
                     )
-            if read.done():
-                self._result_reads.pop(source_job_id, None)
             if retrieval_failure is not None:
                 # The evaluation itself may be fine, so retry the read first. Once
                 # retries run out the generation is recorded as failed below.
@@ -4781,9 +4784,16 @@ class ShinkaEvolveRunner:
                     ),
                 )
                 if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+                    if read.done():
+                        # A failed read is started afresh by the next attempt.
+                        self._result_reads.pop(source_job_id, None)
                     return CompletedJobPersistResult(job=job, success=False)
+                read.cancel()  # Out of retries: stop waiting for it.
+            self._result_reads.pop(source_job_id, None)
             if job.results_retrieved_at is None:
                 job.results_retrieved_at = time.time()
+                # Storing the row gets its own attempts, whatever the read took.
+                job.db_retry_count = 0
             evaluation_finished_at = (
                 job.completion_detected_at or job.results_retrieved_at
             )

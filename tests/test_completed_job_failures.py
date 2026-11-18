@@ -1,6 +1,7 @@
 """A finished job that cannot be processed is retried or recorded, never dropped."""
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +83,7 @@ def test_results_that_never_arrive_become_a_failed_row(tmp_path: Path) -> None:
             assert "timed out after 0.05s" in child.text_feedback
             assert runner.failed_jobs_for_retry == {}
             assert scheduler.calls == 1
-            runner._result_reads.pop(runner._source_job_key(job)).cancel()
+            assert runner._result_reads == {}  # the abandoned read is let go
 
     asyncio.run(run())
 
@@ -110,6 +111,68 @@ def test_unreadable_results_become_a_failed_row_once_retries_run_out(
             assert child.metadata["evaluation_failed"] is True
             assert "stale file handle" in child.text_feedback
             assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
+def test_storing_the_row_gets_its_own_retries_after_a_hard_won_read(
+    tmp_path: Path,
+) -> None:
+    """Read retries must not use up the attempts to store the result they fetched."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            stale = OSError("stale file handle")
+            runner = make_runner(
+                async_db, StaticScheduler(stale, stale, good_results(2.5)), max_retries=3
+            )
+            _enable_retry_loop(runner)
+            add_program = async_db.add_program_async
+            attempts = 0
+
+            async def locked_once(program: Any, **kwargs: Any) -> bool:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("database is locked")
+                return await add_program(program, **kwargs)
+
+            async_db.add_program_async = locked_once
+
+            await runner._process_completed_jobs_safely([make_job()])
+            for _ in range(3):
+                await runner._retry_failed_db_jobs()
+
+            (child,) = children(sync_db)
+            assert child.correct == 1 and child.combined_score == 2.5
+            assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
+def test_waiting_for_results_is_not_booked_as_evaluation_time(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            results_ready = asyncio.Event()
+
+            async def slow_read() -> dict[str, Any]:
+                await results_ready.wait()
+                return good_results(2.5)
+
+            runner = make_runner(async_db, StaticScheduler(slow_read), max_retries=5)
+            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.05
+            _enable_retry_loop(runner)
+            job = make_job()
+
+            await runner._process_completed_jobs_safely([job])
+            first_pass_ended_at = time.time()
+            await asyncio.sleep(0.2)
+            results_ready.set()
+            await runner._retry_failed_db_jobs()
+
+            (child,) = children(sync_db)
+            assert child.metadata["evaluation_finished_at"] < first_pass_ended_at
+            assert job.results_retrieved_at > first_pass_ended_at
 
     asyncio.run(run())
 
@@ -355,8 +418,6 @@ def test_job_out_of_retries_counts_as_in_flight_until_its_row_is_written(
 
             await runner._process_completed_jobs_safely([make_job()])
             await runner._retry_failed_db_jobs()
-            for read in runner._result_reads.values():
-                read.cancel()
 
             assert len(children(sync_db)) == 1
             assert in_flight_during_write == [1]
