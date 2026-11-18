@@ -4426,7 +4426,7 @@ class ShinkaEvolveRunner:
         )
 
         if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
-            self.failed_jobs_for_retry[str(job.job_id)] = job
+            self.failed_jobs_for_retry[self._retry_queue_key(job)] = job
             logger.info(
                 "🔄 RETRY QUEUED: Job %s (gen %s) added to retry queue",
                 job.job_id,
@@ -4434,13 +4434,18 @@ class ShinkaEvolveRunner:
             )
             return
 
-        self.failed_jobs_for_retry.pop(str(job.job_id), None)
+        # The job stays queued, and so counted as in flight, until
+        # _process_single_job_safely has written its last row.
         logger.error(
             "❌ RETRY EXHAUSTED: Job %s (gen %s) exceeded max retry attempts (%s).",
             job.job_id,
             job.generation,
             self.MAX_DB_RETRY_ATTEMPTS,
         )
+
+    @staticmethod
+    def _retry_queue_key(job: AsyncRunningJob) -> str:
+        return str(job.job_id)
 
     async def _record_job_out_of_retries(self, job: AsyncRunningJob) -> bool:
         """Store a failed row for a job that no retry could persist.
@@ -4775,7 +4780,7 @@ class ShinkaEvolveRunner:
                         f"Getting results for {job.job_id} {retrieval_failure}"
                     ),
                 )
-                if str(job.job_id) in self.failed_jobs_for_retry:
+                if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
                     return CompletedJobPersistResult(job=job, success=False)
             if job.results_retrieved_at is None:
                 job.results_retrieved_at = time.time()
@@ -5595,15 +5600,12 @@ class ShinkaEvolveRunner:
             failed_jobs = [
                 job for job in completed_jobs if job not in successfully_processed
             ]
+            queued_jobs = list(self.failed_jobs_for_retry.values())
             retrying_gens = [
-                job.generation
-                for job in failed_jobs
-                if str(job.job_id) in self.failed_jobs_for_retry
+                job.generation for job in failed_jobs if job in queued_jobs
             ]
             dropped_gens = [
-                job.generation
-                for job in failed_jobs
-                if str(job.job_id) not in self.failed_jobs_for_retry
+                job.generation for job in failed_jobs if job not in queued_jobs
             ]
             logger.error(
                 f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: "
@@ -5613,11 +5615,13 @@ class ShinkaEvolveRunner:
 
     async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
         """Process a single job with comprehensive error handling. Returns True on success."""
-        if await self._persist_job_and_apply_side_effects(job):
-            return True
-        if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
-            return False  # Queued for another attempt.
-        return await self._record_job_out_of_retries(job)
+        processed = await self._persist_job_and_apply_side_effects(job)
+        if not processed:
+            if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+                return False  # Queued for another attempt.
+            processed = await self._record_job_out_of_retries(job)
+        self.failed_jobs_for_retry.pop(self._retry_queue_key(job), None)
+        return processed
 
     async def _persist_job_and_apply_side_effects(self, job: AsyncRunningJob) -> bool:
         persist_result = await self._persist_completed_job(job)
@@ -5668,7 +5672,7 @@ class ShinkaEvolveRunner:
             return
 
         # Take a snapshot of jobs to retry (avoid modification during iter)
-        jobs_to_retry = list(self.failed_jobs_for_retry.values())
+        jobs_to_retry = list(self.failed_jobs_for_retry.items())
 
         logger.info(
             f"🔄 RETRY: Attempting to retry {len(jobs_to_retry)} failed DB jobs"
@@ -5676,7 +5680,7 @@ class ShinkaEvolveRunner:
 
         successfully_retried = []
 
-        for job in jobs_to_retry:
+        for queue_key, job in jobs_to_retry:
             try:
                 logger.info(
                     f"🔄 RETRY ATTEMPT: Retrying job {job.job_id} "
@@ -5689,9 +5693,7 @@ class ShinkaEvolveRunner:
 
                 if success:
                     successfully_retried.append(job)
-                    # Remove from retry queue
-                    if str(job.job_id) in self.failed_jobs_for_retry:
-                        del self.failed_jobs_for_retry[str(job.job_id)]
+                    self.failed_jobs_for_retry.pop(queue_key, None)
                     # Also remove from submitted_jobs
                     if str(job.job_id) in self.submitted_jobs:
                         del self.submitted_jobs[str(job.job_id)]

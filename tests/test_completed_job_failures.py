@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from eval_integrity_utils import (
     StaticScheduler,
     children,
@@ -315,6 +317,50 @@ def test_job_is_given_up_without_raising_when_the_database_stays_down(
             assert children(sync_db) == []
             assert attempts == 3  # two attempts and the last-resort failed row
             assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["results-never-arrive", "program-unreadable"])
+def test_job_out_of_retries_counts_as_in_flight_until_its_row_is_written(
+    tmp_path: Path, failure: str
+) -> None:
+    """The run must not be declared finished while the last write is under way."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            never = asyncio.Event()
+            scheduler = StaticScheduler(
+                never.wait if failure == "results-never-arrive" else good_results()
+            )
+            runner = make_runner(async_db, scheduler, max_retries=2)
+            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.05
+            _enable_retry_loop(runner)
+            runner.running_jobs = []
+            runner.active_proposal_tasks = {}
+            if failure == "program-unreadable":
+
+                async def unreadable(path: str) -> Any:
+                    raise RuntimeError("cannot read program file")
+
+                runner._read_file_async = unreadable
+            add_program = async_db.add_program_async
+            in_flight_during_write = []
+
+            async def observing_add(program: Any, **kwargs: Any) -> bool:
+                in_flight_during_write.append(runner._get_in_flight_work_count())
+                return await add_program(program, **kwargs)
+
+            async_db.add_program_async = observing_add
+
+            await runner._process_completed_jobs_safely([make_job()])
+            await runner._retry_failed_db_jobs()
+            for read in runner._result_reads.values():
+                read.cancel()
+
+            assert len(children(sync_db)) == 1
+            assert in_flight_during_write == [1]
+            assert runner._get_in_flight_work_count() == 0
 
     asyncio.run(run())
 
