@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Any, List, Optional, Tuple
 import logging
 import json
@@ -621,12 +622,13 @@ class MetaSummarizer:
 
             for i, prog in enumerate(self.evaluated_since_last_meta):
                 try:
-                    prog_dict = prog.to_dict()
                     # Summaries never read the embeddings, which would make up
-                    # nearly all of a file that is rewritten on every change.
-                    for key in ("embedding", "embedding_pca_2d", "embedding_pca_3d"):
-                        prog_dict[key] = []
-                    unprocessed_programs_data.append(prog_dict)
+                    # nearly all of a file that is rewritten on every change,
+                    # and most of the time it takes to serialize a program.
+                    without_embeddings = replace(
+                        prog, embedding=[], embedding_pca_2d=[], embedding_pca_3d=[]
+                    )
+                    unprocessed_programs_data.append(without_embeddings.to_dict())
                 except Exception as e:
                     prog_id = prog.id if hasattr(prog, "id") else "unknown"
                     logger.warning(f"Failed to serialize program {i} ({prog_id}): {e}")
