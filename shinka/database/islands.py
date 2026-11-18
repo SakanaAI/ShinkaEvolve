@@ -674,6 +674,8 @@ class CombinedIslandManager:
         num_islands = getattr(self.config, "num_islands", 0)
         if num_islands <= 1 or not program.correct:
             return []
+        if self.are_all_islands_initialized():
+            return []  # the usual case: no need to take the write lock
         with write_transaction(self.conn):
             initialized = set(self.get_initialized_islands())
             created_ids = self._insert_copies(
