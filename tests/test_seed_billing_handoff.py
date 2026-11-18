@@ -1,6 +1,7 @@
 """Generated seed bills survive evaluation handoff and settle exactly once."""
 
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -96,6 +97,75 @@ def test_seed_bill_is_recoverable_while_evaluation_is_outstanding(runner, outcom
             copies = [p for p in programs if p.metadata.get("_is_island_copy")]
             assert len(copies) == 2
             assert all(p.metadata["api_costs"] == 0.0 for p in copies)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("interrupted_at", ["evaluation", "insert"])
+def test_resume_uses_paid_seed_after_generation_artifacts_move(runner, monkeypatch, interrupted_at):
+    async def run():
+        runner.async_db = AsyncProgramDatabase(runner.db, max_workers=1)
+        runner.evo_config.max_api_costs = 2.0
+        started, release = threading.Event(), threading.Event()
+        evaluate = runner.scheduler.run
+        previous_embedding_cost = 0.25 if interrupted_at == "insert" else 0.0
+
+        def paused_evaluation(*args):
+            started.set()
+            assert release.wait(5)
+            return evaluate(*args)
+
+        async def embed(path):
+            return await run_request(
+                AsyncMock(return_value=([0.1], previous_embedding_cost)), lambda reply: reply[1],
+                "text-embedding-3-small", "embedding",
+            )
+
+        try:
+            if interrupted_at == "evaluation":
+                runner.scheduler.run = paused_evaluation
+                task = asyncio.create_task(runner._generate_initial_program())
+                try:
+                    assert await asyncio.to_thread(started.wait, 2)
+                finally:
+                    task.cancel()
+                    release.set()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+            else:
+                runner._get_code_embedding_async = embed
+                runner.async_db.add_program_async = AsyncMock(side_effect=asyncio.CancelledError)
+                with pytest.raises(asyncio.CancelledError):
+                    await runner._generate_initial_program()
+            (runner.results_dir / "gen_0").rename(runner.results_dir / "archived_gen_0")
+            (raw_details,) = runner.db.conn.execute("SELECT details FROM attempt_log").fetchone()
+            receipt_id = json.loads(raw_details)["api_charge_id"]
+        finally:
+            await runner.async_db.close_async()
+
+        runner.db.close()
+        runner.db = ProgramDatabase(runner.db_config, embedding_model="")
+        runner.async_db = AsyncProgramDatabase(runner.db, max_workers=1)
+        runner.total_api_cost = await runner._get_total_api_costs()
+        runner.evo_config.max_api_costs = runner.total_api_cost
+        runner.scheduler.run = evaluate
+        runner._get_code_embedding_async = AsyncMock(return_value=(None, 0.0))
+        provider = AsyncMock(side_effect=AssertionError("paid seed must be reused"))
+        monkeypatch.setattr(llm_module, "query_async", provider)
+        try:
+            await runner._generate_initial_program()
+            provider.assert_not_awaited()
+            programs = runner.db.get_programs_by_generation(0)
+            original = next(p for p in programs if not p.metadata.get("_is_island_copy"))
+            assert original.metadata["api_charge_id"] == receipt_id
+            assert original.metadata["api_costs"] == pytest.approx(1.0)
+            assert original.metadata["embed_cost"] == pytest.approx(previous_embedding_cost)
+            assert "pass" in original.code
+            assert runner.total_api_cost == pytest.approx(1.0 + previous_embedding_cost)
+            assert await runner._get_total_api_costs() == pytest.approx(runner.total_api_cost)
+            assert runner.db.conn.execute("SELECT COUNT(*) FROM attempt_log").fetchone()[0] == 1
+        finally:
+            await runner.async_db.close_async()
 
     asyncio.run(run())
 

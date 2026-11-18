@@ -65,10 +65,12 @@ from shinka.core.novelty_judge import NoveltyJudge
 from shinka.core.config import EvolutionConfig, FOLDER_PREFIX
 from shinka.core.billing import (
     BillingPersistenceError,
+    GeneratedSeedHandoff,
     api_cost_in_metadata,
     cancellation_with_cost,
     finish_cost_recording,
     journaled_api_costs,
+    load_generated_seed_handoff,
 )
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
@@ -858,18 +860,22 @@ class ShinkaEvolveRunner:
         )
 
     async def _record_evaluation_charge(
-        self, generation: int, charge_id: str, cost: float
+        self, generation: int, charge_id: str, cost: float,
+        *, seed: Optional[GeneratedSeedHandoff] = None,
     ) -> None:
+        details: Dict[str, Any] = {
+            "node_kind": "evaluation_cost",
+            "api_charge_id": charge_id,
+            "api_costs": cost,
+        }
+        if seed is not None:
+            details["seed_handoff"] = {"code": seed.code, "metadata": seed.metadata}
         await finish_cost_recording(
             self._record_attempt_event(
                 generation=generation,
                 stage="evaluation",
                 status="charged",
-                details={
-                    "node_kind": "evaluation_cost",
-                    "api_charge_id": charge_id,
-                    "api_costs": cost,
-                },
+                details=details,
             )
         )
 
@@ -1900,6 +1906,8 @@ class ShinkaEvolveRunner:
         patch_description: Optional[str],
         api_cost: float,
         llm_metadata: Optional[Dict[str, Any]] = None,
+        *,
+        prepaid_cost: float = 0.0,
     ):
         """Setup initial program in database with metadata."""
         pipeline_started_at = time.time()
@@ -2088,17 +2096,18 @@ class ShinkaEvolveRunner:
                 initial_program.metadata.get("embed_cost") or 0.0,
                 scope.pending - cost_before_evaluation,
             )
-        await finish_cost_recording(
-            self.async_db.add_program_async(initial_program, verbose=self.verbose)
-        )
-
-        # Add initial program costs to in-memory total for accurate budget tracking
         initial_api_cost = (initial_program.metadata or {}).get("api_costs", 0.0)
         initial_embed_cost = (initial_program.metadata or {}).get("embed_cost", 0.0)
         initial_novelty_cost = (initial_program.metadata or {}).get("novelty_cost", 0.0)
-        self._post_api_cost(
-            initial_api_cost + initial_embed_cost + initial_novelty_cost
+        new_cost = initial_embed_cost + initial_novelty_cost
+        if prepaid_cost:
+            initial_program.metadata["embed_cost"] = initial_embed_cost + (prepaid_cost - initial_api_cost)
+        else:
+            new_cost += initial_api_cost
+        await finish_cost_recording(
+            self.async_db.add_program_async(initial_program, verbose=self.verbose)
         )
+        self._post_api_cost(new_cost)
 
         # Add the initial program to meta memory tracking
         if self.meta_summarizer:
@@ -2180,32 +2189,40 @@ class ShinkaEvolveRunner:
             )
 
     async def _generate_initial_program(self):
-        """Generate initial program using LLM, with retries."""
-        budget = getattr(self.evo_config, "max_api_costs", None)
-        if self._api_budget_exhausted():
-            models = self.evo_config.llm_models
-            if all(may_charge(model) for model in models):
-                raise APIBudgetExceeded()
-
-        # Select LLM once per program generation (before all attempts)
-        model_sample_probs = None
-        model_posterior = None
-        if self.llm_selection is not None:
-            model_sample_probs, model_posterior = self.llm_selection.select_llm()
-
-        # Get LLM kwargs for metadata storage
-        llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
-        paid = budget is not None and may_charge(llm_kwargs.get("model_name") or "")
-        if paid and self._api_budget_exhausted():
-            raise APIBudgetExceeded()
-
-        sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
+        """Resume a billed seed or generate an initial program using the LLM."""
+        db = getattr(self, "db", None)
+        seed = load_generated_seed_handoff(db.conn) if db is not None else None
+        prepaid_cost = seed.cost if seed is not None else 0.0
         total_costs = 0.0
-        seed_charge_id = None
 
         cost_before_setup = self.total_api_cost
         scope, token = self._begin_api_cost_scope()
         try:
+            if seed is not None:
+                await self._setup_initial_program_with_metadata(
+                    seed.code, seed.metadata.get("patch_name"),
+                    seed.metadata.get("patch_description"), seed.metadata["api_costs"],
+                    seed.metadata, prepaid_cost=prepaid_cost,
+                )
+                return
+
+            budget = getattr(self.evo_config, "max_api_costs", None)
+            if self._api_budget_exhausted() and all(
+                may_charge(model) for model in self.evo_config.llm_models
+            ):
+                raise APIBudgetExceeded()
+
+            model_sample_probs = None
+            model_posterior = None
+            if self.llm_selection is not None:
+                model_sample_probs, model_posterior = self.llm_selection.select_llm()
+
+            llm_kwargs = self.llm.get_kwargs(model_sample_probs=model_sample_probs)
+            paid = budget is not None and may_charge(llm_kwargs.get("model_name") or "")
+            if paid and self._api_budget_exhausted():
+                raise APIBudgetExceeded()
+
+            sys_msg, user_msg = self.prompt_sampler.initial_program_prompt()
             for attempt in range(self.evo_config.max_patch_attempts):
                 if paid and budget is not None and (
                     self._api_budget_exhausted()
@@ -2322,9 +2339,10 @@ class ShinkaEvolveRunner:
                     }
 
                     if total_costs > 0.0:
-                        seed_charge_id = str(uuid.uuid4())
-                        llm_metadata["api_charge_id"] = seed_charge_id
-                        await self._record_evaluation_charge(0, seed_charge_id, total_costs)
+                        charge_id = str(uuid.uuid4())
+                        llm_metadata["api_charge_id"] = charge_id
+                        seed = GeneratedSeedHandoff(charge_id, initial_code, llm_metadata, total_costs)
+                        await self._record_evaluation_charge(0, charge_id, total_costs, seed=seed)
 
                     # The receipt stays recoverable while the evaluator runs.
                     await self._setup_initial_program_with_metadata(
@@ -2374,7 +2392,7 @@ class ShinkaEvolveRunner:
             total_costs += getattr(exc, "cost", 0.0)
             await self._settle_initial_costs(
                 scope, cost_before_setup, max(scope.pending, total_costs),
-                charge_id=seed_charge_id,
+                seed=seed, prepaid_cost=prepaid_cost,
             )
             raise
         finally:
@@ -2382,12 +2400,14 @@ class ShinkaEvolveRunner:
 
     async def _settle_initial_costs(
         self, scope: ApiCostScope, cost_before_setup: float, known_cost: float,
-        *, charge_id: Optional[str] = None,
+        *, seed: Optional[GeneratedSeedHandoff] = None, prepaid_cost: float = 0.0,
     ) -> None:
         try:
-            if charge_id is not None:
+            if seed is not None:
                 # Reuse the receipt even when its acknowledgement was lost.
-                await self._record_evaluation_charge(0, charge_id, known_cost)
+                await self._record_evaluation_charge(
+                    0, seed.charge_id, prepaid_cost + known_cost, seed=seed
+                )
             elif known_cost > 0.0:
                 await self._reconcile_cost(
                     "initialization", "seed", 0,
