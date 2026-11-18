@@ -9,11 +9,12 @@ import sqlite3
 import time
 import threading
 import traceback
-from typing import List, Optional, Tuple, Dict, Any
+from contextlib import contextmanager
+from typing import List, Optional, Tuple, Dict, Any, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 from .complexity import analyze_code_metrics
-from .dbase import Program, ProgramDatabase
+from .dbase import Program, ProgramDatabase, db_retry
 
 logger = logging.getLogger(__name__)
 
@@ -127,34 +128,29 @@ class AsyncProgramDatabase:
         else:
             logger.debug("Deadlock monitoring disabled")
 
-    def _merge_runtime_metadata_from_db(self, source_db: ProgramDatabase) -> None:
-        """Merge key in-memory metadata from a worker DB back to the shared sync DB."""
-        if hasattr(source_db, "last_iteration") and hasattr(self.sync_db, "last_iteration"):
-            self.sync_db.last_iteration = max(
-                getattr(self.sync_db, "last_iteration", 0),
-                getattr(source_db, "last_iteration", 0),
-            )
+    @db_retry()
+    def _refresh_run_state_from_worker(self, worker_db: ProgramDatabase) -> None:
+        self.sync_db._refresh_run_state(worker_db)
 
-        source_best = getattr(source_db, "best_score_ever", None)
-        current_best = getattr(self.sync_db, "best_score_ever", None)
-        if source_best is not None and (
-            current_best is None or source_best >= current_best
-        ):
-            if hasattr(self.sync_db, "best_score_ever"):
-                self.sync_db.best_score_ever = source_best
-            if hasattr(self.sync_db, "best_score_generation") and hasattr(
-                source_db, "best_score_generation"
-            ):
-                self.sync_db.best_score_generation = source_db.best_score_generation
-            if hasattr(self.sync_db, "best_program_id") and hasattr(
-                source_db, "best_program_id"
-            ):
-                self.sync_db.best_program_id = source_db.best_program_id
-
-        if getattr(source_db, "beam_search_parent_id", None) is not None and hasattr(
-            self.sync_db, "beam_search_parent_id"
-        ):
-            self.sync_db.beam_search_parent_id = source_db.beam_search_parent_id
+    @contextmanager
+    def _refresh_run_state_after_write(
+        self, worker_db: ProgramDatabase
+    ) -> Iterator[None]:
+        try:
+            yield
+        except Exception:
+            # Earlier steps may have committed before maintenance failed.
+            try:
+                if worker_db.conn is not None:
+                    worker_db.conn.rollback()
+                self._refresh_run_state_from_worker(worker_db)
+            except Exception:
+                logger.warning(
+                    "Could not refresh run state after worker failure", exc_info=True
+                )
+            raise
+        else:
+            self._refresh_run_state_from_worker(worker_db)
 
     def _debug_track_start(self, operation: str, **kwargs):
         """Helper to conditionally track debug operations."""
@@ -623,12 +619,12 @@ class AsyncProgramDatabase:
                 thread_db._recompute_embeddings_and_clusters = lambda: None
 
                 try:
-                    thread_db.add(
-                        program,
-                        verbose=verbose,
-                        defer_maintenance=defer_maintenance,
-                    )
-                    self._merge_runtime_metadata_from_db(thread_db)
+                    with self._refresh_run_state_after_write(thread_db):
+                        thread_db.add(
+                            program,
+                            verbose=verbose,
+                            defer_maintenance=defer_maintenance,
+                        )
                     return True
                 finally:
                     if source_job_id_registered:
@@ -674,12 +670,12 @@ class AsyncProgramDatabase:
                     thread_db.set_display_console(
                         getattr(self.sync_db, "display_console", None)
                     )
-                thread_db.run_post_add_maintenance(
-                    program,
-                    verbose=verbose,
-                    recompute_embeddings=recompute_embeddings,
-                )
-                self._merge_runtime_metadata_from_db(thread_db)
+                with self._refresh_run_state_after_write(thread_db):
+                    thread_db.run_post_add_maintenance(
+                        program,
+                        verbose=verbose,
+                        recompute_embeddings=recompute_embeddings,
+                    )
             finally:
                 if thread_db is not None:
                     thread_db.close()
