@@ -12,8 +12,6 @@ __all__ = [
     "AsyncLLMClient",
     "extract_between",
     "QueryResult",
-    "EmbeddingClient",
-    "AsyncEmbeddingClient",
     "BanditBase",
     "AsymmetricUCB",
     "FixedSampler",
