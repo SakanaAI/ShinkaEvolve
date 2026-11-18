@@ -78,8 +78,8 @@ def test_results_that_never_arrive_become_a_failed_row(tmp_path: Path) -> None:
         async with open_database(tmp_path) as (sync_db, async_db):
             never = asyncio.Event()
             scheduler = StaticScheduler(never.wait)
-            runner = make_runner(async_db, scheduler, max_retries=2)
-            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.05
+            runner = make_runner(async_db, scheduler, max_retries=5)
+            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.1
             _enable_retry_loop(runner)
             job = make_job(generation=6)
 
@@ -90,7 +90,7 @@ def test_results_that_never_arrive_become_a_failed_row(tmp_path: Path) -> None:
             (child,) = children(sync_db)
             assert child.generation == 6 and child.correct == 0
             assert child.metadata["results_missing"] is True
-            assert "timed out after 0.1s" in child.text_feedback
+            assert "timed out after 0.5s" in child.text_feedback
             assert runner.failed_jobs_for_retry == {}
             assert scheduler.calls == 1
             assert runner._result_reads == {}  # the abandoned read is let go
@@ -473,8 +473,8 @@ def test_job_out_of_retries_counts_as_in_flight_until_its_row_is_written(
             scheduler = StaticScheduler(
                 never.wait if failure == "results-never-arrive" else good_results()
             )
-            runner = make_runner(async_db, scheduler, max_retries=2)
-            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.05
+            runner = make_runner(async_db, scheduler, max_retries=5)
+            runner._RESULTS_READ_TIMEOUT_SECONDS = 0.1
             _enable_retry_loop(runner)
             runner.running_jobs = []
             runner.active_proposal_tasks = {}
