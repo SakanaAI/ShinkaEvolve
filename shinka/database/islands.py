@@ -674,7 +674,7 @@ class CombinedIslandManager:
         num_islands = getattr(self.config, "num_islands", 0)
         if num_islands <= 1 or not program.correct:
             return []
-        if self.are_all_islands_initialized():
+        if not self._has_island_without_correct_program(num_islands):
             return []  # the usual case: no need to take the write lock
         with write_transaction(self.conn):
             initialized = set(self.get_initialized_islands())
@@ -687,6 +687,18 @@ class CombinedIslandManager:
                 f"program {program.id[:8]}..."
             )
         return created_ids
+
+    def _has_island_without_correct_program(self, num_islands: int) -> bool:
+        """One indexed lookup per island: this runs for every correct program,
+        where a scan over all programs would grow with the run."""
+        for island_idx in range(num_islands):
+            self.cursor.execute(
+                "SELECT 1 FROM programs WHERE island_idx = ? AND correct = 1 LIMIT 1",
+                (island_idx,),
+            )
+            if self.cursor.fetchone() is None:
+                return True
+        return False
 
     def _insert_copies(self, program: Any, islands: List[int]) -> List[str]:
         """Insert a copy of the program into each of the given islands."""
