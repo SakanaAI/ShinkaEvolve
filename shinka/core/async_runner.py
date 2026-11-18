@@ -2052,6 +2052,7 @@ class ShinkaEvolveRunner:
         initial_program = Program(
             id=str(uuid.uuid4()),
             code=code,
+            language=self._program_language(),
             generation=0,
             correct=evaluation.correct,
             combined_score=evaluation.combined_score,
@@ -4534,6 +4535,7 @@ class ShinkaEvolveRunner:
             program = Program(
                 id=str(uuid.uuid4()),
                 code=code,
+                language=self._program_language(),
                 generation=generation,
                 correct=False,
                 combined_score=0.0,
@@ -4583,6 +4585,11 @@ class ShinkaEvolveRunner:
                 e,
             )
             return None
+
+    def _program_language(self) -> str:
+        """Language stored on program rows, which selects their complexity analysis."""
+        evo_config = getattr(self, "evo_config", None)
+        return str(getattr(evo_config, "language", None) or "python")
 
     @staticmethod
     def _source_job_key(job: AsyncRunningJob) -> str:
@@ -4711,6 +4718,7 @@ class ShinkaEvolveRunner:
             program = Program(
                 id=str(uuid.uuid4()),
                 code=await self._read_file_async(job.exec_fname) or "",
+                language=self._program_language(),
                 generation=job.generation,
                 correct=evaluation.correct,
                 combined_score=evaluation.combined_score,
