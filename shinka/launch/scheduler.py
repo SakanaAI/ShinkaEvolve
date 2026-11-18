@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .local import submit as submit_local, monitor as monitor_local
 from .local import ProcessWithLogging
 from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
+from .slurm_evaluation import CONTROL_COMMAND_TIMEOUT_SECONDS
 from .slurm import (
     submit_docker as submit_slurm_docker,
     submit_conda as submit_slurm_conda,
@@ -258,6 +259,7 @@ class JobScheduler:
                 image_tar_path=self.config.image_tar_path,
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
+                command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
             )
         elif self.job_type == "slurm_conda":
             assert isinstance(self.config, SlurmCondaJobConfig)
@@ -274,6 +276,7 @@ class JobScheduler:
                 self.config.modules,
                 verbose=self.verbose,
                 eval_env=self._build_eval_env(),
+                command_timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
             )
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")

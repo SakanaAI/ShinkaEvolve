@@ -13,6 +13,8 @@ from . import slurm
 
 ACCOUNTING_ATTEMPTS = 6
 ACCOUNTING_RETRY_SECONDS = 10
+CONTROL_COMMAND_TIMEOUT_SECONDS = 30
+STATUS_ERROR_LIMIT = 3
 FAILED_STATES = {
     "BOOT_FAIL",
     "CANCELLED",
@@ -33,10 +35,46 @@ def monitor_evaluation(
     if job_id.startswith("local-"):
         _wait_for_local_success(job_id, poll_interval)
     else:
-        while slurm.get_job_status(job_id) != "":
-            time.sleep(poll_interval)
+        _wait_for_queue_exit(job_id, poll_interval)
         _require_accounting_success(job_id)
     return load_results(results_dir)
+
+
+def _wait_for_queue_exit(job_id: str, poll_interval: float) -> None:
+    consecutive_errors = 0
+    while True:
+        try:
+            status = _queue_status(job_id)
+        except (OSError, subprocess.SubprocessError) as exc:
+            consecutive_errors += 1
+            if consecutive_errors >= STATUS_ERROR_LIMIT:
+                raise RuntimeError(
+                    f"Slurm status lookup for {job_id} failed "
+                    f"{consecutive_errors} consecutive times: {exc}"
+                ) from exc
+        else:
+            if not status or status == "COMPLETED" or status in FAILED_STATES:
+                return
+            consecutive_errors = 0
+        time.sleep(poll_interval)
+
+
+def _queue_status(job_id: str) -> str:
+    try:
+        result = subprocess.run(
+            ["squeue", "-j", job_id, "--noheader", "--states=all", "--format=%T"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.CalledProcessError as exc:
+        # The controller may have purged a finished job before our next poll.
+        # Absence is only a cue to check accounting, never proof of success.
+        if (exc.stderr or "").strip().endswith("Invalid job id specified"):
+            return ""
+        raise
+    return result.stdout.strip()
 
 
 def _wait_for_local_success(job_id: str, poll_interval: float) -> None:
@@ -62,7 +100,7 @@ def _require_accounting_success(job_id: str) -> None:
     for attempt in range(ACCOUNTING_ATTEMPTS):
         try:
             record = _read_accounting(job_id)
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             detail = str(exc)
         else:
             if record is not None:
@@ -95,6 +133,7 @@ def _read_accounting(job_id: str) -> tuple[str, str] | None:
         capture_output=True,
         text=True,
         check=True,
+        timeout=CONTROL_COMMAND_TIMEOUT_SECONDS,
     )
     records = [
         [field.strip() for field in line.split("|")]

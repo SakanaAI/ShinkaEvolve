@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -135,8 +136,6 @@ def test_seed_timeout_kills_local_evaluator_with_partial_results(
 def test_slurm_seed_requires_successful_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, state: str
 ) -> None:
-    import subprocess
-
     def submit(results_dir, *args, **kwargs):
         path = Path(results_dir)
         (path / "correct.json").write_text('{"correct": true}')
@@ -164,6 +163,61 @@ def test_slurm_seed_requires_successful_job(
         assert seed.metadata["evaluation_failed"]
         assert state in seed.metadata["stderr_log"]
         assert "evaluator stderr" in seed.metadata["stderr_log"]
+
+
+@pytest.mark.parametrize("backend", ["slurm_conda", "slurm_docker"])
+@pytest.mark.parametrize(
+    ("failed_command", "failure", "expected_attempts"),
+    [
+        ("sbatch", "timeout", 1),
+        ("squeue", "error", 3),
+        ("squeue", "timeout", 3),
+        ("sacct", "timeout", 6),
+    ],
+)
+def test_slurm_control_failures_enter_seed_fix_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    failed_command: str,
+    failure: str,
+    expected_attempts: int,
+) -> None:
+    failed_attempts = 0
+
+    def run(cmd, **kwargs):
+        nonlocal failed_attempts
+        path = tmp_path / "gen_0" / "results"
+        (path / "correct.json").write_text('{"correct": true}')
+        (path / "metrics.json").write_text('{"combined_score": 42}')
+        (path / "job_log.err").write_text("partial evaluator log")
+        if cmd[0] == failed_command:
+            failed_attempts += 1
+            assert failed_attempts <= expected_attempts, "Unbounded retries"
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            raise subprocess.CalledProcessError(1, cmd, stderr="Controller unavailable")
+        output = "Submitted batch job 123" if cmd[0] == "sbatch" else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=output)
+
+    monkeypatch.setattr("shinka.launch.slurm.subprocess.run", run)
+    monkeypatch.setattr("shinka.launch.slurm.time.sleep", Mock())
+    config = (
+        SlurmCondaJobConfig()
+        if backend == "slurm_conda"
+        else SlurmDockerJobConfig(image_tar_path="/tmp/image.tar")
+    )
+    seed, needs_fix, baseline = _run_seed(
+        tmp_path, LocalJobConfig(), scheduler=JobScheduler(backend, config)
+    )
+
+    assert not seed.correct and needs_fix
+    assert seed.combined_score == 0.0
+    assert seed.metadata["evaluation_failed"]
+    assert failed_command in seed.metadata["stderr_log"]
+    assert "partial evaluator log" in seed.metadata["stderr_log"]
+    assert failed_attempts == expected_attempts
+    baseline.assert_called_once_with(0.0)
 
 
 def test_seed_launch_exception_is_saved_for_fix_mode(tmp_path: Path) -> None:

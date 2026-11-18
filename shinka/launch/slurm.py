@@ -200,6 +200,8 @@ def submit_docker(
     verbose: bool = False,
     eval_env: Optional[Dict[str, str]] = None,
     local: bool = False,
+    *,
+    command_timeout: Optional[float] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -278,7 +280,11 @@ fi
         sbatch_path = f.name
 
     result = subprocess.run(
-        ["sbatch", sbatch_path], stdout=subprocess.PIPE, check=True, text=True
+        ["sbatch", sbatch_path],
+        stdout=subprocess.PIPE,
+        check=True,
+        text=True,
+        timeout=command_timeout,
     )
     # Slurm replies: "Submitted batch job <jobid>"
     job_id = result.stdout.strip().split()[-1]
@@ -301,6 +307,8 @@ def submit_conda(
     verbose: bool = False,
     eval_env: Optional[Dict[str, str]] = None,
     local: bool = False,
+    *,
+    command_timeout: Optional[float] = None,
     **sbatch_kwargs,
 ):
     if local:
@@ -364,6 +372,7 @@ def submit_conda(
             stderr=subprocess.PIPE,
             check=True,
             text=True,
+            timeout=command_timeout,
         )
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.strip() if e.stderr else str(e)

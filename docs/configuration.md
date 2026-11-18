@@ -235,13 +235,21 @@ complete CLI configuration.
 `conda_env` and `activate_script` are mutually exclusive.
 
 Generation-zero Slurm evaluations require a matching `sacct` allocation record
-with `State=COMPLETED` and `ExitCode=0:0` before accepting result files. Once the
-job leaves `squeue`, accounting is queried up to six times, ten seconds apart,
+with `State=COMPLETED` and `ExitCode=0:0` before accepting result files. Once
+`squeue` reports a terminal or absent job, accounting is queried up to six times, ten seconds apart,
 to allow delayed records to appear. Missing, inaccessible, or ambiguous records
 fail the seed evaluation with a diagnostic; partial artifacts from failed jobs
 are not accepted. This requires job accounting to be enabled and readable.
 Slurm local fallback jobs instead use the actual subprocess exit status.
 Ordinary asynchronous result retrieval retains its existing contract.
+
+Synchronous Slurm evaluations also limit each `sbatch`, `squeue`, and `sacct`
+command to 30 seconds. Three consecutive status lookup errors fail the seed;
+a successful lookup resets that counter. Pending, running, and suspended jobs
+continue waiting without a queue deadline: the Slurm `time` setting limits job execution, not
+queue wait. The `squeue` error `Invalid job id specified` triggers accounting
+verification for jobs already retired from the controller. Accounting queries
+retain the six-attempt grace period, including command errors and timeouts.
 
 ---
 
