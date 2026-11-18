@@ -363,6 +363,11 @@ def _wait_for_completion(
             if expired:
                 process.kill_for_timeout()
                 raise TimeoutError(f"Local evaluator exceeded timeout of {timeout}")
+    except BaseException:
+        # An interrupted wait, such as Ctrl-C in a notebook, ends the wait but
+        # not the interpreter: nothing else would stop the evaluator then.
+        process.kill_group()
+        raise
     finally:
         process.cleanup_logging()
 

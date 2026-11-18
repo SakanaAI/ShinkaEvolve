@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import psutil
 import pytest
 
 from job_lifecycle_test_utils import (
@@ -43,6 +44,35 @@ def _submit(scheduler: JobScheduler, tmp_path: Path) -> tuple[ProcessWithLogging
     process = scheduler.submit_async("main.py", str(results_dir))
     assert isinstance(process, ProcessWithLogging)
     return process, worker_pid(results_dir)
+
+
+@pytest.mark.parametrize(
+    "scheduler", [None, "00:10:00"], indirect=True, ids=["no-limit", "time-limit"]
+)
+def test_interrupting_a_seed_evaluation_kills_the_evaluator(
+    scheduler: JobScheduler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ctrl-C in a notebook or REPL ends the wait, not the interpreter.
+    results_dir = tmp_path / "results"
+    real_sleep = time.sleep
+    pids: list[int] = []
+
+    def interrupted_sleep(seconds: float) -> None:
+        monkeypatch.setattr(time, "sleep", real_sleep)
+        worker = worker_pid(results_dir)
+        pids.extend([psutil.Process(worker).ppid(), worker])
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(time, "sleep", interrupted_sleep)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            scheduler.run("main.py", str(results_dir))
+
+        evaluator, worker = pids
+        assert wait_until(lambda: not is_alive(evaluator))
+        assert wait_until(lambda: not is_alive(worker))
+    finally:
+        kill_leftovers(*pids)
 
 
 def test_cancel_kills_an_async_evaluator_and_its_workers(
