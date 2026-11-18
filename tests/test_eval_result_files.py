@@ -31,6 +31,33 @@ def test_metrics_are_written_before_the_correctness_verdict(
     assert written == ["metrics.json", "correct.json"]
 
 
+def test_result_files_are_replaced_in_one_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader sees the previous metrics or the complete new ones, never a part."""
+    (tmp_path / "metrics.json").write_text('{"combined_score": 9.0}')
+    replace = os.replace
+    replaced: dict[str, tuple[Any, Any]] = {}
+
+    def observing_replace(source: str, target: str) -> None:
+        before = Path(target).read_text() if os.path.exists(target) else None
+        replaced[os.path.basename(target)] = (before, json.loads(Path(source).read_text()))
+        replace(source, target)
+
+    monkeypatch.setattr(wrap_eval.os, "replace", observing_replace)
+
+    save_json_results(str(tmp_path), {"combined_score": 1.0}, True, verbose=False)
+
+    assert replaced == {
+        "metrics.json": ('{"combined_score": 9.0}', {"combined_score": 1.0}),
+        "correct.json": (None, {"correct": True, "error": None}),
+    }
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "correct.json",
+        "metrics.json",
+    ]
+
+
 def test_interrupted_save_does_not_read_as_a_correct_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -120,6 +147,25 @@ def test_unreadable_correctness_file_is_reported_not_raised(
 
     assert results["correct"] == {"correct": False}
     assert "correct.json" in results["evaluation_error"]
+    with pytest.raises(ValueError, match="Could not decode JSON"):
+        validate_evaluation_results(results)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b'{"combined_score": 1.', b"\xff\xfe"],
+    ids=["truncated", "not-text"],
+)
+def test_unreadable_metrics_file_is_reported_not_raised(
+    tmp_path: Path, content: bytes
+) -> None:
+    (tmp_path / "metrics.json").write_bytes(content)
+    (tmp_path / "correct.json").write_text('{"correct": true}')
+
+    results = load_results(str(tmp_path))
+
+    assert results["metrics"] == {}
+    assert "metrics.json" in results["evaluation_error"]
     with pytest.raises(ValueError, match="Could not decode JSON"):
         validate_evaluation_results(results)
 

@@ -238,6 +238,43 @@ def test_failed_maintenance_is_retried_on_the_stored_row(tmp_path: Path) -> None
     asyncio.run(run())
 
 
+def test_maintenance_that_fails_again_stays_queued(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(
+                async_db, StaticScheduler(good_results(2.5)), max_retries=5
+            )
+            _enable_retry_loop(runner)
+            job = make_job()
+            maintain = async_db.run_program_maintenance_async
+            attempts = 0
+
+            async def twice_locked(program: Any, **kwargs: Any) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts <= 2:
+                    raise RuntimeError("database is locked")
+                await maintain(program, **kwargs)
+
+            async_db.run_program_maintenance_async = twice_locked
+
+            await runner._process_completed_jobs_safely([job])
+            await runner._retry_failed_db_jobs()
+
+            (child,) = children(sync_db)
+            assert child.metadata["postprocess_db_maintenance_applied"] is False
+            assert list(runner.failed_jobs_for_retry.values()) == [job]
+
+            await runner._retry_failed_db_jobs()
+
+            (child,) = children(sync_db)
+            assert child.metadata["postprocess_db_maintenance_applied"] is True
+            assert sync_db.get_best_program().id == child.id
+            assert runner.failed_jobs_for_retry == {}
+
+    asyncio.run(run())
+
+
 def test_failure_after_maintenance_does_not_replay_side_effects(tmp_path: Path) -> None:
     async def run() -> None:
         async with open_database(tmp_path) as (sync_db, async_db):
