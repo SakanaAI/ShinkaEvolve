@@ -7,6 +7,7 @@ from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MA
 from .errors import EmptyResponseError
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
+from .retry import fail_fast_on_permanent_status
 import logging
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,7 @@ def get_openai_costs(response, model):
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
 )
+@fail_fast_on_permanent_status("OpenAI", openai.APIStatusError)
 def query_openai(
     client,
     model,
@@ -271,6 +273,7 @@ def query_openai(
     max_time=MAX_TIME,
     on_backoff=[mark_provider_retry_wait, async_backoff_handler],
 )
+@fail_fast_on_permanent_status("OpenAI", openai.APIStatusError)
 async def query_openai_async(
     client,
     model,
