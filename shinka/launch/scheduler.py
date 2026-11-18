@@ -27,6 +27,7 @@ from .slurm import (
     monitor as monitor_slurm,
 )
 from .slurm_status import SlurmQueuePoller, is_unknown_job_error
+from .evaluation_runtimes import LongestRuntimes, reports_correct
 from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,6 @@ SLURM_JOB_TYPES = ("slurm_docker", "slurm_conda")
 # cancelled. Give a cancelled one this long to leave before reading its files.
 SLURM_RESULTS_SETTLE_SECONDS = 20.0
 SLURM_RESULTS_POLL_SECONDS = 2.0
-
-
-def _reports_correct(results: Optional[Dict[str, Any]]) -> bool:
-    correct = (results or {}).get("correct")
-    return isinstance(correct, dict) and correct.get("correct") is True
 
 
 def _numeric_thread_env(numeric_threads: Optional[int]) -> Dict[str, str]:
@@ -85,8 +81,7 @@ class JobScheduler:
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._slurm_queue = SlurmQueuePoller()
         self._state_lock = threading.Lock()
-        self._longest_successful_runtime: Optional[float] = None
-        self._longest_finished_runtime: Optional[float] = None
+        self._runtimes = LongestRuntimes()
         # Evaluations `run` is blocked on, so that `shutdown` can release it.
         self._seed_jobs: List[Union[str, ProcessWithLogging]] = []
         self._closed = False
@@ -178,34 +173,17 @@ class JobScheduler:
 
     @property
     def longest_successful_runtime(self) -> Optional[float]:
-        """Seconds the longest local evaluation with a correct result took.
-
-        None until one has finished. Failed evaluations are left out: a crash
-        after one second says nothing about how long a healthy one needs.
-        """
-        return self._longest_successful_runtime
+        """Seconds the longest local evaluation with a correct result took."""
+        return self._runtimes.successful
 
     @property
     def longest_finished_runtime(self) -> Optional[float]:
-        """Seconds the longest local evaluation took, whatever its outcome.
-
-        Counts crashes, incorrect results and evaluations that were killed.
-        It is what there is to go by before any evaluation has succeeded.
-        """
-        return self._longest_finished_runtime
+        """Seconds the longest local evaluation took, whatever its outcome."""
+        return self._runtimes.finished
 
     def note_successful_runtime(self, seconds: float) -> None:
         """Record how long a successful evaluation took, e.g. in an earlier run."""
-        with self._state_lock:
-            longest = self._longest_successful_runtime
-            if longest is None or seconds > longest:
-                self._longest_successful_runtime = seconds
-
-    def _note_finished_runtime(self, seconds: float) -> None:
-        with self._state_lock:
-            longest = self._longest_finished_runtime
-            if longest is None or seconds > longest:
-                self._longest_finished_runtime = seconds
+        self._runtimes.note_successful(seconds)
 
     def run(
         self, exec_fname_t: str, results_dir_t: str
@@ -292,7 +270,7 @@ class JobScheduler:
                 self._seed_jobs.remove(job_id)
             if isinstance(job_id, ProcessWithLogging):
                 # Also when the seed crashed or timed out.
-                self._note_finished_runtime(job_id.runtime_seconds())
+                self._runtimes.note_finished(job_id.runtime_seconds())
 
         end_time = time.time()
         rtime = end_time - start_time
@@ -300,8 +278,8 @@ class JobScheduler:
         # Ensure results is not None
         if results is None:
             results = {"correct": {"correct": False}, "metrics": {}}
-        if self.job_type == "local" and _reports_correct(results):
-            self.note_successful_runtime(rtime)
+        if self.job_type == "local" and reports_correct(results):
+            self._runtimes.note_successful(rtime)
 
         return results, rtime
 
@@ -432,9 +410,9 @@ class JobScheduler:
                 )
                 job_id.has_exited()
                 seconds = job_id.runtime_seconds()
-                self._note_finished_runtime(seconds)
-                if not job_id.was_killed and _reports_correct(results):
-                    self.note_successful_runtime(seconds)
+                self._runtimes.note_finished(seconds)
+                if not job_id.was_killed and reports_correct(results):
+                    self._runtimes.note_successful(seconds)
                 return results
         return None
 
