@@ -182,12 +182,66 @@ def test_save_refreshes_with_an_open_read_cursor(config, explicit_transaction):
 
 def test_best_lookup_before_deferred_maintenance_still_records_improvement(config):
     with closing(_open_db(config)) as writer, closing(_open_db(config)) as reader:
-        best = _program(2, 10.0)
+        first, best, lower_metric = (
+            _program(1, 10.0),
+            _program(2, 10.0),
+            _program(3, 10.0),
+        )
+        first.public_metrics = best.public_metrics = {"quality": 2.0}
+        lower_metric.public_metrics = {"quality": 1.0}
+        writer.add(first, defer_maintenance=True)
         writer.add(best, defer_maintenance=True)
+        writer.add(lower_metric, defer_maintenance=True)
         assert reader.get_best_program().id == best.id
+        assert reader.best_program_id is None
+        with closing(ProgramDatabase(config, read_only=True)) as observer:
+            assert observer.get_best_program().id == best.id
+            assert observer.best_program_id is None
+            assert observer.best_score_ever is None
 
+        writer.run_post_add_maintenance(first)
         writer.run_post_add_maintenance(best)
-        assert (writer.best_score_ever, writer.best_score_generation) == (10.0, 2)
+        assert writer.best_program_id == best.id
+        assert (writer.best_score_ever, writer.best_score_generation) == (10.0, 1)
+
+
+def test_best_lookup_repair_retries_without_publishing_pending_candidate(config):
+    first, best, pending = _program(1, 10.0), _program(2, 10.0), _program(3, 99.0)
+    best.public_metrics = {"quality": 1.0}
+    with closing(_open_db(config)) as writer:
+        writer.add(first)
+        writer.add(best)
+        writer.add(pending, defer_maintenance=True)
+        for generation, copy_flag in ((4, "_is_island_copy"), (5, "_spawned_island")):
+            copy = _program(generation, 100.0)
+            copy.metadata = {copy_flag: True, "postprocess_db_maintenance_applied": True}
+            writer.add(copy, defer_maintenance=True)
+        writer._update_metadata_in_db("best_program_id", None)
+        writer.conn.execute("""
+            CREATE TRIGGER fail_best_repair BEFORE INSERT ON metadata_store
+            WHEN NEW.key = 'best_program_id'
+            BEGIN SELECT RAISE(ABORT, 'best repair failed'); END
+            """)
+
+    with closing(_open_db(config)) as repairer:
+        with pytest.raises(sqlite3.IntegrityError, match="best repair failed"):
+            repairer.get_best_program()
+        assert repairer.best_program_id is None
+        assert not repairer.conn.in_transaction
+        repairer.conn.execute("DROP TRIGGER fail_best_repair")
+
+    with closing(ProgramDatabase(config, read_only=True)) as observer:
+        assert observer.best_program_id is None
+        assert observer.get_best_program().id == best.id
+
+    with closing(_open_db(config)) as reopened:
+        assert reopened.get_best_program().id == best.id
+        assert reopened.best_program_id == best.id
+        assert (reopened.best_score_ever, reopened.best_score_generation) == (10.0, 1)
+        reopened.run_post_add_maintenance(reopened.get(pending.id))
+
+    with closing(_open_db(config)) as reopened:
+        assert reopened.best_program_id == pending.id
 
 
 def test_delayed_improvement_and_ties_keep_stagnation_marker_monotonic(config):

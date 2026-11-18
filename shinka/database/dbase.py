@@ -755,11 +755,15 @@ class ProgramDatabase:
             FROM programs ORDER BY rowid
             """):
             program = self._program_from_row(row)
-            if program is not None and not (
-                program.metadata.get("_is_island_copy")
-                or program.metadata.get("_spawned_island")
-            ):
+            if program is not None and self._is_original_program(program):
                 yield program
+
+    @staticmethod
+    def _is_original_program(program: Program) -> bool:
+        return not (
+            program.metadata.get("_is_island_copy")
+            or program.metadata.get("_spawned_island")
+        )
 
     def _scan_original_run_programs(
         self, published: _RunState, programs: Iterator[Program]
@@ -1693,7 +1697,7 @@ class ProgramDatabase:
                 return program
             if self.read_only:
                 program = self._find_best_program()
-                self.best_program_id = program.id if program else None
+                self.best_program_id = self._maintained_best_id(program)
                 return program
         return self._repair_tracked_best()
 
@@ -1707,11 +1711,20 @@ class ProgramDatabase:
             program = self._get_tracked_best(state)
             if program is None:
                 program = self._find_best_program()
-                best_id = program.id if program else None
+                best_id = self._maintained_best_id(program)
                 if best_id != state.best_program_id:
                     self._write_metadata("best_program_id", best_id)
                     state.best_program_id = best_id
         return program
+
+    def _maintained_best_id(self, program: Optional[Program]) -> Optional[str]:
+        if (
+            program is not None
+            and program.metadata.get(_MAINTENANCE_APPLIED_KEY)
+            and self._is_original_program(program)
+        ):
+            return program.id
+        return None
 
     def _find_best_program(
         self,
@@ -1743,53 +1756,32 @@ class ProgramDatabase:
         if not programs:
             return None
 
-        sorted_p: List[Program] = []
-        log_key = "average metrics"
-
         if metric:
-            progs_with_metric = [
-                p for p in programs if p.public_metrics and metric in p.public_metrics
-            ]
-            sorted_p = sorted(
-                progs_with_metric,
-                key=lambda p_item: p_item.public_metrics.get(metric, -float("inf")),
-                reverse=True,
-            )
-            log_key = f"metric '{metric}'"
-        elif island_idx is not None:
-            best_program = programs[0]
-            for candidate in programs[1:]:
-                if self._is_better(candidate, best_program):
-                    best_program = candidate
-            sorted_p = [best_program]
-            log_key = "program ranking"
-        elif any(p.combined_score is not None for p in programs):
-            progs_with_cs = [p for p in programs if p.combined_score is not None]
-            sorted_p = sorted(
-                progs_with_cs,
-                key=lambda p_item: p_item.combined_score,
-                reverse=True,
-            )
-            log_key = "combined_score"
-        else:
-            progs_with_metrics = [p for p in programs if p.public_metrics]
-            sorted_p = sorted(
-                progs_with_metrics,
-                key=lambda p_item: (
-                    sum(p_item.public_metrics.values()) / len(p_item.public_metrics)
-                    if p_item.public_metrics
-                    else -float("inf")
+            return max(
+                (
+                    program
+                    for program in programs
+                    if program.public_metrics and metric in program.public_metrics
                 ),
-                reverse=True,
+                key=lambda program: program.public_metrics[metric],
+                default=None,
             )
-
-        if not sorted_p:
-            logger.debug("No correct programs matched criteria for get_best_program.")
-            return None
-
-        best_overall = sorted_p[0]
-        logger.debug(f"Best correct program by {log_key}: {best_overall.id}")
-        return best_overall
+        if island_idx is None and metric is None:
+            originals = [
+                program for program in programs if self._is_original_program(program)
+            ]
+            maintained = [
+                program
+                for program in originals
+                if program.metadata.get(_MAINTENANCE_APPLIED_KEY)
+            ]
+            # A run with no maintained best can still return a provisional lookup.
+            programs = maintained or originals or programs
+        best_program = programs[0]
+        for candidate in programs[1:]:
+            if self._is_better(candidate, best_program):
+                best_program = candidate
+        return best_program
 
     @db_retry()
     def get_population_telemetry(self) -> List[Dict[str, Any]]:
