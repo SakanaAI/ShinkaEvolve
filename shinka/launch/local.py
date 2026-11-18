@@ -12,6 +12,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# How long a killed evaluator is waited for. One stuck in an uninterruptible
+# wait (a dead network mount) must not stall whoever cancelled it.
+KILL_REAP_SECONDS = 30.0
+
 # Evaluators lead their own process group, so signals sent to this process's
 # group (Ctrl-C, a terminal hangup) no longer reach them. Whatever is still
 # running when this process ends is killed from here instead. Entries are held
@@ -60,7 +64,8 @@ class ProcessWithLogging:
         """Kill the evaluator's isolated group when available and reap the root."""
         self.was_killed = True
         _kill_and_reap(self.process, self._process_group_id)
-        _LIVE_PROCESSES.discard(self)
+        if self.process.returncode is not None:
+            _LIVE_PROCESSES.discard(self)
 
     def kill_group(self) -> bool:
         """Kill a running evaluator together with its descendants.
@@ -70,9 +75,7 @@ class ProcessWithLogging:
         """
         if self.has_exited():
             return False
-        self.was_killed = True
-        _kill_and_reap(self.process, self._process_group_id)
-        _LIVE_PROCESSES.discard(self)
+        self.kill_for_timeout()
         return True
 
     def kill_without_reaping(self) -> None:
@@ -152,7 +155,15 @@ def _kill_group(process: subprocess.Popen, group_id: Optional[int]) -> None:
 
 def _kill_and_reap(process: subprocess.Popen, group_id: Optional[int]) -> None:
     _kill_group(process, group_id)
-    process.wait()
+    try:
+        process.wait(timeout=KILL_REAP_SECONDS)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Evaluator %s has not exited %.0fs after it was killed; no longer "
+            "waiting for it",
+            process.pid,
+            KILL_REAP_SECONDS,
+        )
 
 
 @atexit.register

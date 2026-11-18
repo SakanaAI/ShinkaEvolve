@@ -1,4 +1,5 @@
 import gc
+import logging
 import os
 import signal
 import subprocess
@@ -237,19 +238,61 @@ def test_forked_child_leaves_its_parents_evaluators_alone(
             kill_leftovers(child)
 
 
-def test_fatal_signal_handler_cannot_be_reentered_and_never_waits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    dispositions_at_kill: list[tuple[object, object]] = []
-    evaluator = MagicMock(spec=subprocess.Popen, pid=4321, returncode=None)
-    evaluator.wait.side_effect = AssertionError("a signal handler must not wait")
-    evaluator.poll.side_effect = AssertionError("a signal handler must not reap")
-    process = ProcessWithLogging(
+def _evaluator_stub(**popen_attributes) -> ProcessWithLogging:
+    evaluator = MagicMock(spec=subprocess.Popen, pid=4321, **popen_attributes)
+    return ProcessWithLogging(
         evaluator,
         (MagicMock(), MagicMock()),
         (MagicMock(), MagicMock()),
         process_group_id=4321,
     )
+
+
+def test_evaluator_that_survives_the_kill_does_not_block_its_caller(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A process in an uninterruptible wait (a dead network mount) stays for a while.
+    process = _evaluator_stub(returncode=None)
+    process.process.poll.return_value = None
+    process.process.wait.side_effect = subprocess.TimeoutExpired(["evaluate"], 30)
+    monkeypatch.setattr(local.os, "killpg", lambda group_id, signum: None)
+    monkeypatch.setattr(local, "_has_exited_unreaped", lambda pid: False)
+    monkeypatch.setattr(local, "_LIVE_PROCESSES", {process})
+
+    with caplog.at_level(logging.WARNING, logger=local.__name__):
+        assert process.kill_group() is True
+
+    assert process.process.wait.call_args.kwargs["timeout"] > 0
+    assert "has not exited" in caplog.text
+    # Still alive, so the exit hook gets another go at it.
+    assert process in local._LIVE_PROCESSES
+
+
+def test_group_whose_members_all_exited_is_killed_through_its_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # macOS answers a kill of such a group with a permission error.
+    process = _evaluator_stub(returncode=None)
+    process.process.poll.return_value = None
+    monkeypatch.setattr(local, "_has_exited_unreaped", lambda pid: False)
+
+    def refuse(group_id: int, signum: int) -> None:
+        raise PermissionError(group_id)
+
+    monkeypatch.setattr(local.os, "killpg", refuse)
+
+    assert process.kill_group() is True
+
+    process.process.kill.assert_called_once_with()
+
+
+def test_fatal_signal_handler_cannot_be_reentered_and_never_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispositions_at_kill: list[tuple[object, object]] = []
+    process = _evaluator_stub(returncode=None)
+    process.process.wait.side_effect = AssertionError("a signal handler must not wait")
+    process.process.poll.side_effect = AssertionError("a signal handler must not reap")
 
     def record_kill(group_id: int, signum: int) -> None:
         assert (group_id, signum) == (4321, signal.SIGKILL)
