@@ -7,6 +7,13 @@ arrays of fixed-size numeric types. Array bytes are decoded with `struct`
 after their length has been checked, and no NumPy constructor is ever called,
 so a crafted file can neither run code nor have memory read that it does not
 contain.
+
+Scheduled for removal. This reader first ships in the release after 0.0.8 and
+is to be deleted two releases after that one (0.0.11 if the numbering
+continues), together with `_state_from_legacy_pickle` in `bandit_state` and
+the legacy-pickle tests in `tests/test_bandit_state_safety.py`. From then on a
+pickle at the state path is an unreadable state: the runner warns and starts
+with a fresh bandit.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 States are written as JSON. Runs saved before this format hold a pickle at the
 same path; its values are still read, by `bandit_state_legacy`, without
-unpickling it.
+unpickling it. That reader is scheduled for removal; its module says when.
 """
 
 from __future__ import annotations
@@ -59,9 +59,10 @@ def read_bandit_state(path: Path) -> dict[str, Any]:
     if data.lstrip()[:1] == b"{":
         return _state_from_json(data)
     state = _state_from_legacy_pickle(data)
-    logger.info(
-        "Read legacy pickle bandit state from %s; it is rewritten as JSON on the "
-        "next save.",
+    logger.warning(
+        "Bandit state %s is a pickle from an older Shinka version. It was read "
+        "and is rewritten as JSON on the next save; a later release stops "
+        "reading pickle states.",
         path,
     )
     return state

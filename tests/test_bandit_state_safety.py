@@ -174,6 +174,23 @@ def test_legacy_pickle_state_still_loads_then_becomes_json(cls, protocol, tmp_pa
     assert path.read_bytes().startswith(b"{")
 
 
+def test_reading_a_legacy_pickle_warns_once_that_it_becomes_json(tmp_path, caplog):
+    """The pickle reader is scheduled for removal, so its use must be visible."""
+    path = tmp_path / "bandit_state.pkl"
+    path.write_bytes(pickle.dumps(_trained(AsymmetricUCB).get_state()))
+    bandit = AsymmetricUCB(arm_names=ARMS, seed=0)
+
+    with caplog.at_level(logging.WARNING, logger="shinka.llm.bandit_state"):
+        bandit.load_state(path)
+        bandit.save_state(path)
+        bandit.load_state(path)
+
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    assert str(path) in record.getMessage()
+    assert "rewritten as JSON" in record.getMessage()
+
+
 @pytest.mark.filterwarnings("ignore:numpy.core:DeprecationWarning")
 def test_legacy_pickle_written_by_numpy_1_still_loads(tmp_path):
     source = _trained(AsymmetricUCB)
