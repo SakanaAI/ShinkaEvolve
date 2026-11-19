@@ -50,12 +50,14 @@ THINKING_TOKENS = {
 }
 
 NO_TEMPERATURE_MODELS = {
-    "claude-opus-4-8",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     *GEMINI_THINKING_LEVEL_MODELS,
-    "us.anthropic.claude-opus-4-8",
 }
+# Claude takes no sampling parameters any more: the Anthropic SDK dropped the
+# `temperature` argument in 1.0, and API version 2026-10-21, which SDK 2.x
+# sends, rejects the field for every model.
+NO_TEMPERATURE_PROVIDERS = ("anthropic", "bedrock")
 
 
 def normalize_reasoning_effort(effort: Union[str, bool, None]) -> str:
@@ -240,8 +242,12 @@ def sample_model_kwargs(
         r_effort = "low"
 
     # 3. SAMPLE: temperature with possible reasoning restrictions
-    include_temperature = api_model_name not in NO_TEMPERATURE_MODELS and not (
-        provider in ("openai", "azure_openai") and is_reasoning_model(model_name)
+    include_temperature = (
+        api_model_name not in NO_TEMPERATURE_MODELS
+        and provider not in NO_TEMPERATURE_PROVIDERS
+        and not (
+            provider in ("openai", "azure_openai") and is_reasoning_model(model_name)
+        )
     )
     if (
         include_temperature
