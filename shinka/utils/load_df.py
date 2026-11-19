@@ -18,7 +18,9 @@ def load_programs_to_df(
 
     Args:
         db_path_str: The path to the SQLite database file or results directory.
-        default_db_name: Default database filename if db_path_str is a directory.
+        default_db_name: Database filename tried first if db_path_str is a
+            directory. If that file has no programs, the database of the
+            directory that does is loaded (a run with a custom `db_path`).
         verbose: Whether to print summary statistics.
         include_prompts: If True, also loads the prompt evolution database and
             returns a tuple of (programs_df, prompts_df).
@@ -31,12 +33,22 @@ def load_programs_to_df(
         The 'metrics' JSON string is parsed and its key-value pairs are added
         as columns to the DataFrame.
     """
-    db_file = Path(db_path_str)
+    # Local import: keeps shinka.utils importable without the database package.
+    from shinka.database.run_db_path import (
+        AmbiguousRunDatabaseError,
+        find_run_db_path,
+    )
 
     if db_path_str.endswith(".sqlite") or db_path_str.endswith(".db"):
         db_file = Path(db_path_str)
     else:
-        db_file = Path(f"{db_path_str}/{default_db_name}")
+        try:
+            db_file = find_run_db_path(db_path_str, default_db_name)
+        except AmbiguousRunDatabaseError as e:
+            print(f"Error: {e}")
+            return None
+        if db_file.name != default_db_name:
+            print(f"Loading {db_file.name}: {default_db_name} holds no programs.")
 
     if not db_file.exists():
         print(f"Error: Database file not found at {db_path_str}")
@@ -348,7 +360,8 @@ def store_best_path(df: pd.DataFrame, results_dir: str):
     for _, row in best_path.iterrows():
         print(f"\nGeneration {row['generation']} - Score: {row['combined_score']:.2f}")
 
-        if row["code_diff"] is not None:
+        # The seed has no diff; in a DataFrame that is NaN rather than None.
+        if pd.notna(row["code_diff"]):
             patch_path = patch_dir / f"patch_{i}.patch"
             patch_path.write_text(str(row["code_diff"]), encoding="utf-8")
             print(f"Saved patch to {patch_path}")

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _PREVIEW_RUN_STATE_REPAIR_KEYS = ("run_state_reconciled_v1", "run_state_reconciled_v2")
 _RUN_STATE_REPAIR_KEY = "run_state_reconciled_v3"
 _MAINTENANCE_APPLIED_KEY = "postprocess_db_maintenance_applied"
+_COMPUTE_TIME_MIGRATION_KEY = "compute_time_migrated_v1"
 
 
 def clean_nan_values(obj: Any) -> Any:
@@ -497,8 +498,6 @@ class ProgramDatabase:
             "programs(children_count)",
             "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
             "programs(island_idx)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
-            "programs(system_prompt_id)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
@@ -549,6 +548,13 @@ class ProgramDatabase:
 
         # Run any necessary migrations
         self._run_migrations()
+        # Migration 2 adds this column to databases created before it existed,
+        # so its index can only be created once the migrations have run.
+        self.cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_programs_system_prompt_id ON "
+            "programs(system_prompt_id)"
+        )
+        self.conn.commit()
         self._repair_legacy_run_state()
 
         logger.debug("Database tables and indices ensured to exist.")
@@ -590,25 +596,35 @@ class ProgramDatabase:
         # Migration 3: Restore legacy compute_time semantics when detailed
         # pipeline timing is present. compute_time should mirror evaluation
         # runtime, while pipeline_seconds stores end-to-end wall time.
+        # Rows written since already satisfy this, so the full-table rewrite
+        # runs once per database instead of taking the write lock on every open.
         try:
-            self.cursor.execute("""
-                UPDATE programs
-                SET metadata = json_set(
-                    metadata,
-                    '$.compute_time',
-                    json_extract(metadata, '$.evaluation_seconds')
+            if not self._has_run_state_repair(_COMPUTE_TIME_MIGRATION_KEY):
+                self.cursor.execute("""
+                    UPDATE programs
+                    SET metadata = json_set(
+                        metadata,
+                        '$.compute_time',
+                        json_extract(metadata, '$.evaluation_seconds')
+                    )
+                    WHERE json_valid(metadata)
+                      AND json_type(metadata, '$.evaluation_seconds')
+                          IN ('real', 'integer')
+                      AND (
+                          json_type(metadata, '$.compute_time') IS NULL
+                          OR ABS(
+                              COALESCE(json_extract(metadata, '$.compute_time'), 0.0) -
+                              COALESCE(
+                                  json_extract(metadata, '$.evaluation_seconds'), 0.0
+                              )
+                          ) > 1e-9
+                      )
+                    """)
+                self.cursor.execute(
+                    "INSERT OR REPLACE INTO metadata_store (key, value) VALUES (?, '1')",
+                    (_COMPUTE_TIME_MIGRATION_KEY,),
                 )
-                WHERE json_valid(metadata)
-                  AND json_type(metadata, '$.evaluation_seconds') IN ('real', 'integer')
-                  AND (
-                      json_type(metadata, '$.compute_time') IS NULL
-                      OR ABS(
-                          COALESCE(json_extract(metadata, '$.compute_time'), 0.0) -
-                          COALESCE(json_extract(metadata, '$.evaluation_seconds'), 0.0)
-                      ) > 1e-9
-                  )
-                """)
-            self.conn.commit()
+                self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Error during compute_time timing migration: {e}")
 
@@ -1287,6 +1303,10 @@ class ProgramDatabase:
         if self.island_manager.needs_island_copies(program):
             self.island_manager.copy_program_to_islands(program)
             metadata.pop("_needs_island_copies", None)
+        if program.correct:
+            # An incorrect seed leaves its copies' islands without a correct
+            # program; start them from the first one that works instead.
+            self.island_manager.seed_uninitialized_islands(program)
         self.check_and_spawn_island_if_stagnant(
             program.generation, maintenance_program_id=program.id
         )
@@ -1583,6 +1603,13 @@ class ProgramDatabase:
 
         return ancestors
 
+    def _initialized_islands_for_sampling(self) -> Optional[List[int]]:
+        """Islands a parent can be sampled from, or None while bootstrapping."""
+        initialized_islands = self.island_manager.get_initialized_islands()
+        if initialized_islands or self.island_manager.are_all_islands_initialized():
+            return initialized_islands
+        return None
+
     @db_retry()
     def sample(
         self,
@@ -1595,8 +1622,10 @@ class ProgramDatabase:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
-        # Check if all islands are initialized
-        if not self.island_manager.are_all_islands_initialized():
+        # Until an island holds a correct program there is nothing to select
+        # from, so start from the initial program.
+        initialized_islands = self._initialized_islands_for_sampling()
+        if initialized_islands is None:
             # Get initial program (first program in database)
             self.cursor.execute("SELECT * FROM programs ORDER BY timestamp ASC LIMIT 1")
             row = self.cursor.fetchone()
@@ -1608,7 +1637,7 @@ class ProgramDatabase:
                 raise RuntimeError("Failed to load initial program")
 
             logger.info(
-                f"Not all islands initialized. Using initial program {parent.id} "
+                f"No island initialized. Using initial program {parent.id} "
                 "without inspirations."
             )
 
@@ -1626,8 +1655,7 @@ class ProgramDatabase:
 
             return parent, [], []
 
-        # All islands initialized - sample island + constrain parents
-        initialized_islands = self.island_manager.get_initialized_islands()
+        # Sample among the islands that hold a correct program + constrain parents
         sampled_island = self.island_sampler.sample_island(initialized_islands)
 
         logger.debug(f"Sampling from island {sampled_island}")
@@ -1717,8 +1745,11 @@ class ProgramDatabase:
         if not self.cursor:
             raise ConnectionError("DB not connected.")
 
-        # Check if all islands are initialized
-        if not self.island_manager.are_all_islands_initialized():
+        # Until an island holds a correct program there is nothing to select
+        # from. Islands that are still empty must not hold the run back: their
+        # only program can be an incorrect seed copy that nothing ever replaces.
+        initialized_islands = self._initialized_islands_for_sampling()
+        if initialized_islands is None:
             # Check if there are any correct programs at all
             self.cursor.execute(
                 "SELECT COUNT(*) as cnt FROM programs WHERE correct = 1"
@@ -1810,8 +1841,7 @@ class ProgramDatabase:
                 )
                 return parent, [], [], needs_fix
 
-        # All islands initialized - sample island + constrain parents
-        initialized_islands = self.island_manager.get_initialized_islands()
+        # Sample among the islands that hold a correct program + constrain parents
         sampled_island = self.island_sampler.sample_island(initialized_islands)
 
         logger.debug(f"Sampling from island {sampled_island}")

@@ -13,7 +13,6 @@ parent_config = dict(
 
 
 db_config = DatabaseConfig(
-    db_path="evolution_db.sqlite",
     num_islands=2,
     archive_size=40,
     # Inspiration parameters
