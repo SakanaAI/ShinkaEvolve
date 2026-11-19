@@ -29,7 +29,7 @@ jobs:
           rustfmt --version
 
       - name: Install project
-        run: uv sync --dev
+        run: uv sync --locked --dev
 
       - name: Ruff
         run: uv run ruff check tests --exclude tests/file.py

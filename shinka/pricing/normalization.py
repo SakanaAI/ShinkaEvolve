@@ -89,15 +89,17 @@ def _models_dev_entry(provider: str, model_id: str, model: Any) -> ModelPrice | 
     tier = _first_context_tier(cost)
     model_name = f"openrouter/{model_id}" if provider == "openrouter" else model_id
     reasoning = bool(model.get("reasoning", False))
+    # Embeddings bill input tokens only; models.dev still reports `output: 0`.
+    bills_output = kind == "llm"
     return ModelPrice(
         model_name=model_name,
         api_model_name=model_id,
         provider=provider,
         kind=kind,
         input_price=input_price / MILLION,
-        output_price=None if output_price is None else output_price / MILLION,
+        output_price=_per_token(output_price) if bills_output else None,
         input_price_tier2=_tier_price(tier, "input"),
-        output_price_tier2=_tier_price(tier, "output"),
+        output_price_tier2=_tier_price(tier, "output") if bills_output else None,
         tier_threshold=None if tier is None else tier["size"],
         is_reasoning=reasoning,
         think_temp_fixed=bool(

@@ -39,10 +39,11 @@ def _build_parser() -> argparse.ArgumentParser:
         '    "llm": [...]\n'
         "  }\n\n"
         "Readiness checks are strict and provider-specific:\n"
-        "  anthropic: ANTHROPIC_API_KEY\n"
+        "  anthropic: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN\n"
         "  azure LLM: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT\n"
         "  azure embedding: AZURE_OPENAI_API_KEY + AZURE_API_ENDPOINT + AZURE_API_VERSION\n"
-        "  bedrock: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION_NAME\n"
+        "  bedrock: (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY or AWS_BEARER_TOKEN_BEDROCK)"
+        " + (AWS_REGION_NAME or AWS_REGION)\n"
         "  deepseek: DEEPSEEK_API_KEY\n"
         "  google: GEMINI_API_KEY or GOOGLE_GENAI_USE_VERTEXAI + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION\n"
         "  openai: OPENAI_API_KEY\n"

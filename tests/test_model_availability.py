@@ -12,12 +12,15 @@ from shinka.model_availability import validate_model_env_access
 
 _PROVIDER_ENV_VARS = (
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "AZURE_OPENAI_API_KEY",
     "AZURE_API_ENDPOINT",
     "AZURE_API_VERSION",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_REGION_NAME",
+    "AWS_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "DEEPSEEK_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_GENAI_USE_VERTEXAI",
