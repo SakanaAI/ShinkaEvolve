@@ -292,7 +292,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 
 | Key | Default Value | Type | Explanation |
 |-----|---------------|------|-------------|
-| `db_path` | `None` | `Optional[str]` | Database file path (auto-generated if None) |
+| `db_path` | `None` | `Optional[str]` | File name of the run database inside `results_dir` (`programs.sqlite` if None) |
 | `num_islands` | `2` | `int` | Number of evolution islands for diversity |
 | `archive_size` | `40` | `int` | Global archive size cap |
 | `elite_selection_ratio` | `0.3` | `float` | Proportion of elite programs for inspiration |
@@ -540,6 +540,8 @@ shinka_launch
 # In another terminal, launch the WebUI
 shinka_visualize --port 8888 --open
 ```
+
+The WebUI listens on `localhost` only. To view a run on a remote machine, use an SSH tunnel to that machine (`ssh -L 8888:localhost:8888 user@host`). Reaching it over the network, including a tunnel through a login node to a compute node's address, needs `--host`; see the guide.
 
 For detailed WebUI documentation, see the [WebUI Guide](https://sakanaai.github.io/ShinkaEvolve/webui/).
 

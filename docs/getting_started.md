@@ -428,8 +428,13 @@ See the [Configuration Guide](configuration.md) for parameter explanations.
 ### Code evolution animation
 
 ```bash
-python code_path_anim.py --results_dir examples/circle_packing/results_20250101_120000
+python -m shinka.plots.code_path_anim --results_dir examples/circle_packing/results_20250101_120000
 ```
+
+The script reads the run database (`programs.sqlite` unless the run set
+`db_path`) from the results directory, writes the code and patches along the
+path to the best program to `best_path/`, and renders `code_evolution.mp4` next
+to it.
 
 ---
 

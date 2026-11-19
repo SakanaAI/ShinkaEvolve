@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -242,6 +242,7 @@ def _parse_run_snapshot(snapshot_path: Path) -> CatalogSnapshot | None:
         _validate_entries(entries)
         if document.get("catalog_sha256") != _catalog_digest(entries):
             raise ValueError("pricing snapshot catalog digest mismatch")
+        entries = _without_embedding_output_prices(entries)
         source = document["source"]
         if source not in {"live", "cache", "bundled"}:
             raise ValueError("invalid pricing snapshot source")
@@ -477,8 +478,6 @@ def _validate_entries(entries: tuple[ModelPrice, ...]) -> None:
             (entry.input_price is None) != (entry.output_price is None)
         ):
             raise ValueError("pricing snapshot has a partial price")
-        if entry.kind == "embedding" and entry.output_price is not None:
-            raise ValueError("embedding snapshot entry has an output price")
         if entry.tier_threshold is not None and (
             isinstance(entry.tier_threshold, bool)
             or not isinstance(entry.tier_threshold, int)
@@ -498,6 +497,23 @@ def _validate_entries(entries: tuple[ModelPrice, ...]) -> None:
         if key in keys:
             raise ValueError("duplicate model entry in pricing snapshot")
         keys.add(key)
+
+
+def _without_embedding_output_prices(
+    entries: tuple[ModelPrice, ...],
+) -> tuple[ModelPrice, ...]:
+    """Drop the output price that older snapshots stored for embeddings.
+
+    Embeddings bill input tokens only. Snapshots written before the catalog
+    normalised this hold models.dev's ``output: 0`` and must keep loading, so
+    the value is discarded here instead of rejected.
+    """
+    return tuple(
+        replace(entry, output_price=None, output_price_tier2=None)
+        if entry.kind == "embedding"
+        else entry
+        for entry in entries
+    )
 
 
 def _loads_json(value: str | bytes) -> Any:

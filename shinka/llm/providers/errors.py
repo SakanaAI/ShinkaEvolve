@@ -20,6 +20,10 @@ class NonRetryableLLMError(ValueError):
     cost: float = 0.0
 
 
+class RequestRejectedError(NonRetryableLLMError):
+    """The provider refused this one request; other requests may still succeed."""
+
+
 class LLMEndpointError(NonRetryableLLMError):
     """A permanent endpoint/authentication failure, safe to persist in run artifacts."""
 

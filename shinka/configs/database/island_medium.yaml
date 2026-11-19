@@ -1,7 +1,6 @@
 # from mad example TODO: update
 db_config:
   _target_: shinka.database.DatabaseConfig
-  db_path: "evolution_db.sqlite"
   num_islands: 2
   archive_size: 40
   elite_selection_ratio: 0.3
@@ -13,3 +12,5 @@ db_config:
   enforce_island_separation: true
   parent_selection_strategy: "weighted"
   parent_selection_lambda: 10.0
+  # File name of the run database inside results_dir; null: programs.sqlite
+  db_path: null

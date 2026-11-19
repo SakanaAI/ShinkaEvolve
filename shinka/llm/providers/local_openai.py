@@ -6,7 +6,7 @@ from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MA
 
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
-from .errors import LLMEndpointError
+from .retry import fail_fast_on_permanent_status
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +21,6 @@ def backoff_handler(details):
         logger.warning(
             f"Local OpenAI - Retry {details['tries']} due to error: {exc}. Waiting {details['wait']:0.1f}s..."
         )
-
-
-def _endpoint_error(exc: openai.APIStatusError) -> LLMEndpointError:
-    # Do not persist headers, credentials, request URLs or raw response bodies.
-    return LLMEndpointError(exc.status_code, str(exc.code or type(exc).__name__))
 
 
 def _extract_costs(
@@ -62,6 +57,7 @@ def _extract_usage(response) -> tuple[int, int, int]:
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
 )
+@fail_fast_on_permanent_status("Local OpenAI", openai.APIStatusError)
 def query_local_openai(
     client,
     model,
@@ -78,17 +74,12 @@ def query_local_openai(
         )
 
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system_msg}, *new_msg_history],
-            **kwargs,
-            n=1,
-        )
-    except openai.APIStatusError as exc:
-        if exc.status_code in {401, 403, 404}:
-            raise _endpoint_error(exc) from exc
-        raise
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system_msg}, *new_msg_history],
+        **kwargs,
+        n=1,
+    )
     content = response.choices[0].message.content or ""
     thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
     new_msg_history.append({"role": "assistant", "content": content})
@@ -128,6 +119,7 @@ def query_local_openai(
     max_time=MAX_TIME,
     on_backoff=[mark_provider_retry_wait, backoff_handler],
 )
+@fail_fast_on_permanent_status("Local OpenAI", openai.APIStatusError)
 async def query_local_openai_async(
     client,
     model,
@@ -146,17 +138,12 @@ async def query_local_openai_async(
     if check_provider_attempt():
         client = client.with_options(max_retries=0)
     new_msg_history = msg_history + [{"role": "user", "content": msg}]
-    try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system_msg}, *new_msg_history],
-            **kwargs,
-            n=1,
-        )
-    except openai.APIStatusError as exc:
-        if exc.status_code in {401, 403, 404}:
-            raise _endpoint_error(exc) from exc
-        raise
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system_msg}, *new_msg_history],
+        **kwargs,
+        n=1,
+    )
     content = response.choices[0].message.content or ""
     thought = getattr(response.choices[0].message, "reasoning_content", "") or ""
     new_msg_history.append({"role": "assistant", "content": content})

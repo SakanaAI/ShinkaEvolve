@@ -147,6 +147,7 @@ class AsyncMetaSummarizer:
             f"Processed and cleared {num_processed} programs from meta memory "
             f"(total processed: {self.sync_summarizer.total_programs_processed})"
         )
+        self.sync_summarizer.persist_state()
 
         return (
             (
@@ -385,33 +386,7 @@ class AsyncMetaSummarizer:
 
     async def write_meta_output_async(self, results_dir: str) -> None:
         """Async version of write_meta_output - write files in thread pool."""
-        output_str = ""
-
-        if self.sync_summarizer.meta_summary:
-            output_str += "# INDIVIDUAL PROGRAM SUMMARIES\n\n"
-            output_str += (
-                "The following are summaries of individual programs "
-                "evaluated since the last meta update:\n\n"
-            )
-            output_str += str(self.sync_summarizer.meta_summary)
-            output_str += "\n\n"
-
-        if self.sync_summarizer.meta_scratch_pad:
-            output_str += "# GLOBAL INSIGHTS SCRATCHPAD\n\n"
-            output_str += (
-                "The following are global insights about optimization "
-                "approaches and their effectiveness:\n\n"
-            )
-            output_str += str(self.sync_summarizer.meta_scratch_pad)
-            output_str += "\n\n"
-
-        if self.sync_summarizer.meta_recommendations:
-            output_str += "# META RECOMMENDATIONS\n\n"
-            output_str += (
-                "The following are actionable recommendations for the next "
-                "program generations:\n\n"
-            )
-            output_str += str(self.sync_summarizer.meta_recommendations)
+        output_str = self.sync_summarizer.format_meta_output()
 
         if output_str:
             # Create meta subdirectory if it doesn't exist

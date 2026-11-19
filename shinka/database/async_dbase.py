@@ -624,7 +624,9 @@ class AsyncProgramDatabase:
                     with self._source_job_id_lock:
                         if (
                             source_job_id in self._in_flight_source_job_ids
-                            or thread_db.has_program_with_source_job_id(source_job_id)
+                            or thread_db.has_program_with_source_job_id(
+                                source_job_id, generation=program.generation
+                            )
                         ):
                             logger.info(
                                 "Skipping duplicate persisted job for source_job_id=%s",
@@ -717,7 +719,7 @@ class AsyncProgramDatabase:
                     self.sync_db.config,
                     embedding_model=self.sync_db.embedding_model,
                 )
-                payload = json.dumps(metadata)
+                payload = json.dumps(clean_nan_values(metadata))
                 thread_db.cursor.execute(
                     "UPDATE programs SET metadata = ? WHERE id = ?",
                     (payload, program_id),

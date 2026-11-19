@@ -153,9 +153,10 @@ with a rate-limited warning; population and final snapshots remain authoritative
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `db_path` | `Optional[str]` | `None` | SQLite DB path. |
+| `db_path` | `Optional[str]` | `None` | File name of the run database inside `results_dir`; `programs.sqlite` when unset. See the note below. |
 | `num_islands` | `int` | `2` | Number of islands. |
 | `archive_size` | `int` | `40` | Global archive size cap. |
+| `max_stdout_log_chars` | `Optional[int]` | `None` | Keep only the last N characters of an evaluation's stdout in the program metadata. `None` stores it in full; the complete log always stays on disk. |
 | `elite_selection_ratio` | `float` | `0.3` | Fraction of elite inspirations. |
 | `num_archive_inspirations` | `int` | `1` | Number of archive inspirations sampled. |
 | `num_top_k_inspirations` | `int` | `1` | Number of top-k inspirations sampled. |
@@ -177,6 +178,42 @@ with a rate-limited warning; population and final snapshots remain authoritative
 | `num_beams` | `int` | `5` | Beam count for beam-search parent selection. |
 | `archive_selection_strategy` | `str` | `'fitness'` | Archive replacement strategy: `fitness` or `crowding`. |
 | `archive_criteria` | `Dict[str, float]` | `{'combined_score': 1.0}` | Weighted criteria for fitness archive scoring. |
+
+A run stores its programs in `<results_dir>/<db_path>`, or in
+`<results_dir>/programs.sqlite` when `db_path` is unset, as in the shipped
+presets and examples. Rules for `db_path` in a run:
+
+- Only the file name counts. The database always sits directly in
+  `results_dir`, because the prompt database, the meta files, the web UI and
+  the analysis helpers look next to it. An absolute path or a path with
+  directories is reduced to its file name and the runner logs a warning: set
+  `results_dir` to move a run.
+- Give the name a `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
+  and the resume rule below recognise database files by it; the runner warns
+  about any other name. `prompts.sqlite` and `prompts.db`
+  belong to the prompt database and are refused.
+- A run never starts at generation 0 next to programs it did not ask for. If
+  the configured file has no programs but `programs.sqlite` or a database of the
+  first releases (`evolution_db.sqlite`) does, the run resumes in that one and
+  logs a warning. Use a new `results_dir` to start over.
+- Programs under any other name are not adopted. If the configured file has no
+  programs and another database in `results_dir` does (the run was started with
+  a `db_path` the configuration no longer has, or somebody left a copy there),
+  the runner stops with an error that lists the files: set `db_path` to the one
+  to continue.
+
+`load_programs_to_df(results_dir)` and `python -m shinka.plots.code_path_anim`
+look in the same places. Because reading changes nothing, they also load a
+database under an unknown name when it is the only one in the directory. A
+`ProgramDatabase` you open yourself uses `db_path` as the full file path.
+
+`island_selection_strategy` picks the island a parent is sampled from. `uniform`
+treats all islands alike and `equal` picks the island with the fewest correct
+programs. `proportional` uses a Boltzmann distribution over each island's best
+score, which depends only on score differences. `weighted` divides the best
+score by the number of correct programs on the island; if any island's best
+score is negative, the scores are first shifted to
+`score - worst + (best - worst)`, so the best island weighs twice the worst.
 
 Tournament selection chooses the mutation parent, leaving archive retention and
 inspiration selection unchanged. Set `parent_selection_strategy: tournament`,
@@ -201,6 +238,8 @@ complete CLI configuration.
 |-----------|------|---------|-------------|
 | `eval_program_path` | `Optional[str]` | `'evaluate.py'` | Evaluation script path. |
 | `extra_cmd_args` | `Dict[str, Any]` | `{}` | Extra CLI args forwarded to eval script. |
+| `eval_verbose` | `bool` | `True` | Print the per-run evaluation banners to stdout. Passed to the evaluation process as `SHINKA_EVAL_VERBOSE`. |
+| `numeric_threads_per_job` | `Optional[int]` | `None` | Thread cap for numeric libraries (OMP, BLAS, MKL, ...) in each evaluation process. `None` leaves the libraries' defaults on Slurm; for local jobs the runner sets it to `cpu_count // max_evaluation_jobs`. |
 
 `LocalJobConfig` adds:
 
@@ -209,6 +248,7 @@ complete CLI configuration.
 | `time` | `Optional[str]` | `None` | Optional timeout (`HH:MM:SS`). |
 | `conda_env` | `Optional[str]` | `None` | Optional conda env for local execution. |
 | `activate_script` | `Optional[str]` | `None` | Optional sourceable env script, e.g. `.venv/bin/activate`. |
+| `python_executable` | `Optional[str]` | `None` | Interpreter that runs the evaluation script. `None` uses the interpreter running Shinka. Ignored when `conda_env` or `activate_script` is set. |
 
 `SlurmDockerJobConfig` adds:
 
@@ -326,11 +366,6 @@ evo_config:
   embedding_model: "text-embedding-3-small"
   code_embed_sim_threshold: 0.99
   enable_controlled_oversubscription: false
-  proposal_target_mode: adaptive
-  proposal_target_min_samples: 5
-  proposal_target_ratio_cap: 2.0
-  proposal_buffer_max: 2
-  proposal_target_ewma_alpha: 0.3
   results_dir: ${output_dir}
 ```
 
@@ -363,12 +398,6 @@ evo_config:
     temperatures: [0.0]
   embedding_model: "text-embedding-3-small"
   enable_controlled_oversubscription: false
-  proposal_target_mode: adaptive
-  proposal_target_min_samples: 5
-  proposal_target_ratio_cap: 2.0
-  proposal_buffer_max: 2
-  proposal_target_hard_cap: 8
-  proposal_target_ewma_alpha: 0.3
   results_dir: ${output_dir}
 ```
 
@@ -413,7 +442,6 @@ All `shinka/configs/database/*.yaml` override `DatabaseConfig` defaults only for
 
 ```yaml
 db_config:
-  db_path: "evolution_db.sqlite"
   num_islands: 2
   archive_size: 20
   exploitation_ratio: 0.2
@@ -429,7 +457,6 @@ db_config:
 
 ```yaml
 db_config:
-  db_path: "evolution_db.sqlite"
   num_islands: 2
   archive_size: 40
   elite_selection_ratio: 0.3
@@ -447,7 +474,6 @@ db_config:
 
 ```yaml
 db_config:
-  db_path: "evolution_db.sqlite"
   num_islands: 5
   archive_size: 40
   elite_selection_ratio: 0.3

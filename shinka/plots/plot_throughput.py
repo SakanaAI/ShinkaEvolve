@@ -126,6 +126,20 @@ def _get_series_with_default(
     return series
 
 
+# Flags of rows that repeat another program's job: the metadata flags under the
+# column names `load_programs_to_df` gives them, and the plain column of frames
+# built by hand.
+_ISLAND_COPY_COLUMNS = ("_is_island_copy", "_spawned_island", "is_island_copy")
+
+
+def _island_copy_mask(df: pd.DataFrame) -> pd.Series:
+    mask = pd.Series(False, index=df.index)
+    for column in _ISLAND_COPY_COLUMNS:
+        if column in df.columns:
+            mask |= df[column].eq(True)
+    return mask
+
+
 def _get_runtime_row_priority(row: pd.Series) -> int:
     priority = 0
     if not bool(row.get("is_island_copy", False)):
@@ -229,9 +243,7 @@ def _prepare_pool_runtime_data(df: pd.DataFrame) -> Optional[PoolRuntimeData]:
     runtime_df["source_job_id"] = runtime_df["source_job_id"].where(
         runtime_df["source_job_id"].notna(), runtime_df["id"]
     )
-    runtime_df["is_island_copy"] = _get_series_with_default(
-        runtime_df, "is_island_copy", False
-    ).fillna(False).astype(bool)
+    runtime_df["is_island_copy"] = _island_copy_mask(runtime_df)
     runtime_df["correct"] = _get_series_with_default(
         runtime_df, "correct", False
     ).fillna(False).astype(bool)

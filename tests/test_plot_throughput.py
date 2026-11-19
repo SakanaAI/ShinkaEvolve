@@ -20,7 +20,7 @@ def _runtime_df() -> pd.DataFrame:
             {
                 "id": "job-a-main",
                 "source_job_id": "job-a",
-                "is_island_copy": False,
+                "_is_island_copy": False,
                 "correct": True,
                 "combined_score": 0.9,
                 "timestamp": 10,
@@ -45,7 +45,7 @@ def _runtime_df() -> pd.DataFrame:
             {
                 "id": "job-a-copy",
                 "source_job_id": "job-a",
-                "is_island_copy": True,
+                "_is_island_copy": True,
                 "correct": False,
                 "combined_score": 0.1,
                 "timestamp": 11,
@@ -70,7 +70,7 @@ def _runtime_df() -> pd.DataFrame:
             {
                 "id": "job-b",
                 "source_job_id": "job-b",
-                "is_island_copy": False,
+                "_is_island_copy": False,
                 "correct": True,
                 "combined_score": 0.8,
                 "timestamp": 20,
@@ -95,7 +95,7 @@ def _runtime_df() -> pd.DataFrame:
             {
                 "id": "job-missing",
                 "source_job_id": "job-missing",
-                "is_island_copy": False,
+                "_is_island_copy": False,
                 "correct": True,
                 "combined_score": 0.7,
                 "timestamp": 30,
@@ -139,7 +139,7 @@ def test_prepare_pool_runtime_data_dedupes_rows_and_computes_capacities():
 
 def test_prepare_pool_runtime_data_handles_missing_optional_columns():
     runtime_df = _runtime_df().drop(
-        columns=["source_job_id", "is_island_copy", "patch_name", "model_name"]
+        columns=["source_job_id", "_is_island_copy", "patch_name", "model_name"]
     )
 
     prepared = _prepare_pool_runtime_data(runtime_df)
@@ -177,7 +177,7 @@ def test_prepare_pool_runtime_data_reconciles_legacy_worker_overlap():
             {
                 "id": "job-a",
                 "source_job_id": "job-a",
-                "is_island_copy": False,
+                "_is_island_copy": False,
                 "correct": True,
                 "combined_score": 0.9,
                 "timestamp": 10,
@@ -202,7 +202,7 @@ def test_prepare_pool_runtime_data_reconciles_legacy_worker_overlap():
             {
                 "id": "job-b",
                 "source_job_id": "job-b",
-                "is_island_copy": False,
+                "_is_island_copy": False,
                 "correct": True,
                 "combined_score": 0.8,
                 "timestamp": 20,
