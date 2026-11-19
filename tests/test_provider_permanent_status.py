@@ -238,6 +238,31 @@ def test_account_wide_failure_is_an_endpoint_error_whatever_its_status(
     assert raised.value.code == expected_code
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_anthropic_empty_credit_balance_is_an_endpoint_error(asynchronous):
+    """Anthropic reports it as a plain 400 invalid_request_error (seen live)."""
+    error = anthropic.APIStatusError(
+        "rejected",
+        response=_http_response(400),
+        body={
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the Anthropic "
+                "API. Please go to Plans & Billing to upgrade or purchase credits.",
+            },
+        },
+    )
+    client = _FailingClient([error], asynchronous)
+
+    with pytest.raises(LLMEndpointError) as raised:
+        _run_query("anthropic", client)
+
+    assert client.calls == 1
+    assert raised.value.status_code == 400
+    assert raised.value.code == "credit_balance_too_low"
+
+
 def _openrouter_error(status: int):
     request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     body = {"message": "flagged", "code": status, "metadata": {"reasons": ["violence"]}}

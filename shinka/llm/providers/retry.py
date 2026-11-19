@@ -13,11 +13,20 @@ RETRYABLE_CLIENT_STATUS_CODES = frozenset({408, 409, 425, 429, 499})
 # Statuses that mean the endpoint, credentials, model or account are wrong for
 # every request.
 ENDPOINT_FAILURE_STATUS_CODES = frozenset({401, 402, 403, 404})
+# Anthropic reports an empty credit balance as a plain 400
+# invalid_request_error; only the message tells it from a malformed request.
+# Message fragment -> the code recorded for it.
+ACCOUNT_FAILURE_MESSAGES = {"credit balance is too low": "credit_balance_too_low"}
 # Provider error codes that mean the same but arrive under a status shared with
 # per-request errors: Google reports a bad key as 400, OpenAI an exhausted
 # quota as 429.
 ACCOUNT_FAILURE_CODES = frozenset(
-    {"API_KEY_INVALID", "invalid_api_key", "insufficient_quota"}
+    {
+        "API_KEY_INVALID",
+        "invalid_api_key",
+        "insufficient_quota",
+        *ACCOUNT_FAILURE_MESSAGES.values(),
+    }
 )
 # Hosts whose 403 refuses one request, not the endpoint: OpenRouter answers
 # 403 when its moderation flags the input.
@@ -54,10 +63,22 @@ def _nested(value: Any, *keys: str) -> Any:
     return value
 
 
+def _account_failure_messages(exc: Exception) -> List[str]:
+    message = _nested(getattr(exc, "body", None), "error", "message")
+    if not isinstance(message, str):
+        return []
+    return [
+        code
+        for fragment, code in ACCOUNT_FAILURE_MESSAGES.items()
+        if fragment in message
+    ]
+
+
 def _error_codes(exc: Exception) -> List[str]:
     """Every machine-readable code a provider attached to a status error."""
     google_details = _nested(getattr(exc, "details", None), "error", "details")
     candidates = [
+        *_account_failure_messages(exc),
         getattr(exc, "code", None),  # OpenAI and compatible servers
         *(
             _nested(detail, "reason")  # google.rpc.ErrorInfo
