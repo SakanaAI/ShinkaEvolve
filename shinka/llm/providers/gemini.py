@@ -1,6 +1,7 @@
 import backoff
 import logging
 from typing import Any, cast
+from google.genai import errors as genai_errors
 from google.genai import types
 from shinka.api_budget import APIBudgetExceeded, check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import (
@@ -12,6 +13,7 @@ from shinka.llm.constants import (
 from .errors import NonRetryableLLMError, StructuredOutputNotSupportedError
 from .pricing import calculate_cost
 from .result import QueryResult
+from .retry import fail_fast_on_permanent_status
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +228,7 @@ def gemini_extract_thoughts_and_content(response):
     on_backoff=backoff_handler,
     giveup=_giveup_gemini,
 )
+@fail_fast_on_permanent_status("Gemini", genai_errors.APIError)
 def query_gemini(
     client,
     model,
@@ -304,6 +307,7 @@ def query_gemini(
     on_backoff=[mark_provider_retry_wait, backoff_handler],
     giveup=_giveup_gemini,
 )
+@fail_fast_on_permanent_status("Gemini", genai_errors.APIError)
 async def query_gemini_async(
     client,
     model,

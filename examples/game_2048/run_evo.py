@@ -72,8 +72,8 @@ evo_config = EvolutionConfig(
     ],
     llm_kwargs=dict(
         temperatures=[0.0, 0.5, 1.0],
-        # reasoning_efforts=["auto", "low", "medium", "high"],
-        reasoning_efforts=["auto"],
+        # reasoning_efforts=["disabled", "low", "medium", "high"],
+        reasoning_efforts=["disabled"],
         max_tokens=32768,
     ),
     meta_rec_interval=10,

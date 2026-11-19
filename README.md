@@ -541,6 +541,8 @@ shinka_launch
 shinka_visualize --port 8888 --open
 ```
 
+The WebUI listens on `localhost` only. To view a run on a remote machine, use an SSH tunnel to that machine (`ssh -L 8888:localhost:8888 user@host`). Reaching it over the network, including a tunnel through a login node to a compute node's address, needs `--host`; see the guide.
+
 For detailed WebUI documentation, see the [WebUI Guide](https://sakanaai.github.io/ShinkaEvolve/webui/).
 
 ## Local Docs Development

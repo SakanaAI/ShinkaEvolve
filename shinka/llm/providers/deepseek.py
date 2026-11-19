@@ -4,6 +4,7 @@ from shinka.api_budget import check_provider_attempt, mark_provider_retry_wait
 from shinka.llm.constants import BACKOFF_MAX_TIME, BACKOFF_MAX_TRIES, BACKOFF_MAX_VALUE
 from .pricing import calculate_cost, model_exists
 from .result import QueryResult
+from .retry import fail_fast_on_permanent_status
 import logging
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ def get_deepseek_costs(response, model):
     max_time=MAX_TIME,
     on_backoff=backoff_handler,
 )
+@fail_fast_on_permanent_status("DeepSeek", openai.APIStatusError)
 def query_deepseek(
     client,
     model,
@@ -132,6 +134,7 @@ def query_deepseek(
     max_time=MAX_TIME,
     on_backoff=[mark_provider_retry_wait, backoff_handler],
 )
+@fail_fast_on_permanent_status("DeepSeek", openai.APIStatusError)
 async def query_deepseek_async(
     client,
     model,

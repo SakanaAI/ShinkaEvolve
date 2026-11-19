@@ -1,0 +1,92 @@
+name: Lockfile Refresh
+
+# CI installs with `uv sync --locked`, so nothing else moves uv.lock forward.
+# Each week this upgrades it, runs the CI gate on the result and proposes the
+# new lock in a pull request. A red run means the upgrade needs a human.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: lock-refresh
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: Upgrade uv.lock, run the gate, open a PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BRANCH: build/refresh-uv-lock
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+
+      - name: Upgrade the lockfile
+        id: lock
+        run: |
+          uv lock --upgrade
+          if git diff --quiet -- uv.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up stable Rust formatter
+        if: steps.lock.outputs.changed == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustfmt --version
+
+      - name: Install project
+        if: steps.lock.outputs.changed == 'true'
+        run: uv sync --locked --dev
+
+      - name: Ruff
+        if: steps.lock.outputs.changed == 'true'
+        run: uv run ruff check tests --exclude tests/file.py
+
+      - name: Mypy
+        if: steps.lock.outputs.changed == 'true'
+        run: uv run mypy --follow-imports=skip --ignore-missing-imports tests/test_*.py tests/conftest.py
+
+      - name: Pytest
+        if: steps.lock.outputs.changed == 'true'
+        run: uv run pytest -q -m "not requires_secrets and not models_dev_live"
+
+      - name: Open or update the pull request
+        if: steps.lock.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --force-create "$BRANCH"
+          git commit --message "build: refresh uv.lock" -- uv.lock
+          git push --force origin "$BRANCH"
+          open_pr="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')"
+          if [ -z "$open_pr" ]; then
+            gh pr create --base "$BASE" --head "$BRANCH" \
+              --title "build: refresh uv.lock" \
+              --body "Weekly \`uv lock --upgrade\`. Ruff, mypy and pytest passed on this lock in $RUN_URL. Pull requests opened by the workflow token do not start CI; close and reopen this one to run it here."
+          fi

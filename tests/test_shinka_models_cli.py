@@ -16,9 +16,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LLM_PRICING_CSV = REPO_ROOT / "shinka" / "llm" / "providers" / "pricing.csv"
 EMBED_PRICING_CSV = REPO_ROOT / "shinka" / "embed" / "providers" / "pricing.csv"
 PROVIDER_ENV_VARS = {
-    "anthropic": ("ANTHROPIC_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
     "azure": ("AZURE_OPENAI_API_KEY", "AZURE_API_ENDPOINT", "AZURE_API_VERSION"),
-    "bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION_NAME"),
+    "bedrock": (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_REGION_NAME",
+        "AWS_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+    ),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "google": ("GEMINI_API_KEY",),
     "vertexai": (

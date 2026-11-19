@@ -1,4 +1,5 @@
 import logging
+import math
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Union, Sequence, List, Any, Dict
@@ -6,10 +7,11 @@ from scipy.special import logsumexp
 from rich.table import Table
 from rich.console import Console
 import rich.box
-import pickle
 from pathlib import Path
 
 from shinka.local_openai_config import parse_local_openai_model
+
+from .bandit_state import read_bandit_state, write_bandit_state
 
 Arm = Union[int, str]
 Subset = Optional[Union[np.ndarray, Sequence[Arm]]]
@@ -110,7 +112,31 @@ class BanditBase(ABC):
         self,
         baseline: float,
     ) -> None:
-        self._baseline = float(baseline)
+        finite_baseline = self._finite_or_none(baseline, "baseline score")
+        if finite_baseline is not None:
+            self._baseline = finite_baseline
+
+    @staticmethod
+    def _finite_or_none(value: Optional[float], what: str) -> Optional[float]:
+        """Return a finite float, or None for a missing or non-finite value.
+
+        One NaN or infinity folded into the running statistics makes every
+        later posterior non-finite, and that state is saved and reloaded.
+        """
+        if value is None:
+            return None
+        number = float(value)
+        if math.isfinite(number):
+            return number
+        logger.warning("Bandit ignored a non-finite %s: %s", what, number)
+        return None
+
+    def _finite_parent_baseline(self, baseline: Optional[float]) -> Optional[float]:
+        """A non-finite parent score cannot shift a reward; use the run baseline."""
+        if baseline is None:
+            return None
+        finite_baseline = self._finite_or_none(baseline, "parent baseline")
+        return self._baseline if finite_baseline is None else finite_baseline
 
     def _resolve_arm(self, arm: Arm) -> int:
         # allows updating by int index or string name
@@ -207,21 +233,19 @@ class BanditBase(ABC):
         raise NotImplementedError
 
     def save_state(self, path: Union[str, Path]) -> None:
-        """Save bandit state to a pickle file."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        state = self.get_state()
-        with open(path, "wb") as f:
-            pickle.dump(state, f)
+        """Save bandit state as JSON, whatever the file is named."""
+        write_bandit_state(Path(path), self.get_state())
 
     def load_state(self, path: Union[str, Path]) -> None:
-        """Load bandit state from a pickle file."""
+        """Load bandit state saved as JSON or by an older pickle writer."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Bandit state file not found: {path}")
-        with open(path, "rb") as f:
-            state = pickle.load(f)
-        self.set_state(state)
+        self.set_state(read_bandit_state(path))
+
+    def _restored_baseline(self, state: Dict[str, Any]) -> float:
+        baseline = self._finite_or_none(state["baseline"], "saved baseline score")
+        return self._baseline if baseline is None else baseline
 
     def _state_arm_names(self) -> Optional[List[str]]:
         if self._arm_names is None:
@@ -294,6 +318,23 @@ class BanditBase(ABC):
         self._obs_max = float(finite_means.max()) if finite_means.size > 0 else -np.inf
         self._obs_min = float(finite_means.min()) if finite_means.size > 0 else np.inf
 
+    def _reset_reward_sums(self) -> None:
+        """Set reward sums and the observed range to their unseen-arm values."""
+        n = self.n_arms
+        if self.use_exponential_scaling:
+            self.s = np.full(n, -np.inf, dtype=np.float64)
+        else:
+            self.s = np.zeros(n, dtype=np.float64)
+        if not self.asymmetric_scaling:
+            self._obs_max = -np.inf
+            self._obs_min = np.inf
+        elif self.use_exponential_scaling:
+            self._obs_max = -np.inf
+            self._obs_min = -np.inf
+        else:
+            self._obs_min = 0.0
+            self._obs_max = 0.0
+
     def _discard_invalid_linear_state(self) -> bool:
         """Drop reward statistics that cannot have come from linear accumulation.
 
@@ -311,6 +352,25 @@ class BanditBase(ABC):
             "from a run where exponential scaling was applied with "
             "asymmetric_scaling=False. Resetting reward statistics to the prior; "
             "delete bandit_state.pkl to start cleanly."
+        )
+        self._reset_reward_state()
+        return True
+
+    def _discard_non_finite_reward_state(self, *arrays: np.ndarray) -> bool:
+        """Drop reward statistics that a non-finite reward corrupted.
+
+        Runs saved before non-finite rewards were rejected can hold NaN or
+        +inf sums, from which no posterior can be computed. Only -inf is a
+        legitimate non-finite value, as the log-space sum of an unseen arm.
+        """
+        corrupted = np.isposinf(self.s).any() or any(
+            np.isnan(values).any() for values in (self.s, *arrays)
+        )
+        if not corrupted:
+            return False
+        logger.warning(
+            "Bandit state contains NaN or +inf reward statistics from a "
+            "non-finite reward. Resetting reward statistics to the prior."
         )
         self._reset_reward_state()
         return True
@@ -500,6 +560,8 @@ class AsymmetricUCB(BanditBase):
 
     def update(self, arm, reward, baseline=None):
         i = self._resolve_arm(arm)
+        reward = self._finite_or_none(reward, "reward")
+        baseline = self._finite_parent_baseline(baseline)
         is_real = reward is not None
         r_raw = float(reward) if is_real else self._impute_worst_reward()
 
@@ -545,7 +607,9 @@ class AsymmetricUCB(BanditBase):
         cost: float,
     ) -> float:
         i = self._resolve_arm(arm)
-        c = float(cost)
+        c = self._finite_or_none(cost, "cost")
+        if c is None:
+            return 0.0
         self.total_costs[i] += c
         self.n_costs[i] += 1.0
 
@@ -960,18 +1024,11 @@ class AsymmetricUCB(BanditBase):
         }
 
     def _reset_reward_state(self) -> None:
-        # Only reached in linear mode, where s holds plain sums.
         n = self.n_arms
         self.n_submitted = np.zeros(n, dtype=np.float64)
         self.n_completed = np.zeros(n, dtype=np.float64)
-        self.s = np.zeros(n, dtype=np.float64)
         self.divs = np.zeros(n, dtype=np.float64)
-        if self.asymmetric_scaling:
-            self._obs_min = 0.0
-            self._obs_max = 0.0
-        else:
-            self._obs_max = -np.inf
-            self._obs_min = np.inf
+        self._reset_reward_sums()
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
@@ -983,14 +1040,26 @@ class AsymmetricUCB(BanditBase):
         )
         self.s = self._align_state_array(state, "s", self.s)
         self.divs = self._align_state_array(state, "divs", self.divs)
-        self._baseline = state["baseline"]
-        if not self._discard_invalid_linear_state():
+        self._baseline = self._restored_baseline(state)
+        if not (
+            self._discard_invalid_linear_state()
+            or self._discard_non_finite_reward_state(
+                self.divs, self.n_submitted, self.n_completed
+            )
+        ):
             self._restore_observation_range(state)
         self.n_costs = self._align_state_array(state, "n_costs", self.n_costs)
         self.total_costs = self._align_state_array(
             state, "total_costs", self.total_costs
         )
-        self._restore_cost_range(state)
+        if np.isfinite(self.n_costs).all() and np.isfinite(self.total_costs).all():
+            self._restore_cost_range(state)
+        else:
+            logger.warning("Bandit state contains non-finite costs; resetting them.")
+            self.n_costs = np.zeros(self.n_arms, dtype=np.float64)
+            self.total_costs = np.zeros(self.n_arms, dtype=np.float64)
+            self.min_cost_observed = np.inf
+            self.max_cost_observed = -np.inf
 
 
 class FixedSampler(BanditBase):
@@ -1055,7 +1124,9 @@ class FixedSampler(BanditBase):
         cost: float,
     ) -> float:
         i = self._resolve_arm(arm)
-        c = float(cost)
+        c = self._finite_or_none(cost, "cost")
+        if c is None:
+            return 0.0
         self.total_costs[i] += c
         self.n_costs[i] += 1.0
         return c
@@ -1136,7 +1207,7 @@ class FixedSampler(BanditBase):
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
-        self._baseline = state["baseline"]
+        self._baseline = self._restored_baseline(state)
         self.p = self._align_state_array(state, "p", self.p)
         p_sum = float(self.p.sum())
         if p_sum <= 0.0:
@@ -1290,6 +1361,8 @@ class ThompsonSampler(BanditBase):
         baseline: Optional[float] = None,
     ) -> tuple[float, float]:
         i = self._resolve_arm(arm)
+        reward = self._finite_or_none(reward, "reward")
+        baseline = self._finite_parent_baseline(baseline)
         is_real = reward is not None
         r_raw = float(reward) if is_real else self._impute_worst_reward()
 
@@ -1513,20 +1586,13 @@ class ThompsonSampler(BanditBase):
         }
 
     def _reset_reward_state(self) -> None:
-        # Only reached in linear mode, where s holds plain sums.
         n = self.n_arms
         self.n_submitted = np.zeros(n, dtype=np.float64)
         self.n_completed = np.zeros(n, dtype=np.float64)
-        self.s = np.zeros(n, dtype=np.float64)
         self.divs = np.zeros(n, dtype=np.float64)
         self.alpha = np.full(n, self.a_prior, dtype=np.float64)
         self.beta = np.full(n, self.b_prior, dtype=np.float64)
-        if self.asymmetric_scaling:
-            self._obs_min = 0.0
-            self._obs_max = 0.0
-        else:
-            self._obs_max = -np.inf
-            self._obs_min = np.inf
+        self._reset_reward_sums()
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Restore the internal state from serialization."""
@@ -1540,6 +1606,11 @@ class ThompsonSampler(BanditBase):
         self.divs = self._align_state_array(state, "divs", self.divs)
         self.alpha = self._align_state_array(state, "alpha", self.alpha)
         self.beta = self._align_state_array(state, "beta", self.beta)
-        self._baseline = state["baseline"]
-        if not self._discard_invalid_linear_state():
+        self._baseline = self._restored_baseline(state)
+        if not (
+            self._discard_invalid_linear_state()
+            or self._discard_non_finite_reward_state(
+                self.divs, self.n_submitted, self.n_completed, self.alpha, self.beta
+            )
+        ):
             self._restore_observation_range(state)
