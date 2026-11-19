@@ -38,7 +38,8 @@ new_str = """# EVOLVE-BLOCK-START
 THIS IS A TEST PART 2
 
 
-# EVOLVE-BLOCK-END"""
+# EVOLVE-BLOCK-END
+"""
 
 
 def test_edit():
@@ -441,7 +442,7 @@ def test_find_indented_match_exact_match():
     x = 1
     y = 2
     return x + y"""
-    search = "x = 1"
+    search = "    x = 1"
     matched, pos = _find_indented_match(search, original)
 
     assert matched == search
@@ -1306,7 +1307,7 @@ def f(a):
 
     assert num_applied == 0
     assert error is not None
-    assert updated_content == original_content.rstrip("\n")
+    assert updated_content == original_content
 
 
 def test_apply_diff_patch_preserves_dedent_in_replacement():

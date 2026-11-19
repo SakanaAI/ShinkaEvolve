@@ -3,7 +3,6 @@ max_proposal_jobs: 5
 max_db_workers: 4
 
 db_config:
-  db_path: evolution_db.sqlite
   num_islands: 2
   archive_size: 40
   elite_selection_ratio: 0.3

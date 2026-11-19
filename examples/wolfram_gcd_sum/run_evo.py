@@ -9,7 +9,6 @@ job_config = LocalJobConfig(
 )
 
 db_config = DatabaseConfig(
-    db_path="evolution_db.sqlite",
     num_islands=2,
     archive_size=20,
     elite_selection_ratio=0.3,

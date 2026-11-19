@@ -904,7 +904,7 @@
 
         function formatNumber(n) {
             if (n === null || n === undefined) return '-';
-            return n.toLocaleString();
+            return escapeHtml(n.toLocaleString());
         }
 
         function formatScore(score) {
@@ -923,7 +923,7 @@
             const count = stats.prompt_count || 0;
             const cost = stats.prompt_evo_cost || 0;
             const costStr = cost > 0 ? ` ($${cost.toFixed(2)})` : '';
-            return `<span class="pe-active" title="${count} prompts, $${cost.toFixed(4)} cost">${count}${costStr}</span>`;
+            return `<span class="pe-active" title="${escapeHtml(count)} prompts, $${cost.toFixed(4)} cost">${escapeHtml(count)}${costStr}</span>`;
         }
 
         function formatGenerations(stats) {
@@ -934,7 +934,7 @@
             const costStr = totalCost > 0 ? ` ($${totalCost.toFixed(2)})` : '';
             const titleCount = stats.generation_count ?? count;
             const maxGen = stats.max_generation ?? '-';
-            return `<span title="${titleCount} generations, max generation ${maxGen}, $${totalCost.toFixed(4)} total cost">${titleCount}${costStr}</span>`;
+            return `<span title="${escapeHtml(titleCount)} generations, max generation ${escapeHtml(maxGen)}, $${totalCost.toFixed(4)} total cost">${escapeHtml(titleCount)}${costStr}</span>`;
         }
 
         function formatDuration(seconds) {
@@ -948,9 +948,9 @@
         function formatStall(gens) {
             if (gens === null || gens === undefined) return '-';
             if (gens === 0) return '<span class="stall-ok">✓</span>';
-            if (gens <= 10) return `<span class="stall-ok">${gens}</span>`;
-            if (gens <= 50) return `<span class="stall-warn">${gens}</span>`;
-            return `<span class="stall-bad">${gens}</span>`;
+            if (gens <= 10) return `<span class="stall-ok">${escapeHtml(gens)}</span>`;
+            if (gens <= 50) return `<span class="stall-warn">${escapeHtml(gens)}</span>`;
+            return `<span class="stall-bad">${escapeHtml(gens)}</span>`;
         }
 
         function formatBestGeneration(generation) {
@@ -987,10 +987,16 @@
             return `<span class="time-ago">${text}</span>`;
         }
 
+        // Escapes for both element and attribute context: names shown here
+        // come from the run directory and the DB.
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            if (text === null || text === undefined) return '';
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         // Selection and comparison functionality

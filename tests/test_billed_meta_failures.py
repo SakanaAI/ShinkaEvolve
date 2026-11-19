@@ -24,13 +24,17 @@ from shinka.database.prompt_dbase import (
 )
 from shinka.llm import AsyncLLMClient
 from shinka.llm.providers import QueryResult
-from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
+from shinka.llm.providers.errors import (
+    BilledCancellationError,
+    LLMEndpointError,
+    NonRetryableLLMError,
+)
 
 
-def test_meta_batch_keeps_billed_sibling_when_request_fails(monkeypatch):
+def _meta_summarizer_with_two_programs(monkeypatch, first_program_error):
     async def provider(msg, **kwargs):
         if "first" in msg:
-            raise LLMEndpointError(401, "unauthorized")
+            raise first_program_error
         return QueryResult("summary", msg, "sys", [], "gpt-5-mini", {}, 1, 1, cost=0.8)
 
     monkeypatch.setattr(llm_module, "query_async", provider)
@@ -47,8 +51,28 @@ def test_meta_batch_keeps_billed_sibling_when_request_fails(monkeypatch):
     summarizer = AsyncMetaSummarizer(
         sync, AsyncLLMClient(model_names="gpt-5-mini", verbose=False)
     )
+    return sync, summarizer
+
+
+def test_meta_batch_keeps_billed_sibling_when_request_fails(monkeypatch):
+    _, summarizer = _meta_summarizer_with_two_programs(
+        monkeypatch, NonRetryableLLMError("unsupported option")
+    )
 
     assert asyncio.run(summarizer.update_meta_memory_async()) == (None, 0.8)
+
+
+def test_meta_summarises_what_an_unreachable_endpoint_left_answered(monkeypatch):
+    """One model of the pool failing must not discard the other summaries."""
+    sync, summarizer = _meta_summarizer_with_two_programs(
+        monkeypatch, LLMEndpointError(401, "unauthorized")
+    )
+
+    recommendations, cost = asyncio.run(summarizer.update_meta_memory_async())
+
+    assert recommendations == "summary"
+    assert cost == pytest.approx(2.4)  # one summary, then the two synthesis steps
+    assert [program.id for program in sync.evaluated_since_last_meta] == ["first"]
 
 
 def test_meta_keeps_budget_skipped_inputs_pending(tmp_path, monkeypatch):

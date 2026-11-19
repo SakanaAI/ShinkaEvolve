@@ -39,7 +39,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install project
-        run: uv sync --dev --extra wandb
+        run: uv sync --locked --dev --extra wandb
 
       - name: Run secret-backed integration tests
         run: |
