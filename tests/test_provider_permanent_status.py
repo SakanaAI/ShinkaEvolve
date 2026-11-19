@@ -238,6 +238,33 @@ def test_account_wide_failure_is_an_endpoint_error_whatever_its_status(
     assert raised.value.code == expected_code
 
 
+def _openrouter_error(status: int):
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    body = {"message": "flagged", "code": status, "metadata": {"reasons": ["violence"]}}
+    return openai.APIStatusError(
+        "flagged", response=httpx.Response(status, request=request), body=body
+    )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_openrouter_403_rejects_one_request_not_the_endpoint(asynchronous):
+    """OpenRouter answers 403 when its moderation flags the prompt of one request."""
+    client = _FailingClient([_openrouter_error(403)], asynchronous)
+
+    with pytest.raises(RequestRejectedError, match="403"):
+        _run_query("openai", client)
+
+    assert client.calls == 1
+
+
+@pytest.mark.parametrize("status", sorted(ENDPOINT_STATUSES - {403}))
+def test_other_openrouter_endpoint_statuses_still_fail_the_endpoint(status):
+    client = _FailingClient([_openrouter_error(status)], asynchronous=False)
+
+    with pytest.raises(LLMEndpointError, match=str(status)):
+        _run_query("openai", client)
+
+
 def test_request_errors_sharing_those_statuses_keep_their_class():
     assert is_permanent_status_error(_openai_error(429, code="rate_limit_exceeded")) is False
     rejected = _FailingClient([_gemini_error(400, reason="INVALID_ARGUMENT")], False)

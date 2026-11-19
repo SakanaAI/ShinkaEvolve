@@ -19,6 +19,9 @@ ENDPOINT_FAILURE_STATUS_CODES = frozenset({401, 402, 403, 404})
 ACCOUNT_FAILURE_CODES = frozenset(
     {"API_KEY_INVALID", "invalid_api_key", "insufficient_quota"}
 )
+# Hosts whose 403 refuses one request, not the endpoint: OpenRouter answers
+# 403 when its moderation flags the input.
+REQUEST_SCOPED_403_HOSTS = frozenset({"openrouter.ai"})
 
 
 # The endpoint chooses these strings and they are stored in run artifacts.
@@ -66,10 +69,18 @@ def _error_codes(exc: Exception) -> List[str]:
     return [code for code in candidates if isinstance(code, str) and code]
 
 
+def _request_host(exc: Exception) -> Optional[str]:
+    url = getattr(getattr(exc, "request", None), "url", None)
+    return getattr(url, "host", None)
+
+
 def _is_endpoint_failure(exc: Exception) -> bool:
-    return _status_code(exc) in ENDPOINT_FAILURE_STATUS_CODES or any(
-        code in ACCOUNT_FAILURE_CODES for code in _error_codes(exc)
-    )
+    if any(code in ACCOUNT_FAILURE_CODES for code in _error_codes(exc)):
+        return True
+    status_code = _status_code(exc)
+    if status_code == 403 and _request_host(exc) in REQUEST_SCOPED_403_HOSTS:
+        return False
+    return status_code in ENDPOINT_FAILURE_STATUS_CODES
 
 
 def _error_code(exc: Exception) -> str:

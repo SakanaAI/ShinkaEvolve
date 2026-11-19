@@ -18,7 +18,7 @@ from shinka.core.endpoint_failures import (
 )
 from shinka.database import DatabaseConfig, Program
 from shinka.llm.llm import AsyncLLMClient
-from shinka.llm.providers.errors import LLMEndpointError
+from shinka.llm.providers.errors import LLMEndpointError, RequestRejectedError
 
 BAD = "gpt-5-mini"
 ALSO_BAD = "gpt-5-nano"
@@ -32,6 +32,7 @@ class _Proposals:
         self.requested_models: list[str] = []
         self.settled: list[dict] = []
         self.dead_models = set(dead_models)
+        self.rejecting_models: set[str] = set()
         runner: Any = object.__new__(ShinkaEvolveRunner)
         runner.evo_config = EvolutionConfig(max_patch_attempts=1)
         runner.db_config = DatabaseConfig()
@@ -69,6 +70,8 @@ class _Proposals:
         self.requested_models.append(kwargs["model_name"])
         if kwargs["model_name"] in self.dead_models:
             raise LLMEndpointError(401, "invalid_api_key")
+        if kwargs["model_name"] in self.rejecting_models:
+            raise RequestRejectedError("OpenAI rejected the request with HTTP 403")
         return None  # The endpoint answered, with nothing usable.
 
     def propose(self, generation: int) -> None:
@@ -98,6 +101,17 @@ def test_single_model_pool_stops_on_the_first_endpoint_failure(monkeypatch, fix_
         "code": "invalid_api_key",
     }
     assert proposals.runner.slot_available.is_set()
+
+
+def test_rejected_request_costs_its_generation_and_the_run_goes_on(monkeypatch):
+    """A prompt the provider refuses (OpenRouter moderation: 403) is no dead endpoint."""
+    proposals = _Proposals(monkeypatch, [BAD], dead_models=[])
+    proposals.rejecting_models.add(BAD)
+
+    proposals.propose(generation=7)
+
+    assert proposals.runner._endpoint_stop is None
+    assert proposals.settled_generations == [7]
 
 
 def test_proposals_already_in_flight_are_not_settled_after_the_stop(monkeypatch):
