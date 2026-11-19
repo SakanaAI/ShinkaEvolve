@@ -111,6 +111,14 @@ _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
 _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
 _WANDB_CANDIDATE_STOP = object()
+# While no local evaluation has succeeded, each one killed for running too long
+# raises the hang limit fivefold. It stops at the `time` Slurm job configs
+# default to, or a few hung candidates in a row would stall the run for days.
+_PROVISIONAL_HANG_LIMIT_CAP_SECONDS = 3600.0
+
+
+def _adaptive_hang_limit_seconds(longest_evaluation_seconds: float) -> float:
+    return max(60.0, longest_evaluation_seconds * 5.0 + 60.0)
 
 
 def _output_limit_error(response) -> Optional[str]:
@@ -5834,26 +5842,47 @@ class ShinkaEvolveRunner:
         # Without a configured limit, allow a multiple of the longest evaluation
         # that succeeded. Crashes finish early and must not shrink the limit.
         longest = getattr(self.scheduler, "longest_successful_runtime", None)
-        basis = "longest successful evaluation"
-        if longest is None:
-            # Until one succeeds, go by the longest evaluation that has ended
-            # at all, so that a candidate that never returns cannot hold its
-            # slot for the rest of the run. Evaluations this limit killed count
-            # too: a limit learned from an early crash then grows instead of
-            # killing every slower candidate.
-            longest = getattr(self.scheduler, "longest_finished_runtime", None)
-            basis = "longest evaluation so far; no evaluation has succeeded yet"
+        if longest is not None:
+            limit = _adaptive_hang_limit_seconds(longest)
+            self._report_hang_limit(
+                limit,
+                logging.INFO,
+                f"(5 x {longest:.1f}s + 60s, longest successful evaluation)",
+            )
+            return limit
+
+        # Until one succeeds, go by the longest evaluation that has ended at
+        # all, so that a candidate that never returns cannot hold its slot for
+        # the rest of the run. Evaluations this limit killed count too: a limit
+        # learned from an early crash then grows instead of killing every
+        # slower candidate.
+        longest = getattr(self.scheduler, "longest_finished_runtime", None)
         if longest is None:
             return None
-
-        limit = max(60.0, longest * 5.0 + 60.0)
-        if limit != getattr(self, "_reported_hang_limit", None):
-            self._reported_hang_limit = limit
-            logger.info(
-                f"Hang limit for local evaluations: {limit:.0f}s "
-                f"(5 x {longest:.1f}s + 60s, {basis})"
+        uncapped = _adaptive_hang_limit_seconds(longest)
+        if uncapped <= _PROVISIONAL_HANG_LIMIT_CAP_SECONDS:
+            self._report_hang_limit(
+                uncapped,
+                logging.INFO,
+                f"(5 x {longest:.1f}s + 60s, longest evaluation so far; "
+                "no evaluation has succeeded yet)",
             )
-        return limit
+            return uncapped
+        self._report_hang_limit(
+            _PROVISIONAL_HANG_LIMIT_CAP_SECONDS,
+            logging.WARNING,
+            "and no higher until an evaluation succeeds (the longest so far "
+            f"took {longest:.0f}s). Evaluations that run longer are killed; "
+            "set `time` in the job config if yours need more",
+        )
+        return _PROVISIONAL_HANG_LIMIT_CAP_SECONDS
+
+    def _report_hang_limit(self, limit: float, level: int, basis: str) -> None:
+        """Log the hang limit in use, once per value."""
+        if limit == getattr(self, "_reported_hang_limit", None):
+            return
+        self._reported_hang_limit = limit
+        logger.log(level, f"Hang limit for local evaluations: {limit:.0f}s {basis}")
 
     def _is_job_hung(self, job: AsyncRunningJob, now: Optional[float] = None) -> bool:
         """Detect a single evaluation job that has exceeded its runtime budget."""

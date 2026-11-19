@@ -187,6 +187,42 @@ def test_evaluation_killed_before_any_success_raises_the_provisional_limit(
     assert limit == pytest.approx(70.0 * 5.0 + 60.0, abs=25.0)
 
 
+def test_provisional_limit_stops_growing_at_one_hour(
+    scheduler: JobScheduler, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Each kill multiplies the provisional limit by five. Without a cap a few
+    # hung candidates in a row would hold their slots for days.
+    runner = _runner(scheduler)
+    _evaluate(scheduler, tmp_path, "crash", "crash", took_seconds=1.0)
+
+    with caplog.at_level(logging.WARNING, logger="shinka.core.async_runner"):
+        _evaluate(scheduler, tmp_path, "hung", "ok", took_seconds=1000.0, killed=True)
+        limit = runner._get_evaluation_runtime_limit_seconds()
+        _evaluate(scheduler, tmp_path, "hung_2", "ok", took_seconds=3601.0, killed=True)
+        assert runner._get_evaluation_runtime_limit_seconds() == limit
+
+    assert limit == 3600.0
+    assert runner._is_job_hung(_job(submitted_seconds_ago=3500.0)) is False
+    assert runner._is_job_hung(_job(submitted_seconds_ago=3700.0)) is True
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "3600s" in warnings[0]
+    assert "set `time`" in warnings[0]
+
+
+def test_limit_learned_from_a_success_is_not_capped(
+    scheduler: JobScheduler, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runner = _runner(scheduler)
+
+    with caplog.at_level(logging.WARNING, logger="shinka.core.async_runner"):
+        _evaluate(scheduler, tmp_path, "healthy", "ok", took_seconds=1000.0)
+        limit = runner._get_evaluation_runtime_limit_seconds()
+
+    assert limit == pytest.approx(1000.0 * 5.0 + 60.0, abs=25.0)
+    assert not caplog.records
+
+
 def test_first_success_replaces_the_provisional_limit(
     scheduler: JobScheduler, tmp_path: Path
 ) -> None:
