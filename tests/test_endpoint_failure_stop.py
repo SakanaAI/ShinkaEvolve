@@ -1,6 +1,7 @@
 """An unreachable LLM endpoint must stop the run, not spend its generations."""
 
 import asyncio
+import logging
 from io import StringIO
 from types import SimpleNamespace
 from typing import Any
@@ -142,6 +143,23 @@ def test_mixed_pool_resamples_a_model_whose_endpoint_works(monkeypatch, fix_mode
     # The working model gave no patch, so this is an ordinary failed proposal.
     assert proposals.settled_generations == [1]
     assert "endpoint_error" not in proposals.settled[0]["meta_patch_data"]
+
+
+def test_switching_away_from_a_failed_endpoint_is_reported(monkeypatch, caplog):
+    """Otherwise a dead model in a working pool leaves no trace in the run log."""
+    proposals = _Proposals(
+        monkeypatch, [BAD, GOOD], dead_models=[BAD], weights=[1.0, 0.0]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="shinka.core.async_runner"):
+        proposals.propose(generation=4)
+
+    (warning,) = [
+        record.getMessage() for record in caplog.records if BAD in record.getMessage()
+    ]
+    assert "HTTP 401" in warning
+    assert "invalid_api_key" in warning
+    assert "generation 4" in warning
 
 
 def test_mixed_pool_stops_after_consecutive_proposals_without_an_endpoint(monkeypatch):

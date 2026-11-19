@@ -3258,6 +3258,12 @@ class ShinkaEvolveRunner:
                                     failed_models, model_posterior
                                 )
                                 if other_models is not None:
+                                    logger.warning(
+                                        f"{last_failure_reason} for model "
+                                        f"{meta_patch_data.get('model_name')}; "
+                                        f"retrying generation {generation} with "
+                                        "another model of the pool"
+                                    )
                                     model_sample_probs = other_models
                                     continue
                             if meta_patch_data.get("non_retryable"):
