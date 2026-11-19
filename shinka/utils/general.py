@@ -119,9 +119,29 @@ def load_results(results_dir: str, *, log_dir: Optional[str] = None) -> dict[str
 
 
 def parse_time_to_seconds(time_str: str) -> int:
-    """Converts hh:mm:ss to seconds."""
-    parts = time_str.split(":")
-    if len(parts) != 3:
-        raise ValueError("Time format must be hh:mm:ss")
-    h, m, s = [int(p) for p in parts]
-    return h * 3600 + m * 60 + s
+    """Convert a Slurm time limit to seconds.
+
+    Accepts every form ``sbatch --time`` does: ``minutes``, ``minutes:seconds``,
+    ``hours:minutes:seconds``, ``days-hours``, ``days-hours:minutes`` and
+    ``days-hours:minutes:seconds``. Like Slurm, fields are not range-checked.
+    """
+    text = str(time_str).strip()
+    days, has_days, clock = text.rpartition("-")
+    fields = clock.split(":")
+    numbers = [days, *fields] if has_days else fields
+    if len(fields) > 3 or not all(n.isascii() and n.isdecimal() for n in numbers):
+        raise ValueError(
+            f"Invalid time limit {time_str!r}: expected minutes, minutes:seconds, "
+            "hours:minutes:seconds, days-hours, days-hours:minutes or "
+            "days-hours:minutes:seconds"
+        )
+    values = [int(field) for field in fields]
+    if has_days:
+        hours, minutes, seconds = (values + [0, 0])[:3]
+        return int(days) * 86400 + hours * 3600 + minutes * 60 + seconds
+    if len(values) == 1:
+        return values[0] * 60
+    if len(values) == 2:
+        return values[0] * 60 + values[1]
+    hours, minutes, seconds = values
+    return hours * 3600 + minutes * 60 + seconds

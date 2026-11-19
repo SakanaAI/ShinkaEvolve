@@ -13,7 +13,7 @@ def render_seed_evaluator(
     cmd: list[str], results_dir: str | None, job_name: str
 ) -> tuple[str, str, str]:
     if results_dir is None:
-        return "", " ".join(cmd), "exit $?"
+        return "", shlex.join(cmd), "exit $?"
     results_option = cmd.index("--results_dir")
     if cmd[results_option + 1 : results_option + 2] != [results_dir]:
         raise ValueError("Slurm seed command does not match its results directory")

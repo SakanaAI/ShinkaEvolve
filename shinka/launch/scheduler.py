@@ -1,15 +1,24 @@
 import logging
+import subprocess
+import threading
 import time
 import asyncio
 import shlex
 import sys
-from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, Tuple, Union, List
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
 from .local import monitor_evaluation as monitor_local_evaluation
-from .local import ProcessWithLogging
+from .local import ProcessWithLogging, kill_evaluators_on_fatal_signals
+from .job_config import (
+    JobConfig,
+    LocalJobConfig,
+    SlurmCondaJobConfig,
+    SlurmDockerJobConfig,
+    SlurmEnvJobConfig,
+    _has_value,
+)
 from .slurm_evaluation import monitor_evaluation as monitor_slurm_evaluation
 from .slurm_evaluation import CONTROL_COMMAND_TIMEOUT_SECONDS
 from .slurm import (
@@ -17,22 +26,17 @@ from .slurm import (
     submit_conda as submit_slurm_conda,
     monitor as monitor_slurm,
 )
+from .slurm_status import SlurmQueuePoller, is_unknown_job_error
+from .evaluation_runtimes import LongestRuntimes, reports_correct
 from shinka.utils import parse_time_to_seconds
 
 logger = logging.getLogger(__name__)
 SLURM_CANCEL_TIMEOUT_SECONDS = 30
-
-
-def _has_value(value: Optional[str]) -> bool:
-    return value is not None and value.strip() != ""
-
-
-def _validate_activation_config(
-    conda_env: Optional[str],
-    activate_script: Optional[str],
-) -> None:
-    if _has_value(conda_env) and _has_value(activate_script):
-        raise ValueError("conda_env and activate_script are mutually exclusive")
+SLURM_JOB_TYPES = ("slurm_docker", "slurm_conda")
+# A job whose results are being collected has left the queue or was just
+# cancelled. Give a cancelled one this long to leave before reading its files.
+SLURM_RESULTS_SETTLE_SECONDS = 20.0
+SLURM_RESULTS_POLL_SECONDS = 2.0
 
 
 def _numeric_thread_env(numeric_threads: Optional[int]) -> Dict[str, str]:
@@ -59,72 +63,6 @@ def _numeric_thread_env(numeric_threads: Optional[int]) -> Dict[str, str]:
     }
 
 
-@dataclass
-class JobConfig:
-    """Base job configuration"""
-
-    eval_program_path: Optional[str] = "evaluate.py"
-    extra_cmd_args: Dict[str, Any] = field(default_factory=dict)
-    eval_verbose: bool = True  # emit per-run eval banners to stdout
-    # Cap numeric-library threads (OMP/BLAS/MKL/...) per eval subprocess.
-    # None = leave unset. Applied for both local and SLURM jobs.
-    numeric_threads_per_job: Optional[int] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary representation"""
-        job_to_dict = asdict(self)
-        return {k: v for k, v in job_to_dict.items() if v is not None}
-
-
-@dataclass
-class LocalJobConfig(JobConfig):
-    """Configuration for local jobs"""
-
-    time: Optional[str] = None
-    conda_env: Optional[str] = None
-    activate_script: Optional[str] = None
-    python_executable: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        _validate_activation_config(self.conda_env, self.activate_script)
-
-
-@dataclass
-class SlurmDockerJobConfig(JobConfig):
-    """Configuration for SLURM jobs using Docker"""
-
-    image: str = "ubuntu:latest"
-    image_tar_path: Optional[str] = None
-    docker_flags: str = ""
-    partition: str = "gpu"
-    time: str = "01:00:00"
-    cpus: int = 1
-    gpus: int = 1
-    mem: Optional[str] = "8G"
-
-
-@dataclass
-class SlurmCondaJobConfig(JobConfig):
-    """Configuration for SLURM jobs using Conda environment"""
-
-    conda_env: str = ""
-    activate_script: Optional[str] = None
-    modules: Optional[List[str]] = None
-    partition: str = "gpu"
-    time: str = "01:00:00"
-    cpus: int = 1
-    gpus: int = 1
-    mem: Optional[str] = "8G"
-
-    def __post_init__(self):
-        _validate_activation_config(self.conda_env, self.activate_script)
-        if self.modules is None:
-            self.modules = []
-
-
-SlurmEnvJobConfig = SlurmCondaJobConfig
-
-
 class JobScheduler:
     def __init__(
         self,
@@ -141,12 +79,19 @@ class JobScheduler:
         self.config = config
         self.verbose = verbose
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._slurm_queue = SlurmQueuePoller()
+        self._state_lock = threading.Lock()
+        self._runtimes = LongestRuntimes()
+        # Evaluations `run` is blocked on, so that `shutdown` can release it.
+        self._seed_jobs: List[Union[str, ProcessWithLogging]] = []
+        self._closed = False
         if self.job_type == "slurm_env":
             self.job_type = "slurm_conda"
 
         if self.job_type == "local":
             self.monitor = monitor_local
-        elif self.job_type in ["slurm_docker", "slurm_conda"]:
+            kill_evaluators_on_fatal_signals()
+        elif self.job_type in SLURM_JOB_TYPES:
             self.monitor = monitor_slurm
         else:
             raise ValueError(
@@ -226,9 +171,25 @@ class JobScheduler:
             return None
         return self._build_eval_env()
 
+    @property
+    def longest_successful_runtime(self) -> Optional[float]:
+        """Seconds the longest local evaluation with a correct result took."""
+        return self._runtimes.successful
+
+    @property
+    def longest_finished_runtime(self) -> Optional[float]:
+        """Seconds the longest local evaluation took, whatever its outcome."""
+        return self._runtimes.finished
+
+    def note_successful_runtime(self, seconds: float) -> None:
+        """Record how long a successful evaluation took, e.g. in an earlier run."""
+        self._runtimes.note_successful(seconds)
+
     def run(
         self, exec_fname_t: str, results_dir_t: str
     ) -> Tuple[Dict[str, Any], float]:
+        if self._closed:
+            raise RuntimeError("JobScheduler is shut down and runs no more evaluations")
         job_id: Union[str, ProcessWithLogging]
         cmd = self._build_command(exec_fname_t, results_dir_t)
         start_time = time.time()
@@ -289,10 +250,27 @@ class JobScheduler:
         else:
             raise ValueError(f"Unknown job type: {self.job_type}")
 
-        if isinstance(job_id, str):
-            results = monitor_slurm_evaluation(job_id, results_dir_t, job_name=job_name)
-        else:
-            results = monitor_local_evaluation(job_id, results_dir_t, timeout=timeout)
+        with self._state_lock:
+            self._seed_jobs.append(job_id)
+            closed = self._closed
+        try:
+            if closed:
+                # Shut down while the evaluation was being launched.
+                self._cancel_job(job_id)
+            if isinstance(job_id, str):
+                results = monitor_slurm_evaluation(
+                    job_id, results_dir_t, job_name=job_name
+                )
+            else:
+                results = monitor_local_evaluation(
+                    job_id, results_dir_t, timeout=timeout
+                )
+        finally:
+            with self._state_lock:
+                self._seed_jobs.remove(job_id)
+            if isinstance(job_id, ProcessWithLogging):
+                # Also when the seed crashed or timed out.
+                self._runtimes.note_finished(job_id.runtime_seconds())
 
         end_time = time.time()
         rtime = end_time - start_time
@@ -300,6 +278,8 @@ class JobScheduler:
         # Ensure results is not None
         if results is None:
             results = {"correct": {"correct": False}, "metrics": {}}
+        if self.job_type == "local" and reports_correct(results):
+            self._runtimes.note_successful(rtime)
 
         return results, rtime
 
@@ -350,15 +330,16 @@ class JobScheduler:
             )
         raise ValueError(f"Unknown job type: {self.job_type}")
 
+    def _check_slurm_jobs(self, jobs: List) -> List[bool]:
+        """Whether each job is still queued or running, from one queue query."""
+        job_ids = [job.job_id for job in jobs if isinstance(job.job_id, str)]
+        active = self._slurm_queue.active_jobs(job_ids) if job_ids else set()
+        return [isinstance(job.job_id, str) and job.job_id in active for job in jobs]
+
     def check_job_status(self, job) -> bool:
         """Check if job is running. Returns True if running, False if done."""
-        if self.job_type in ["slurm_docker", "slurm_conda"]:
-            from .slurm import get_job_status
-
-            if isinstance(job.job_id, str):
-                status = get_job_status(job.job_id)
-                return status != ""
-            return False  # Should not happen with slurm
+        if self.job_type in SLURM_JOB_TYPES:
+            return self._check_slurm_jobs([job])[0]
         else:
             if isinstance(job.job_id, ProcessWithLogging):
                 if (
@@ -374,12 +355,12 @@ class JobScheduler:
                                 f"timeout of {self.config.time}. Killing. "
                                 f"=> Gen. {job.generation}"
                             )
-                        job.job_id.kill()
+                        job.job_id.kill_group()
                         return False
 
                 # More robust status checking with exception handling
                 try:
-                    return job.job_id.poll() is None
+                    return not job.job_id.has_exited()
                 except Exception as e:
                     # If poll() fails, try alternative methods to determine if process is running
                     logger.warning(f"poll() failed for PID {job.job_id.pid}: {e}")
@@ -409,18 +390,30 @@ class JobScheduler:
         self, job_id: Union[str, ProcessWithLogging], results_dir: str
     ) -> Optional[Dict[str, Any]]:
         """Get results from a completed job."""
-        if self.job_type in ["slurm_docker", "slurm_conda"]:
+        if self.job_type in SLURM_JOB_TYPES:
             if isinstance(job_id, str):
-                return monitor_slurm(job_id, results_dir, verbose=self.verbose)
+                return monitor_slurm(
+                    job_id,
+                    results_dir,
+                    poll_interval=SLURM_RESULTS_POLL_SECONDS,
+                    verbose=self.verbose,
+                    max_wait=SLURM_RESULTS_SETTLE_SECONDS,
+                )
         else:
             if isinstance(job_id, ProcessWithLogging):
                 job_id.wait()
-                return monitor_local(
+                results = monitor_local(
                     job_id,
                     results_dir,
                     verbose=self.verbose,
-                    timeout=self.config.time,
+                    timeout=self.config.time or None,
                 )
+                job_id.has_exited()
+                seconds = job_id.runtime_seconds()
+                self._runtimes.note_finished(seconds)
+                if not job_id.was_killed and reports_correct(results):
+                    self._runtimes.note_successful(seconds)
+                return results
         return None
 
     async def submit_async_nonblocking(
@@ -451,39 +444,53 @@ class JobScheduler:
 
     async def batch_check_status_async(self, jobs: List) -> List[bool]:
         """Check status of multiple jobs concurrently."""
+        if self.job_type in SLURM_JOB_TYPES:
+            loop = asyncio.get_event_loop()
+            try:
+                return await loop.run_in_executor(
+                    self.executor, self._check_slurm_jobs, jobs
+                )
+            except Exception as e:
+                # Reported per job, like a failed individual check.
+                return [e] * len(jobs)
         tasks = [self.check_job_status_async(job) for job in jobs]
         return await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _cancel_job(self, job_id: Union[str, ProcessWithLogging]) -> bool:
+        """Cancel a job. Blocks, so the event loop calls it through the executor."""
+        try:
+            if self.job_type in SLURM_JOB_TYPES:
+                if isinstance(job_id, str):
+                    result = subprocess.run(
+                        ["scancel", job_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=SLURM_CANCEL_TIMEOUT_SECONDS,
+                    )
+                    # A job the controller no longer knows is already gone.
+                    return result.returncode == 0 or is_unknown_job_error(
+                        result.stderr
+                    )
+            elif isinstance(job_id, ProcessWithLogging):
+                # Kill the evaluator with everything it started.
+                job_id.kill_group()
+                job_id.cleanup_logging()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error cancelling job {job_id}: {e}")
+            return False
 
     async def cancel_job_async(self, job_id: Union[str, ProcessWithLogging]) -> bool:
         """Cancel a running job asynchronously."""
         loop = asyncio.get_event_loop()
-
-        def cancel_job():
-            """Cancel job in thread executor."""
-            try:
-                if self.job_type in ["slurm_docker", "slurm_conda"]:
-                    if isinstance(job_id, str):
-                        import subprocess
-
-                        result = subprocess.run(
-                            ["scancel", job_id],
-                            capture_output=True,
-                            text=True,
-                            timeout=SLURM_CANCEL_TIMEOUT_SECONDS,
-                        )
-                        return result.returncode == 0
-                else:
-                    # For local jobs, kill the process
-                    if isinstance(job_id, ProcessWithLogging):
-                        job_id.kill()
-                        return True
-                return False
-            except Exception as e:
-                logger.error(f"Error cancelling job {job_id}: {e}")
-                return False
-
-        return await loop.run_in_executor(self.executor, cancel_job)
+        return await loop.run_in_executor(self.executor, self._cancel_job, job_id)
 
     def shutdown(self):
-        """Shutdown the thread pool executor."""
+        """Cancel evaluations `run` still waits on, then stop the executor."""
+        with self._state_lock:
+            self._closed = True
+            seed_jobs = list(self._seed_jobs)
+        for job_id in seed_jobs:
+            self._cancel_job(job_id)
         self.executor.shutdown(wait=True)

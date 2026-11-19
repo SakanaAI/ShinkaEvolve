@@ -119,6 +119,14 @@ _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
 _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
 _WANDB_CANDIDATE_STOP = object()
+# While no local evaluation has succeeded, each one killed for running too long
+# raises the hang limit fivefold. It stops at the `time` Slurm job configs
+# default to, or a few hung candidates in a row would stall the run for days.
+_PROVISIONAL_HANG_LIMIT_CAP_SECONDS = 3600.0
+
+
+def _adaptive_hang_limit_seconds(longest_evaluation_seconds: float) -> float:
+    return max(60.0, longest_evaluation_seconds * 5.0 + 60.0)
 
 
 def _output_limit_error(response) -> Optional[str]:
@@ -2437,6 +2445,7 @@ class ShinkaEvolveRunner:
     async def _job_monitor_task(self):
         """Monitor running jobs and process completed ones."""
         logger.info("🔄 Job monitor task started")
+        await self._restore_hang_limit_from_history()
 
         while not self.should_stop.is_set():
             try:
@@ -2807,7 +2816,7 @@ class ShinkaEvolveRunner:
                         )
 
             except Exception as e:
-                logger.error(f"Error in job monitor task: {e}")
+                logger.error(f"Error in job monitor task: {e}", exc_info=True)
                 self.should_stop.set()  # Stop on error
                 self.finalization_complete.set()
                 break
@@ -6159,10 +6168,14 @@ class ShinkaEvolveRunner:
             await self.sampling_slot_pool.release(sampling_worker_id)
 
         evaluation_worker_id = await self.evaluation_slot_pool.acquire()
+        submission = asyncio.ensure_future(
+            self.scheduler.submit_async_nonblocking(exec_fname, results_dir)
+        )
         try:
-            job_id = await self.scheduler.submit_async_nonblocking(
-                exec_fname, results_dir
-            )
+            job_id = await asyncio.shield(submission)
+        except asyncio.CancelledError:
+            await self._abandon_cancelled_submission(submission, evaluation_worker_id)
+            raise
         except Exception:
             await self.evaluation_slot_pool.release(evaluation_worker_id)
             raise
@@ -6178,21 +6191,114 @@ class ShinkaEvolveRunner:
             running_eval_jobs_at_submit,
         )
 
+    async def _abandon_cancelled_submission(
+        self, submission: "asyncio.Future[Any]", evaluation_worker_id: int
+    ) -> None:
+        """Cancel the job of a submission whose proposal was cancelled.
+
+        The worker thread running ``sbatch``/``Popen`` cannot be interrupted, so
+        it may still launch a job that no caller is left to track.
+        """
+        cancellation = asyncio.ensure_future(
+            self._cancel_job_once_submitted(submission)
+        )
+        try:
+            # Shutdown cancels a proposal more than once. The job has to be
+            # cancelled all the same, or it would outlive the run untracked.
+            while not cancellation.done():
+                try:
+                    await asyncio.shield(cancellation)
+                except asyncio.CancelledError:
+                    continue
+        finally:
+            await self.evaluation_slot_pool.release(evaluation_worker_id)
+
+    async def _cancel_job_once_submitted(
+        self, submission: "asyncio.Future[Any]"
+    ) -> None:
+        try:
+            job_id = await submission
+        except Exception:
+            return  # Nothing was launched.
+        try:
+            cancelled = await self.scheduler.cancel_job_async(job_id)
+        except Exception as e:
+            logger.warning(f"Error cancelling evaluation job {job_id}: {e}")
+            cancelled = False
+        if not cancelled:
+            logger.warning(
+                f"Could not cancel evaluation job {job_id}, submitted while its "
+                "proposal was being cancelled; it may keep running untracked"
+            )
+
     def _get_evaluation_runtime_limit_seconds(self) -> Optional[float]:
-        """Return the wall-clock runtime limit for a single evaluation job."""
+        """Return the runner's wall-clock limit for a single evaluation job."""
+        if str(getattr(self.scheduler, "job_type", "")).startswith("slurm"):
+            # Slurm enforces `time` from the moment a job starts running. The
+            # runner only knows when it was submitted, so a limit here would
+            # count the queue wait against the evaluation.
+            return None
+
         job_timeout = getattr(self.job_config, "time", None)
         if job_timeout:
             return float(parse_time_to_seconds(job_timeout))
 
-        if getattr(self.scheduler, "job_type", None) == "local":
-            if self._evaluation_seconds_ewma is not None:
-                return max(60.0, self._evaluation_seconds_ewma * 5.0 + 60.0)
+        # Without a configured limit, allow a multiple of the longest evaluation
+        # that succeeded. Crashes finish early and must not shrink the limit.
+        longest = getattr(self.scheduler, "longest_successful_runtime", None)
+        if longest is not None:
+            limit = _adaptive_hang_limit_seconds(longest)
+            self._report_hang_limit(
+                limit,
+                logging.INFO,
+                f"(5 x {longest:.1f}s + 60s, longest successful evaluation)",
+            )
+            return limit
 
-        return None
+        # Until one succeeds, go by the longest evaluation that has ended at
+        # all, so that a candidate that never returns cannot hold its slot for
+        # the rest of the run. Evaluations this limit killed count too: a limit
+        # learned from an early crash then grows instead of killing every
+        # slower candidate.
+        longest = getattr(self.scheduler, "longest_finished_runtime", None)
+        if longest is None:
+            return None
+        uncapped = _adaptive_hang_limit_seconds(longest)
+        if uncapped <= _PROVISIONAL_HANG_LIMIT_CAP_SECONDS:
+            self._report_hang_limit(
+                uncapped,
+                logging.INFO,
+                f"(5 x {longest:.1f}s + 60s, longest evaluation so far; "
+                "no evaluation has succeeded yet)",
+            )
+            return uncapped
+        self._report_hang_limit(
+            _PROVISIONAL_HANG_LIMIT_CAP_SECONDS,
+            logging.WARNING,
+            "and no higher until an evaluation succeeds (the longest so far "
+            f"took {longest:.0f}s). Evaluations that run longer are killed; "
+            "set `time` in the job config if yours need more",
+        )
+        return _PROVISIONAL_HANG_LIMIT_CAP_SECONDS
+
+    def _report_hang_limit(self, limit: float, level: int, basis: str) -> None:
+        """Log the hang limit in use, once per value."""
+        if limit == getattr(self, "_reported_hang_limit", None):
+            return
+        self._reported_hang_limit = limit
+        logger.log(level, f"Hang limit for local evaluations: {limit:.0f}s {basis}")
 
     def _is_job_hung(self, job: AsyncRunningJob, now: Optional[float] = None) -> bool:
         """Detect a single evaluation job that has exceeded its runtime budget."""
-        runtime_limit = self._get_evaluation_runtime_limit_seconds()
+        try:
+            runtime_limit = self._get_evaluation_runtime_limit_seconds()
+        except ValueError as e:
+            # Job configs validate `time` on construction; a value that still
+            # fails to parse must not stop the monitor that tracks every job.
+            if not getattr(self, "_invalid_job_time_reported", False):
+                self._invalid_job_time_reported = True
+                logger.error(f"Hung-job detection disabled: {e}")
+            return False
         if runtime_limit is None:
             return False
 
@@ -6204,6 +6310,30 @@ class ShinkaEvolveRunner:
 
         current_time = time.time() if now is None else now
         return (current_time - started_at) > runtime_limit
+
+    async def _restore_hang_limit_from_history(self) -> None:
+        """Give a resumed run the hang limit its earlier evaluations earned.
+
+        The scheduler learns how long a healthy evaluation takes from the seed
+        and from each success, and a resumed run evaluates no seed.
+        """
+        note_runtime = getattr(self.scheduler, "note_successful_runtime", None)
+        if (
+            note_runtime is None
+            or getattr(self.scheduler, "job_type", None) != "local"
+            or getattr(self.job_config, "time", None)
+        ):
+            return
+        try:
+            best_program = await self.async_db.get_best_program_async()
+        except Exception as e:
+            logger.debug(f"Could not read an earlier evaluation runtime: {e}")
+            return
+        if best_program is None or not best_program.correct:
+            return
+        seconds = (best_program.metadata or {}).get("evaluation_seconds")
+        if isinstance(seconds, (int, float)) and seconds > 0:
+            note_runtime(float(seconds))
 
     async def _update_completed_generations(self):
         """Update completed generations count for async evolution.
@@ -6531,6 +6661,29 @@ class ShinkaEvolveRunner:
 
         logger.info("Meta summarizer task exited")
 
+    async def _cancel_running_evaluations(self) -> None:
+        """Cancel evaluations that nobody will collect once the run stops."""
+        jobs = list(getattr(self, "running_jobs", ()))
+        if not jobs:
+            return
+        logger.info(
+            f"🛑 Cancelling {len(jobs)} running evaluation job(s) before shutdown"
+        )
+        outcomes = await asyncio.gather(
+            *(self.scheduler.cancel_job_async(job.job_id) for job in jobs),
+            return_exceptions=True,
+        )
+        left_running = [
+            str(job.job_id)
+            for job, cancelled in zip(jobs, outcomes)
+            if cancelled is not True
+        ]
+        if left_running:
+            logger.warning(
+                f"Could not cancel {len(left_running)} evaluation job(s); they "
+                f"may still be running: {left_running}"
+            )
+
     async def _cleanup_async(self):
         """Cleanup async resources."""
         try:
@@ -6577,7 +6730,13 @@ class ShinkaEvolveRunner:
                 await self._finish_wandb_logging()
             finally:
                 await self.async_db.close_async()
-                self.scheduler.shutdown()
+                # Charges and the database are safe first: cancelling can take
+                # minutes on a slow controller, and a second interrupt may cut
+                # it short.
+                try:
+                    await self._cancel_running_evaluations()
+                finally:
+                    self.scheduler.shutdown()
 
         except BillingPersistenceError:
             raise

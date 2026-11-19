@@ -1267,11 +1267,10 @@ def test_release_evaluation_slot_once_does_not_free_reassigned_slot():
     asyncio.run(_run())
 
 
-def test_get_evaluation_runtime_limit_uses_ewma_when_timeout_not_configured():
+def test_get_evaluation_runtime_limit_uses_longest_success_when_timeout_not_configured():
     runner = _build_runner(
         job_config=SimpleNamespace(time=None),
-        scheduler=SimpleNamespace(job_type="local"),
-        evaluation_ewma=30.0,
+        scheduler=SimpleNamespace(job_type="local", longest_successful_runtime=30.0),
     )
 
     assert runner._get_evaluation_runtime_limit_seconds() == 210.0
@@ -1280,8 +1279,7 @@ def test_get_evaluation_runtime_limit_uses_ewma_when_timeout_not_configured():
 def test_is_job_hung_when_runtime_exceeds_limit():
     runner = _build_runner(
         job_config=SimpleNamespace(time=None),
-        scheduler=SimpleNamespace(job_type="local"),
-        evaluation_ewma=30.0,
+        scheduler=SimpleNamespace(job_type="local", longest_successful_runtime=30.0),
     )
     job = AsyncRunningJob(
         job_id="job-1",
@@ -1685,6 +1683,8 @@ def test_job_monitor_releases_unrelated_slots_after_slurm_cancel_timeout(monkeyp
         runner._update_completed_generations = lambda: asyncio.sleep(0)
         runner._log_wandb_population_progress = lambda: None
         runner._record_progress = lambda: None
+        # Slurm enforces `time` itself, so the runner never times its jobs out.
+        runner._is_job_hung = lambda job: job.job_id == "101"
 
         async def register(job_id, generation, started_at):
             job = AsyncRunningJob(
