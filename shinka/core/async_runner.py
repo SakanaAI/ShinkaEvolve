@@ -91,6 +91,10 @@ from shinka.core.prompt_evolver import (
 )
 from shinka.core.runtime_slots import LogicalSlotPool
 from shinka.core.seed_results import SeedResultAttempt
+from shinka.core.evaluation_results import (
+    failed_evaluation,
+    validate_evaluation_results,
+)
 from shinka.logo import BannerStyle, get_logo_ascii, print_gradient_logo
 from shinka.model_availability import validate_model_env_access
 from shinka.pricing.catalog import (
@@ -223,7 +227,9 @@ class AsyncRunningJob:
     novelty_cost: float = 0.0  # Track novelty checking cost
     proposal_task_id: Optional[str] = None  # Track which proposal task created this job
     db_retry_count: int = 0  # Track number of DB write retry attempts
+    last_persist_error: Optional[str] = None
     results_retrieved_at: Optional[float] = None
+    results_wait_deadline: Optional[float] = None  # monotonic clock
     completion_detected_at: Optional[float] = None
     discard_if_completed: bool = False
     evaluation_slot_released: bool = False
@@ -1997,8 +2003,6 @@ class ShinkaEvolveRunner:
         await write_file_async(exec_fname, code)
 
         evaluation_started_at = time.time()
-        evaluation_diagnostic = None
-        evaluation_failed = False
         seed_attempt = SeedResultAttempt(results_dir)
         try:
             if self.verbose:
@@ -2010,55 +2014,18 @@ class ShinkaEvolveRunner:
             if self.verbose:
                 logger.info(f"Initial program evaluation completed in {rtime:.2f}s")
 
-            if results.get("evaluation_error"):
-                raise ValueError(results["evaluation_error"])
-            correctness = results.get("correct")
-            if not isinstance(correctness, dict) or not isinstance(
-                correctness.get("correct"), bool
-            ):
-                raise ValueError("correct.json must contain a boolean 'correct' field")
-            correct_val = correctness["correct"]
-            metrics = results.get("metrics", {})
-            if not isinstance(metrics, dict):
-                raise ValueError("metrics.json must contain a JSON object")
-            combined_score = metrics.get("combined_score", 0.0)
-            if type(combined_score) not in (int, float):
-                raise ValueError("metrics.json 'combined_score' must be numeric")
-            combined_score = float(combined_score)
-            if not math.isfinite(combined_score):
-                if correct_val:
-                    raise ValueError(
-                        "metrics.json 'combined_score' must be finite for a correct program"
-                    )
-                evaluation_diagnostic = (
-                    f"Incorrect seed reported a non-finite combined_score ({combined_score}). "
-                    "Using 0.0."
-                )
-                combined_score = 0.0
-
-            feedback = metrics.get("text_feedback")
-            if not correct_val and not feedback:
-                feedback = correctness.get("error")
-            if isinstance(feedback, list):
-                text_feedback = "\n".join(str(item) for item in feedback)
-            else:
-                text_feedback = "" if feedback is None else str(feedback)
+            evaluation = validate_evaluation_results(results, subject="seed")
         except Exception as exc:
-            evaluation_failed = True
-            evaluation_diagnostic = (
+            evaluation = failed_evaluation(
                 f"Initial program evaluation failed ({type(exc).__name__}): {exc}"
             )
             results = load_result_logs(str(seed_attempt.path))
-            correct_val = False
-            combined_score = 0.0
-            metrics = {}
-            text_feedback = evaluation_diagnostic
 
         stderr_log = results.get("stderr_log", "")
-        if evaluation_diagnostic is not None:
-            logger.warning("%s", evaluation_diagnostic)
+        if evaluation.diagnostic is not None:
+            logger.warning("%s", evaluation.diagnostic)
             stderr_log = "\n".join(
-                filter(None, (stderr_log.rstrip(), evaluation_diagnostic))
+                filter(None, (stderr_log.rstrip(), evaluation.diagnostic))
             )
 
         evaluation_finished_at = time.time()
@@ -2093,7 +2060,7 @@ class ShinkaEvolveRunner:
                 "patch_description": patch_description or "Initial program setup",
             }
         )
-        if evaluation_failed:
+        if evaluation.failed:
             base_metadata["evaluation_failed"] = True
 
         base_metadata = with_pipeline_timing(
@@ -2110,12 +2077,13 @@ class ShinkaEvolveRunner:
         initial_program = Program(
             id=str(uuid.uuid4()),
             code=code,
+            language=self._program_language(),
             generation=0,
-            correct=correct_val,
-            combined_score=combined_score,
-            public_metrics=metrics.get("public", {}),
-            private_metrics=metrics.get("private", {}),
-            text_feedback=text_feedback,
+            correct=evaluation.correct,
+            combined_score=evaluation.combined_score,
+            public_metrics=evaluation.public_metrics,
+            private_metrics=evaluation.private_metrics,
+            text_feedback=evaluation.text_feedback,
             timestamp=datetime.now().timestamp(),
             embedding=code_embedding,
             metadata=base_metadata,
@@ -2702,10 +2670,15 @@ class ShinkaEvolveRunner:
                                 )
 
                         # Wait for ALL running jobs and proposals to
-                        # complete and be processed
+                        # complete and be processed. A finished job whose
+                        # results read is still running is not processed yet.
                         if (
                             len(self.running_jobs) == 0
                             and len(self.active_proposal_tasks) == 0
+                            and not any(
+                                self._is_waiting_for_results(job)
+                                for job in self.failed_jobs_for_retry.values()
+                            )
                         ):
                             # Final retry attempt for any remaining failed jobs
                             # before cost-limit shutdown
@@ -4563,6 +4536,7 @@ class ShinkaEvolveRunner:
     ) -> None:
         """Queue a completed job for DB retry bookkeeping."""
         job.db_retry_count += 1
+        job.last_persist_error = error_message
         logger.error(
             "%s %s (retry %s/%s)",
             log_prefix,
@@ -4572,7 +4546,7 @@ class ShinkaEvolveRunner:
         )
 
         if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
-            self.failed_jobs_for_retry[str(job.job_id)] = job
+            self.failed_jobs_for_retry[self._retry_queue_key(job)] = job
             logger.info(
                 "🔄 RETRY QUEUED: Job %s (gen %s) added to retry queue",
                 job.job_id,
@@ -4580,13 +4554,113 @@ class ShinkaEvolveRunner:
             )
             return
 
-        self.failed_jobs_for_retry.pop(str(job.job_id), None)
+        # The job stays queued, and so counted as in flight, until
+        # _process_single_job_safely has written its last row.
         logger.error(
-            "❌ RETRY EXHAUSTED: Job %s (gen %s) exceeded max retry attempts (%s). Job permanently lost.",
+            "❌ RETRY EXHAUSTED: Job %s (gen %s) exceeded max retry attempts (%s).",
             job.job_id,
             job.generation,
             self.MAX_DB_RETRY_ATTEMPTS,
         )
+
+    @staticmethod
+    def _retry_queue_key(job: AsyncRunningJob) -> str:
+        """Key that keeps jobs sharing a scheduler handle apart in the retry queue."""
+        return ShinkaEvolveRunner._source_job_key(job)
+
+    async def _record_job_out_of_retries(self, job: AsyncRunningJob) -> bool:
+        """Store a failed row for a job that no retry could persist.
+
+        Returns whether this recorded the generation. A job that already has a
+        row keeps it: only its maintenance is missing, which a resume applies.
+        """
+        diagnostic = (
+            "Program evaluation failed: the finished job could not be stored after "
+            f"{job.db_retry_count} attempts ({job.last_persist_error})"
+        )
+        try:
+            try:
+                code = await self._read_file_async(job.exec_fname) or ""
+            except Exception:
+                code = ""
+            now = time.time()
+            evaluation_started_at = (
+                job.evaluation_started_at or job.evaluation_submitted_at
+            )
+            program = Program(
+                id=str(uuid.uuid4()),
+                code=code,
+                language=self._program_language(),
+                generation=job.generation,
+                correct=False,
+                combined_score=0.0,
+                text_feedback=diagnostic,
+                timestamp=datetime.now().timestamp(),
+                parent_id=job.parent_id,
+                archive_inspiration_ids=job.archive_insp_ids,
+                top_k_inspiration_ids=job.top_k_insp_ids,
+                code_diff=job.code_diff,
+                embedding=job.code_embedding or [],
+                system_prompt_id=(job.meta_patch_data or {}).get("system_prompt_id"),
+                metadata=with_pipeline_timing(
+                    {
+                        **(job.meta_patch_data or {}),
+                        "embed_cost": job.embed_cost,
+                        "novelty_cost": job.novelty_cost,
+                        "stdout_log": "",
+                        "stderr_log": diagnostic,
+                        "results_missing": True,
+                        "evaluation_failed": True,
+                        "safe_processing": False,
+                        "source_job_id": self._source_job_key(job),
+                        "source_generation": job.generation,
+                    },
+                    pipeline_started_at=job.proposal_started_at,
+                    sampling_started_at=job.proposal_started_at,
+                    sampling_finished_at=evaluation_started_at,
+                    evaluation_started_at=evaluation_started_at,
+                    evaluation_finished_at=job.results_retrieved_at or now,
+                    postprocess_started_at=now,
+                    postprocess_finished_at=now,
+                ),
+            )
+            recorded = await asyncio.wait_for(
+                self.async_db.add_program_async(
+                    program,
+                    parent_id=job.parent_id,
+                    archive_insp_ids=job.archive_insp_ids,
+                    top_k_insp_ids=job.top_k_insp_ids,
+                    code_diff=job.code_diff,
+                    meta_patch_data=job.meta_patch_data,
+                    code_embedding=job.code_embedding,
+                    embed_cost=job.embed_cost,
+                    verbose=self.verbose,
+                    defer_maintenance=True,
+                ),
+                timeout=90.0,
+            )
+        except Exception as e:
+            logger.error(
+                "❌ JOB LOST: Job %s (gen %s) could not be recorded as failed: %s",
+                job.job_id,
+                job.generation,
+                e,
+            )
+            return False
+        if recorded:
+            logger.error(
+                "Recorded job %s (gen %s) as failed program %s",
+                job.job_id,
+                job.generation,
+                program.id,
+            )
+        else:
+            logger.error(
+                "Job %s (gen %s) is already stored; leaving its row as it is",
+                job.job_id,
+                job.generation,
+            )
+        return recorded
 
     async def _persist_failed_generation(
         self,
@@ -4683,6 +4757,7 @@ class ShinkaEvolveRunner:
             program = Program(
                 id=str(uuid.uuid4()),
                 code=code,
+                language=self._program_language(),
                 generation=generation,
                 correct=False,
                 combined_score=0.0,
@@ -4733,12 +4808,84 @@ class ShinkaEvolveRunner:
             )
             return None
 
+    def _program_language(self) -> str:
+        """Language stored on program rows, which selects their complexity analysis."""
+        evo_config = getattr(self, "evo_config", None)
+        return str(getattr(evo_config, "language", None) or "python")
+
+    @staticmethod
+    def _source_job_key(job: AsyncRunningJob) -> str:
+        """Identify one submitted job across sessions and across its own retries.
+
+        A scheduler handle alone repeats: a local job is named by its PID, which a
+        later session can be handed again.
+        """
+        return (
+            f"{job.job_id}|gen={job.generation}"
+            f"|submitted={job.evaluation_submitted_at!r}"
+        )
+
+    @staticmethod
+    def _evaluator_exit_status(job: AsyncRunningJob) -> Optional[int]:
+        """Exit status of a finished local evaluator. Slurm handles carry none."""
+        exit_status = getattr(job.job_id, "returncode", None)
+        return exit_status if type(exit_status) is int else None
+
+    def _runner_stop_note(
+        self, job: AsyncRunningJob, exit_status: Optional[int]
+    ) -> str:
+        """Say when the runner, not the evaluator, ended a local evaluation.
+
+        The time limit and hung-job detection both kill the evaluator, so it
+        was the runner if a signal ended a job that had outrun its limit.
+        """
+        if exit_status is None or exit_status >= 0:
+            return ""
+        limit = self._get_evaluation_runtime_limit_seconds()
+        started_at = (
+            job.evaluation_started_at or job.evaluation_submitted_at or job.start_time
+        )
+        runtime = (job.completion_detected_at or time.time()) - started_at
+        if limit is None or runtime <= limit:
+            return ""
+        return (
+            f" (the runner stopped the evaluator after {runtime:.0f}s; "
+            f"its runtime limit is {limit:g}s)"
+        )
+
+    _RESULTS_READ_TIMEOUT_SECONDS = 30.0
+
+    def _result_read(self, job: AsyncRunningJob, source_job_id: str) -> asyncio.Future:
+        """Return the job's results read, starting it on first use.
+
+        A read that outlasts its timeout keeps its scheduler thread, so a retry
+        waits on the same read instead of occupying another thread.
+        """
+        reads = getattr(self, "_result_reads", None)
+        if reads is None:
+            reads = self._result_reads = {}
+        if source_job_id not in reads:
+            reads[source_job_id] = asyncio.ensure_future(
+                self.scheduler.get_job_results_async(job.job_id, job.results_dir)
+            )
+        return reads[source_job_id]
+
+    def _is_waiting_for_results(self, job: AsyncRunningJob) -> bool:
+        """Whether the job's results read is still running and still given time."""
+        read = getattr(self, "_result_reads", {}).get(self._source_job_key(job))
+        return (
+            read is not None
+            and not read.done()
+            and job.results_wait_deadline is not None
+            and time.monotonic() < job.results_wait_deadline
+        )
+
     async def _persist_completed_job(
         self, job: AsyncRunningJob
     ) -> CompletedJobPersistResult:
         """Persist a completed evaluation job without blocking on slower side effects."""
         postprocess_worker_id = None
-        source_job_id = str(job.job_id)
+        source_job_id = self._source_job_key(job)
         try:
             logger.info(
                 f"🔄 SAFE PROCESSING: Starting job {job.job_id} (gen {job.generation})"
@@ -4751,65 +4898,130 @@ class ShinkaEvolveRunner:
                 )
                 return CompletedJobPersistResult(job=job, success=True)
 
-            # Get job results with timeout to prevent hanging
+            # The evaluation ended when it was first seen finished, however long
+            # reading and storing its results goes on to take.
+            if job.completion_detected_at is None:
+                job.completion_detected_at = time.time()
+
+            # Get job results with timeout to prevent hanging. Only the pass
+            # that starts a read waits for it: a read that outlasts the wait
+            # keeps running and later passes look in on it, so one stuck read
+            # cannot hold up the monitor again.
+            results = None
+            retrieval_failure = None
+            starts_read = source_job_id not in getattr(self, "_result_reads", ())
+            read = self._result_read(job, source_job_id)
+            read_timeout = self._RESULTS_READ_TIMEOUT_SECONDS
+            read_patience = read_timeout * self.MAX_DB_RETRY_ATTEMPTS
+            if starts_read:
+                job.results_wait_deadline = time.monotonic() + read_patience
             try:
                 results = await asyncio.wait_for(
-                    self.scheduler.get_job_results_async(job.job_id, job.results_dir),
-                    timeout=30.0,  # 30 second timeout
-                )
-                results_retrieved_at = time.time()
-                if job.results_retrieved_at is None:
-                    job.results_retrieved_at = results_retrieved_at
-                evaluation_finished_at = (
-                    job.completion_detected_at or job.results_retrieved_at
+                    asyncio.shield(read), timeout=read_timeout if starts_read else 0
                 )
                 logger.info(
                     f"📂 RESULTS: Got results for {job.job_id}: {results is not None}"
                 )
-            except asyncio.TimeoutError:
-                logger.error(f"❌ TIMEOUT: Getting results for {job.job_id} timed out")
-                await self._record_generation_event(
-                    generation=job.generation,
-                    status="results_timeout",
-                    source_job_id=job.job_id,
-                )
-                return CompletedJobPersistResult(job=job, success=False)
+            except Exception as exc:
+                # The evaluation itself may be fine, so give the read another
+                # chance first. After that the generation is recorded as failed.
+                if read.done() and read.exception() is None:
+                    results = read.result()  # It finished as the wait ran out.
+                elif read.done():
+                    retrieval_failure = f"failed ({type(exc).__name__}): {exc}"
+                    self._queue_failed_db_job(
+                        job,
+                        log_prefix="❌ RESULTS ERROR:",
+                        error_message=(
+                            f"Getting results for {job.job_id} {retrieval_failure}"
+                        ),
+                    )
+                    if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+                        # The next attempt starts the read afresh.
+                        self._result_reads.pop(source_job_id, None)
+                        return CompletedJobPersistResult(job=job, success=False)
+                elif self._is_waiting_for_results(job):
+                    if starts_read:
+                        logger.error(
+                            f"❌ RESULTS ERROR: No results for {job.job_id} (gen "
+                            f"{job.generation}) after {read_timeout:g}s; waiting "
+                            f"up to {read_patience:g}s in all"
+                        )
+                        await self._record_generation_event(
+                            generation=job.generation,
+                            status="results_timeout",
+                            source_job_id=job.job_id,
+                        )
+                    self.failed_jobs_for_retry[self._retry_queue_key(job)] = job
+                    return CompletedJobPersistResult(job=job, success=False)
+                else:
+                    retrieval_failure = f"timed out after {read_patience:g}s"
+                    logger.error(
+                        f"❌ RESULTS ERROR: Getting results for {job.job_id} (gen "
+                        f"{job.generation}) {retrieval_failure}; giving up"
+                    )
+                    read.cancel()
+            self._result_reads.pop(source_job_id, None)
+            if job.results_retrieved_at is None:
+                job.results_retrieved_at = time.time()
+                # Storing the row gets its own attempts, whatever the read took.
+                job.db_retry_count = 0
+            evaluation_finished_at = (
+                job.completion_detected_at or job.results_retrieved_at
+            )
             await self._release_evaluation_slot_once(job)
             postprocess_worker_id = await self.postprocess_slot_pool.acquire()
             db_workers_in_use_at_postprocess_start = self.postprocess_slot_pool.in_use
             postprocess_started_at = time.time()
 
             # Always create a program entry, even if results are missing
+            rejected_results = None
             if results:
-                # Extract metrics properly like the sync version
-                correct_val = results.get("correct", {}).get("correct", False)
-                metrics_val = results.get("metrics", {})
-                combined_score = metrics_val.get("combined_score", 0.0)
-                public_metrics = metrics_val.get("public", {})
-                private_metrics = metrics_val.get("private", {})
-                text_feedback = metrics_val.get("text_feedback", "")
+                exit_status = self._evaluator_exit_status(job)
+                try:
+                    evaluation = validate_evaluation_results(
+                        results, exit_status=exit_status
+                    )
+                except ValueError as exc:
+                    evaluation = failed_evaluation(
+                        f"Program evaluation failed: {exc}"
+                        + self._runner_stop_note(job, exit_status),
+                        results,
+                    )
+                    # Kept so a rejected verdict can be looked up and restored.
+                    rejected_results = {
+                        "correct": results.get("correct"),
+                        "metrics": results.get("metrics"),
+                        "exit_status": exit_status,
+                    }
                 stdout_log = truncate_log_tail(
                     results.get("stdout_log", ""),
                     self.db_config.max_stdout_log_chars,
                 )
                 stderr_log = results.get("stderr_log", "")
-
-                logger.info(
-                    f"✅ VALID RESULTS: {job.job_id} has valid results - correct={correct_val}, score={combined_score}"
-                )
             else:
                 # Handle missing results - don't lose the job!
-                logger.warning(
-                    f"⚠️  NO RESULTS: {job.job_id} (gen {job.generation}) has no results. "
-                    f"Creating program entry with default values to avoid job loss."
+                evaluation = failed_evaluation(
+                    "Program evaluation failed: results could not be retrieved"
+                    + (f" (reading them {retrieval_failure})" if retrieval_failure else "")
                 )
-                correct_val = False
-                combined_score = 0.0
-                public_metrics = {}
-                private_metrics = {}
-                text_feedback = "Job completed but results could not be retrieved"
                 stdout_log = ""
-                stderr_log = "Results retrieval failed"
+                stderr_log = ""
+
+            if evaluation.diagnostic is not None:
+                logger.warning(
+                    "⚠️  %s (gen %s): %s",
+                    job.job_id,
+                    job.generation,
+                    evaluation.diagnostic,
+                )
+                stderr_log = "\n".join(
+                    filter(None, (stderr_log.rstrip(), evaluation.diagnostic))
+                )
+            logger.info(
+                f"📊 RESULTS: {job.job_id} correct={evaluation.correct}, "
+                f"score={evaluation.combined_score}"
+            )
 
             # Extract system_prompt_id from meta_patch_data
             system_prompt_id = None
@@ -4823,12 +5035,13 @@ class ShinkaEvolveRunner:
             program = Program(
                 id=str(uuid.uuid4()),
                 code=await self._read_file_async(job.exec_fname) or "",
+                language=self._program_language(),
                 generation=job.generation,
-                correct=correct_val,
-                combined_score=combined_score,
-                public_metrics=public_metrics,
-                private_metrics=private_metrics,
-                text_feedback=text_feedback,
+                correct=evaluation.correct,
+                combined_score=evaluation.combined_score,
+                public_metrics=evaluation.public_metrics,
+                private_metrics=evaluation.private_metrics,
+                text_feedback=evaluation.text_feedback,
                 timestamp=datetime.now().timestamp(),
                 parent_id=job.parent_id,
                 archive_inspiration_ids=job.archive_insp_ids,
@@ -4843,7 +5056,13 @@ class ShinkaEvolveRunner:
                         "novelty_cost": job.novelty_cost,
                         "stdout_log": stdout_log,
                         "stderr_log": stderr_log,
-                        "results_missing": results is None,
+                        "results_missing": not results,
+                        **({"evaluation_failed": True} if evaluation.failed else {}),
+                        **(
+                            {"rejected_evaluation": rejected_results}
+                            if rejected_results
+                            else {}
+                        ),
                         "safe_processing": True,
                         "postprocess_db_maintenance_applied": False,
                         "source_job_id": source_job_id,
@@ -4902,6 +5121,20 @@ class ShinkaEvolveRunner:
                                 source_job_id
                             )
                         )
+                    if (
+                        existing_program is not None
+                        and existing_program.generation != job.generation
+                    ):
+                        # Never let another generation's row stand in for this job.
+                        logger.error(
+                            "Ignoring program %s (gen %s) as the persisted row of "
+                            "job %s (gen %s)",
+                            existing_program.id,
+                            existing_program.generation,
+                            job.job_id,
+                            job.generation,
+                        )
+                        existing_program = None
 
                     if existing_program is None:
                         self._queue_failed_db_job(
@@ -5050,6 +5283,12 @@ class ShinkaEvolveRunner:
             )
             logger.error(
                 f"   Job details: exec_fname={job.exec_fname}, results_dir={job.results_dir}"
+            )
+            # A retry reuses the row if the insert already happened.
+            self._queue_failed_db_job(
+                job,
+                log_prefix="❌ PERSIST ERROR:",
+                error_message=f"Persisting {job.job_id} failed: {e}",
             )
             return CompletedJobPersistResult(job=job, success=False)
         finally:
@@ -5529,6 +5768,13 @@ class ShinkaEvolveRunner:
         """Process completed jobs inline, closer to the amd_shinka execution model."""
         successfully_processed: List[AsyncRunningJob] = []
 
+        # The whole batch was found finished now: a job must not be charged for
+        # the time the jobs ahead of it take to process.
+        detected_at = time.time()
+        for job in completed_jobs:
+            if job.completion_detected_at is None:
+                job.completion_detected_at = detected_at
+
         for job in completed_jobs:
             try:
                 success = await self._process_single_job_safely(job)
@@ -5541,8 +5787,13 @@ class ShinkaEvolveRunner:
                         f"❌ CRITICAL: Failed to process job {job.job_id} (gen {job.generation})"
                     )
             except Exception as e:
-                logger.error(
-                    f"❌ CRITICAL: Exception processing job {job.job_id} (gen {job.generation}): {e}"
+                self._queue_failed_db_job(
+                    job,
+                    log_prefix="❌ CRITICAL:",
+                    error_message=(
+                        f"Exception processing job {job.job_id} "
+                        f"(gen {job.generation}): {e}"
+                    ),
                 )
 
         logger.info(
@@ -5553,16 +5804,30 @@ class ShinkaEvolveRunner:
             failed_jobs = [
                 job for job in completed_jobs if job not in successfully_processed
             ]
-            failed_gens = [job.generation for job in failed_jobs]
+            queued_jobs = list(self.failed_jobs_for_retry.values())
+            retrying_gens = [
+                job.generation for job in failed_jobs if job in queued_jobs
+            ]
+            dropped_gens = [
+                job.generation for job in failed_jobs if job not in queued_jobs
+            ]
             logger.error(
-                f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: gens {failed_gens}"
-            )
-            logger.error(
-                "   These jobs remain in submitted_jobs registry for potential recovery"
+                f"❌ FAILED JOBS: {len(failed_jobs)} jobs failed processing: "
+                f"gens {retrying_gens} queued for retry, "
+                f"gens {dropped_gens} out of retries"
             )
 
     async def _process_single_job_safely(self, job: AsyncRunningJob) -> bool:
         """Process a single job with comprehensive error handling. Returns True on success."""
+        processed = await self._persist_job_and_apply_side_effects(job)
+        if not processed:
+            if job.db_retry_count < self.MAX_DB_RETRY_ATTEMPTS:
+                return False  # Queued for another attempt.
+            processed = await self._record_job_out_of_retries(job)
+        self.failed_jobs_for_retry.pop(self._retry_queue_key(job), None)
+        return processed
+
+    async def _persist_job_and_apply_side_effects(self, job: AsyncRunningJob) -> bool:
         persist_result = await self._persist_completed_job(job)
         if not persist_result.success:
             return False
@@ -5570,7 +5835,30 @@ class ShinkaEvolveRunner:
         if persist_result.persisted_event is None:
             return True
 
-        await self._apply_persisted_program_side_effects(persist_result.persisted_event)
+        persisted_event = persist_result.persisted_event
+        try:
+            await self._apply_persisted_program_side_effects(persisted_event)
+        except Exception as e:
+            metadata = persisted_event.program.metadata or {}
+            if metadata.get("postprocess_db_maintenance_applied") is True:
+                # The row is stored and maintained. Replaying the remaining side
+                # effects would count the program twice, so only report them.
+                logger.error(
+                    f"❌ SIDE EFFECTS ERROR: Side effects for {job.job_id} "
+                    f"(gen {job.generation}) are incomplete: {e}"
+                )
+                return True
+            # The row is stored, but it is not in the archive or on its islands
+            # until maintenance runs. A retry finds the row and applies it.
+            self._queue_failed_db_job(
+                job,
+                log_prefix="❌ SIDE EFFECTS ERROR:",
+                error_message=(
+                    f"Maintenance for {job.job_id} (gen {job.generation}) "
+                    f"failed: {e}"
+                ),
+            )
+            return False
         return True
 
     async def _process_completed_jobs(self, completed_jobs: List[AsyncRunningJob]):
@@ -5584,11 +5872,15 @@ class ShinkaEvolveRunner:
         successfully but failed to write to the database due to timeouts
         or errors.
         """
-        if not self.failed_jobs_for_retry:
+        # Take a snapshot of jobs to retry (avoid modification during iter). A
+        # job whose results read is still running has nothing to retry yet.
+        jobs_to_retry = [
+            (queue_key, job)
+            for queue_key, job in self.failed_jobs_for_retry.items()
+            if not self._is_waiting_for_results(job)
+        ]
+        if not jobs_to_retry:
             return
-
-        # Take a snapshot of jobs to retry (avoid modification during iter)
-        jobs_to_retry = list(self.failed_jobs_for_retry.values())
 
         logger.info(
             f"🔄 RETRY: Attempting to retry {len(jobs_to_retry)} failed DB jobs"
@@ -5596,7 +5888,7 @@ class ShinkaEvolveRunner:
 
         successfully_retried = []
 
-        for job in jobs_to_retry:
+        for queue_key, job in jobs_to_retry:
             try:
                 logger.info(
                     f"🔄 RETRY ATTEMPT: Retrying job {job.job_id} "
@@ -5609,9 +5901,7 @@ class ShinkaEvolveRunner:
 
                 if success:
                     successfully_retried.append(job)
-                    # Remove from retry queue
-                    if str(job.job_id) in self.failed_jobs_for_retry:
-                        del self.failed_jobs_for_retry[str(job.job_id)]
+                    self.failed_jobs_for_retry.pop(queue_key, None)
                     # Also remove from submitted_jobs
                     if str(job.job_id) in self.submitted_jobs:
                         del self.submitted_jobs[str(job.job_id)]
@@ -5964,9 +6254,13 @@ class ShinkaEvolveRunner:
                 f"🧹 Dropping {len(dropped_retry_gens)} retry-queued jobs after "
                 f"reaching target: gens {dropped_retry_gens}"
             )
+            pending_reads = getattr(self, "_result_reads", {})
             for job in self.failed_jobs_for_retry.values():
                 job.discard_if_completed = True
                 self.submitted_jobs.pop(str(job.job_id), None)
+                read = pending_reads.pop(self._source_job_key(job), None)
+                if read is not None:
+                    read.cancel()
             self.failed_jobs_for_retry.clear()
 
         if self.active_proposal_tasks:

@@ -90,21 +90,52 @@ def save_json_results(
     error: Optional[str] = None,
     verbose: bool = True,
 ) -> None:
-    """Saves metrics and correctness status to JSON files."""
-    os.makedirs(results_dir, exist_ok=True)
+    """Saves metrics and correctness status to JSON files.
 
-    correct_payload = {"correct": correct, "error": error}
+    `correct.json` is written last and marks the result as complete: a reader
+    that finds it also finds the metrics it belongs to.
+    """
+    os.makedirs(results_dir, exist_ok=True)
     correct_file = os.path.join(results_dir, "correct.json")
-    with open(correct_file, "w") as f:
-        json.dump(correct_payload, f, indent=4)
+    metrics_file = os.path.join(results_dir, "metrics.json")
+
+    # An earlier attempt's verdict must not be paired with these metrics, or
+    # survive a failure below.
+    try:
+        os.remove(correct_file)
+    except FileNotFoundError:
+        pass
+
+    # Serialize both before writing either, so bad data leaves no result behind.
+    metrics_text = json.dumps(metrics, indent=4, default=_json_default)
+    correct_text = json.dumps(
+        {"correct": correct, "error": error}, indent=4, default=_json_default
+    )
+
+    _write_text_atomic(metrics_file, metrics_text)
+    if verbose:
+        print(f"Metrics saved to {metrics_file}")
+
+    _write_text_atomic(correct_file, correct_text)
     if verbose:
         print(f"Correctness and error status saved to {correct_file}")
 
-    metrics_file = os.path.join(results_dir, "metrics.json")
-    with open(metrics_file, "w") as f:
-        json.dump(metrics, f, indent=4)
-    if verbose:
-        print(f"Metrics saved to {metrics_file}")
+
+def _json_default(value: Any) -> Any:
+    """Convert the NumPy values evaluators commonly return into JSON types."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _write_text_atomic(path: str, text: str) -> None:
+    """Replace `path` in one step so a reader never sees a partial file."""
+    temporary_path = f"{path}.tmp"
+    with open(temporary_path, "w") as f:
+        f.write(text)
+    os.replace(temporary_path, path)
 
 
 def run_shinka_eval(

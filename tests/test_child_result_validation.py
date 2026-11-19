@@ -1,0 +1,328 @@
+"""Child evaluations get the same result validation as the seed."""
+
+import asyncio
+import math
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from eval_integrity_utils import (
+    SEED_ID,
+    RecordingSelection,
+    StaticScheduler,
+    children,
+    good_results,
+    make_job,
+    make_runner,
+    open_database,
+)
+from shinka.core.evaluation_results import (
+    failed_evaluation,
+    validate_evaluation_results,
+)
+
+
+def _results(correct: Any, metrics: Any, **extra: Any) -> dict[str, Any]:
+    return {"correct": correct, "metrics": metrics, "stdout_log": "", "stderr_log": "", **extra}
+
+
+BAD_RESULTS = {
+    "metrics-missing": _results(
+        {"correct": True},
+        {},
+        evaluation_error="Metrics file not found at results/metrics.json",
+    ),
+    "infinite-score": _results({"correct": True}, {"combined_score": math.inf}),
+    "nan-score": _results({"correct": True}, {"combined_score": math.nan}),
+    "overflowing-score": _results({"correct": True}, {"combined_score": 10**400}),
+    "string-correct": _results({"correct": "false"}, {"combined_score": 1.0}),
+    "integer-correct": _results({"correct": 1}, {"combined_score": 1.0}),
+    "correct-not-object": _results([True], {"combined_score": 1.0}),
+    "metrics-not-object": _results({"correct": True}, [1.0]),
+    "string-score": _results({"correct": True}, {"combined_score": "1.0"}),
+    "boolean-score": _results({"correct": True}, {"combined_score": True}),
+    "public-not-object": _results(
+        {"correct": True}, {"combined_score": 1.0, "public": [1, 2]}
+    ),
+}
+
+
+@pytest.mark.parametrize("results", BAD_RESULTS.values(), ids=BAD_RESULTS.keys())
+def test_bad_child_results_are_stored_incorrect_with_a_diagnostic(
+    tmp_path: Path, results: dict[str, Any]
+) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            selection = RecordingSelection()
+            runner = make_runner(
+                async_db, StaticScheduler(results), llm_selection=selection
+            )
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 0
+            assert child.combined_score == 0.0
+            assert child.metadata["evaluation_failed"] is True
+            assert "evaluation failed" in child.text_feedback.lower()
+            assert child.text_feedback in child.metadata["stderr_log"]
+            # The row must not count as correct in SQL or become the best program.
+            correct_ids = {
+                row["id"]
+                for row in sync_db.cursor.execute(
+                    "SELECT id FROM programs WHERE correct = 1"
+                )
+            }
+            assert correct_ids == {SEED_ID}
+            assert sync_db.get_best_program().id == SEED_ID
+            # A rejected result never reaches the bandit as a reward.
+            assert [update["reward"] for update in selection.updates] == [None]
+
+    asyncio.run(run())
+
+
+def test_incorrect_child_with_non_finite_score_is_stored_with_zero(
+    tmp_path: Path,
+) -> None:
+    results = _results({"correct": False, "error": "diverged"}, {"combined_score": math.nan})
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(results))
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 0
+            assert child.combined_score == 0.0
+            assert child.text_feedback == "diverged"
+            assert "non-finite" in child.metadata["stderr_log"]
+            assert "evaluation_failed" not in child.metadata
+
+    asyncio.run(run())
+
+
+UNUSABLE_METRICS_OF_INCORRECT_CHILD = {
+    "null-score": (
+        {"combined_score": None, "public": {"stage": "compile"}},
+        0.0,
+        {"stage": "compile"},
+        "non-numeric 'combined_score'",
+    ),
+    "string-score": ({"combined_score": "n/a"}, 0.0, {}, "non-numeric"),
+    "public-not-object": (
+        {"combined_score": 0.1, "public": [1, 2]},
+        0.1,
+        {},
+        "'public' that is not a JSON object",
+    ),
+    "metrics-not-object": ([1.0], 0.0, {}, "is not a JSON object"),
+}
+
+
+@pytest.mark.parametrize(
+    ("metrics", "score", "public", "diagnostic"),
+    UNUSABLE_METRICS_OF_INCORRECT_CHILD.values(),
+    ids=UNUSABLE_METRICS_OF_INCORRECT_CHILD.keys(),
+)
+def test_incorrect_child_keeps_its_feedback_whatever_its_metrics(
+    tmp_path: Path, metrics: Any, score: float, public: dict[str, Any], diagnostic: str
+) -> None:
+    """The evaluator's feedback is what the next proposal has to go on."""
+    results = _results({"correct": False, "error": "compile error at line 3"}, metrics)
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(results))
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 0
+            assert child.combined_score == score
+            assert child.public_metrics == public
+            assert child.text_feedback == "compile error at line 3"
+            assert diagnostic in child.metadata["stderr_log"]
+            assert "evaluation_failed" not in child.metadata
+
+    asyncio.run(run())
+
+
+REJECTED_RESULTS_WITH_FEEDBACK = {
+    "integer-verdict": _results(
+        {"correct": 0},
+        {"combined_score": 0.3, "text_feedback": "wrong answer on case 7"},
+    ),
+    "metrics-missing": _results(
+        {"correct": False, "error": "wrong answer on case 7"},
+        {},
+        evaluation_error="Metrics file not found at results/metrics.json",
+    ),
+    "infinite-score": _results(
+        {"correct": True},
+        {"combined_score": math.inf, "text_feedback": ["wrong answer", "on case 7"]},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "results",
+    REJECTED_RESULTS_WITH_FEEDBACK.values(),
+    ids=REJECTED_RESULTS_WITH_FEEDBACK.keys(),
+)
+def test_rejected_child_results_keep_the_evaluators_feedback(
+    tmp_path: Path, results: dict[str, Any]
+) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(results))
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 0 and child.combined_score == 0.0
+            assert child.metadata["evaluation_failed"] is True
+            assert child.text_feedback.startswith("Program evaluation failed: ")
+            assert "on case 7" in child.text_feedback
+
+    asyncio.run(run())
+
+
+def test_valid_child_results_are_stored_as_reported(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            selection = RecordingSelection()
+            runner = make_runner(
+                async_db, StaticScheduler(good_results(2.5)), llm_selection=selection
+            )
+
+            assert await runner._process_single_job_safely(make_job())
+
+            (child,) = children(sync_db)
+            assert child.correct == 1
+            assert child.combined_score == 2.5
+            assert child.public_metrics == {"acc": 1.0}
+            assert "evaluation_failed" not in child.metadata
+            assert sync_db.get_best_program().id == child.id
+            assert [update["reward"] for update in selection.updates] == [2.5]
+
+    asyncio.run(run())
+
+
+class LocalHandle(SimpleNamespace):
+    """Stands in for ProcessWithLogging: a PID and, once finished, an exit status."""
+
+    def __str__(self) -> str:
+        return f"ProcessWithLogging(PID: {self.pid})"
+
+
+def test_correct_result_from_a_failed_local_evaluator_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Result files left behind by a crashed evaluator are not trusted."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(good_results()))
+            crashed = make_job(job_id=LocalHandle(pid=10, returncode=-9), generation=1)
+            clean = make_job(job_id=LocalHandle(pid=11, returncode=0), generation=2)
+
+            assert await runner._process_single_job_safely(crashed)
+            assert await runner._process_single_job_safely(clean)
+
+            by_generation = {child.generation: child for child in children(sync_db)}
+            assert by_generation[1].correct == 0
+            assert "status -9" in by_generation[1].text_feedback
+            assert "runner stopped" not in by_generation[1].text_feedback
+            assert by_generation[2].correct == 1
+
+    asyncio.run(run())
+
+
+def test_rejected_result_is_kept_in_metadata(tmp_path: Path) -> None:
+    """A verdict rejected by the exit rule can still be looked up and restored."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(good_results(2.5)))
+            crashed = make_job(job_id=LocalHandle(pid=10, returncode=3), generation=1)
+            clean = make_job(job_id=LocalHandle(pid=11, returncode=0), generation=2)
+
+            assert await runner._process_single_job_safely(crashed)
+            assert await runner._process_single_job_safely(clean)
+
+            by_generation = {child.generation: child for child in children(sync_db)}
+            assert by_generation[1].correct == 0
+            assert by_generation[1].combined_score == 0.0
+            assert by_generation[1].public_metrics == {}
+            assert by_generation[1].metadata["rejected_evaluation"] == {
+                "correct": {"correct": True, "error": None},
+                "metrics": {"combined_score": 2.5, "public": {"acc": 1.0}, "private": {}},
+                "exit_status": 3,
+            }
+            assert "rejected_evaluation" not in by_generation[2].metadata
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("runtime", "stopped_by_runner"), [(61.0, True), (20.0, False)]
+)
+def test_diagnostic_says_when_the_runner_itself_stopped_the_evaluator(
+    tmp_path: Path, runtime: float, stopped_by_runner: bool
+) -> None:
+    """A kill at the time limit is not a crash of the evaluator."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, async_db):
+            runner = make_runner(async_db, StaticScheduler(good_results()))
+            runner.job_config = SimpleNamespace(time="00:01:00")
+            job = make_job(job_id=LocalHandle(pid=10, returncode=-9))
+            job.evaluation_started_at = time.time() - runtime
+
+            assert await runner._process_single_job_safely(job)
+
+            (child,) = children(sync_db)
+            assert child.correct == 0
+            assert "status -9" in child.text_feedback
+            assert (
+                "the runner stopped the evaluator after 61s; its runtime limit is 60s"
+                in child.text_feedback
+            ) is stopped_by_runner
+
+    asyncio.run(run())
+
+
+def test_validator_accepts_integer_scores_and_feedback_lists() -> None:
+    outcome = validate_evaluation_results(
+        _results({"correct": True}, {"combined_score": 3, "text_feedback": ["a", "b"]})
+    )
+
+    assert outcome.correct is True
+    assert outcome.combined_score == 3.0
+    assert type(outcome.combined_score) is float
+    assert outcome.text_feedback == "a\nb"
+    assert not outcome.failed and outcome.diagnostic is None
+
+
+def test_validator_keeps_results_of_an_incorrect_program_that_exited_nonzero() -> None:
+    outcome = validate_evaluation_results(
+        _results({"correct": False, "error": "assert failed"}, {"combined_score": 0.25}),
+        exit_status=1,
+    )
+
+    assert outcome.correct is False
+    assert outcome.combined_score == 0.25
+    assert outcome.text_feedback == "assert failed"
+
+
+def test_failed_evaluation_carries_no_score_or_metrics() -> None:
+    outcome = failed_evaluation("boom")
+
+    assert outcome.failed and not outcome.correct
+    assert outcome.combined_score == 0.0
+    assert outcome.public_metrics == {} and outcome.private_metrics == {}
+    assert outcome.text_feedback == outcome.diagnostic == "boom"

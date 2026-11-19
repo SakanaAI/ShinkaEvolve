@@ -1051,8 +1051,14 @@ class ProgramDatabase:
         return (self.cursor.fetchone() or {"COUNT(*)": 0})["COUNT(*)"]
 
     @db_retry()
-    def has_program_with_source_job_id(self, source_job_id: str) -> bool:
-        """Return True if a program row already exists for the given job id."""
+    def has_program_with_source_job_id(
+        self, source_job_id: str, generation: Optional[int] = None
+    ) -> bool:
+        """Return True if a program row already exists for the given job id.
+
+        Pass the generation to ignore rows that another generation stored under
+        the same id.
+        """
         if not self.cursor:
             return False
         self.cursor.execute(
@@ -1060,10 +1066,11 @@ class ProgramDatabase:
             SELECT 1
             FROM programs
             WHERE json_valid(metadata)
-              AND json_extract(metadata, '$.source_job_id') = ?
+              AND json_extract(metadata, '$.source_job_id') = :job_id
+              AND (:generation IS NULL OR generation = :generation)
             LIMIT 1
             """,
-            (source_job_id,),
+            {"job_id": source_job_id, "generation": generation},
         )
         return self.cursor.fetchone() is not None
 
@@ -1163,7 +1170,11 @@ class ProgramDatabase:
         # Pre-serialize all JSON data once
         public_metrics_json = json.dumps(program.public_metrics or {})
         private_metrics_json = json.dumps(program.private_metrics or {})
-        metadata_json = json.dumps(program.metadata or {})
+        # SQLite's JSON functions reject NaN and Infinity, which would hide the
+        # row from every lookup that reads its metadata. Clean the program too:
+        # later maintenance writes its in-memory metadata back.
+        program.metadata = clean_nan_values(program.metadata or {})
+        metadata_json = json.dumps(program.metadata)
         archive_insp_ids_json = json.dumps(program.archive_inspiration_ids or [])
         top_k_insp_ids_json = json.dumps(program.top_k_inspiration_ids or [])
         embedding_json = json.dumps(program.embedding)  # Serialize embedding
