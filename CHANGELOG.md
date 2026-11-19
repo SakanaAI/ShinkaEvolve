@@ -4,6 +4,53 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ## TBD
 
+### Added
+
+- Honor `DatabaseConfig.db_path` as the run database's file name inside
+  `results_dir` (default `programs.sqlite`) in PR #227. The database presets
+  carry `db_path: null`, so `db_config.db_path=<name>` works as a Hydra
+  override, and `load_programs_to_df(results_dir)` and `code_path_anim.py` find
+  a custom-named database.
+- Added `--host` and repeatable `--allowed-host` options to `shinka_visualize`
+  in PR #228. A server started with `--host` also answers to the machine's
+  short, full and `.local` names, and start-up prints the accepted names.
+- Added a weekly `Lockfile Refresh` workflow that upgrades `uv.lock` and opens a
+  pull request once the checks pass in PR #224.
+
+### Changed
+
+- `shinka_visualize` listens on `127.0.0.1` by default in PR #228. Use `--host`
+  to listen elsewhere; an SSH tunnel that reaches the server over the network
+  (`-L 8888:compute-node:8888` through a login node) needs it. `--db` must name
+  an existing file inside the root directory, symlinks that leave the root are
+  not followed, and images in meta notes are no longer shown.
+- Match SEARCH/REPLACE patches on whole lines in PR #227. Only a trailing
+  comment may be left out of a SEARCH line. A SEARCH of nothing but the END
+  marker appends to the editable region when the file has one region; other
+  marker-only SEARCH blocks are rejected.
+- Stop a run with an error when `results_dir` holds programs only in a database
+  it is not configured for, instead of starting at generation 0 next to them,
+  in PR #227. A damaged run database fails on open. Presets, examples and docs
+  no longer set `db_path: evolution_db.sqlite`, and the `compute_time` metadata
+  migration runs once per database.
+- Save bandit state as JSON, still at `bandit_state.pkl`, in PR #224. Older
+  Shinka versions cannot read it and start a fresh bandit.
+- Require `openai>=2.34.0`, track `uv.lock` and install with `--locked` in CI
+  in PR #224. Run `uv lock` after changing dependencies. Release and docs
+  workflows pin actions by commit SHA.
+- Shell-quote async Slurm evaluator commands like the seed command in PR #226:
+  `$VAR` and `~` in `eval_program_path` and `extra_cmd_args` are passed
+  literally. `slurm.monitor()` without `max_wait` raises after three
+  consecutive failed status lookups, and `JobScheduler.run()` raises after
+  `shutdown()`.
+
+### Deprecated
+
+- Pickle bandit states from earlier versions are still read, without being
+  unpickled, and rewritten as JSON on the next save in PR #224. Reading them
+  will be removed in the second release after this one.
+- Reasoning effort `auto` is treated as `disabled`, with a warning, in PR #224.
+
 ### Fixed
 
 - Bound Slurm cancellation waits and retain evaluations submitted during a
@@ -29,6 +76,85 @@ All notable changes to `shinka-evolve` are documented in this file.
   Recover terminal charges once and rebuild the selected best export while
   preserving a valid export if staging fails. If no correct winner exists,
   retain the invalid historical export outside the public best path.
+- Stop retrying provider errors that cannot succeed in PR #224. 401/402/403/404
+  and account-wide failures (`API_KEY_INVALID`, `invalid_api_key`,
+  `insufficient_quota`, Anthropic's empty credit balance) raise
+  `LLMEndpointError`; other 4xx except 408/409/425/429/499 raise
+  `RequestRejectedError`; an OpenRouter 403 is a rejected request. A run whose
+  endpoints cannot be reached tries another model of the pool, then stops and
+  leaves the generation for resume instead of recording every remaining
+  generation as failed. A batch keeps the samples that were answered.
+- Make Claude models other than Opus 4.8 and the 5.x family callable again in
+  PR #224 by no longer sending `temperature` to Anthropic or Bedrock. The
+  `temperatures` setting does not apply to Claude models.
+- Reload `pricing_snapshot.json` on resume when it holds embedding entries,
+  accept `ANTHROPIC_AUTH_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` in
+  startup validation and `shinka_models`, and validate and map
+  `reasoning_efforts` for every model family in PR #224. `""`, `none`,
+  `minimal` and `xhigh` no longer raise `KeyError` on budget-based models, and
+  `none` disables thinking on DeepSeek. A NaN or infinite reward no longer
+  breaks LLM selection, two `local/` endpoints in one pool keep separate cached
+  clients, `from shinka.llm import *` works, and `temperatures: 0` is accepted.
+- Validate child evaluations like the seed in PR #225. A non-boolean `correct`,
+  a missing or unreadable result file, a non-numeric or non-finite score on a
+  correct program, or a correct result from a local evaluator that exited
+  non-zero is stored as an incorrect program with a diagnostic. The row keeps
+  the evaluator's feedback and the reported result in
+  `metadata.rejected_evaluation`. `run_shinka_eval` writes `metrics.json`
+  before `correct.json`, atomically, and serializes NumPy metric values.
+- Keep the results of completed jobs in PR #225. A local job whose PID was used
+  before is no longer skipped or dropped, results that cannot be read or stored
+  are retried and then recorded as a failed generation, and a results read that
+  hangs no longer blocks the job monitor. Program rows record the configured
+  language, and non-finite metadata values no longer hide a row from duplicate
+  detection.
+- Leave the time limit of Slurm evaluation jobs to Slurm in PR #226, so queue
+  wait no longer counts against `time`. `time` accepts every `sbatch --time`
+  format for local and Slurm jobs and is validated when the job config is
+  created; such values previously ended the run after generation 0.
+- Harden async Slurm status handling in PR #226. A purged job id counts as
+  finished, `squeue` has a timeout, tracked jobs share one `squeue` call every
+  5 s, jobs stay tracked through a status outage, a job that is held or has not
+  been running for 30 minutes is reported in a warning, and
+  `slurm.monitor(verbose=True)` no longer raises `TypeError`.
+- Derive the local hang limit used when `time` is unset from the longest
+  successful evaluation in PR #226, and before the first success from the
+  longest evaluation that has ended, up to one hour. Local evaluators run in
+  their own process group, so timeouts and cancellations also stop `conda run`
+  children and worker pools. Stopping a run cancels evaluations that are still
+  running, after charges are saved and the database is closed, and local
+  evaluators are killed on SIGTERM/SIGHUP.
+- Stop an incorrect seed from trapping the run in fixing the seed in PR #227.
+  Once a correct program exists, parents are sampled from correct programs and
+  islands without one are seeded from it. `weighted` and `proportional` island
+  selection work with negative, mixed-sign and large scores.
+- Keep SEARCH/REPLACE patches inside EVOLVE-BLOCK regions in PR #227. A SEARCH
+  can no longer hit a fragment of a longer line, a match inside the region is
+  found even when the same text appears earlier outside it, and text outside
+  the regions is left byte for byte.
+- Restore the meta-summarizer state (saved to `meta_memory.json`) and the
+  bandit baseline on resume in PR #227, without overwriting earlier
+  `meta/meta_<N>.txt` files. Databases created before `system_prompt_id`
+  existed open again, a run directory of the first releases
+  (`evolution_db.sqlite`) resumes in the database it has, and
+  `code_path_anim.py` and the throughput plots read the files and columns the
+  runner writes.
+- Open databases written before `attempt_log` existed in the WebUI instead of
+  returning HTTP 500 in PR #228. Failed proposals show their code when the UI
+  is opened from a directory other than the one the run was started in, and
+  `shinka_visualize` exits with an error when it cannot listen on the given
+  address.
+
+### Security
+
+- Confine WebUI file access to the root directory after resolving symlinks in
+  PR #228. `/plot_file` serves only images, only the UI's own assets are served
+  statically, `Access-Control-Allow-Origin: *` is removed, and requests with a
+  foreign `Host` header are refused.
+- Escape run data such as patch names, descriptions and metric names in the
+  WebUI in PR #228. Meta notes are sanitized with DOMPurify, CDN scripts are
+  pinned with SRI hashes, request text can no longer inject response headers,
+  and the meta PDF export renders a note as text and links only.
 
 ## 0.0.8 - 2026-11-13
 
