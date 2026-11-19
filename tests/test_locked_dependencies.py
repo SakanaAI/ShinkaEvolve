@@ -92,12 +92,35 @@ def test_workflows_install_from_the_lockfile(workflow: Path):
         assert "--locked" in command, command
 
 
+def test_lock_refresh_proposes_only_a_lock_that_passed_the_gate():
+    """Nothing else upgrades the lock, and an untested upgrade must not be proposed."""
+    refresh = (ROOT / ".github" / "workflows" / "lock-refresh.yml").read_text(
+        encoding="utf-8"
+    )
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lint_commands = re.findall(r"uv run (?:ruff|mypy)[^\n]*", ci)
+    assert len(lint_commands) == 2
+
+    steps = [
+        "schedule:",
+        "uv lock --upgrade",
+        "uv sync --locked --dev",
+        *lint_commands,
+        'pytest -q -m "not requires_secrets and not models_dev_live"',
+        "gh pr create",
+    ]
+
+    positions = [refresh.find(step) for step in steps]
+    assert -1 not in positions, steps[positions.index(-1)]
+    assert positions == sorted(positions)
+
+
 @pytest.mark.parametrize("workflow", WORKFLOWS, ids=lambda path: path.name)
-def test_workflows_with_oidc_tokens_pin_actions_by_commit(workflow: Path):
-    """A moved tag must not run new code in a job that can mint an OIDC token."""
+def test_workflows_with_write_access_pin_actions_by_commit(workflow: Path):
+    """A moved tag must not run new code in a job that can write or mint a token."""
     text = workflow.read_text(encoding="utf-8")
-    if "id-token: write" not in text:
-        pytest.skip("workflow does not request an OIDC token")
+    if not re.search(r"^\s*[\w-]+: write\b", text, flags=re.MULTILINE):
+        pytest.skip("workflow requests no write permission")
 
     actions = re.findall(r"uses:\s*(\S+)", text)
 
