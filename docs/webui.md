@@ -33,13 +33,13 @@ shinka_visualize --port 8888 --open
 shinka_visualize results_20241201_120000/ --port 8888 --open
 
 # Or target a specific database file
-shinka_visualize --db results_20241201_120000/evolution_db.sqlite --port 8888 --open
+shinka_visualize --db results_20241201_120000/programs.sqlite --port 8888 --open
 ```
 
 ### Remote experiment
 
 ```bash
-# On remote machine
+# On remote machine (listens on its localhost only)
 shinka_visualize --port 8888
 
 # On local machine (SSH tunnel)
@@ -47,6 +47,13 @@ ssh -L 8888:localhost:8888 username@remote-host
 
 # Open http://localhost:8888
 ```
+
+The server listens on `127.0.0.1` by default, so an SSH tunnel is the way in
+from another machine. The tunnel has to end on the machine that runs the
+server: `localhost` in `-L 8888:localhost:8888` is that machine's own
+localhost. A tunnel that reaches the server over the network, such as
+`-L 8888:compute-node:8888` through a login node, is refused unless the server
+was started with `--host`. See [Remote Access](#remote-access).
 
 ### Async runner support
 
@@ -59,7 +66,7 @@ shinka_visualize --open
 
 # Or with specific results directory / database
 shinka_visualize results_20241201_120000/ --open
-shinka_visualize --db results_20241201_120000/evolution_db.sqlite --open
+shinka_visualize --db results_20241201_120000/programs.sqlite --open
 ```
 
 ---
@@ -70,8 +77,19 @@ shinka_visualize --db results_20241201_120000/evolution_db.sqlite --open
 |----------|---------|-------------|
 | `root_directory` | Current dir | Root directory to search for database files |
 | `-p, --port` | `8000` | Port for the web server |
+| `--host` | `127.0.0.1` | Address to listen on. `0.0.0.0` accepts connections from other machines |
+| `--allowed-host` | None | Extra hostname browsers may use to reach the server (repeatable). See [Opening the UI by hostname](#opening-the-ui-by-hostname) |
 | `--db` | Auto-detect | Path to specific SQLite database file |
 | `--open` | `False` | Auto-open browser |
+
+`--db` must name an existing file inside `root_directory`; the command exits
+with an error otherwise, so start it after the run has created its database.
+Given without a root directory, a database outside the current directory makes
+its own folder the root.
+
+Symlinks are followed only while they stay inside the root. A database that
+links to a file outside it is left out of the list, and the server log says
+so; point `root_directory` (or `--db`) at the real location instead.
 
 ---
 
@@ -135,10 +153,55 @@ ssh -L 8888:localhost:8888 -N username@remote-host
 
 ### Cluster access
 
+The WebUI runs on a compute node and you reach it through the login node.
+Prefer the first form: the server stays on the compute node's localhost.
+
 ```bash
-# Through login node to compute node
+# On the compute node
+shinka_visualize --port 8888
+
+# On your machine: jump through the login node, tunnel to the compute node's localhost
+ssh -J username@cluster-login-node -L 8888:localhost:8888 username@compute-node
+```
+
+If you cannot SSH to the compute node, the login node has to connect to it
+over the cluster network, so the server must listen beyond localhost:
+
+```bash
+# On the compute node: listen on all interfaces
+shinka_visualize --host 0.0.0.0 --port 8888
+
+# On your machine
 ssh -L 8888:compute-node:8888 username@cluster-login-node
 ```
+
+With `--host 0.0.0.0` every user and process that can reach the compute node
+on that port can read the run data under the root directory. Stop the server
+when you are done, or pass the node's cluster-internal address to `--host`
+instead of `0.0.0.0` to narrow who can connect.
+
+Versions before the server listened on localhost only needed no `--host` for
+this second form. If a tunnel that used to work now reports "connection
+refused", this is why.
+
+### Opening the UI by hostname
+
+Through a tunnel you open `http://localhost:8888`, which always works. Opening
+`http://<name>:8888` directly needs two things: the server must listen beyond
+localhost (`--host`), and it must know `<name>` as its own. It refuses any
+other name with `403 Host not allowed`, which keeps a website in your browser
+from reaching it under a name of its choosing.
+
+A server started with `--host` accepts `localhost`, any IP address, the
+machine's hostname, its short name, `<name>.local` and the full name its
+resolver reports. Start-up prints the list:
+
+```
+[*] Answering requests addressed to: localhost, node17, node17.cluster.example.org, node17.local, or any IP address. Add a name with --allowed-host.
+```
+
+For anything else, such as a DNS alias or a reverse proxy's name, add
+`--allowed-host <name>`.
 
 ### Multiple experiments
 
@@ -153,7 +216,9 @@ shinka_visualize exp2/ --port 8889
 
 | Issue | Solution |
 |-------|---------|
-| Database not found | Specify path: `shinka_visualize --db /full/path/to/evolution_db.sqlite` |
+| Database not found | Specify path: `shinka_visualize --db /full/path/to/programs.sqlite` |
+| `403 Host not allowed` | You opened the UI under a name the server does not know (DNS alias, reverse proxy). Start-up prints the names it accepts; restart with `--allowed-host <name>` to add one |
+| Connection refused from another machine, or through a tunnel to `compute-node:8888` | The server listens on localhost only. Tunnel to the server's own localhost, or start it with `--host` (see [Remote Access](#remote-access)) |
 | Port in use | Use different port: `--port 9000` |
 | No data displayed | Check experiment has started, verify path, check permissions |
 | SSH tunnel issues | Test with `curl http://localhost:8888`; debug with `ssh -v ...` |
@@ -165,13 +230,27 @@ shinka_visualize exp2/ --port 8889
 
 ### API endpoints
 
+The pages load their data from these JSON endpoints. `db_path` is a database
+path relative to the root directory, as returned by `/list_databases`.
+
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/generations` | List all generations |
-| `GET /api/generation/{id}` | Specific generation data |
-| `GET /api/solutions/{id}` | Solution details |
-| `GET /api/metrics` | Performance metrics |
-| `GET /api/islands` | Island information |
+| `GET /list_databases` | Databases found under the root directory |
+| `GET /get_database_stats?db_path=` | Program count, best score, cost and runtime |
+| `GET /get_programs_summary?db_path=` | All programs without code or embeddings |
+| `GET /get_programs?db_path=` | All programs with code and embeddings |
+| `GET /get_program_details?db_path=&id=` | One program in full |
+| `GET /get_program_count?db_path=` | Count and latest timestamp, for change detection |
+| `GET /get_meta_files?db_path=` | Available meta-scratchpad updates |
+| `GET /get_meta_content?db_path=&processed_count=` | One meta-scratchpad update |
+| `GET /download_meta_pdf?db_path=&processed_count=` | The same update as a PDF (needs `wkhtmltopdf` or `pandoc` on the server; plain text otherwise) |
+| `GET /get_system_prompts?db_path=` | Evolved system prompts |
+| `GET /get_plots?db_path=&generation=&program_id=` | Plot images saved by a program's evaluation |
+| `GET /plot_file/<path>` | One of those images, by its path relative to the root directory (`.png`, `.jpg`, `.jpeg`, `.gif` only) |
+
+`processed_count` and `generation` are non-negative integers; anything else is
+answered with `400`. A `db_path` or plot path outside the root directory gets
+`403`.
 
 ### Embedding in Jupyter
 
@@ -183,6 +262,26 @@ subprocess.Popen(['shinka_visualize', '--port', '8888'])
 time.sleep(2)
 IFrame('http://localhost:8888', width=1000, height=600)
 ```
+
+### Security model
+
+The WebUI has no login. It is built for one person looking at their own runs:
+
+- It listens on `127.0.0.1` unless you pass `--host`.
+- It reads only run files (databases, meta notes, failed-proposal artifacts)
+  and plot images (`.png`, `.jpg`, `.jpeg`, `.gif`) inside the root directory,
+  and follows no symlink out of it.
+- It answers only requests addressed to `localhost`, an IP address, this
+  machine's hostname or an `--allowed-host` name (with `--host`, also the
+  machine's full and `.local` names), and sends no CORS headers, so another
+  website open in your browser cannot read your runs.
+- Program names, descriptions and meta notes are written by the model. The UI
+  shows them as text and never runs markup they contain.
+- The PDF export of a meta note renders formatting and links only. HTML in a
+  note is printed as text and images are replaced by their description, so
+  the export fetches nothing a note points to.
+- Third-party scripts load from public CDNs pinned to exact versions with
+  integrity hashes, so the UI needs internet access in the browser.
 
 ### Best practices
 
