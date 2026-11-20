@@ -116,21 +116,27 @@ def test_terminal_whose_shell_exits_slowly_does_not_cut_the_cleanup_short(
         assert (tmp_path / "cleaned").exists()
 
 
+# One call into C code that no signal interrupts and that leaves the
+# interpreter to other threads, such as a slow commit.
+BUSY_STEP = """
+    import hashlib
+
+    def rounds_for(seconds):
+        rounds, started = 50_000, time.perf_counter()
+        hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
+        per_second = rounds / (time.perf_counter() - started)
+        return int(per_second * seconds)
+
+    def busy(seconds, rounds=None):
+        hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds or rounds_for(seconds))
+    """
+
+
 def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
     tmp_path: Path,
 ) -> None:
-    # One call into C code that no signal interrupts, such as a slow commit.
-    busy_step = """
-        import hashlib
-
-        def busy(seconds):
-            rounds, started = 50_000, time.perf_counter()
-            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
-            per_second = rounds / (time.perf_counter() - started)
-            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", int(per_second * seconds))
-        """
     # SIGTERM, which a later one of would end the run: a hangup never does.
-    with _run(tmp_path, start=busy_step, cleanup="busy(2.0)") as run:
+    with _run(tmp_path, start=BUSY_STEP, cleanup="busy(2.0)") as run:
         run.send_signal(signal.SIGTERM)
         assert wait_until((tmp_path / "stopping").exists)
         time.sleep(0.2)
@@ -138,6 +144,33 @@ def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
 
         assert run.wait(timeout=20.0) == -signal.SIGTERM
         assert (tmp_path / "cleaned").exists()
+
+
+def test_twin_signals_that_find_the_main_thread_busy_are_one_request(
+    tmp_path: Path,
+) -> None:
+    # Both signals arrive during one busy step, so the handler runs for them
+    # seconds later, once. Each has left a report with the relay, which
+    # answers the second report after the handler ran: more than a second
+    # after the signals arrived, and still no later signal.
+    twins_while_busy = dedent(BUSY_STEP) + dedent("""
+        def twins():
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.002)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        rounds = rounds_for(3.0)
+        threading.Timer(0.2, twins).start()
+        started = time.perf_counter()
+        busy(3.0, rounds)
+        (here / "busy").write_text(str(time.perf_counter() - started))
+        """)
+    with _run(tmp_path, start=twins_while_busy, cleanup="time.sleep(0.5)") as run:
+        assert run.wait(timeout=20.0) == -signal.SIGTERM
+        assert (tmp_path / "cleaned").exists()
+        # Otherwise the handler ran inside the window and nothing was tested.
+        busy_seconds = float((tmp_path / "busy").read_text())
+        assert busy_seconds > fatal_signals._SAME_REQUEST_SECONDS + 0.3
 
 
 def test_cleanup_is_not_ended_by_the_relays_own_signals(tmp_path: Path) -> None:

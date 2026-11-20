@@ -41,7 +41,8 @@ _unhandled_since: Dict[int, float] = {}
 
 # Runs that the first fatal signal asks to stop, and whoever outlives them.
 _stops: "List[SignalStop]" = []
-# The signal that asked them, and when. They die of it once all have stopped.
+# The signal that asked them, and when its handler ran. They die of it once
+# all have stopped.
 _asked_to_stop: Optional[Tuple[int, float]] = None
 # A closing terminal sends SIGHUP twice within milliseconds, a service manager
 # may send SIGHUP right after SIGTERM, and the relay may repeat a signal once
@@ -254,7 +255,10 @@ def _runs_are_stopping_for(signum: int, received_at: float) -> bool:
     requests = [stop._ask_to_stop for stop in _stops if stop._ask_to_stop is not None]
     if not requests:
         return False
-    _asked_to_stop = (signum, received_at)
+    # Counted from now, not from when the signal arrived: a handler that ran
+    # late leaves reports with the relay, of the signal's twin and of the
+    # relay's own repeats, and the relay answers them only after this.
+    _asked_to_stop = (signum, time.monotonic())
     try:
         for ask_to_stop in requests:
             ask_to_stop(signal.Signals(signum))

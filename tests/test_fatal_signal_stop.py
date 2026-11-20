@@ -160,6 +160,33 @@ def test_signal_handled_late_counts_from_when_it_arrived(
     stop.finish()
 
 
+def test_reports_queued_before_a_late_handler_are_the_same_request(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The first signal and its twin both arrive while the main thread is busy
+    # in C code for seconds. The handler runs once for the two; the relay then
+    # answers the twin's report, which waited in its pipe, with a signal of now.
+    clock = FakeClock()
+    clock.install(monkeypatch, fatal_signals)
+    asked: list[int] = []
+    stop = fatal_signals.stop_on_fatal_signals(asked.append)
+
+    fatal_signals._unhandled_since[signal.SIGTERM] = clock.monotonic()
+    clock.sleep(3 * fatal_signals._SAME_REQUEST_SECONDS)
+    raise_hooked(signal.SIGTERM)
+    raise_hooked(signal.SIGTERM)
+
+    assert asked == [signal.SIGTERM]
+    assert deaths == []
+
+    # A second after the run was asked, a SIGTERM is somebody who will not wait.
+    clock.sleep(fatal_signals._SAME_REQUEST_SECONDS)
+    raise_hooked(signal.SIGTERM)
+
+    assert deaths == [signal.SIGTERM]
+    stop.finish()
+
+
 def test_run_that_no_signal_stopped_finishes_and_returns(deaths: list[int]) -> None:
     asked: list[int] = []
     stop = fatal_signals.stop_on_fatal_signals(asked.append)
