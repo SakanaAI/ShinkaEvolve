@@ -1192,7 +1192,9 @@ class ShinkaEvolveRunner:
 
         Charges and the reservation only grow, so a cap that cannot cover the
         next proposal now never will: the run finishes its work in flight and
-        stops, instead of waiting for room that cannot come.
+        stops, instead of waiting for room that cannot come. A run that has no
+        proposal left to start is not held up by a reservation: it ends as it
+        would without a cap.
         """
         budget = self.evo_config.max_api_costs
         if budget is None:
@@ -1207,7 +1209,10 @@ class ShinkaEvolveRunner:
                 f"in-flight=${known_cost - self.total_api_cost:.4f} = "
                 f"${known_cost:.4f} >= ${budget:.2f}."
             )
-        elif self._proposals_covered(known_cost) == 0:
+        elif (
+            self._get_remaining_generation_slots() > 0
+            and self._proposals_covered(known_cost) == 0
+        ):
             reason = (
                 f"API cost budget cannot cover another proposal: "
                 f"${known_cost:.4f} charged + ${self._proposal_reservation():.4f} "

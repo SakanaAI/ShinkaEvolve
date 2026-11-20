@@ -10,6 +10,7 @@ budget on reasoning, $0.15 each, and the run ended at $0.5387.
 import asyncio
 import logging
 import math
+from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
@@ -39,6 +40,9 @@ def _runner(
         runner._update_avg_proposal_cost(cost)
     runner.cost_limit_reached = False
     runner.verbose = True
+    runner.completed_generations = 5
+    runner.next_generation_to_submit = 6
+    runner._settled_resume_generations = deque()
     return runner
 
 
@@ -161,27 +165,66 @@ def test_a_negligible_reservation_does_not_limit_proposals():
     assert _coordinator_tick(runner, wanted=3) == [3]
 
 
+def _prepare_monitor(runner: Any) -> None:
+    runner.should_stop = asyncio.Event()
+    runner.slot_available = asyncio.Event()
+    runner.finalization_complete = asyncio.Event()
+    runner.processing_lock = asyncio.Lock()
+    runner.failed_jobs_for_retry = {}
+    runner.submitted_jobs = {}
+    runner._restore_hang_limit_from_history = lambda: asyncio.sleep(0)
+
+
 def test_monitor_stops_a_run_whose_cap_cannot_cover_another_proposal():
     """Nothing is in flight and nothing may start: the run must end, not wait."""
     history = [*FIRST_PROPOSALS, 0.1497]
     runner = _runner(charged=CHARGED + 0.1497, in_flight=0, history=history)
 
     async def run() -> None:
-        runner.should_stop = asyncio.Event()
-        runner.slot_available = asyncio.Event()
-        runner.finalization_complete = asyncio.Event()
-        runner.processing_lock = asyncio.Lock()
-        runner.failed_jobs_for_retry = {}
-        runner.submitted_jobs = {}
-        runner.completed_generations = 6
-        runner._restore_hang_limit_from_history = lambda: asyncio.sleep(0)
+        _prepare_monitor(runner)
         await asyncio.wait_for(runner._job_monitor_task(), timeout=2)
 
     asyncio.run(run())
 
+    assert runner.cost_limit_reached is True
     assert runner.should_stop.is_set()
     assert runner.finalization_complete.is_set()
     assert runner.total_api_cost < CAP
+
+
+def test_reservation_does_not_stop_a_run_with_no_proposal_left_to_start(caplog):
+    """Every generation has been assigned: the run ends as any finished run."""
+    history = [*FIRST_PROPOSALS, 0.1497]
+    runner = _runner(charged=CHARGED + 0.1497, in_flight=0, history=history)
+    runner.next_generation_to_submit = runner.evo_config.num_generations
+
+    with caplog.at_level(logging.INFO, logger="shinka.core.async_runner"):
+        assert runner._close_proposal_budget() is False
+
+    assert runner.cost_limit_reached is False
+    assert "cannot cover another proposal" not in caplog.text
+
+
+def test_monitor_leaves_a_run_out_of_generations_to_the_coordinator():
+    """Two generations failed for good: the coordinator records that and stops."""
+    history = [*FIRST_PROPOSALS, 0.1497]
+    runner = _runner(charged=CHARGED + 0.1497, in_flight=0, history=history)
+    runner.next_generation_to_submit = runner.evo_config.num_generations
+    runner.completed_generations = runner.evo_config.num_generations - 2
+
+    async def run() -> None:
+        _prepare_monitor(runner)
+        monitor = asyncio.create_task(runner._job_monitor_task())
+        await asyncio.sleep(0.35)
+        stopped_by_monitor = runner.should_stop.is_set()
+        runner.should_stop.set()
+        await asyncio.wait_for(monitor, timeout=2)
+        assert not stopped_by_monitor
+
+    asyncio.run(run())
+
+    assert runner.cost_limit_reached is False
+    assert not runner.finalization_complete.is_set()
 
 
 def test_resume_restores_the_cost_history_of_the_stored_proposals(tmp_path):
