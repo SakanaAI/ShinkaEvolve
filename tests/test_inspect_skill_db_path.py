@@ -116,14 +116,36 @@ def script_for_old_shinka(monkeypatch) -> ModuleType:
     return _load_script()
 
 
-def test_shinka_without_the_shared_resolver_reads_the_default_name(
+def test_shinka_without_the_shared_resolver_defaults_to_the_default_name(
     tmp_path, script_for_old_shinka
 ):
-    _write_db(tmp_path / "custom.sqlite")
-
     resolved = script_for_old_shinka._resolve_db_path(str(tmp_path))
 
     assert resolved == tmp_path / "programs.sqlite"
+
+
+@pytest.mark.parametrize("db_name", ["custom.sqlite", "run.db"])
+def test_shinka_without_the_shared_resolver_finds_the_only_database(
+    tmp_path, script_for_old_shinka, db_name
+):
+    # A run directory written by a newer shinka with a custom db_path. Its
+    # prompt database is not a candidate.
+    (tmp_path / "prompts.sqlite").write_bytes(b"")
+    _write_db(tmp_path / db_name)
+
+    resolved = script_for_old_shinka._resolve_db_path(str(tmp_path))
+
+    assert resolved == tmp_path / db_name
+
+
+def test_shinka_without_the_shared_resolver_does_not_guess_between_databases(
+    tmp_path, script_for_old_shinka
+):
+    _write_db(tmp_path / "a.sqlite")
+    _write_db(tmp_path / "b.sqlite")
+
+    with pytest.raises(ValueError, match="a.sqlite, b.sqlite"):
+        script_for_old_shinka._resolve_db_path(str(tmp_path))
 
 
 def test_shinka_without_the_shared_resolver_still_finds_the_first_release_name(

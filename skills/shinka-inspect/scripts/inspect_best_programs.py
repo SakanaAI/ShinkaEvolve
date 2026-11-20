@@ -117,6 +117,7 @@ def _parse_args() -> InspectConfig:
 
 
 _DB_SUFFIXES = {".sqlite", ".db"}
+_PROMPT_DB_NAMES = {"prompts.sqlite", "prompts.db"}
 
 
 def _resolve_db_path(results_dir_or_db: str) -> Path:
@@ -124,14 +125,34 @@ def _resolve_db_path(results_dir_or_db: str) -> Path:
     if provided.suffix in _DB_SUFFIXES:
         return provided
     if find_run_db_path is None:
-        # What a shinka without the resolver wrote: programs.sqlite, or the
-        # evolution_db.sqlite its first presets configured.
-        legacy = provided / "evolution_db.sqlite"
-        default = provided / "programs.sqlite"
-        return legacy if legacy.exists() and not default.exists() else default
+        return _find_db_without_resolver(provided)
     # The file the run wrote: programs.sqlite, a custom db_path or a
     # first-release name. Raises if several databases could be meant.
     return find_run_db_path(provided)
+
+
+def _find_db_without_resolver(results_dir: Path) -> Path:
+    # What a shinka without the resolver wrote: programs.sqlite, or the
+    # evolution_db.sqlite its first presets configured.
+    default = results_dir / "programs.sqlite"
+    legacy = results_dir / "evolution_db.sqlite"
+    for known in (default, legacy):
+        if known.exists():
+            return known
+    # Otherwise a run of a newer shinka with a custom db_path, or a database
+    # the user named: taken if it is the only one, never guessed between.
+    others = sorted(
+        path
+        for path in (results_dir.iterdir() if results_dir.is_dir() else ())
+        if path.suffix in _DB_SUFFIXES and path.name.lower() not in _PROMPT_DB_NAMES
+    )
+    if len(others) > 1:
+        names = ", ".join(path.name for path in others)
+        raise ValueError(
+            f"{results_dir} holds several program databases ({names}) and none "
+            f"is named {default.name}. Pass the path of the file to load."
+        )
+    return others[0] if others else default
 
 
 def _loader_path(db_path: Path) -> Path:
