@@ -195,6 +195,15 @@ def test_an_expensive_proposal_is_reserved_only_while_it_is_among_the_last_fifty
     assert runner._proposal_reservation() == pytest.approx(0.01)
 
 
+def test_free_proposals_do_not_push_a_charged_one_out_of_the_last_fifty():
+    """With a free and a paid model in one run, the free replies say nothing
+    about what the next paid one costs. A resumed run restores charged
+    proposals only, so the running one must look at the same fifty."""
+    runner = _runner(charged=1.0, in_flight=0, history=[0.15, *[0.0] * 60])
+
+    assert runner._proposal_reservation() == pytest.approx(0.15)
+
+
 def test_run_is_not_stopped_while_a_proposal_in_flight_can_lower_the_reservation():
     """The expensive proposal leaves the last fifty when the one in flight ends."""
     runner = _runner(

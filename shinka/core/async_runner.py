@@ -22,6 +22,7 @@ from contextvars import Token
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
+from itertools import islice
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, Iterable
@@ -1166,10 +1167,14 @@ class ShinkaEvolveRunner:
         budget on reasoning costs several times the average, so the average
         reserves too little exactly when the cap is close. Only the last
         _PROPOSAL_RESERVATION_WINDOW proposals count, so that one outlier does
-        not hold proposals back for the rest of the run.
+        not hold proposals back for the rest of the run. Proposals that cost
+        nothing are not among them: a reply of a free model says nothing about
+        the next paid one, and a resumed run restores charged proposals only.
         """
-        recent = self.completed_proposal_costs[-_PROPOSAL_RESERVATION_WINDOW:]
-        return max(recent, default=0.0)
+        charged = (
+            cost for cost in reversed(self.completed_proposal_costs) if cost > 0.0
+        )
+        return max(islice(charged, _PROPOSAL_RESERVATION_WINDOW), default=0.0)
 
     def _get_committed_cost(self) -> float:
         """Known charges plus a reservation for every proposal in flight.
