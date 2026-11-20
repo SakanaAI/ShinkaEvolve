@@ -154,7 +154,7 @@ runner = ShinkaEvolveRunner(
     job_config=job_conf,
     db_config=db_conf,
     max_evaluation_jobs=2,
-    max_proposal_jobs=3,  # modest oversubscription when proposal generation is slower than eval
+    max_proposal_jobs=3,  # proposals run above max_evaluation_jobs only with enable_controlled_oversubscription=True
     max_db_workers=4,
 )
 runner.run()
