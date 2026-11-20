@@ -9,6 +9,7 @@ from dataclasses import astuple, dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Iterator
 
+from shinka.database.display import stored_number
 from shinka.database.prompt_dbase import SystemPromptConfig, SystemPromptDatabase
 from shinka.llm.providers.errors import BilledCancellationError
 
@@ -71,17 +72,8 @@ def load_generated_seed_handoff(connection: sqlite3.Connection) -> GeneratedSeed
     return GeneratedSeedHandoff(charge_id, code, {**metadata, "api_charge_id": charge_id}, cost)
 
 
-def _stored_cost(value: Any) -> float:
-    """Read a cost from stored JSON: missing, null and non-finite count as nothing.
-
-    Non-finite costs are stored as null today; early releases wrote NaN literals.
-    """
-    cost = value or 0.0
-    return cost if math.isfinite(cost) else 0.0
-
-
 def api_cost_in_metadata(metadata: dict[str, Any]) -> float:
-    return sum(_stored_cost(metadata.get(field)) for field in _PROGRAM_COST_FIELDS)
+    return sum(stored_number(metadata.get(field)) for field in _PROGRAM_COST_FIELDS)
 
 
 def cancellation_with_cost(
@@ -161,13 +153,15 @@ def program_db_costs(connection: sqlite3.Connection) -> RunCosts:
             metadata = json.loads(raw_metadata or "{}")
         except json.JSONDecodeError:
             continue
+        if not isinstance(metadata, dict):
+            continue
         charge_id = metadata.get("api_charge_id")
         if isinstance(charge_id, str) and not (
             metadata.get("_is_island_copy") or metadata.get("_spawned_island")
         ):
             attached_charge_ids.add(charge_id)
         for field in _PROGRAM_COST_FIELDS:
-            on_rows[field] += _stored_cost(metadata.get(field))
+            on_rows[field] += stored_number(metadata.get(field))
 
     has_journal = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attempt_log'"
@@ -240,7 +234,7 @@ def stored_proposal_costs(connection: sqlite3.Connection) -> list[float]:
 
     costs = (
         sum(
-            _stored_cost(record.get(field))
+            stored_number(record.get(field))
             for field in ("api_costs", "embed_cost", "novelty_cost")
         )
         for _, record in sorted(proposals, key=lambda proposal: proposal[0])

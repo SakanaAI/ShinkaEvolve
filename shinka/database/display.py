@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -15,9 +16,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _number(value: Any) -> float:
-    """Read a cost or duration from metadata, where a non-finite one is stored as null."""
-    return float(value or 0.0)
+def stored_number(value: Any) -> float:
+    """Read a cost or duration from stored JSON.
+
+    Missing, null, non-finite and unreadable values count as nothing. A
+    non-finite value is stored as null today; early releases wrote NaN literals.
+    """
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 class DatabaseDisplay:
@@ -163,10 +172,10 @@ class DatabaseDisplay:
         # Format cost breakdown
         cost_display = "[dim]N/A[/dim]"
         if program.metadata:
-            api_cost = _number(program.metadata.get("api_costs"))
-            embed_cost = _number(program.metadata.get("embed_cost"))
-            novelty_cost = _number(program.metadata.get("novelty_cost"))
-            meta_cost = _number(program.metadata.get("meta_cost"))
+            api_cost = stored_number(program.metadata.get("api_costs"))
+            embed_cost = stored_number(program.metadata.get("embed_cost"))
+            novelty_cost = stored_number(program.metadata.get("novelty_cost"))
+            meta_cost = stored_number(program.metadata.get("meta_cost"))
             total_cost = api_cost + embed_cost + novelty_cost + meta_cost
             cost_display = f"${total_cost:.3f}"
 
@@ -240,9 +249,9 @@ class DatabaseDisplay:
                         evolved_programs += 1
                         correct_evolved += bool(row["correct"])
                 if "compute_time" in metadata:
-                    total_compute_time += _number(metadata["compute_time"])
+                    total_compute_time += stored_number(metadata["compute_time"])
                 elif "pipeline_seconds" in metadata:
-                    total_compute_time += _number(metadata["pipeline_seconds"])
+                    total_compute_time += stored_number(metadata["pipeline_seconds"])
 
                 if row["combined_score"] is not None:
                     score = float(row["combined_score"])
@@ -647,10 +656,10 @@ class DatabaseDisplay:
             # Cost breakdown
             cost_display = "[dim]N/A[/dim]"
             if prog.metadata:
-                api_cost = _number(prog.metadata.get("api_costs"))
-                embed_cost = _number(prog.metadata.get("embed_cost"))
-                novelty_cost = _number(prog.metadata.get("novelty_cost"))
-                meta_cost = _number(prog.metadata.get("meta_cost"))
+                api_cost = stored_number(prog.metadata.get("api_costs"))
+                embed_cost = stored_number(prog.metadata.get("embed_cost"))
+                novelty_cost = stored_number(prog.metadata.get("novelty_cost"))
+                meta_cost = stored_number(prog.metadata.get("meta_cost"))
                 total_cost = api_cost + embed_cost + novelty_cost + meta_cost
                 cost_display = f"${total_cost:.3f}"
 

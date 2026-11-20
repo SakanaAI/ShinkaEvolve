@@ -13,6 +13,7 @@ import pytest
 from rich.console import Console
 
 from shinka.core.async_runner import ShinkaEvolveRunner
+from shinka.core.billing import program_db_costs
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.database.prompt_dbase import (
     SystemPrompt,
@@ -108,6 +109,13 @@ def _add_prompt_evolution_cost(tmp_path, cost: float) -> None:
         prompt_db.close()
 
 
+def _store_raw_metadata(database, program_id: str, metadata: str) -> None:
+    database.cursor.execute(
+        "UPDATE programs SET metadata = ? WHERE id = ?", (metadata, program_id)
+    )
+    database.conn.commit()
+
+
 def test_closing_table_total_is_the_run_accounting(db):
     summary = _closing_summary(db)
 
@@ -180,5 +188,53 @@ def test_closing_table_reads_a_database_without_a_journal(tmp_path):
 
         assert _amount(summary, "Total Combined Cost") == pytest.approx(0.25)
         assert _amount(summary, "Failed/Interrupted Cost") == 0.0
+    finally:
+        database.close()
+
+
+def test_summaries_read_costs_that_are_not_stored_as_finite_numbers(tmp_path):
+    """Early releases wrote NaN literals; a summary must also survive other junk."""
+    database = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1),
+        embedding_model="",
+        read_only=False,
+    )
+    try:
+        database.add(_program("seed", 0, api_costs=0.25, compute_time=90.0))
+        for program_id, generation, metadata in (
+            ("gen1", 1, '{"api_costs": NaN, "embed_cost": Infinity, "compute_time": NaN}'),
+            ("gen2", 2, '{"api_costs": "0.05", "novelty_cost": "unknown"}'),
+            ("gen3", 3, '{"api_costs": [0.05], "meta_cost": {}}'),
+        ):
+            database.add(_program(program_id, generation))
+            _store_raw_metadata(database, program_id, metadata)
+        output = io.StringIO()
+        database.set_display_console(_console(output))
+
+        for program_id in ("gen1", "gen2", "gen3"):
+            database._print_program_summary(database.get(program_id))
+        database.print_summary()
+
+        shown = output.getvalue()
+        assert "$nan" not in shown and "$inf" not in shown
+        assert _amount(shown, "Total Combined Cost") == pytest.approx(0.30)
+        assert "0h 1m 30s" in shown
+        assert _run_accounting(database) == pytest.approx(0.30)
+    finally:
+        database.close()
+
+
+def test_run_accounting_skips_metadata_that_is_not_an_object(tmp_path):
+    database = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "programs.sqlite"), num_islands=1),
+        embedding_model="",
+        read_only=False,
+    )
+    try:
+        database.add(_program("seed", 0, api_costs=0.25))
+        database.add(_program("odd", 1))
+        _store_raw_metadata(database, "odd", "[0.5]")
+
+        assert program_db_costs(database.conn).total == pytest.approx(0.25)
     finally:
         database.close()
