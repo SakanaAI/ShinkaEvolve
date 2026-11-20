@@ -114,6 +114,7 @@ class BanditBase(ABC):
         # patch and of proposals that did not.
         self.recent_delivered = np.zeros(self._n_arms, dtype=np.float64)
         self.recent_failed = np.zeros(self._n_arms, dtype=np.float64)
+        self._warned_untracked_arm = False
 
     @property
     def n_arms(self) -> int:
@@ -121,7 +122,9 @@ class BanditBase(ABC):
 
     def update_delivered(self, arm: Arm) -> None:
         """Record that a proposal submitted to `arm` came back with a usable patch."""
-        self._record_outcome(self._resolve_arm(arm), self.recent_delivered)
+        i = self._outcome_arm(arm)
+        if i is not None:
+            self._record_outcome(i, self.recent_delivered)
 
     def update_failed(self, arm: Arm, cost: float = 0.0) -> None:
         """Record that a proposal submitted to `arm` came back without a usable patch.
@@ -136,9 +139,33 @@ class BanditBase(ABC):
         what a patch from this arm costs: counted as a cost observation, an
         unbilled failure would make the arm look cheap.
         """
-        i = self._resolve_arm(arm)
-        self._record_outcome(i, self.recent_failed)
-        self._add_failed_cost(i, cost)
+        i = self._outcome_arm(arm)
+        if i is not None:
+            self._record_outcome(i, self.recent_failed)
+            self._add_failed_cost(i, cost)
+
+    def _outcome_arm(self, arm: Arm) -> Optional[int]:
+        """Index of `arm` in the outcome counts, or None if it has none.
+
+        Outcome reports reach every bandit, also a subclass written before
+        they existed that keeps arm names of its own. An arm this class cannot
+        place is left untracked, with one warning, instead of failing the
+        proposal that reports it.
+        """
+        try:
+            i = self._resolve_arm(arm)
+        except ValueError:
+            i = -1
+        if 0 <= i < self.recent_failed.size:
+            return i
+        if not self._warned_untracked_arm:
+            self._warned_untracked_arm = True
+            logger.warning(
+                "Bandit does not know arm %r and cannot track the outcomes of "
+                "its proposals; its selection is not weighted by reliability.",
+                arm,
+            )
+        return None
 
     def _add_failed_cost(self, i: int, cost: float) -> None:
         """Hook for bandits that track costs: add a failed proposal's bill."""
@@ -154,14 +181,18 @@ class BanditBase(ABC):
         counts[i] += 1.0
 
     def reliability(self) -> np.ndarray:
-        """Share of each arm's recent proposals that delivered a patch, in (0, 1].
+        """Share of each arm's recent proposals that delivered a patch, in [0, 1].
 
-        One delivered proposal is assumed up front. An arm without failures is
-        therefore at 1.0, and an arm that only fails approaches
-        1 / (1 + failure_memory) and never 0: it is still drawn now and then,
-        which is how the bandit notices that it works again.
+        A new arm is assumed to have delivered one proposal, and that
+        assumption fades as real outcomes fill the memory. An arm without
+        failures is at 1.0, a first failure halves a new arm, and an arm that
+        only fails goes to 0.
         """
-        delivered = 1.0 + self.recent_delivered
+        if self._failure_memory == 0.0:
+            return np.ones(self._n_arms, dtype=np.float64)
+        observed = self.recent_delivered + self.recent_failed
+        assumed = np.clip(1.0 - observed / self._failure_memory, 0.0, 1.0)
+        delivered = assumed + self.recent_delivered
         return delivered / (delivered + self.recent_failed)
 
     def _discount_by_reliability(
@@ -174,23 +205,36 @@ class BanditBase(ABC):
         divided instead, so that failing never raises a score.
         """
         reliability = self.reliability()[idx]
-        return np.where(scores >= 0.0, scores * reliability, scores / reliability)
+        divisor = np.maximum(reliability, np.finfo(np.float64).tiny)
+        return np.where(scores >= 0.0, scores * reliability, scores / divisor)
 
     def _weight_by_reliability(
-        self, probs: np.ndarray, idx: Optional[np.ndarray] = None
+        self,
+        probs: np.ndarray,
+        eligible: np.ndarray,
+        idx: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Scale selection probabilities by reliability and renormalise them.
 
-        `probs` covers every arm, or the arms `idx` when that is given.
+        `probs` and the mask `eligible` cover every arm, or the arms `idx`
+        when that is given. An eligible arm that has failed keeps a probe
+        share: (1 - reliability) / (1 + failure_memory) of an even share. A
+        model that is down is therefore still tried now and then, whatever the
+        bandit's own exploration is set to, and can show that it works again.
         """
         reliability = self.reliability()
         if idx is not None:
             reliability = reliability[idx]
-        if np.all(reliability == 1.0):
+        n_eligible = int(eligible.sum())
+        if n_eligible == 0 or np.all(reliability == 1.0):
             return probs
         weighted = probs * reliability
         total = weighted.sum()
-        return weighted / total if total > 0.0 else probs
+        if total > 0.0:
+            weighted = weighted / total
+        probe = (1.0 - reliability) / (n_eligible * (1.0 + self._failure_memory))
+        weighted = np.where(eligible, np.maximum(weighted, probe), weighted)
+        return weighted / weighted.sum()
 
     def _epsilon_greedy(
         self, scores: np.ndarray, idx: np.ndarray, epsilon: float
@@ -210,7 +254,7 @@ class BanditBase(ABC):
         else:
             p[winners] = (1.0 - epsilon) / n_winners
             p[~winners] = epsilon / (idx.size - n_winners)
-        return self._weight_by_reliability(p, idx)
+        return self._weight_by_reliability(p, np.ones(idx.size, dtype=bool), idx)
 
     def set_baseline_score(
         self,
@@ -391,8 +435,15 @@ class BanditBase(ABC):
                 )
                 delivered, failed = zeros.copy(), zeros.copy()
                 break
-        self.recent_delivered = delivered
-        self.recent_failed = failed
+        # An arm's counts add up to at most failure_memory. A state saved with
+        # a longer memory, or edited, is scaled down to that: it keeps its
+        # reliability and the arm does not take longer than usual to recover.
+        half_total = delivered / 2.0 + failed / 2.0  # the sum can overflow
+        scale = np.minimum(
+            1.0, (self._failure_memory / 2.0) / np.maximum(half_total, 0.5)
+        )
+        self.recent_delivered = delivered * scale
+        self.recent_failed = failed * scale
 
     def _align_state_array(
         self,
@@ -1289,7 +1340,7 @@ class FixedSampler(BanditBase):
     ) -> np.ndarray:
         # the fixed prior probabilities, weighted by each arm's reliability
         if subset is None:
-            return self._weight_by_reliability(self.p.copy())
+            return self._weight_by_reliability(self.p.copy(), self.p > 0.0)
         idx = self._resolve_subset(subset)
 
         # Handle empty subset
@@ -1303,7 +1354,7 @@ class FixedSampler(BanditBase):
         probs = probs / s
         out = np.zeros(self.n_arms, dtype=np.float64)
         out[idx] = probs
-        return self._weight_by_reliability(out)
+        return self._weight_by_reliability(out, out > 0.0)
 
     def decay(self, factor: float) -> None:
         return None

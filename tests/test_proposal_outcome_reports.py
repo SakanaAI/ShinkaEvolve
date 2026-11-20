@@ -275,5 +275,5 @@ def test_endpoint_failures_turn_the_real_bandit_away_from_the_model(
         run(runner)
 
     assert bandit.n_submitted.tolist() == [3.0, 1.0]
-    assert bandit.reliability()[0] == pytest.approx(1 / 3.71)
+    assert bandit.reliability()[0] == pytest.approx(0.729 / 3.439)
     assert bandit.posterior()[0] < 0.1
