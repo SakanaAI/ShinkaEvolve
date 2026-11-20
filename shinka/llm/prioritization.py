@@ -465,17 +465,23 @@ class BanditBase(ABC):
     def _restore_outcomes(self, state: Dict[str, Any]) -> None:
         """Restore the outcome counts; a state saved without them has none."""
         zeros = np.zeros(self.n_arms, dtype=np.float64)
-        delivered = self._align_state_array(state, "recent_delivered", zeros)
-        failed = self._align_state_array(state, "recent_failed", zeros)
-        n_failed = self._align_state_array(state, "n_failed", zeros)
-        for counts in (delivered, failed, n_failed):
-            if not (np.isfinite(counts).all() and (counts >= 0.0).all()):
-                logger.warning(
-                    "Bandit state contains invalid proposal outcome counts; "
-                    "resetting them."
-                )
-                delivered, failed, n_failed = zeros.copy(), zeros.copy(), zeros.copy()
-                break
+        try:
+            delivered = self._align_state_array(state, "recent_delivered", zeros)
+            failed = self._align_state_array(state, "recent_failed", zeros)
+            n_failed = self._align_state_array(state, "n_failed", zeros)
+            valid = all(
+                np.isfinite(counts).all() and (counts >= 0.0).all()
+                for counts in (delivered, failed, n_failed)
+            )
+        except (TypeError, ValueError, OverflowError):
+            valid = False  # names, a scalar, a number no float holds
+        if not valid:
+            # Reset, not raise: the rest of the state is already restored.
+            logger.warning(
+                "Bandit state contains invalid proposal outcome counts; "
+                "resetting them."
+            )
+            delivered, failed, n_failed = zeros.copy(), zeros.copy(), zeros.copy()
         self.n_failed = n_failed
         # An arm's counts add up to at most failure_memory. A state saved with
         # a longer memory, or edited, is scaled down to that: it keeps its

@@ -99,13 +99,14 @@ def _state_from_json(data: bytes) -> dict[str, Any]:
     # json.loads has already turned the bare tokens of a version 1 file into
     # floats; the strings of a version 2 file follow here.
     non_finite_fields = document.get("non_finite_fields", [])
-    if not isinstance(non_finite_fields, list):
+    if not isinstance(non_finite_fields, list) or not all(
+        isinstance(name, str) for name in non_finite_fields
+    ):
         raise BanditStateError("bandit state field list 'non_finite_fields' is invalid")
+    # A set: the list is looked up once per state field.
+    flagged = frozenset(non_finite_fields)
     return {
-        key: _plain(
-            key,
-            _non_finite_from_strings(value) if key in non_finite_fields else value,
-        )
+        key: _plain(key, _non_finite_from_strings(value) if key in flagged else value)
         for key, value in document["state"].items()
     }
 
@@ -135,9 +136,16 @@ def _non_finite_as_strings(value: Any) -> Any:
 
 
 def _non_finite_from_strings(value: Any) -> Any:
-    """Undo `_non_finite_as_strings`; any other string is left for `_plain`."""
+    """Undo `_non_finite_as_strings`; any other string is left for `_plain`.
+
+    A state value is a scalar or a flat list. Deeper nesting is not followed:
+    `_plain` refuses it, where following it could exhaust the stack first.
+    """
     if isinstance(value, list):
-        return [_non_finite_from_strings(item) for item in value]
+        return [
+            _NON_FINITE.get(item, item) if isinstance(item, str) else item
+            for item in value
+        ]
     if isinstance(value, str):
         return _NON_FINITE.get(value, value)
     return value

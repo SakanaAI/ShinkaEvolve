@@ -172,6 +172,30 @@ def test_invalid_saved_outcome_counts_are_reset(make_bandit, bad, caplog):
     assert np.isclose(probabilities.sum(), 1.0)
 
 
+@pytest.mark.parametrize(
+    "bad", [["a", "b"], 5.0, None, [0.0, 10**400]], ids=["names", "scalar", "null", "huge"]
+)
+@ALL_BANDITS
+def test_unreadable_saved_outcome_counts_are_reset_not_raised(make_bandit, bad, caplog):
+    """Raising here would leave a bandit that restored everything else, with
+    the log saying its state could not be loaded."""
+    saved = make_bandit(0)
+    saved.set_baseline_score(BASELINE)
+    saved.update_submitted("ok")
+    saved.update("ok", BASELINE + 0.1, baseline=BASELINE)
+    saved.update_failed("dead")
+    state = saved.get_state()
+    state["recent_failed"] = bad
+    restored = make_bandit(1)
+
+    with caplog.at_level(logging.WARNING, logger="shinka.llm.prioritization"):
+        restored.set_state(state)
+
+    assert "invalid proposal outcome counts" in caplog.text
+    assert restored.reliability().tolist() == [1.0, 1.0]
+    assert restored.get_state()["baseline"] == BASELINE
+
+
 @ALL_BANDITS
 def test_summary_names_the_models_whose_proposals_failed(make_bandit):
     bandit = make_bandit(0)

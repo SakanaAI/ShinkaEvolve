@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -192,6 +193,60 @@ def test_invalid_list_of_non_finite_fields_is_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(BanditStateError, match="non_finite_fields"):
+        read_bandit_state(path)
+
+
+@pytest.mark.parametrize("fields", ['["s", 3]', '["s", ["obs_max"]]', '[null]'])
+def test_list_of_non_finite_fields_must_hold_field_names(
+    fields: str, tmp_path: Path
+) -> None:
+    path = tmp_path / "bandit_state.pkl"
+    path.write_text(
+        '{"format": "shinka-bandit-state", "version": 2, "non_finite_fields": '
+        + fields
+        + ', "state": {"s": ["NaN"]}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BanditStateError, match="non_finite_fields"):
+        read_bandit_state(path)
+
+
+def test_long_list_of_non_finite_fields_does_not_stall_the_read(tmp_path: Path) -> None:
+    """Looked up once per state field: a list scan made this quadratic."""
+    names = [f"field-{i}" for i in range(30_000)]
+    path = tmp_path / "bandit_state.pkl"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "shinka-bandit-state",
+                "version": 2,
+                "non_finite_fields": names,
+                "state": dict.fromkeys(names, 1.0),
+            }
+        ),
+        encoding="utf-8",
+    )
+    started = time.perf_counter()
+
+    state = read_bandit_state(path)
+
+    # 30 ms with a set lookup; several seconds with the list scan.
+    assert time.perf_counter() - started < 2.0
+    assert len(state) == 30_000
+
+
+def test_deeply_nested_field_is_refused_as_bad_state(tmp_path: Path) -> None:
+    """Not with a RecursionError, which callers of the reader do not expect."""
+    depth = 900
+    path = tmp_path / "bandit_state.pkl"
+    path.write_text(
+        '{"format": "shinka-bandit-state", "version": 2, "non_finite_fields": '
+        '["s"], "state": {"s": ' + "[" * depth + '"NaN"' + "]" * depth + "}}",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BanditStateError, match="unsupported data"):
         read_bandit_state(path)
 
 
