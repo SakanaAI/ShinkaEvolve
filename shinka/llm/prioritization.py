@@ -72,6 +72,10 @@ def _format_arm_display_name(name: Arm, max_width: int) -> str:
     return _truncate_middle(text, max_width)
 
 
+# Share of an arm's remembered failures that a state loaded from disk keeps.
+_FAILURES_KEPT_ON_LOAD = 0.5
+
+
 class BanditBase(ABC):
     def __init__(
         self,
@@ -407,6 +411,20 @@ class BanditBase(ABC):
         if not path.exists():
             raise FileNotFoundError(f"Bandit state file not found: {path}")
         self.set_state(read_bandit_state(path))
+        self._forgive_failures()
+
+    def _forgive_failures(self) -> None:
+        """Forget half of each arm's remembered failures after loading a state.
+
+        A state is loaded when a run resumes, and a run that stopped because
+        a model was down resumes after the model was fixed. The bandit
+        cannot know that; held to all its old failures, the model would wait
+        at the probe share and need a full memory of deliveries to count
+        again. With half forgotten its next deliveries weigh twice as much.
+        """
+        failed = getattr(self, "recent_failed", None)
+        if failed is not None:
+            self.recent_failed = failed * _FAILURES_KEPT_ON_LOAD
 
     def _restored_baseline(self, state: Dict[str, Any]) -> float:
         baseline = self._finite_or_none(state["baseline"], "saved baseline score")

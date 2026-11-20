@@ -73,10 +73,51 @@ def test_outcome_counts_survive_save_and_load(make_bandit, tmp_path):
     restored = make_bandit(1)
     restored.load_state(path)
 
-    np.testing.assert_array_equal(restored.recent_failed, bandit.recent_failed)
+    # A loaded state keeps the deliveries and half of the failures.
+    np.testing.assert_array_equal(restored.recent_failed, bandit.recent_failed / 2)
     np.testing.assert_array_equal(restored.recent_delivered, bandit.recent_delivered)
+    assert restored.reliability()[0] == 1.0
+    assert bandit.reliability()[DEAD] < restored.reliability()[DEAD] < 0.6
+
+
+@ALL_BANDITS
+def test_model_fixed_between_sessions_is_not_held_to_all_its_failures(
+    make_bandit, tmp_path
+):
+    """The run stopped on a dead model; it is resumed once the model works."""
+    stopped = make_bandit(0)
+    for _ in range(40):
+        stopped.update_delivered("ok")
+        stopped.update_failed("dead")
+    path = tmp_path / "bandit_state.pkl"
+    stopped.save_state(path)
+    resumed = make_bandit(1)
+    resumed.load_state(path)
+
+    def deliveries_until_reliable(bandit) -> int:
+        for delivered in range(1, 30):
+            bandit.update_delivered("dead")
+            if bandit.reliability()[DEAD] >= 0.5:
+                return delivered
+        return 30
+
+    assert stopped.reliability()[DEAD] < 0.01
+    assert resumed.reliability()[DEAD] == pytest.approx(0.09, abs=0.005)
+    assert deliveries_until_reliable(resumed) == 4
+    assert deliveries_until_reliable(stopped) == 7
+
+
+@ALL_BANDITS
+def test_restoring_a_state_in_memory_forgives_nothing(make_bandit):
+    bandit = make_bandit(0)
+    for _ in range(4):
+        bandit.update_failed("dead")
+    restored = make_bandit(1)
+
+    restored.set_state(bandit.get_state())
+
+    np.testing.assert_array_equal(restored.recent_failed, bandit.recent_failed)
     np.testing.assert_array_equal(restored.reliability(), bandit.reliability())
-    assert restored.reliability()[DEAD] < 0.5
 
 
 @ALL_BANDITS
@@ -90,8 +131,9 @@ def test_outcome_counts_follow_the_model_when_the_pool_changes(make_bandit, tmp_
     reordered = type(bandit)(arm_names=["new", "dead", "ok"], seed=0)
     reordered.load_state(path)
 
+    assert reordered.recent_failed.tolist() == [0.0, bandit.recent_failed[DEAD] / 2, 0.0]
     assert reordered.reliability()[0] == 1.0
-    assert reordered.reliability()[1] == bandit.reliability()[DEAD]
+    assert reordered.reliability()[1] < 0.5
     assert reordered.reliability()[2] == 1.0
 
 
@@ -196,5 +238,6 @@ def test_save_and_load_leave_the_counts_bit_for_bit(
     restored = type(template)(arm_names=ARMS, seed=1, failure_memory=failure_memory)
     restored.load_state(path)
 
-    np.testing.assert_array_equal(restored.recent_failed, bandit.recent_failed)
+    # Halving is exact, so the saved counts came back bit for bit.
+    np.testing.assert_array_equal(restored.recent_failed * 2, bandit.recent_failed)
     np.testing.assert_array_equal(restored.recent_delivered, bandit.recent_delivered)
