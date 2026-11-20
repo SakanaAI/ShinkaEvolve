@@ -15,6 +15,7 @@ from rich.console import Console
 from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.core.billing import program_db_costs
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
+from shinka.database.display import stored_number
 from shinka.database.prompt_dbase import (
     SystemPrompt,
     SystemPromptConfig,
@@ -238,3 +239,23 @@ def test_run_accounting_skips_metadata_that_is_not_an_object(tmp_path):
         assert program_db_costs(database.conn).total == pytest.approx(0.25)
     finally:
         database.close()
+
+
+@pytest.mark.parametrize(
+    "stored, read",
+    [
+        (None, 0.0),
+        (0.05, 0.05),
+        (3, 3.0),
+        ("0.05", 0.05),  # a number stored as text is still that amount
+        ("unknown", 0.0),
+        (float("nan"), 0.0),
+        (float("-inf"), 0.0),
+        (10**400, 0.0),  # JSON has no upper limit for an integer
+        (True, 0.0),
+        ([0.05], 0.0),
+        ({"usd": 0.05}, 0.0),
+    ],
+)
+def test_a_stored_number_that_is_not_a_finite_amount_reads_as_nothing(stored, read):
+    assert stored_number(stored) == read

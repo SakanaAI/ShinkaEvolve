@@ -19,12 +19,15 @@ logger = logging.getLogger(__name__)
 def stored_number(value: Any) -> float:
     """Read a cost or duration from stored JSON.
 
-    Missing, null, non-finite and unreadable values count as nothing. A
-    non-finite value is stored as null today; early releases wrote NaN literals.
+    Missing, null, non-finite and unreadable values count as nothing; a number
+    stored as text counts as that number. A non-finite value is stored as null
+    today; early releases wrote NaN literals.
     """
+    if isinstance(value, bool):
+        return 0.0
     try:
         number = float(value or 0.0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
     return number if math.isfinite(number) else 0.0
 
