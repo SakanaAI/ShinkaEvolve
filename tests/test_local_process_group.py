@@ -357,7 +357,7 @@ def test_fatal_signal_handler_cannot_be_reentered_and_never_waits(
     )
     previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
-        fatal_signals._die_with_evaluators(signal.SIGTERM, None)
+        fatal_signals._die_with_evaluators(signal.SIGTERM)
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -396,7 +396,7 @@ def test_signal_relay_passes_on_only_fatal_signals_the_hook_still_handles(
     )
     monkeypatch.setattr(fatal_signals, "_RELAY_SECONDS", 0.0)
     read_fd, write_fd = os.pipe()
-    previous = signal.signal(signal.SIGTERM, fatal_signals._die_with_evaluators)
+    previous = signal.signal(signal.SIGTERM, fatal_signals._on_fatal_signal)
     hangup = signal.signal(signal.SIGHUP, application_handler)
     try:
         os.write(write_fd, bytes([signal.SIGINT, signal.SIGHUP, signal.SIGTERM]))
