@@ -1343,7 +1343,15 @@ class ShinkaEvolveRunner:
             until_the_loop_has_closed.finish()
 
     async def run_async(self):
-        """Run evolution while retaining provider clients for this loop user."""
+        """Run evolution while retaining provider clients for this loop user.
+
+        SIGTERM and SIGHUP stop the run as Ctrl-C does, unless the application
+        handles them itself. The process then dies of the signal as soon as
+        the run has cleaned up: inside this call, before the application's
+        own tasks and ``finally`` blocks get to run. An application that has
+        more to finish holds the process until then with
+        ``shinka.launch.fatal_signals.outlive_stopping_runs()``, as ``run`` does.
+        """
         from shinka.llm.client import async_client_cache_scope
 
         async with async_client_cache_scope():
