@@ -1038,20 +1038,23 @@ class ShinkaEvolveRunner:
         - Local evaluation jobs are CPU-bound subprocesses: at most one per core,
           and at most two per GB of RAM (0.5 GB assumed per evaluation).
         - Slurm evaluation jobs run on the cluster and are granted as requested.
-        - Proposal jobs wait on the LLM inside the runner's event loop and are
-          granted as requested. The pipeline target already bounds how many are
+        - Proposal jobs spend most of their time waiting on the LLM; their local
+          work is patch application and one syntax-check subprocess per patch.
+          They are granted as requested. The pipeline target bounds how many are
           in flight (`_compute_proposal_pipeline_target`).
-        - Database workers are threads: the database layer runs at most eight
-          operations at once, so more than eight would sit idle.
+        - Database workers are threads on one SQLite database. The limit of
+          eight is kept from the previous rule and has not been measured.
 
         Every pool that is granted less than requested is logged at WARNING.
         """
-        max_concurrent_db_operations = 8
+        max_supported_db_workers = 8
 
         try:
             memory_gb = psutil.virtual_memory().total / (1024**3)
+            memory_source = "installed"
         except Exception:
-            memory_gb = 8  # Default assumption
+            memory_gb = 8
+            memory_source = "assumed, memory size unknown"
 
         evaluation_memory_limit = max(1, int(memory_gb * 2))
         if cpu_count <= evaluation_memory_limit:
@@ -1062,7 +1065,8 @@ class ShinkaEvolveRunner:
         else:
             evaluation_limit = evaluation_memory_limit
             evaluation_reason = (
-                f"0.5 GB of RAM assumed per evaluation, {memory_gb:.1f} GB installed"
+                "0.5 GB of RAM assumed per evaluation, "
+                f"{memory_gb:.1f} GB {memory_source}"
             )
 
         def grant(name: str, requested: int, limit: int, reason: str) -> int:
@@ -1087,9 +1091,8 @@ class ShinkaEvolveRunner:
         max_db_workers = grant(
             "max_db_workers",
             max_db_workers,
-            max_concurrent_db_operations,
-            f"the database layer runs at most {max_concurrent_db_operations} "
-            "operations at once",
+            max_supported_db_workers,
+            f"at most {max_supported_db_workers} database workers are supported",
         )
 
         if self.verbose:

@@ -105,23 +105,58 @@ def test_local_evaluations_are_capped_by_memory(
     assert "max_evaluation_jobs" in warnings[0]
     assert "requested 8" in warnings[0]
     assert "granted 4" in warnings[0]
-    assert "2.0 GB" in warnings[0]
+    assert "2.0 GB installed" in warnings[0]
 
 
-def test_unknown_memory_is_treated_as_eight_gb(
-    monkeypatch: pytest.MonkeyPatch,
+def test_core_limit_is_the_reason_when_cores_and_memory_allow_the_same(
+    set_memory_gb: Callable[[float], None], caplog: pytest.LogCaptureFixture
+) -> None:
+    set_memory_gb(4)  # eight evaluations by memory, eight by cores
+
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        granted = _runner()._validate_concurrency_settings(9, 9, 4, 8)
+
+    assert granted == (8, 9, 4)
+    assert "8 CPU cores" in _clamp_warnings(caplog)[0]
+
+
+def test_unknown_memory_is_treated_as_eight_gb_and_reported_as_assumed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     def _fail() -> None:
         raise OSError("no memory information")
 
     monkeypatch.setattr(async_runner.psutil, "virtual_memory", _fail)
 
-    granted = _runner()._validate_concurrency_settings(32, 32, 4, 64)
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        granted = _runner()._validate_concurrency_settings(32, 32, 4, 64)
 
     assert granted == (16, 32, 4)
+    warnings = _clamp_warnings(caplog)
+    assert len(warnings) == 1
+    assert "8.0 GB assumed" in warnings[0]
+    assert "installed" not in warnings[0]
 
 
-def test_db_workers_are_capped_at_the_database_layer_limit(
+def test_verbose_run_logs_the_granted_settings(
+    set_memory_gb: Callable[[float], None], caplog: pytest.LogCaptureFixture
+) -> None:
+    set_memory_gb(64)
+    runner = _runner()
+    runner.verbose = True
+
+    with caplog.at_level(logging.INFO, logger=RUNNER_LOGGER):
+        granted = runner._validate_concurrency_settings(16, 12, 4, 10)
+
+    assert granted == (10, 12, 4)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Evaluation jobs: 10" in message for message in messages)
+    assert any("Proposal jobs: 12" in message for message in messages)
+    assert any("DB workers: 4" in message for message in messages)
+    assert len(_clamp_warnings(caplog)) == 1
+
+
+def test_db_workers_are_capped_at_eight(
     set_memory_gb: Callable[[float], None], caplog: pytest.LogCaptureFixture
 ) -> None:
     set_memory_gb(64)
