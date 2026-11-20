@@ -191,24 +191,41 @@ def test_endpoint_failure_is_reported_as_failed(run: Callable[[Any], Any]) -> No
     assert bandit.calls == [("submitted", MODEL), ("failed", MODEL, 0.01)]
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        RequestRejectedError("LLM request rejected with HTTP 400"),
-        TypeError("create() got an unexpected keyword argument 'temperature'"),
-    ],
-    ids=["rejected-request", "client-error"],
-)
 @BOTH_PROPOSAL_KINDS
-def test_failed_request_is_reported_as_failed(
-    run: Callable[[Any], Any], error: Exception
-) -> None:
+def test_rejected_request_is_reported_as_failed(run: Callable[[Any], Any]) -> None:
     bandit = _RecordingBandit()
+    error = RequestRejectedError("LLM request rejected with HTTP 400")
 
     _, _, success = run(_build_runner(_raise(error), bandit))
 
     assert success is False
     assert bandit.calls == [("submitted", MODEL), ("failed", MODEL, 0.0)]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError(28, "No space left on device"), RuntimeError("bug in the runner")],
+    ids=["disk-full", "runner-bug"],
+)
+@BOTH_PROPOSAL_KINDS
+def test_runner_side_error_is_not_held_against_the_model(
+    run: Callable[[Any], Any], error: Exception, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model answered and its patch applied; saving the attempt broke."""
+    monkeypatch.setattr(async_runner, "apply_patch_async", _patch_applies)
+    bandit = _RecordingBandit()
+    runner = _build_runner(_reply, bandit)
+
+    async def cannot_save(**_kwargs: Any) -> None:
+        raise error
+
+    runner._save_patch_attempt_async = cannot_save
+
+    _, metadata, success = run(runner)
+
+    assert success is False
+    assert metadata["api_costs"] == REPLY_COST
+    assert bandit.calls == [("submitted", MODEL)]
 
 
 @BOTH_PROPOSAL_KINDS
@@ -283,9 +300,10 @@ def test_endpoint_failures_turn_the_real_bandit_away_from_the_model(
 
 @pytest.mark.parametrize("raising_step", ["_print_metadata_table", "to_dict"])
 @BOTH_PROPOSAL_KINDS
-def test_proposal_that_breaks_after_its_patch_applied_is_reported_once(
+def test_proposal_that_breaks_after_its_patch_applied_reports_no_outcome(
     run: Callable[[Any], Any], raising_step: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Not delivered, and not the model's failure either."""
     monkeypatch.setattr(async_runner, "apply_patch_async", _patch_applies)
     bandit = _RecordingBandit()
     runner = _build_runner(_reply, bandit)
@@ -302,11 +320,12 @@ def test_proposal_that_breaks_after_its_patch_applied_is_reported_once(
     _, _, success = run(runner)
 
     assert success is False
-    assert bandit.calls == [("submitted", MODEL), ("failed", MODEL, REPLY_COST)]
+    assert bandit.calls == [("submitted", MODEL)]
 
 
 @BOTH_PROPOSAL_KINDS
-def test_no_attempt_at_all_is_reported_once(run: Callable[[Any], Any]) -> None:
+def test_no_attempt_at_all_reports_no_outcome(run: Callable[[Any], Any]) -> None:
+    """With no attempt allowed the model is never asked."""
     bandit = _RecordingBandit()
     runner = _build_runner(_reply, bandit)
     runner.evo_config.max_patch_attempts = 0
@@ -314,7 +333,7 @@ def test_no_attempt_at_all_is_reported_once(run: Callable[[Any], Any]) -> None:
     _, _, success = run(runner)
 
     assert success is False
-    assert bandit.calls == [("submitted", MODEL), ("failed", MODEL, 0.0)]
+    assert bandit.calls == [("submitted", MODEL)]
 
 
 class _OwnNamesBandit(BanditBase):

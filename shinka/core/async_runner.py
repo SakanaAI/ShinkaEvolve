@@ -53,7 +53,11 @@ from shinka.llm import (
     ThompsonSampler,
 )
 from shinka.llm.prioritization import ProposalOutcomes
-from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
+from shinka.llm.providers.errors import (
+    BilledCancellationError,
+    LLMEndpointError,
+    NonRetryableLLMError,
+)
 from shinka.core.endpoint_failures import (
     endpoint_failures_before_stop,
     probabilities_without,
@@ -3640,6 +3644,23 @@ class ShinkaEvolveRunner:
         metadata_file = attempt_dir / "metadata.json"
         await write_file_async(str(metadata_file), json.dumps(metadata, indent=2))
 
+    def _model_refused_request(
+        self, error: Exception, llm_kwargs: Dict[str, Any]
+    ) -> bool:
+        """Whether an error of a proposal call counts against the model called.
+
+        A request the model's endpoint refused does. Anything else broke on
+        the runner's side, a full disk or a bug in applying the patch, and
+        says nothing about the model; like a cancelled call it is not
+        reported. Errors of the request that may pass on a retry never get
+        here: the client retries them and then returns an empty reply.
+        """
+        return (
+            self.llm_selection is not None
+            and "model_name" in llm_kwargs
+            and isinstance(error, NonRetryableLLMError)
+        )
+
     def _proposal_delivered(self, model_name: str) -> None:
         """Note that a proposal call to `model_name` returned a usable patch."""
         outcomes = _task_outcomes.get()
@@ -4251,7 +4272,7 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
-            if self.llm_selection is not None and "model_name" in llm_kwargs:
+            if self._model_refused_request(e, llm_kwargs):
                 self._proposal_failed(llm_kwargs["model_name"], total_costs)
             return None, {
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
@@ -4529,7 +4550,7 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async patch generation: {e}")
             # Restore original task_sys_msg in case of exception
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
-            if self.llm_selection is not None and "model_name" in llm_kwargs:
+            if self._model_refused_request(e, llm_kwargs):
                 self._proposal_failed(llm_kwargs["model_name"], total_costs)
             return (
                 None,
