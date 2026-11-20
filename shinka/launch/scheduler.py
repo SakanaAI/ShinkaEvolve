@@ -10,7 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
 from .local import monitor_evaluation as monitor_local_evaluation
-from .local import ProcessWithLogging, kill_evaluators_on_fatal_signals
+from .local import ProcessWithLogging
+from .fatal_signals import kill_evaluators_on_fatal_signals
 from .job_config import (
     JobConfig,
     LocalJobConfig,
@@ -90,6 +91,8 @@ class JobScheduler:
 
         if self.job_type == "local":
             self.monitor = monitor_local
+            # Hooked now and again before each evaluation: an application may
+            # add and remove a handler of its own, which leaves the default.
             kill_evaluators_on_fatal_signals()
         elif self.job_type in SLURM_JOB_TYPES:
             self.monitor = monitor_slurm
@@ -202,6 +205,7 @@ class JobScheduler:
             if timeout is not None:
                 # Reject an invalid timeout before starting the subprocess.
                 parse_time_to_seconds(timeout)
+            kill_evaluators_on_fatal_signals()
             job_id = submit_local(
                 results_dir_t,
                 cmd,
@@ -290,6 +294,7 @@ class JobScheduler:
         cmd = self._build_command(exec_fname_t, results_dir_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
+            kill_evaluators_on_fatal_signals()
             return submit_local(
                 results_dir_t,
                 cmd,
@@ -421,6 +426,9 @@ class JobScheduler:
     ) -> Union[str, ProcessWithLogging]:
         """Submit a job asynchronously without blocking the event loop."""
         loop = asyncio.get_event_loop()
+        if self.job_type == "local":
+            # Here, in the loop's thread: the executor's cannot hook signals.
+            kill_evaluators_on_fatal_signals()
 
         return await loop.run_in_executor(
             self.executor, self.submit_async, exec_fname_t, results_dir_t
@@ -466,6 +474,9 @@ class JobScheduler:
                         capture_output=True,
                         text=True,
                         timeout=SLURM_CANCEL_TIMEOUT_SECONDS,
+                        # Out of the terminal's process group: the hangup
+                        # that stops this run must not end its `scancel`.
+                        start_new_session=True,
                     )
                     # A job the controller no longer knows is already gone.
                     return result.returncode == 0 or is_unknown_job_error(

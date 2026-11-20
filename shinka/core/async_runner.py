@@ -141,6 +141,10 @@ _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
 _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
 _WANDB_CANDIDATE_STOP = object()
+# How long a run that a signal stopped waits for a database lock before it
+# leaves the write-ahead log as it is. The fold itself takes milliseconds for
+# the few megabytes a log usually holds, and half a second for 300 MB.
+_WAL_FOLD_LOCK_SECONDS = 5.0
 # While no local evaluation has succeeded, each one killed for running too long
 # raises the hang limit fivefold. It stops at the `time` Slurm job configs
 # default to, or a few hung candidates in a row would stall the run for days.
@@ -1432,10 +1436,27 @@ class ShinkaEvolveRunner:
             if "no running event loop" not in str(exc):
                 raise
 
-        asyncio.run(self.run_async())
+        # Local import: this method is the only runner region that needs it.
+        from shinka.launch.fatal_signals import outlive_stopping_runs
+
+        # A run that SIGTERM or SIGHUP stops ends the process once the loop has
+        # closed and the threads it handed work to are done, as after Ctrl-C.
+        until_the_loop_has_closed = outlive_stopping_runs()
+        try:
+            asyncio.run(self.run_async())
+        finally:
+            until_the_loop_has_closed.finish()
 
     async def run_async(self):
-        """Run evolution while retaining provider clients for this loop user."""
+        """Run evolution while retaining provider clients for this loop user.
+
+        SIGTERM and SIGHUP stop the run as Ctrl-C does, unless the application
+        handles them itself. The process then dies of the signal as soon as
+        the run has cleaned up: inside this call, before the application's
+        own tasks and ``finally`` blocks get to run. An application that has
+        more to finish holds the process until then with
+        ``shinka.launch.fatal_signals.outlive_stopping_runs()``, as ``run`` does.
+        """
         from shinka.llm.client import async_client_cache_scope
 
         async with async_client_cache_scope():
@@ -1443,10 +1464,32 @@ class ShinkaEvolveRunner:
 
     async def _run_async(self):
         """Main async evolution loop."""
+        # Local import: this method is the only runner region that needs it.
+        from shinka.launch.fatal_signals import (
+            runs_are_stopping,
+            stop_on_fatal_signals,
+        )
+
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
+        loop = asyncio.get_running_loop()
+        run_task = asyncio.current_task()
+
+        def stop_the_run(received) -> None:
+            logger.warning(
+                f"🛑 Received {received.name}: stopping the run as Ctrl-C would. "
+                "A SIGTERM a second or more from now ends it at once."
+            )
+            # A run that is already cleaning up finishes that.
+            if run_task is not None and not getattr(self, "_closing_run", False):
+                run_task.cancel()
+
+        # SIGTERM and SIGHUP cancel this task, like Ctrl-C in `asyncio.run`.
+        signal_stop = stop_on_fatal_signals(
+            lambda received: loop.call_soon_threadsafe(stop_the_run, received)
+        )
 
         try:
             # Setup initial program (results_dir now set)
@@ -1596,18 +1639,73 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
-            # Stop producers before waiting on any shielded provider calls.
-            self._closing_run = True
-            self.should_stop.set()
-            for task in (*tasks, *self.active_proposal_tasks.values()):
-                task.cancel()
-            await finish_cost_recording(self._drain_and_cleanup_async(tasks))
+            try:
+                # Stop producers before waiting on any shielded provider calls.
+                self._closing_run = True
+                self.should_stop.set()
+                for task in (*tasks, *self.active_proposal_tasks.values()):
+                    task.cancel()
+                # Nobody collects the local evaluators any more. They die now
+                # and not at the end of the cleanup, which still reaps them:
+                # whoever sent SIGTERM may send SIGKILL before the cleanup
+                # gets there.
+                for job in list(getattr(self, "running_jobs", ())):
+                    kill_at_once = getattr(job.job_id, "kill_without_reaping", None)
+                    if kill_at_once is None:  # Slurm jobs are ids.
+                        continue
+                    try:
+                        kill_at_once()
+                    except Exception as exc:
+                        # The cleanup below cancels it, and says so if it cannot.
+                        logger.warning(f"Could not kill evaluator {job.job_id}: {exc}")
+                await finish_cost_recording(self._drain_and_cleanup_async(tasks))
+            finally:
+                # A run that a signal stopped ends the process with the
+                # signal's status: here, or in `run` once the loop has closed.
+                if runs_are_stopping():
+                    self._fold_write_ahead_logs()
+                signal_stop.finish()
 
         if billing_error := getattr(self, "_billing_error", None):
             raise billing_error
 
         # Print final summary
         await self._print_final_summary()
+
+    def _fold_write_ahead_logs(self) -> None:
+        """Write what the databases hold in their `-wal` files into the files.
+
+        A connection that closes does this, which is how Ctrl-C leaves the
+        databases. A process that dies of a signal closes none: its latest
+        programs would stay in `programs.sqlite-wal`, and a copy of
+        `programs.sqlite` alone would lack them.
+        """
+        import sqlite3
+
+        for database in (getattr(self, "db", None), getattr(self, "prompt_db", None)):
+            path = getattr(getattr(database, "config", None), "db_path", None)
+            if not path or not Path(path).is_file():
+                continue  # No database yet, or one in memory.
+            try:
+                # A connection of its own: this may not be the thread that
+                # opened the run's. It waits this long for a lock, no longer.
+                connection = sqlite3.connect(
+                    str(path), timeout=_WAL_FOLD_LOCK_SECONDS
+                )
+                try:
+                    blocked = connection.execute(
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    ).fetchone()[0]
+                finally:
+                    connection.close()
+                reason = "another connection is using the database"
+            except sqlite3.Error as exc:
+                blocked, reason = True, str(exc)
+            if blocked:
+                logger.warning(
+                    f"Could not write all of {path}-wal into the database "
+                    f"({reason}): keep the two files together"
+                )
 
     async def _drain_and_cleanup_async(self, tasks: list[asyncio.Task]) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)

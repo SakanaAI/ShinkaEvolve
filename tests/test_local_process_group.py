@@ -20,7 +20,8 @@ from job_lifecycle_test_utils import (
     worker_pid,
     write_evaluator_with_worker,
 )
-from shinka.launch import ProcessWithLogging, local
+from shinka.launch import ProcessWithLogging, fatal_signals, local
+from signal_stop_test_utils import FRESH_SIGNALS
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix", reason="requires POSIX process groups"
@@ -141,14 +142,15 @@ def _orchestrator(
     evaluator = write_evaluator_with_worker(tmp_path)
     runner_script = tmp_path / "runner.py"
     runner_script.write_text(
-        dedent(f"""
+        FRESH_SIGNALS
+        + dedent(f"""
             import os
             import sys
             import threading
             import time
-            from shinka.launch import local
+            from shinka.launch import fatal_signals, local
 
-            local.kill_evaluators_on_fatal_signals()
+            fatal_signals.kill_evaluators_on_fatal_signals()
             results_dir = {str(results_dir)!r}
             process = local.submit(
                 results_dir,
@@ -357,7 +359,7 @@ def test_fatal_signal_handler_cannot_be_reentered_and_never_waits(
     )
     previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
-        local._die_with_evaluators(signal.SIGTERM, None)
+        fatal_signals._die_with_evaluators(signal.SIGTERM)
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -373,7 +375,7 @@ def test_fatal_signal_hook_leaves_application_handlers_alone() -> None:
     previous = signal.signal(signal.SIGTERM, application_handler)
     hangup = signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        local.kill_evaluators_on_fatal_signals()
+        fatal_signals.kill_evaluators_on_fatal_signals()
 
         assert signal.getsignal(signal.SIGTERM) is application_handler
         assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
@@ -390,19 +392,19 @@ def test_signal_relay_passes_on_only_fatal_signals_the_hook_still_handles(
 
     relayed: list[tuple[int, int]] = []
     monkeypatch.setattr(
-        local.signal,
+        fatal_signals.signal,
         "pthread_kill",
         lambda thread_id, signum: relayed.append((thread_id, signum)),
     )
-    monkeypatch.setattr(local, "_RELAY_SECONDS", 0.0)
+    monkeypatch.setattr(fatal_signals, "_RELAY_SECONDS", 0.0)
     read_fd, write_fd = os.pipe()
-    previous = signal.signal(signal.SIGTERM, local._die_with_evaluators)
+    previous = signal.signal(signal.SIGTERM, fatal_signals._on_fatal_signal)
     hangup = signal.signal(signal.SIGHUP, application_handler)
     try:
         os.write(write_fd, bytes([signal.SIGINT, signal.SIGHUP, signal.SIGTERM]))
         os.close(write_fd)
 
-        local._relay_fatal_signals(read_fd, 1234)
+        fatal_signals._relay_fatal_signals(read_fd, 1234)
     finally:
         signal.signal(signal.SIGTERM, previous)
         signal.signal(signal.SIGHUP, hangup)
@@ -418,7 +420,7 @@ def test_signal_relay_leaves_an_event_loops_signal_reports_alone() -> None:
         event_loop.setblocking(False)
         previous = signal.set_wakeup_fd(event_loop.fileno())
         try:
-            local._relay_fatal_signals_to_the_main_thread()
+            fatal_signals._relay_fatal_signals_to_the_main_thread()
         finally:
             reported_to = signal.set_wakeup_fd(previous)
         assert reported_to == event_loop.fileno()
@@ -427,11 +429,11 @@ def test_signal_relay_leaves_an_event_loops_signal_reports_alone() -> None:
 def test_signal_relay_takes_the_signal_reports_back_once_they_are_free() -> None:
     previous = signal.set_wakeup_fd(-1)
     try:
-        local._relay_fatal_signals_to_the_main_thread()
-        local._relay_fatal_signals_to_the_main_thread()
+        fatal_signals._relay_fatal_signals_to_the_main_thread()
+        fatal_signals._relay_fatal_signals_to_the_main_thread()
 
-        assert local._signal_reports is not None
-        assert signal.set_wakeup_fd(-1) == local._signal_reports[1]
+        assert fatal_signals._signal_reports is not None
+        assert signal.set_wakeup_fd(-1) == fatal_signals._signal_reports[1]
     finally:
         signal.set_wakeup_fd(previous)
 

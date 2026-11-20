@@ -59,8 +59,18 @@ def _thread_cli_lock() -> threading.Lock:
     return _THREAD_LOCK
 
 
+# How often a call that waits for the CLI lock looks again. A CLI call takes
+# seconds, so the wait this adds does not show.
+_CLI_LOCK_POLL_SECONDS = 0.05
+
+
 async def _acquire_cli_lock_async() -> None:
-    await asyncio.to_thread(_THREAD_LOCK.acquire)
+    # Not `to_thread(lock.acquire)`: a thread parked on the lock outlives the
+    # cancellation of its call. It would take the lock later with nobody left
+    # to release it, block every waiter behind it, and keep the event loop
+    # from closing; and each one occupies a thread of the loop's small pool.
+    while not _THREAD_LOCK.acquire(blocking=False):
+        await asyncio.sleep(_CLI_LOCK_POLL_SECONDS)
 
 
 def parse_headless_model(model_name: str) -> HeadlessModel:

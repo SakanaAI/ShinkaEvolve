@@ -5,6 +5,8 @@ import shlex
 import stat
 import sys
 import asyncio
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -385,3 +387,94 @@ def test_shinka_run_full_headless_cli_mutation_succeeds(tmp_path, monkeypatch):
         for path in metrics_files
     )
     assert best_score == pytest.approx(1.0)
+
+
+def _let_parked_waiters_through(lock: threading.Lock, waiters: int) -> None:
+    """Hand the lock to every thread still parked on it, so the loop can close."""
+    for _ in range(waiters + 1):
+        if lock.locked():
+            lock.release()
+        time.sleep(0.02)
+
+
+def test_cancelled_waiters_leave_the_cli_lock_to_the_next_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ctrl-C, SIGTERM and SIGHUP cancel every proposal. One that waited for
+    # the CLI lock must not take it afterwards: nobody would release it, the
+    # other waiters would block for good, and the event loop could not close.
+    lock = threading.Lock()
+    monkeypatch.setattr(headless, "_THREAD_LOCK", lock)
+
+    async def run() -> tuple[bool, set[str]]:
+        lock.acquire()  # A CLI call in flight.
+        waiters = [
+            asyncio.ensure_future(headless._acquire_cli_lock_async()) for _ in range(3)
+        ]
+        try:
+            await asyncio.sleep(0.1)
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+            lock.release()  # The call in flight returns.
+            await asyncio.sleep(0.2)
+
+            free = lock.acquire(blocking=False)
+            still_waiting = {
+                thread.name
+                for thread in threading.enumerate()
+                if thread.name.startswith("asyncio_")
+            }
+            return free, still_waiting
+        finally:
+            _let_parked_waiters_through(lock, len(waiters))
+
+    free, still_waiting = asyncio.run(asyncio.wait_for(run(), timeout=10.0))
+
+    assert free
+    assert still_waiting == set()
+
+
+def test_calls_that_wait_for_the_cli_lock_leave_the_thread_pool_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The loop's default pool has few threads: cores + 4. A waiter that parks
+    # one for as long as a CLI call takes stalls everything else that uses it.
+    lock = threading.Lock()
+    monkeypatch.setattr(headless, "_THREAD_LOCK", lock)
+
+    async def run() -> bool:
+        loop = asyncio.get_running_loop()
+        lock.acquire()  # A CLI call in flight.
+        waiters = [
+            asyncio.ensure_future(headless._acquire_cli_lock_async()) for _ in range(40)
+        ]
+        try:
+            await asyncio.sleep(0.1)
+            pool_job = loop.run_in_executor(None, lambda: None)
+            done, _ = await asyncio.wait([pool_job], timeout=2.0)
+            return bool(done)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            _let_parked_waiters_through(lock, len(waiters))
+
+    assert asyncio.run(run())
+
+
+def test_waiter_gets_the_cli_lock_once_it_is_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = threading.Lock()
+    monkeypatch.setattr(headless, "_THREAD_LOCK", lock)
+
+    async def run() -> bool:
+        lock.acquire()
+        waiter = asyncio.ensure_future(headless._acquire_cli_lock_async())
+        await asyncio.sleep(0.1)
+        assert not waiter.done()
+        lock.release()
+        await asyncio.wait_for(waiter, timeout=5.0)
+        return lock.locked()
+
+    assert asyncio.run(run())
