@@ -9,13 +9,15 @@ budget on reasoning, $0.15 each, and the run ended at $0.5387.
 
 import asyncio
 import logging
+import math
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from shinka.api_budget import cost_scope
 from shinka.core.async_runner import ShinkaEvolveRunner
-from shinka.core.billing import stored_proposal_costs
+from shinka.core.billing import program_db_costs, stored_proposal_costs
 from shinka.database import DatabaseConfig, Program, ProgramDatabase
 
 CAP = 0.45
@@ -113,7 +115,8 @@ def test_first_proposals_start_without_a_cost_history():
 
 
 def test_a_cap_that_exactly_covers_the_next_proposal_admits_it():
-    runner = _runner(charged=0.30, in_flight=0, history=[0.15])
+    # In floating point (0.3 - 0.2) / 0.1 is a hair below one.
+    runner = _runner(charged=0.2, in_flight=0, history=[0.1], cap=0.3)
 
     assert _coordinator_tick(runner, wanted=3) == [1]
 
@@ -128,6 +131,34 @@ def test_committed_cost_reserves_the_most_expensive_proposal_for_each_in_flight(
     runner = _runner(charged=CHARGED, in_flight=2, history=FIRST_PROPOSALS)
 
     assert runner._get_committed_cost() == pytest.approx(CHARGED + 2 * 0.1137)
+
+
+def test_a_charge_already_received_does_not_use_up_a_reservation():
+    """A proposal that has paid for one reply may still pay for another."""
+    runner = _runner(charged=0.20, in_flight=1, history=[0.10])
+    scope, token = runner._begin_api_cost_scope()
+    cost_scope.reset(token)
+    scope.record(0.08)
+
+    # $0.28 known + $0.10 in flight + $0.10 for the new one > $0.45.
+    assert runner._get_committed_cost() == pytest.approx(0.38)
+    assert _coordinator_tick(runner, wanted=1) == []
+    assert runner.cost_limit_reached is False
+
+
+@pytest.mark.parametrize("charged", [math.nan, math.inf])
+def test_a_total_that_is_not_a_number_admits_nothing(charged):
+    """It cannot be compared with the cap, so it must not count as room."""
+    runner = _runner(charged=charged, in_flight=0, history=[0.05])
+
+    assert _coordinator_tick(runner, wanted=2) == []
+    assert runner.cost_limit_reached is True
+
+
+def test_a_negligible_reservation_does_not_limit_proposals():
+    runner = _runner(charged=0.1, in_flight=0, history=[1e-320])
+
+    assert _coordinator_tick(runner, wanted=3) == [3]
 
 
 def test_monitor_stops_a_run_whose_cap_cannot_cover_another_proposal():
@@ -176,7 +207,16 @@ def test_resume_restores_the_cost_history_of_the_stored_proposals(tmp_path):
             3, "meta", "failed", {"node_kind": "unattached_cost", "api_costs": 0.8}
         )
 
+        # A database of an early release can hold a NaN literal as a cost.
+        db.conn.execute(
+            "INSERT INTO attempt_log (generation, stage, status, details, created_at) "
+            "VALUES (4, 'proposal', 'failed', "
+            """'{"node_kind": "failed_proposal", "api_costs": NaN}', 0)"""
+        )
+        db.conn.commit()
+
         assert sorted(stored_proposal_costs(db.conn)) == pytest.approx([0.073, 0.1497])
+        assert math.isfinite(program_db_costs(db.conn).total)
 
         runner = _runner(charged=0.0, in_flight=0, history=[])
         runner.db = db

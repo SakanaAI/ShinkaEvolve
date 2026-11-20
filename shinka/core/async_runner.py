@@ -1163,11 +1163,13 @@ class ShinkaEvolveRunner:
         return max(self.completed_proposal_costs, default=0.0)
 
     def _get_committed_cost(self) -> float:
-        """Known charges plus a reservation for every proposal in flight."""
-        known_cost = self._known_api_cost()
+        """Known charges plus a reservation for every proposal in flight.
+
+        What a proposal in flight has been charged so far does not use up its
+        reservation: it may still pay for another reply.
+        """
         reserved = len(self.active_proposal_tasks) * self._proposal_reservation()
-        # A proposal in flight may already have posted part of its cost.
-        return max(known_cost, self.total_api_cost + reserved)
+        return self._known_api_cost() + reserved
 
     def _proposals_covered(self, cost: float) -> Optional[int]:
         """How many proposal reservations fit between a cost and the cap.
@@ -1179,7 +1181,11 @@ class ShinkaEvolveRunner:
         reservation = self._proposal_reservation() if budget is not None else 0.0
         if budget is None or reservation <= 0.0:
             return None
-        return max(0, math.floor((budget - cost) / reservation * (1 + 1e-9)))
+        covered = (budget - cost) / reservation * (1 + 1e-9)
+        if math.isnan(covered) or covered < 0.0:
+            # A cost that is not a number cannot be compared with the cap.
+            return 0
+        return None if math.isinf(covered) else math.floor(covered)
 
     def _close_proposal_budget(self) -> bool:
         """Latch the cost limit once no further proposal fits under the cap.
@@ -1236,8 +1242,11 @@ class ShinkaEvolveRunner:
                 conn.close()
 
         loop = asyncio.get_event_loop()
-        for cost in await loop.run_in_executor(None, read_stored_costs):
-            self._update_avg_proposal_cost(cost)
+        stored_costs = await loop.run_in_executor(None, read_stored_costs)
+        if stored_costs:
+            # Adding the last one through the update computes the average once.
+            self.completed_proposal_costs.extend(stored_costs[:-1])
+            self._update_avg_proposal_cost(stored_costs[-1])
 
     def _record_oversubscription_timing_sample(self, metadata: Dict[str, Any]) -> None:
         """Update proposal/evaluation timing EWMAs for adaptive oversubscription."""

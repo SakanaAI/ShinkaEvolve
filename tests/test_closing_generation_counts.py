@@ -40,7 +40,8 @@ def db(tmp_path):
                 combined_score=float(generation),
             )
         )
-    for generation in FAILED:
+    # Generation 9 failed in an earlier run with a higher target.
+    for generation in (*FAILED, 9):
         database.record_attempt_event(
             generation, "proposal", "failed", {"node_kind": "failed_proposal"}
         )
