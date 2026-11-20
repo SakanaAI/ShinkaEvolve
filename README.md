@@ -236,7 +236,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `llm_models` | `["gpt-5-mini", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gpt-5.4"]` | `List[str]` | List of LLM models for code generation |
 | `llm_dynamic_selection` | `"ucb"` | `Optional[Union[str, BanditBase]]` | Dynamic model selection strategy |
 | `llm_dynamic_selection_kwargs` | `{"cost_aware_coef": 0.5}` | `dict` | Kwargs for dynamic selection |
-| `llm_kwargs` | `{"temperatures": [0.0, 0.5, 1.0], "max_tokens": 16384}` | `dict` | Sampling settings for LLM calls: `temperatures`, `max_tokens`, `reasoning_efforts`. `temperatures` does not apply to Claude models |
+| `llm_kwargs` | `{"temperatures": [0.0, 0.5, 1.0], "max_tokens": 16384}` | `dict` | Sampling settings for LLM calls: `temperatures`, `max_tokens`, `reasoning_efforts`. `temperatures` does not apply to Claude models on Anthropic or Bedrock |
 | `meta_rec_interval` | `10` | `Optional[int]` | Interval for meta-recommendations |
 | `meta_llm_models` | `None` | `Optional[List[str]]` | LLM models for meta-recommendations |
 | `meta_llm_kwargs` | `{}` | `dict` | Kwargs for meta-recommendation LLMs |
