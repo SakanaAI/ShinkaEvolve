@@ -83,7 +83,9 @@ def _assert_same_state(actual: dict, expected: dict) -> None:
             np.testing.assert_array_equal(np.asarray(actual[key]), np.asarray(value))
 
 
-@pytest.mark.parametrize("observe", [lambda bandit: bandit, _observe], ids=["new", "used"])
+@pytest.mark.parametrize(
+    "observe", [lambda bandit: bandit, _observe], ids=["new", "used"]
+)
 @ALL_BANDITS
 def test_saved_state_is_strict_json_and_loads_unchanged(make_bandit, observe, tmp_path):
     source = observe(make_bandit())
@@ -113,7 +115,15 @@ def test_non_finite_numbers_are_written_as_strings(tmp_path: Path) -> None:
 
     write_bandit_state(path, state)
 
-    saved = _strict_json(path.read_text(encoding="utf-8"))["state"]
+    document = _strict_json(path.read_text(encoding="utf-8"))
+    assert document["non_finite_fields"] == [
+        "s",
+        "all_non_finite",
+        "obs_min",
+        "obs_max",
+        "broken",
+    ]
+    saved = document["state"]
     assert saved["s"] == [0.5, "-Infinity", "Infinity"]
     assert saved["all_non_finite"] == ["-Infinity", "-Infinity"]
     assert saved["obs_min"] == "-Infinity"
@@ -130,7 +140,9 @@ def test_non_finite_numbers_are_written_as_strings(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("kind", STATE_FILES_WITH_BARE_INFINITY)
-def test_state_file_with_bare_infinity_tokens_still_loads(kind: str, tmp_path: Path) -> None:
+def test_state_file_with_bare_infinity_tokens_still_loads(
+    kind: str, tmp_path: Path
+) -> None:
     text = STATE_FILES_WITH_BARE_INFINITY[kind]
     with pytest.raises(ValueError, match="is not JSON"):
         _strict_json(text)
@@ -155,22 +167,49 @@ def test_state_file_with_bare_infinity_tokens_still_loads(kind: str, tmp_path: P
     _assert_same_state(reloaded.get_state(), state)
 
 
-def test_arm_named_like_a_non_finite_number_stays_a_name(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "names", [["NaN", "Infinity"], ["NaN", "model-b"], ["-Infinity"]]
+)
+@pytest.mark.parametrize("field", ["arm_names", "labels_of_a_custom_bandit"])
+def test_names_that_look_like_non_finite_numbers_stay_names(
+    field: str, names: list, tmp_path: Path
+) -> None:
     path = tmp_path / "bandit_state.pkl"
 
-    write_bandit_state(path, {"arm_names": ["NaN", "Infinity"], "p": [0.5, 0.5]})
+    write_bandit_state(path, {field: names, "s": [0.5, float("-inf")]})
 
-    assert read_bandit_state(path)["arm_names"] == ["NaN", "Infinity"]
+    restored = read_bandit_state(path)
+    assert restored[field] == names
+    assert restored["s"] == [0.5, -math.inf]
+
+
+def test_invalid_list_of_non_finite_fields_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "bandit_state.pkl"
+    path.write_text(
+        '{"format": "shinka-bandit-state", "version": 2, '
+        '"non_finite_fields": "s", "state": {"s": ["NaN"]}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BanditStateError, match="non_finite_fields"):
+        read_bandit_state(path)
 
 
 @pytest.mark.parametrize(
     "state",
-    ['{"s": [1.0, "minus infinity"]}', '{"obs_max": "huge"}', '{"s": [1.0, "model-a"]}'],
+    [
+        '{"s": [1.0, "minus infinity"]}',
+        '{"obs_max": "huge"}',
+        '{"s": [1.0, "model-a"]}',
+    ],
 )
-def test_other_strings_in_numeric_fields_are_refused(state: str, tmp_path: Path) -> None:
+def test_other_strings_in_numeric_fields_are_refused(
+    state: str, tmp_path: Path
+) -> None:
     path = tmp_path / "bandit_state.pkl"
     path.write_text(
-        '{"format": "shinka-bandit-state", "version": 2, "state": ' + state + "}",
+        '{"format": "shinka-bandit-state", "version": 2, "non_finite_fields": '
+        '["s", "obs_max"], "state": ' + state + "}",
         encoding="utf-8",
     )
 

@@ -1,8 +1,9 @@
 """Bandit state persistence that never executes what the state file contains.
 
 States are written as strict JSON: a non-finite number, which JSON has no token
-for, is the string "Infinity", "-Infinity" or "NaN". Version 1 files wrote
-those as bare tokens, which only Python's parser accepts; they are still read.
+for, is the string "Infinity", "-Infinity" or "NaN", and `non_finite_fields`
+names the state fields written that way. Version 1 files wrote those numbers
+as bare tokens, which only Python's parser accepts; they are still read.
 Runs saved before the JSON format hold a pickle at the same path; its values
 are still read, by `bandit_state_legacy`, without unpickling it. That reader is
 scheduled for removal; its module says when.
@@ -29,8 +30,6 @@ STATE_FORMAT = "shinka-bandit-state"
 STATE_VERSION = 2
 _READABLE_VERSIONS = (1, STATE_VERSION)
 _NON_FINITE = {"Infinity": math.inf, "-Infinity": -math.inf, "NaN": math.nan}
-# Fields whose strings are names. Everywhere else a string is a number.
-_NAME_FIELDS = frozenset({"arm_names"})
 
 
 class BanditStateError(ValueError):
@@ -39,12 +38,17 @@ class BanditStateError(ValueError):
 
 def write_bandit_state(path: Path, state: dict[str, Any]) -> None:
     """Atomically write a bandit state as strict JSON."""
+    plain = {key: _plain(key, value) for key, value in state.items()}
+    non_finite_fields = [key for key, value in plain.items() if _has_non_finite(value)]
     document = {
         "format": STATE_FORMAT,
         "version": STATE_VERSION,
+        # Only these fields hold numbers written as strings; a list of names
+        # that happens to contain "NaN" is not among them and stays as it is.
+        "non_finite_fields": non_finite_fields,
         "state": {
-            key: _non_finite_as_strings(_plain(key, value))
-            for key, value in state.items()
+            key: _non_finite_as_strings(value) if key in non_finite_fields else value
+            for key, value in plain.items()
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,8 +98,14 @@ def _state_from_json(data: bytes) -> dict[str, Any]:
         raise BanditStateError("bandit state has an unknown format or version")
     # json.loads has already turned the bare tokens of a version 1 file into
     # floats; the strings of a version 2 file follow here.
+    non_finite_fields = document.get("non_finite_fields", [])
+    if not isinstance(non_finite_fields, list):
+        raise BanditStateError("bandit state field list 'non_finite_fields' is invalid")
     return {
-        key: _plain(key, _non_finite_from_strings(key, value))
+        key: _plain(
+            key,
+            _non_finite_from_strings(value) if key in non_finite_fields else value,
+        )
         for key, value in document["state"].items()
     }
 
@@ -106,6 +116,11 @@ def _state_from_legacy_pickle(data: bytes) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - malformed pickles fail in many ways
         raise BanditStateError(f"cannot read legacy bandit state: {exc}") from exc
     return {key: _plain(key, value) for key, value in state.items()}
+
+
+def _has_non_finite(value: Any) -> bool:
+    items = value if isinstance(value, list) else [value]
+    return any(isinstance(item, float) and not math.isfinite(item) for item in items)
 
 
 def _non_finite_as_strings(value: Any) -> Any:
@@ -119,15 +134,10 @@ def _non_finite_as_strings(value: Any) -> Any:
     return value
 
 
-def _non_finite_from_strings(key: str, value: Any) -> Any:
-    """Undo `_non_finite_as_strings` for every field that does not hold names."""
-    if key in _NAME_FIELDS:
-        return value
+def _non_finite_from_strings(value: Any) -> Any:
+    """Undo `_non_finite_as_strings`; any other string is left for `_plain`."""
     if isinstance(value, list):
-        return [
-            _NON_FINITE.get(item, item) if isinstance(item, str) else item
-            for item in value
-        ]
+        return [_non_finite_from_strings(item) for item in value]
     if isinstance(value, str):
         return _NON_FINITE.get(value, value)
     return value
