@@ -178,6 +178,8 @@ if __name__ == "__main__":
     main(program_path=args.program_path, results_dir=args.results_dir)
 ```
 
+The `raise` makes the evaluator exit non-zero for an incorrect program. Later generations are still stored as reported. An incorrect seed (`initial.<ext>`) is stored as a failed evaluation instead: its score, metrics and `text_feedback` are replaced by a diagnostic, and only the stderr log keeps what the evaluator said. Remove the `raise` if the seed's feedback matters.
+
 ## Template: `evaluate.py` (non-Python `initial.<ext>` path)
 ```py
 import argparse
