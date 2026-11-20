@@ -252,8 +252,9 @@ presets and examples. Rules for `db_path` in a run:
   `results_dir` to move a run.
 - Give the name a `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
   and the resume rule below recognise database files by it; the runner warns
-  about any other name. `prompts.sqlite` and `prompts.db`
-  belong to the prompt database and are refused.
+  about any other name. `prompts.sqlite` and `prompts.db`, in any letter case,
+  belong to the prompt database and are refused, as is a value that names no
+  file (`..`).
 - A run never starts at generation 0 next to programs it did not ask for. If
   the configured file has no programs but `programs.sqlite` or a database of the
   first releases (`evolution_db.sqlite`) does, the run resumes in that one and
@@ -263,11 +264,20 @@ presets and examples. Rules for `db_path` in a run:
   a `db_path` the configuration no longer has, or somebody left a copy there),
   the runner stops with an error that lists the files: set `db_path` to the one
   to continue.
+- A configured database that exists but cannot be read (damaged, locked, not
+  permitted, or not a program database) is not swapped for another file in the
+  directory. The run fails when it opens it.
 
-`load_programs_to_df(results_dir)` and `python -m shinka.plots.code_path_anim`
-look in the same places. Because reading changes nothing, they also load a
-database under an unknown name when it is the only one in the directory. A
-`ProgramDatabase` you open yourself uses `db_path` as the full file path.
+The database presets carry `db_path: null`, so `db_config.db_path=<name>` works
+as a Hydra override. With `shinka_run`, use `--set db.db_path=<name>`.
+
+`load_programs_to_df(results_dir)`, `python -m shinka.plots.code_path_anim` and
+the `shinka-inspect` skill look in the same places. Because reading changes
+nothing, they also load a database under an unknown name when it is the only
+one in the directory, and `load_programs_to_df` prints the name of the file it
+loaded instead of `programs.sqlite`. With several such databases none of them
+guesses; `load_programs_to_df` and the skill take the path of the file instead.
+A `ProgramDatabase` you open yourself uses `db_path` as the full file path.
 
 `island_selection_strategy` picks the island a parent is sampled from. `uniform`
 treats all islands alike and `equal` picks the island with the fewest correct
@@ -637,6 +647,7 @@ db_config:
   migration_interval: 10
   migration_rate: 0.1
   island_elitism: true
+  db_path: null
 ```
 
 #### `shinka/configs/database/island_medium.yaml`
@@ -654,6 +665,7 @@ db_config:
   enforce_island_separation: true
   parent_selection_strategy: "weighted"
   parent_selection_lambda: 10.0
+  db_path: null
 ```
 
 #### `shinka/configs/database/island_large.yaml`
@@ -672,6 +684,7 @@ db_config:
   exploitation_alpha: 1.0
   exploitation_ratio: 0.2
   parent_selection_lambda: 10.0
+  db_path: null
 ```
 
 ### Cluster Presets
