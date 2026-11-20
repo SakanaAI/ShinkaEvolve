@@ -84,23 +84,23 @@ def test_fatal_signal_during_cleanup_does_not_cut_it_short(
     assert deaths == [signal.SIGTERM]
 
 
-@pytest.mark.parametrize("signum", FATAL_SIGNALS)
-def test_killed_runner_cleans_up_and_exits_with_the_signals_status(
-    tmp_path: Path, signum: int
-) -> None:
+def _killed_runner_events(tmp_path: Path, signum: int, runner_script: str) -> list[str]:
+    """Events a runner process records when the signal reaches it as it waits."""
     events = tmp_path / "events"
     script = tmp_path / "runner.py"
     script.write_text(
         dedent("""
+            import asyncio
             import sys
+            import threading
+            import time
             from signal_stop_test_utils import waiting_runner
 
             def record(event):
                 with open(sys.argv[1], "a") as events:
                     events.write(event + "\\n")
-
-            waiting_runner(record).run()
             """)
+        + dedent(runner_script)
     )
     tests = Path(__file__).resolve().parent
     runner = subprocess.Popen(
@@ -116,7 +116,46 @@ def test_killed_runner_cleans_up_and_exits_with_the_signals_status(
         runner.send_signal(signum)
 
         assert runner.wait(timeout=20.0) == -signum
-        assert events.read_text().split() == ["setup", "waiting", *CLEANUP]
+        return events.read_text().split()
     finally:
         runner.kill()
         runner.wait()
+
+
+@pytest.mark.parametrize("signum", FATAL_SIGNALS)
+def test_killed_runner_cleans_up_and_exits_with_the_signals_status(
+    tmp_path: Path, signum: int
+) -> None:
+    events = _killed_runner_events(tmp_path, signum, "waiting_runner(record).run()")
+
+    assert events == ["setup", "waiting", *CLEANUP]
+
+
+def test_killed_runner_lets_the_event_loops_threads_finish(tmp_path: Path) -> None:
+    # Closing the loop waits for work it handed to threads, as after Ctrl-C.
+    work_in_a_thread = """
+        cleaned_up = threading.Event()
+
+        def record_cleanup(event):
+            record(event)
+            if event == "scheduler.shutdown":
+                cleaned_up.set()
+
+        def write_something():
+            cleaned_up.wait()
+            time.sleep(0.3)
+            record("thread_finished")
+
+        runner = waiting_runner(record_cleanup)
+        setup = runner._setup_async
+
+        async def setup_with_work_in_a_thread():
+            asyncio.get_running_loop().run_in_executor(None, write_something)
+            await setup()
+
+        runner._setup_async = setup_with_work_in_a_thread
+        runner.run()
+        """
+    events = _killed_runner_events(tmp_path, signal.SIGTERM, work_in_a_thread)
+
+    assert events == ["setup", "waiting", *CLEANUP, "thread_finished"]

@@ -1327,7 +1327,16 @@ class ShinkaEvolveRunner:
             if "no running event loop" not in str(exc):
                 raise
 
-        asyncio.run(self.run_async())
+        # Local import: this method is the only runner region that needs it.
+        from shinka.launch.fatal_signals import stop_on_fatal_signals
+
+        # A run that SIGTERM or SIGHUP stops ends the process once the loop has
+        # closed and the threads it handed work to are done, as after Ctrl-C.
+        until_the_loop_has_closed = stop_on_fatal_signals(lambda received: None)
+        try:
+            asyncio.run(self.run_async())
+        finally:
+            until_the_loop_has_closed.finish()
 
     async def run_async(self):
         """Run evolution while retaining provider clients for this loop user."""
@@ -1338,7 +1347,7 @@ class ShinkaEvolveRunner:
 
     async def _run_async(self):
         """Main async evolution loop."""
-        # Local import: this method is the only runner region that needs it.
+        # Local import: with `run`, the only runner region that needs it.
         from shinka.launch.fatal_signals import stop_on_fatal_signals
 
         activate_model_catalog(self.pricing_snapshot)
@@ -1518,7 +1527,8 @@ class ShinkaEvolveRunner:
             try:
                 await finish_cost_recording(self._drain_and_cleanup_async(tasks))
             finally:
-                # A run that a signal stopped ends here, with the signal's status.
+                # A run that a signal stopped ends the process with the
+                # signal's status: here, or in `run` once the loop has closed.
                 signal_stop.finish()
 
         if billing_error := getattr(self, "_billing_error", None):
