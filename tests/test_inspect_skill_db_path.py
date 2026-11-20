@@ -165,3 +165,19 @@ def test_bundle_is_built_from_a_custom_named_database(
     assert f"- Source DB: `{tmp_path / 'run.db'}`" in bundle
     assert "- Total rows loaded: `3`" in bundle
     assert "selected=3" in capsys.readouterr().out
+
+
+def test_bundle_is_built_from_a_first_release_file_named_none(
+    tmp_path, inspect_script, monkeypatch
+):
+    # load_programs_to_df takes a path without a database suffix for a directory.
+    _write_db(tmp_path / "None", num_programs=2)
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_best_programs.py", "--results-dir", str(tmp_path)]
+    )
+
+    assert inspect_script.main() == 0
+
+    bundle = (tmp_path / "shinka_inspect_context.md").read_text(encoding="utf-8")
+    assert f"- Source DB: `{tmp_path / 'None'}`" in bundle
+    assert "- Total rows loaded: `2`" in bundle

@@ -116,9 +116,12 @@ def _parse_args() -> InspectConfig:
     )
 
 
+_DB_SUFFIXES = {".sqlite", ".db"}
+
+
 def _resolve_db_path(results_dir_or_db: str) -> Path:
     provided = Path(results_dir_or_db).expanduser()
-    if provided.suffix in {".sqlite", ".db"}:
+    if provided.suffix in _DB_SUFFIXES:
         return provided
     if find_run_db_path is None:
         # What a shinka without the resolver wrote: programs.sqlite, or the
@@ -129,6 +132,13 @@ def _resolve_db_path(results_dir_or_db: str) -> Path:
     # The file the run wrote: programs.sqlite, a custom db_path or a
     # first-release name. Raises if several databases could be meant.
     return find_run_db_path(provided)
+
+
+def _loader_path(db_path: Path) -> Path:
+    # load_programs_to_df takes a path for a database file only by its suffix.
+    # The first releases wrote a file named `None`: the loader finds it from
+    # the run directory, where it resolves the same file.
+    return db_path if db_path.suffix in _DB_SUFFIXES else db_path.parent
 
 
 def _resolve_output_path(config: InspectConfig, db_path: Path) -> Path:
@@ -295,7 +305,7 @@ def main() -> int:
     output_path = _resolve_output_path(config, db_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    loaded = load_programs_to_df(str(db_path), verbose=False)
+    loaded = load_programs_to_df(str(_loader_path(db_path)), verbose=False)
     programs_df = loaded[0] if isinstance(loaded, tuple) else loaded
     if programs_df is None:
         raise RuntimeError(f"Failed to load programs DataFrame from: {db_path}")
