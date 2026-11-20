@@ -1035,8 +1035,9 @@ class ShinkaEvolveRunner:
     ) -> Tuple[int, int, int]:
         """Limit each worker pool by what its workers cost on this machine.
 
-        - Evaluation jobs are CPU-bound subprocesses: at most one per core, and
-          at most two per GB of RAM (0.5 GB assumed per evaluation).
+        - Local evaluation jobs are CPU-bound subprocesses: at most one per core,
+          and at most two per GB of RAM (0.5 GB assumed per evaluation).
+        - Slurm evaluation jobs run on the cluster and are granted as requested.
         - Proposal jobs wait on the LLM inside the runner's event loop and are
           granted as requested. The pipeline target already bounds how many are
           in flight (`_compute_proposal_pipeline_target`).
@@ -1076,12 +1077,13 @@ class ShinkaEvolveRunner:
                 )
             return granted
 
-        max_evaluation_jobs = grant(
-            "max_evaluation_jobs",
-            max_evaluation_jobs,
-            evaluation_limit,
-            evaluation_reason,
-        )
+        if isinstance(self.job_config, LocalJobConfig):
+            max_evaluation_jobs = grant(
+                "max_evaluation_jobs",
+                max_evaluation_jobs,
+                evaluation_limit,
+                evaluation_reason,
+            )
         max_db_workers = grant(
             "max_db_workers",
             max_db_workers,

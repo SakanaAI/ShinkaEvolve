@@ -10,7 +10,12 @@ import pytest
 
 import shinka.core.async_runner as async_runner
 from shinka.core import ShinkaEvolveRunner
-from shinka.launch import JobConfig, LocalJobConfig
+from shinka.launch import (
+    JobConfig,
+    LocalJobConfig,
+    SlurmCondaJobConfig,
+    SlurmDockerJobConfig,
+)
 
 RUNNER_LOGGER = "shinka.core.async_runner"
 
@@ -145,3 +150,23 @@ def test_every_clamped_pool_gets_its_own_warning(
     assert len(warnings) == 2
     assert "max_evaluation_jobs" in warnings[0] and "requested 12" in warnings[0]
     assert "max_db_workers" in warnings[1] and "requested 9" in warnings[1]
+
+
+@pytest.mark.parametrize(
+    "job_config",
+    [SlurmCondaJobConfig(), SlurmDockerJobConfig()],
+    ids=["conda", "docker"],
+)
+def test_slurm_evaluations_are_not_limited_by_the_submitting_machine(
+    job_config: JobConfig,
+    set_memory_gb: Callable[[float], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A 4-core, 8 GB login node submitting 50 cluster jobs: was (3, 1, 1).
+    set_memory_gb(8)
+
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        granted = _runner(job_config)._validate_concurrency_settings(50, 50, 4, 4)
+
+    assert granted == (50, 50, 4)
+    assert _clamp_warnings(caplog) == []
