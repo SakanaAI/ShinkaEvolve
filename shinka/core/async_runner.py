@@ -4136,8 +4136,8 @@ class ShinkaEvolveRunner:
                         )
                         self._print_metadata_table(meta_patch_data, generation)
 
-                    # Update LLM selection: cost and outcome. Last step, so
-                    # that nothing fails the proposal after it was reported.
+                    # Update LLM selection: cost and outcome. Reported last, so
+                    # a proposal that breaks above is not reported as delivered.
                     if self.llm_selection is not None:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
                         self.llm_selection.update_delivered(model_name)
@@ -4414,8 +4414,8 @@ class ShinkaEvolveRunner:
                     if self.verbose:
                         self._print_metadata_table(meta_patch_data, generation)
 
-                    # Update LLM selection: cost and outcome. Last step, so
-                    # that nothing fails the proposal after it was reported.
+                    # Update LLM selection: cost and outcome. Reported last, so
+                    # a proposal that breaks above is not reported as delivered.
                     if self.llm_selection is not None:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
                         self.llm_selection.update_delivered(model_name)
