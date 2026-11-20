@@ -265,12 +265,16 @@ def test_stopping_runner_kills_its_local_evaluators_before_it_cleans_up(
     )
     evaluator_pid = worker = 0
     try:
-        worker = worker_pid(results_dir)
-        evaluator_pid = os.getpgid(worker)  # The evaluator leads its group.
-        deadline = time.monotonic() + 60.0
+        # The runner's imports alone take seconds on a busy machine.
+        deadline = time.monotonic() + 120.0
         while not (events.exists() and "waiting" in events.read_text()):
             assert runner.poll() is None and time.monotonic() < deadline
             time.sleep(0.05)
+        while not (results_dir / "worker.pid").exists():
+            assert runner.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        worker = worker_pid(results_dir)
+        evaluator_pid = os.getpgid(worker)  # The evaluator leads its group.
 
         runner.send_signal(signal.SIGTERM)
 
