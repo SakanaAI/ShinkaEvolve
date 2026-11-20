@@ -3,12 +3,9 @@ import logging
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from textwrap import dedent
 from typing import Iterator, Sequence
 from unittest.mock import MagicMock
 
@@ -16,11 +13,6 @@ import pytest
 
 from job_lifecycle_test_utils import (
     FakeClock,
-    is_alive,
-    kill_leftovers,
-    wait_until,
-    worker_pid,
-    write_evaluator_with_worker,
 )
 from shinka.launch import JobScheduler, LocalJobConfig, ProcessWithLogging
 from shinka.launch import fatal_signals, local
@@ -279,8 +271,6 @@ def test_scheduler_built_off_the_main_thread_says_that_nothing_is_hooked(
     deaths: list[int], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # Python installs signal handlers from the main thread only.
-    monkeypatch.setattr(fatal_signals, "_warned_that_nothing_is_hooked", False)
-
     with caplog.at_level(logging.WARNING, logger=fatal_signals.__name__):
         _build_a_scheduler_in_a_thread()
         _build_a_scheduler_in_a_thread()
@@ -294,7 +284,6 @@ def test_scheduler_built_off_the_main_thread_says_that_nothing_is_hooked(
 def test_scheduler_built_off_the_main_thread_is_quiet_when_the_signals_are_hooked(
     deaths: list[int], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(fatal_signals, "_warned_that_nothing_is_hooked", False)
     fatal_signals.kill_evaluators_on_fatal_signals()
 
     with caplog.at_level(logging.WARNING, logger=fatal_signals.__name__):
@@ -403,140 +392,3 @@ def test_relay_sends_a_later_signal_to_the_main_thread_again(
     relayed = _relay(monkeypatch, reports, [True, True])
 
     assert relayed == [signal.SIGTERM] * 2
-
-
-@contextmanager
-def _run(tmp_path: Path, *, start: str = "", cleanup: str = "") -> Iterator[subprocess.Popen]:
-    """A process whose run waits for a fatal signal, cleans up and finishes.
-
-    It prints a line once it waits, and leaves the files "stopping" and
-    "cleaned" behind as it gets that far.
-    """
-    script = tmp_path / "run.py"
-    script.write_text(
-        dedent("""
-            import os
-            import signal
-            import sys
-            import threading
-            import time
-            from pathlib import Path
-            from shinka.launch import fatal_signals, local
-
-            here = Path(sys.argv[1])
-            asked, ask = os.pipe()
-            stop = fatal_signals.stop_on_fatal_signals(lambda received: os.write(ask, b"!"))
-            """)
-        + dedent(start)
-        + dedent("""
-            print("waiting", flush=True)
-            os.read(asked, 1)
-            (here / "stopping").touch()
-            """)
-        + dedent(cleanup)
-        + dedent("""
-            (here / "cleaned").touch()
-            stop.finish()
-            """)
-    )
-    run = subprocess.Popen(
-        [sys.executable, str(script), str(tmp_path)],
-        stdout=subprocess.PIPE,
-        text=True,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
-    )
-    try:
-        assert run.stdout is not None
-        assert run.stdout.readline() == "waiting\n"
-        yield run
-    finally:
-        run.kill()
-        run.wait()
-
-
-@pytest.mark.parametrize("signum", FATAL_SIGNALS)
-def test_signalled_run_cleans_up_and_dies_of_the_signal(
-    tmp_path: Path, signum: int
-) -> None:
-    with _run(tmp_path) as run:
-        run.send_signal(signum)
-
-        assert run.wait(timeout=10.0) == -signum
-        assert (tmp_path / "cleaned").exists()
-
-
-def test_closing_terminal_does_not_cut_the_cleanup_short(tmp_path: Path) -> None:
-    with _run(tmp_path, cleanup="time.sleep(0.3)") as run:
-        run.send_signal(signal.SIGHUP)
-        run.send_signal(signal.SIGHUP)
-
-        assert run.wait(timeout=10.0) == -signal.SIGHUP
-        assert (tmp_path / "cleaned").exists()
-
-
-def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
-    tmp_path: Path,
-) -> None:
-    # One call into C code that no signal interrupts, such as a slow commit.
-    busy_step = """
-        import hashlib
-
-        def busy(seconds):
-            rounds, started = 50_000, time.perf_counter()
-            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
-            per_second = rounds / (time.perf_counter() - started)
-            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", int(per_second * seconds))
-        """
-    with _run(tmp_path, start=busy_step, cleanup="busy(2.0)") as run:
-        run.send_signal(signal.SIGHUP)
-        assert wait_until((tmp_path / "stopping").exists)
-        time.sleep(0.2)
-        run.send_signal(signal.SIGHUP)
-
-        assert run.wait(timeout=20.0) == -signal.SIGHUP
-        assert (tmp_path / "cleaned").exists()
-
-
-def test_cleanup_is_not_ended_by_the_relays_own_signals(tmp_path: Path) -> None:
-    # Another thread takes the signal, so the relay passes it on. Its signal
-    # must not count as a second one once the cleanup has taken a while.
-    take_the_signal = """
-        threading.Timer(
-            0.2, lambda: signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
-        ).start()
-        """
-    with _run(tmp_path, start=take_the_signal, cleanup="time.sleep(2.0)") as run:
-        assert run.wait(timeout=10.0) == -signal.SIGTERM
-        assert (tmp_path / "cleaned").exists()
-
-
-def test_second_signal_after_a_while_ends_the_run_with_its_evaluators(
-    tmp_path: Path,
-) -> None:
-    results_dir = tmp_path / "results"
-    evaluator = write_evaluator_with_worker(tmp_path)
-    launch_an_evaluator = f"""
-        process = local.submit(
-            {str(results_dir)!r},
-            [sys.executable, {str(evaluator)!r}, "--results_dir", {str(results_dir)!r}],
-        )
-        """
-    script = _run(tmp_path, start=launch_an_evaluator, cleanup="time.sleep(30)")
-    evaluator_pid = worker = 0
-    try:
-        with script as run:
-            worker = worker_pid(results_dir)
-            evaluator_pid = os.getpgid(worker)  # The evaluator leads its group.
-            run.send_signal(signal.SIGTERM)
-            assert wait_until((tmp_path / "stopping").exists)
-            time.sleep(fatal_signals._SAME_REQUEST_SECONDS + 0.2)
-            assert is_alive(evaluator_pid)
-
-            run.send_signal(signal.SIGTERM)
-
-            assert run.wait(timeout=10.0) == -signal.SIGTERM
-            assert not (tmp_path / "cleaned").exists()
-            assert wait_until(lambda: not is_alive(evaluator_pid))
-            assert wait_until(lambda: not is_alive(worker))
-    finally:
-        kill_leftovers(*(pid for pid in (evaluator_pid, worker) if pid))

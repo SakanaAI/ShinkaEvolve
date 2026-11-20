@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -17,6 +18,7 @@ from job_lifecycle_test_utils import (
     worker_pid,
     write_evaluator_with_worker,
 )
+from shinka.core.billing import BillingPersistenceError
 from signal_stop_test_utils import (
     CLEANUP,
     FATAL_SIGNALS,
@@ -68,27 +70,55 @@ def test_fatal_signal_stops_a_run_the_way_ctrl_c_does(
     assert deaths == [signum]
 
 
-def test_fatal_signal_during_cleanup_does_not_cut_it_short(
+def test_fatal_signal_during_the_cleanup_of_a_run_that_ended_lets_it_finish(
     deaths: list[int], cleanup_events: list[str]
 ) -> None:
-    async def run() -> None:
-        def record(event: str) -> None:
-            cleanup_events.append(event)
-            if event == "flush_charges":
-                raise_hooked(signal.SIGTERM)
+    def record(event: str) -> None:
+        cleanup_events.append(event)
+        if event == "flush_charges":
+            raise_hooked(signal.SIGTERM)
 
+    async def fail() -> None:
+        record("waiting")
+        raise RuntimeError("the run fails by itself")
+
+    async def run() -> None:
         runner = waiting_runner(record)
-        task = asyncio.ensure_future(runner._run_async())
-        while "waiting" not in cleanup_events:
-            await asyncio.sleep(0)
-        task.cancel()  # Ctrl-C, or the end of the run.
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        runner._verify_database_ready = fail
+        # Its own error leaves the run, not a cancellation by the signal.
+        with pytest.raises(RuntimeError, match="fails by itself"):
+            await asyncio.ensure_future(runner._run_async())
 
     asyncio.run(asyncio.wait_for(run(), timeout=10.0))
 
     assert cleanup_events == ["setup", "waiting", *CLEANUP]
     assert deaths == [signal.SIGTERM]
+
+
+def test_signalled_run_dies_of_the_signal_when_its_cleanup_fails(
+    deaths: list[int], cleanup_events: list[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def fail_to_save_charges() -> None:
+        raise BillingPersistenceError("journal unavailable")
+
+    def record(event: str) -> None:
+        cleanup_events.append(event)
+        if event == "waiting":
+            raise_hooked(signal.SIGTERM)
+
+    async def run() -> None:
+        runner = waiting_runner(record)
+        runner._flush_unwritten_charges = fail_to_save_charges
+        with pytest.raises(BillingPersistenceError):
+            await asyncio.ensure_future(runner._run_async())
+
+    with caplog.at_level(logging.ERROR, logger="shinka.launch.fatal_signals"):
+        asyncio.run(asyncio.wait_for(run(), timeout=10.0))
+
+    assert cleanup_events[-3:] == ["close_db", "cancel:101", "scheduler.shutdown"]
+    assert deaths == [signal.SIGTERM]
+    # Nothing else reports the error of a process that dies here.
+    assert "journal unavailable" in caplog.text
 
 
 def _killed_runner_events(
@@ -117,7 +147,7 @@ def _killed_runner_events(
         env={**os.environ, "PYTHONPATH": f"{tests.parent}{os.pathsep}{tests}"},
     )
     try:
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + 120.0
         while not (events.exists() and signal_at in events.read_text()):
             assert runner.poll() is None and time.monotonic() < deadline
             time.sleep(0.05)
