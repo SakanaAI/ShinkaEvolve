@@ -1,12 +1,17 @@
 import json
 import logging
+import sqlite3
 import time
-from typing import Optional, Callable, Any
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, Callable, Optional
 import rich.box  # type: ignore
 import rich  # type: ignore
 from rich.columns import Columns as RichColumns  # type: ignore
 from rich.console import Console as RichConsole  # type: ignore
 from rich.table import Table as RichTable  # type: ignore
+
+if TYPE_CHECKING:
+    from shinka.core.billing import RunCosts
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,26 @@ class DatabaseDisplay:
         """Set default console used by all rich display methods."""
         self.default_console = console
 
+    def _run_costs(self) -> "RunCosts":
+        """Everything the run has been charged, the same sum the runner counts.
+
+        Failed and interrupted proposals leave no program row and prompt
+        evolution keeps its own database, so program rows alone fall short.
+        """
+        # shinka.core imports this package, so the import cannot be at the top.
+        from shinka.core.billing import program_db_costs, stored_prompt_evolution_cost
+
+        costs = program_db_costs(self.conn)
+        db_path = getattr(self.config, "db_path", None)
+        if not db_path:
+            return costs
+        try:
+            prompt_evolution = stored_prompt_evolution_cost(db_path)
+        except sqlite3.Error as exc:
+            logger.warning("Prompt evolution costs left out of the summary: %s", exc)
+            return costs
+        return replace(costs, prompt_evolution=prompt_evolution)
+
     def print_program_summary(self, program, console: Optional[RichConsole] = None):
         """Print a rich summary of a newly added program in two rows."""
         _console = console or self.default_console or RichConsole()
@@ -53,22 +78,7 @@ class DatabaseDisplay:
             if best_score_val is not None:
                 best_score_str = f"[bold yellow]{best_score_val:.3f}[/bold yellow]"
 
-        # Calculate total API costs
-        total_api_cost = 0
-        if self.cursor:
-            query = "SELECT metadata FROM programs"
-            self.cursor.execute(query)
-            for row in self.cursor.fetchall():
-                if row["metadata"]:
-                    metadata = json.loads(row["metadata"] or "{}")
-                    if "api_costs" in metadata:
-                        total_api_cost += _number(metadata["api_costs"])
-                    if "embed_cost" in metadata:
-                        total_api_cost += _number(metadata["embed_cost"])
-                    if "novelty_cost" in metadata:
-                        total_api_cost += _number(metadata["novelty_cost"])
-                    if "meta_cost" in metadata:
-                        total_api_cost += _number(metadata["meta_cost"])
+        total_api_cost = self._run_costs().total if self.conn else 0.0
 
         # Create a table with headers - include generation and total cost
         table = RichTable(
@@ -184,11 +194,7 @@ class DatabaseDisplay:
 
         _console = console or self.default_console or RichConsole()
 
-        # Calculate total cost, scores, etc. from metadata of all programs
-        total_api_cost = 0
-        total_embed_cost = 0
-        total_novelty_cost = 0
-        total_meta_cost = 0
+        # Calculate scores, compute time, etc. from metadata of all programs
         total_compute_time = 0
         avg_score = 0.0
         best_score = 0.0  # Initialize best_score
@@ -214,20 +220,10 @@ class DatabaseDisplay:
                     elif metadata.get("node_kind") != "failed_proposal":
                         evolved_programs += 1
                         correct_evolved += bool(row["correct"])
-                if row["metadata"]:
-                    metadata = json.loads(row["metadata"] or "{}")
-                    if "api_costs" in metadata:
-                        total_api_cost += _number(metadata["api_costs"])
-                    if "embed_cost" in metadata:
-                        total_embed_cost += _number(metadata["embed_cost"])
-                    if "novelty_cost" in metadata:
-                        total_novelty_cost += _number(metadata["novelty_cost"])
-                    if "meta_cost" in metadata:
-                        total_meta_cost += _number(metadata["meta_cost"])
-                    if "compute_time" in metadata:
-                        total_compute_time += _number(metadata["compute_time"])
-                    elif "pipeline_seconds" in metadata:
-                        total_compute_time += _number(metadata["pipeline_seconds"])
+                if "compute_time" in metadata:
+                    total_compute_time += _number(metadata["compute_time"])
+                elif "pipeline_seconds" in metadata:
+                    total_compute_time += _number(metadata["pipeline_seconds"])
 
                 if row["combined_score"] is not None:
                     score = float(row["combined_score"])
@@ -356,22 +352,22 @@ class DatabaseDisplay:
         cost_table.add_column("Metric", style="magenta bold")
         cost_table.add_column("Value", style="green")
 
-        # Add cost information
-        total_cost = (
-            total_api_cost + total_embed_cost + total_novelty_cost + total_meta_cost
-        )
-        if total_cost > 0:
-            cost_table.add_row("Total API Cost", f"[bold]${total_api_cost:.2f}[/bold]")
-            cost_table.add_row(
-                "Total Embedding Cost", f"[bold]${total_embed_cost:.2f}[/bold]"
-            )
-            cost_table.add_row(
-                "Total Novelty Cost", f"[bold]${total_novelty_cost:.2f}[/bold]"
-            )
-            cost_table.add_row(
-                "Total Meta Cost", f"[bold]${total_meta_cost:.2f}[/bold]"
-            )
-            cost_table.add_row("Total Combined Cost", f"[bold]${total_cost:.2f}[/bold]")
+        # Add cost information. The total is the run's own accounting, so the
+        # work that left no program row gets a line of its own.
+        costs = self._run_costs()
+        if costs.total > 0:
+            cost_lines = [
+                ("Total Proposal Cost", costs.proposals),
+                ("Total Embedding Cost", costs.embeddings),
+                ("Total Novelty Cost", costs.novelty),
+                ("Total Meta Cost", costs.meta),
+                ("Failed/Interrupted Cost", costs.without_program),
+            ]
+            if costs.prompt_evolution > 0:
+                cost_lines.append(("Prompt Evolution Cost", costs.prompt_evolution))
+            cost_lines.append(("Total Combined Cost", costs.total))
+            for label, amount in cost_lines:
+                cost_table.add_row(label, f"[bold]${amount:.4f}[/bold]")
 
         # Add compute time if available
         if total_compute_time > 0:
@@ -545,22 +541,7 @@ class DatabaseDisplay:
             # Fallback to parent.generation + 1 (may not be accurate)
             gen_display = parent.generation + 1
 
-        # Calculate total API costs
-        total_api_cost = 0
-        if self.cursor:
-            query = "SELECT metadata FROM programs"
-            self.cursor.execute(query)
-            for row in self.cursor.fetchall():
-                if row["metadata"]:
-                    metadata = json.loads(row["metadata"] or "{}")
-                    if "api_costs" in metadata:
-                        total_api_cost += _number(metadata["api_costs"])
-                    if "embed_cost" in metadata:
-                        total_api_cost += _number(metadata["embed_cost"])
-                    if "novelty_cost" in metadata:
-                        total_api_cost += _number(metadata["novelty_cost"])
-                    if "meta_cost" in metadata:
-                        total_api_cost += _number(metadata["meta_cost"])
+        total_api_cost = self._run_costs().total if self.conn else 0.0
 
         # Create title with generation and attempt information
         title_parts = [

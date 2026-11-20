@@ -17,7 +17,6 @@ import psutil
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from contextvars import Token
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -77,8 +76,9 @@ from shinka.core.billing import (
     api_cost_in_metadata,
     cancellation_with_cost,
     finish_cost_recording,
-    journaled_api_costs,
     load_generated_seed_handoff,
+    program_db_costs,
+    stored_prompt_evolution_cost,
 )
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
@@ -1120,41 +1120,14 @@ class ShinkaEvolveRunner:
         def _compute_costs_thread_safe():
             """Thread-safe computation of total costs from database."""
             import sqlite3
-            import json
 
-            conn = None
+            conn = sqlite3.connect(
+                self.db.config.db_path, check_same_thread=False, timeout=60.0
+            )
             try:
-                conn = sqlite3.connect(
-                    self.db.config.db_path, check_same_thread=False, timeout=60.0
-                )
-                cursor = conn.cursor()
-
-                # Get all metadata fields
-                cursor.execute(
-                    "SELECT metadata FROM programs WHERE metadata IS NOT NULL"
-                )
-                rows = cursor.fetchall()
-
-                total_costs = 0.0
-                attached_charge_ids: set[str] = set()
-                for row in rows:
-                    metadata_str = row[0]
-                    if metadata_str:
-                        try:
-                            metadata = json.loads(metadata_str)
-                            charge_id = metadata.get("api_charge_id")
-                            if isinstance(charge_id, str) and not (
-                                metadata.get("_is_island_copy") or metadata.get("_spawned_island")
-                            ):
-                                attached_charge_ids.add(charge_id)
-                            total_costs += api_cost_in_metadata(metadata)
-                        except json.JSONDecodeError:
-                            continue
-
-                return total_costs + journaled_api_costs(conn, attached_charge_ids)
+                return program_db_costs(conn).total
             finally:
-                if conn:
-                    conn.close()
+                conn.close()
 
         # Call thread-safe method through executor
         loop = asyncio.get_event_loop()
@@ -1164,11 +1137,7 @@ class ShinkaEvolveRunner:
         if self.prompt_db is not None:
             total_costs += self.prompt_db.get_total_evolution_costs()
         else:
-            prompt_db_path = Path(self.db.config.db_path).with_name("prompts.sqlite")
-            if prompt_db_path.exists():
-                config = SystemPromptConfig(db_path=str(prompt_db_path))
-                with closing(SystemPromptDatabase(config, read_only=True)) as stored:
-                    total_costs += stored.get_total_evolution_costs()
+            total_costs += stored_prompt_evolution_cost(self.db.config.db_path)
 
         return total_costs
 

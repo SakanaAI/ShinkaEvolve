@@ -4,10 +4,15 @@ import asyncio
 import json
 import math
 import sqlite3
-from dataclasses import dataclass
+from contextlib import closing
+from dataclasses import astuple, dataclass
+from pathlib import Path
 from typing import Any, Awaitable
 
+from shinka.database.prompt_dbase import SystemPromptConfig, SystemPromptDatabase
 from shinka.llm.providers.errors import BilledCancellationError
+
+_PROGRAM_COST_FIELDS = ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
 
 
 class BillingPersistenceError(RuntimeError):
@@ -67,10 +72,7 @@ def load_generated_seed_handoff(connection: sqlite3.Connection) -> GeneratedSeed
 
 
 def api_cost_in_metadata(metadata: dict[str, Any]) -> float:
-    return sum(
-        metadata.get(field, 0.0) or 0.0
-        for field in ("api_costs", "embed_cost", "novelty_cost", "meta_cost")
-    )
+    return sum(metadata.get(field, 0.0) or 0.0 for field in _PROGRAM_COST_FIELDS)
 
 
 def cancellation_with_cost(
@@ -120,3 +122,63 @@ def journaled_api_costs(
             counted.add(charge_id)
         total += api_cost_in_metadata(details)
     return total
+
+
+@dataclass(frozen=True)
+class RunCosts:
+    """Every charge a run has stored, split the way the closing table shows it."""
+
+    proposals: float = 0.0
+    embeddings: float = 0.0
+    novelty: float = 0.0
+    meta: float = 0.0
+    # Failed and interrupted work has no program row: its charges are journaled.
+    without_program: float = 0.0
+    prompt_evolution: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return math.fsum(astuple(self))
+
+
+def program_db_costs(connection: sqlite3.Connection) -> RunCosts:
+    """Sum the charges of a program database: its rows and its charge journal."""
+    on_rows = dict.fromkeys(_PROGRAM_COST_FIELDS, 0.0)
+    attached_charge_ids: set[str] = set()
+    for (raw_metadata,) in connection.execute(
+        "SELECT metadata FROM programs WHERE metadata IS NOT NULL"
+    ):
+        try:
+            metadata = json.loads(raw_metadata or "{}")
+        except json.JSONDecodeError:
+            continue
+        charge_id = metadata.get("api_charge_id")
+        if isinstance(charge_id, str) and not (
+            metadata.get("_is_island_copy") or metadata.get("_spawned_island")
+        ):
+            attached_charge_ids.add(charge_id)
+        for field in _PROGRAM_COST_FIELDS:
+            on_rows[field] += metadata.get(field, 0.0) or 0.0
+
+    has_journal = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attempt_log'"
+    ).fetchone()
+    return RunCosts(
+        proposals=on_rows["api_costs"],
+        embeddings=on_rows["embed_cost"],
+        novelty=on_rows["novelty_cost"],
+        meta=on_rows["meta_cost"],
+        without_program=(
+            journaled_api_costs(connection, attached_charge_ids) if has_journal else 0.0
+        ),
+    )
+
+
+def stored_prompt_evolution_cost(program_db_path: str | Path) -> float:
+    """Read the prompt evolution charges kept beside a program database."""
+    prompt_db_path = Path(program_db_path).with_name("prompts.sqlite")
+    if not prompt_db_path.exists():
+        return 0.0
+    config = SystemPromptConfig(db_path=str(prompt_db_path))
+    with closing(SystemPromptDatabase(config, read_only=True)) as stored:
+        return stored.get_total_evolution_costs()
