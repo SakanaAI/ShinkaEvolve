@@ -99,6 +99,14 @@ Correctness must include:
 - `correct`
 - `error`
 
+Shinka checks these outputs before it stores a program:
+- `correct` must be a JSON boolean, not `"true"` or `1`
+- `combined_score` must be a finite number (no NaN or infinity); `public` and `private` must be JSON objects
+- The evaluator must exit with status 0 when it reports a correct program
+- A result that fails the check is stored as an incorrect program with score 0
+
+Write `metrics.json` before `correct.json`, as `run_shinka_eval` does: `correct.json` marks the result as complete. Shinka does not check the order.
+
 Higher `combined_score` values indicate better performance unless the user explicitly defines an inverted metric that you transform during aggregation.
 
 ## Python Conversion Template
@@ -135,6 +143,8 @@ def main(program_path: str, results_dir: str):
     if not correct:
         raise RuntimeError(err or "Evaluation failed")
 ```
+
+The `raise` makes the evaluator exit non-zero for an incorrect program. Later generations are still stored as reported. An incorrect seed is stored as a failed evaluation instead: its score, metrics and `text_feedback` are replaced by a diagnostic, and only the stderr log keeps what the evaluator said. Remove the `raise` if the seed's feedback matters.
 
 ## Non-Python Conversion Template
 Use `evaluate.py` to run the candidate and write outputs:

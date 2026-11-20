@@ -1237,6 +1237,64 @@ def test_generate_evolved_proposal_uses_slot_reservation_helper():
     asyncio.run(_run())
 
 
+def test_accepted_proposal_cost_becomes_the_reservation_for_the_next():
+    async def _run():
+        async def sample_with_fix_mode_async(**kwargs):
+            return SimpleNamespace(id="parent", generation=0), [], [], False
+
+        async def record_attempt_event_async(**kwargs):
+            return None
+
+        async def submit_with_slot(exec_fname, results_dir, sampling_worker_id):
+            return "job-123", 9, 10.0, 10.0, 1
+
+        runner = _build_runner(
+            async_db=SimpleNamespace(
+                sample_with_fix_mode_async=sample_with_fix_mode_async,
+                record_attempt_event_async=record_attempt_event_async,
+            ),
+            active_proposal_tasks={"task-1": object()},
+            evo_config=SimpleNamespace(
+                max_novelty_attempts=1, max_patch_resamples=1, max_api_costs=None
+            ),
+            db_config=SimpleNamespace(num_islands=1, parent_selection_strategy=""),
+        )
+        runner.novelty_judge = None
+        runner.llm_selection = None
+        runner.total_api_cost = 0.0
+        runner.slot_available = _FakeEvent()
+        runner.submitted_jobs = {}
+        runner.running_jobs = []
+        runner._submit_evaluation_job_with_slot = submit_with_slot
+
+        async def run_patch_async(*args, **kwargs):
+            return "diff", {"api_costs": 0.07}, True
+
+        async def get_code_embedding_async(exec_fname):
+            return [0.1], 0.001
+
+        runner._run_patch_async = run_patch_async
+        runner._get_code_embedding_async = get_code_embedding_async
+
+        job = await runner._generate_evolved_proposal(
+            generation=4,
+            task_id="task-1",
+            exec_fname="program.py",
+            results_dir="results",
+            meta_recs=None,
+            meta_summary=None,
+            meta_scratch=None,
+            proposal_started_at=time.time() - 1.0,
+            sampling_worker_id=None,
+            active_proposals_at_start=1,
+        )
+
+        assert job is not None
+        assert runner._proposal_reservation() == pytest.approx(0.071)
+
+    asyncio.run(_run())
+
+
 def test_release_evaluation_slot_once_does_not_free_reassigned_slot():
     async def _run():
         runner = _build_runner(evaluation_slot_pool=LogicalSlotPool(1, "evaluation"))
