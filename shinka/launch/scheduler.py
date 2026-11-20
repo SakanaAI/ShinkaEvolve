@@ -10,7 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from .local import submit as submit_local, monitor as monitor_local
 from .local import monitor_evaluation as monitor_local_evaluation
-from .local import ProcessWithLogging, kill_evaluators_on_fatal_signals
+from .local import ProcessWithLogging
+from .fatal_signals import kill_evaluators_on_fatal_signals
 from .job_config import (
     JobConfig,
     LocalJobConfig,
