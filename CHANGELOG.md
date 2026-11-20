@@ -43,6 +43,33 @@ All notable changes to `shinka-evolve` are documented in this file.
   literally. `slurm.monitor()` without `max_wait` raises after three
   consecutive failed status lookups, and `JobScheduler.run()` raises after
   `shutdown()`.
+- Stop a run on SIGTERM and SIGHUP the way Ctrl-C does in PR #234. Evaluations
+  are cancelled (`scancel` for Slurm jobs), charges are saved, and the database
+  is closed with its write-ahead log folded into `programs.sqlite` before the
+  process dies of the signal. Signals within a second of the first are the same
+  request, and so is any later SIGHUP; a later SIGTERM ends the process at once
+  and still kills local evaluators. As PID 1 of a container the process exits
+  with 128 plus the signal's number. The hook moved to
+  `shinka.launch.fatal_signals`.
+- Reserve API cost for proposals in flight in PR #232. The cost cap reserves the
+  most expensive of the last 50 proposals for each proposal in flight and for
+  the one being admitted, so a run stops under its cap with up to one
+  reservation unspent instead of over it. With a cap set and no cost known yet,
+  one proposal is admitted first. The cap is not a hard limit; the configuration
+  guide states what it guarantees. The closing table labels proposal spend
+  `Total Proposal Cost`.
+- Report proposal outcomes to the model-selection bandits in PR #233.
+  `llm_dynamic_selection_kwargs` accepts `failure_memory` (10 by default for
+  `ucb` and `thompson`, 0 for `fixed`; 0 disables the reliability weighting), so
+  `fixed` keeps its split when a model fails unless it is set. The bandit state
+  format is version 2 and stores the outcome counts; loading a state forgets
+  half of each model's remembered failures. Earlier Shinka versions start a
+  fresh bandit from a version 2 file. Custom `BanditBase` subclasses receive
+  failed proposals through `update_failed(arm, cost)`, once per proposal task
+  and model.
+- Resolve the run database in the `shinka-inspect` skill through the shared
+  resolver in PR #231, so custom and first-release names are found. The script
+  no longer takes the first `*.sqlite` file in a directory.
 
 ### Deprecated
 
@@ -144,6 +171,31 @@ All notable changes to `shinka-evolve` are documented in this file.
   is opened from a directory other than the one the run was started in, and
   `shinka_visualize` exits with an error when it cannot listen on the given
   address.
+- Run the fatal-signal hook when another thread takes the signal in PR #230.
+  On Linux, of two signals sent back to back the second could go to another
+  thread, and the hook that kills local evaluators then ran only when the main
+  thread's blocking call returned.
+- Make the closing cost table match the run accounting in PR #232, with failed
+  and interrupted work on its own line. A resume restores the cost history,
+  including proposals that were in evaluation when the run stopped, null and
+  non-finite stored costs no longer break the summary, and the closing summary
+  states how many generations produced a program and how many failed.
+- Stop the model-selection bandits from sending proposals to a model whose
+  proposals fail in PR #233. `ucb` and `thompson` let a model keep only the
+  reliable share of its selection probability and keep a small probe share so
+  a model that works again gets its weight back. Cost-aware UCB no longer
+  treats a model without a cost report as free, Thompson sampling no longer
+  keeps drawing a model that never completes a proposal, and
+  `llm_dynamic_selection: thompson` starts with the default kwargs.
+  `bandit_state.pkl` is strict JSON, and files with bare `-Infinity` tokens
+  still load.
+- Fix a run with three or more `headless/*` proposals in flight hanging on
+  Ctrl-C in PR #234. A cancelled call no longer keeps a thread waiting for the
+  CLI lock.
+- Bring the configuration guide in line with the merged behavior in PR #231:
+  `time` formats, the local hang limit, async Slurm status handling,
+  child-result validation and retries, the endpoint-failure stop, and the
+  reasoning-effort mapping per model family.
 
 ### Security
 
