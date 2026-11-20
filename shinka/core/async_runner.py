@@ -4117,6 +4117,7 @@ class ShinkaEvolveRunner:
                     # Update LLM selection costs
                     if self.llm_selection is not None:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                        self.llm_selection.update_delivered(model_name)
 
                     meta_patch_data = {
                         "api_costs": total_costs,
@@ -4172,9 +4173,9 @@ class ShinkaEvolveRunner:
                     )
                     msg_history = response.new_msg_history if response else []
 
-            # Update LLM selection costs
+            # No usable patch: a failed proposal for the LLM selection
             if self.llm_selection is not None:
-                self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
 
             # All attempts failed
             meta_patch_data = {
@@ -4205,6 +4206,10 @@ class ShinkaEvolveRunner:
             raise
 
         except LLMEndpointError as exc:
+            if self.llm_selection is not None and "model_name" in llm_kwargs:
+                self.llm_selection.update_failed(
+                    arm=llm_kwargs["model_name"], cost=total_costs + exc.cost
+                )
             metadata = {
                 "api_costs": total_costs + exc.cost,
                 "error_attempt": str(exc),
@@ -4216,6 +4221,10 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
+            if self.llm_selection is not None and "model_name" in llm_kwargs:
+                self.llm_selection.update_failed(
+                    arm=llm_kwargs["model_name"], cost=total_costs
+                )
             return None, {
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
                 "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
@@ -4388,6 +4397,7 @@ class ShinkaEvolveRunner:
                     # Update LLM selection costs
                     if self.llm_selection is not None:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                        self.llm_selection.update_delivered(model_name)
 
                     meta_patch_data = {
                         "api_costs": total_costs,
@@ -4436,9 +4446,9 @@ class ShinkaEvolveRunner:
                         else []
                     )
 
-            # Update LLM selection costs
+            # No usable patch: a failed proposal for the LLM selection
             if self.llm_selection is not None:
-                self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
 
             # All attempts failed
             meta_patch_data = {
@@ -4474,6 +4484,10 @@ class ShinkaEvolveRunner:
 
         except LLMEndpointError as exc:
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            if self.llm_selection is not None and "model_name" in llm_kwargs:
+                self.llm_selection.update_failed(
+                    arm=llm_kwargs["model_name"], cost=total_costs + exc.cost
+                )
             metadata = {
                 "api_costs": total_costs + exc.cost,
                 "error_attempt": str(exc),
@@ -4487,6 +4501,10 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async patch generation: {e}")
             # Restore original task_sys_msg in case of exception
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            if self.llm_selection is not None and "model_name" in llm_kwargs:
+                self.llm_selection.update_failed(
+                    arm=llm_kwargs["model_name"], cost=total_costs
+                )
             return (
                 None,
                 {
