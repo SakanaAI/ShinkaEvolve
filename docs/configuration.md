@@ -64,7 +64,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `novelty_llm_models` | `Optional[List[str]]` | `None` | Optional novelty-judge model pool. |
 | `novelty_llm_kwargs` | `dict` | `{}` | kwargs for novelty-judge LLM calls. |
 | `use_text_feedback` | `bool` | `False` | Include text feedback in mutation prompts. |
-| `max_api_costs` | `Optional[float]` | `None` | Stops new paid API requests once known charges reach this amount in USD. |
+| `max_api_costs` | `Optional[float]` | `None` | Budget in USD for the paid API calls of a run, counted across resumes. Proposals start only while it covers a reservation for them; it is not a hard limit. See [API Cost Cap](#api-cost-cap). |
 | `enable_controlled_oversubscription` | `bool` | `False` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `str` | `'adaptive'` | Proposal target controller mode: `adaptive` or `fixed`. |
 | `proposal_target_min_samples` | `int` | `5` | Minimum completed timing samples required before adaptive targeting activates. |
@@ -433,6 +433,46 @@ evo_config:
 
 Use `max_proposal_jobs: 1` if you want sync-like proposal behavior with no
 proposal backlog.
+
+### API Cost Cap
+
+`max_api_costs` is a budget in USD for every paid API call of a run: proposals,
+embeddings, novelty checks, meta summaries and prompt evolution. A resumed run
+starts from the charges already stored in its results directory.
+
+What it guarantees:
+
+- No paid request starts once the charges the run knows of have reached the
+  cap. A charge is known when the reply arrives, not when the request is sent.
+- A proposal starts only if the cap covers the known charges plus one
+  reservation for the new proposal and one for every proposal still in flight.
+  The reservation is the cost of the most expensive proposal so far: the
+  evolved programs and failed proposals of this results directory.
+- When the cap cannot cover even one more reservation, the run finishes the
+  work in flight and stops. The log line names the amounts, for example
+  `API cost budget cannot cover another proposal: $0.3978 charged + $0.1497
+  reserved (the most expensive proposal so far) > $0.45`. A run can therefore
+  end with up to one reservation unspent; resume it with a higher cap to use
+  the rest.
+
+What it does not guarantee: that the total stays below the cap. The price of a
+request is known only after the reply. The total passes the cap when
+
+- a proposal costs more than every proposal before it, by at most that
+  difference for each proposal in flight. This includes the first
+  `max_proposal_jobs` proposals of a new results directory, which start
+  without any cost history and so without a reservation;
+- a meta summary, a prompt evolution step or an LLM-generated initial program
+  is in flight when the cap is reached. These calls are not reserved; they
+  start whenever the known charges are below the cap.
+
+One LLM call costs at most about `max_tokens` output tokens at the model's
+output price, plus its prompt; reasoning tokens count as output. With
+`max_tokens: 32768`, one `gpt-5.4-mini` reply that spends the whole output
+budget costs $0.15. A proposal makes up to `max_patch_resamples` x
+`max_patch_attempts` such calls for each of its `max_novelty_attempts`. For a
+limit that must hold, set the cap below it by that worst case times
+`max_proposal_jobs`, or lower `max_tokens` and the reasoning effort.
 
 ### Database Presets
 

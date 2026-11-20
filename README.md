@@ -262,7 +262,7 @@ Class defaults below come from `shinka/core/config.py` (`EvolutionConfig`). Hydr
 | `novelty_llm_models` | `None` | `Optional[List[str]]` | LLM models for novelty judgment |
 | `novelty_llm_kwargs` | `{}` | `dict` | Kwargs for novelty LLMs |
 | `use_text_feedback` | `False` | `bool` | Whether to use text feedback in evolution |
-| `max_api_costs` | `None` | `Optional[float]` | Total API budget cap (USD); async runner stops new proposals at cap |
+| `max_api_costs` | `None` | `Optional[float]` | API budget (USD) across resumes; a proposal starts only while the budget covers a reservation for it. Not a hard limit: see [API Cost Cap](docs/configuration.md#api-cost-cap) |
 | `enable_controlled_oversubscription` | `False` | `bool` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `'adaptive'` | `str` | Proposal target controller mode (`adaptive` or `fixed`). |
 | `proposal_target_min_samples` | `5` | `int` | Minimum completed timing samples before adaptive targeting activates. |
