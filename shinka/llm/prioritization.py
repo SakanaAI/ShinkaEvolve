@@ -1291,8 +1291,10 @@ class AsymmetricUCB(BanditBase):
 
 
 class FixedSampler(BanditBase):
-    # samples from fixed prior probabilities; learns no rewards, but weights
-    # the probabilities by how often each arm's proposals deliver
+    # samples from fixed prior probabilities; no learning or decay. The split
+    # is what a comparison of models is run with, so it stays fixed also
+    # when a model fails; failure_memory > 0 asks for the probabilities to
+    # be weighted by how often each arm's proposals deliver.
     def __init__(
         self,
         n_arms: Optional[int] = None,
@@ -1302,7 +1304,7 @@ class FixedSampler(BanditBase):
         auto_decay: Optional[float] = None,
         shift_by_baseline: bool = True,
         shift_by_parent: bool = True,
-        failure_memory: float = 10.0,
+        failure_memory: float = 0.0,
         **kwargs: Any,
     ):
         super().__init__(
@@ -1372,7 +1374,8 @@ class FixedSampler(BanditBase):
         subset: Subset = None,
         samples: Optional[int] = None,
     ) -> np.ndarray:
-        # the fixed prior probabilities, weighted by each arm's reliability
+        # the fixed prior probabilities; weighted by each arm's reliability
+        # only if a failure memory was asked for
         if subset is None:
             return self._weight_by_reliability(self.p.copy(), self.p > 0.0)
         idx = self._resolve_subset(subset)

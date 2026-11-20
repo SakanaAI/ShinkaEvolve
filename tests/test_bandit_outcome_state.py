@@ -18,7 +18,8 @@ BANDITS = {
         arm_names=ARMS, seed=seed, cost_aware_coef=0.5
     ),
     "thompson": lambda seed: ThompsonSampler(arm_names=ARMS, seed=seed),
-    "fixed": lambda seed: FixedSampler(arm_names=ARMS, seed=seed),
+    # The fixed sampler weighs by reliability only when asked to.
+    "fixed": lambda seed: FixedSampler(arm_names=ARMS, seed=seed, failure_memory=10),
 }
 ALL_BANDITS = pytest.mark.parametrize("make_bandit", BANDITS.values(), ids=BANDITS)
 
@@ -128,7 +129,9 @@ def test_outcome_counts_follow_the_model_when_the_pool_changes(make_bandit, tmp_
     path = tmp_path / "bandit_state.pkl"
     bandit.save_state(path)
 
-    reordered = type(bandit)(arm_names=["new", "dead", "ok"], seed=0)
+    reordered = type(bandit)(
+        arm_names=["new", "dead", "ok"], seed=0, failure_memory=10
+    )
     reordered.load_state(path)
 
     assert reordered.recent_failed.tolist() == [0.0, bandit.recent_failed[DEAD] / 2, 0.0]

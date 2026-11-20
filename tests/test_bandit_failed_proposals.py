@@ -22,7 +22,8 @@ BANDITS = {
     "thompson-greedy": lambda seed: ThompsonSampler(
         arm_names=ARMS, seed=seed, epsilon=0.0
     ),
-    "fixed": lambda seed: FixedSampler(arm_names=ARMS, seed=seed),
+    # The fixed sampler weighs by reliability only when asked to.
+    "fixed": lambda seed: FixedSampler(arm_names=ARMS, seed=seed, failure_memory=10),
 }
 ALL_BANDITS = pytest.mark.parametrize("make_bandit", BANDITS.values(), ids=BANDITS)
 # What a failed proposal was billed: nothing, as for an endpoint failure or a
@@ -155,8 +156,22 @@ def test_reliability_recovers_with_delivered_proposals(make_bandit):
     assert recovery[-1] > 0.95
 
 
-def test_fixed_sampler_weights_its_probabilities_by_reliability():
+def test_fixed_sampler_is_strictly_fixed_unless_asked_to_weigh():
+    """`fixed` is what a comparison of models is run with."""
     bandit = FixedSampler(arm_names=["a", "b", "c"], prior_probs=[0.5, 0.3, 0.2])
+    for _ in range(20):
+        bandit.update_submitted("a")
+        bandit.update_failed("a", cost=0.01)
+
+    assert bandit.reliability().tolist() == [1.0, 1.0, 1.0]
+    np.testing.assert_array_equal(bandit.posterior(), [0.5, 0.3, 0.2])
+    np.testing.assert_array_equal(bandit.posterior(subset=["a", "b"]), [0.625, 0.375, 0])
+
+
+def test_fixed_sampler_weights_its_probabilities_by_reliability():
+    bandit = FixedSampler(
+        arm_names=["a", "b", "c"], prior_probs=[0.5, 0.3, 0.2], failure_memory=10
+    )
     np.testing.assert_array_equal(bandit.posterior(), [0.5, 0.3, 0.2])
 
     bandit.update_failed("a")
@@ -184,7 +199,9 @@ def test_fixed_sampler_weights_its_probabilities_by_reliability():
 def test_models_that_fail_alike_keep_their_shares():
     """A failure rate the whole pool shares, a hard task or an outage, is no
     reason to move probability from the preferred model to the others."""
-    bandit = FixedSampler(arm_names=["a", "b", "c"], prior_probs=[0.8, 0.1, 0.1])
+    bandit = FixedSampler(
+        arm_names=["a", "b", "c"], prior_probs=[0.8, 0.1, 0.1], failure_memory=10
+    )
     for arm in ("a", "b", "c"):
         for _ in range(3):
             bandit.update_failed(arm)
@@ -223,7 +240,9 @@ def test_pool_that_fails_alike_keeps_its_best_model_in_front(cls):
 
 def test_most_reliable_model_keeps_its_whole_share():
     """Arms are weighed against the most reliable one, not against perfect."""
-    bandit = FixedSampler(arm_names=["flaky", "dead"], prior_probs=[0.5, 0.5])
+    bandit = FixedSampler(
+        arm_names=["flaky", "dead"], prior_probs=[0.5, 0.5], failure_memory=10
+    )
     for _ in range(20):
         bandit.update_delivered("flaky")
     bandit.update_failed("flaky")
@@ -242,7 +261,7 @@ def test_most_reliable_model_keeps_its_whole_share():
 @pytest.mark.parametrize("prior", [[0.99, 0.01], [0.5, 0.49, 0.01], [0.9, 0.05, 0.05]])
 def test_failing_never_raises_the_share_a_fixed_sampler_gives_a_model(prior):
     arms = [f"arm-{i}" for i in range(len(prior))]
-    bandit = FixedSampler(arm_names=arms, prior_probs=prior)
+    bandit = FixedSampler(arm_names=arms, prior_probs=prior, failure_memory=10)
     shares = []
     for _ in range(80):
         bandit.update_failed(arms[-1])
@@ -259,7 +278,9 @@ def test_failing_never_raises_the_share_a_fixed_sampler_gives_a_model(prior):
 
 
 def test_fixed_sampler_never_draws_a_model_it_gives_no_probability():
-    bandit = FixedSampler(arm_names=["a", "b", "off"], prior_probs=[0.5, 0.5, 0.0])
+    bandit = FixedSampler(
+        arm_names=["a", "b", "off"], prior_probs=[0.5, 0.5, 0.0], failure_memory=10
+    )
     for _ in range(30):
         bandit.update_failed("a")
         bandit.update_failed("off")
