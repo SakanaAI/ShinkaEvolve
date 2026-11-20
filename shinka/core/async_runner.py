@@ -17,6 +17,7 @@ import psutil
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from contextvars import Token
 from collections.abc import Awaitable, Callable
 from datetime import datetime
