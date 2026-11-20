@@ -305,8 +305,8 @@ the `shinka-inspect` skill look in `programs.sqlite`, `evolution_db.sqlite` and
 the file named `None`. They do not know the run's `db_path`, so they do not
 look in the nested first-release path: pass that file's path. Because reading
 changes nothing, they also load a database under an unknown name when it is the
-only one directly in the directory. When `load_programs_to_df` loads another file than
-`programs.sqlite`, it prints `Loading <name>: programs.sqlite holds no programs.`
+only one directly in the directory. When `load_programs_to_df` loads another
+file than `programs.sqlite`, it prints `Loading <name>: programs.sqlite holds no programs.`
 With several such databases none of them guesses: `load_programs_to_df` prints
 the error and returns `None`, and the skill stops with it. Both take the path
 of the database file instead of the directory. A `ProgramDatabase` you open
@@ -507,9 +507,9 @@ A finished job is kept when its results cannot be read or stored at first:
 - Storing the program row is retried the same way, five attempts in all.
 
 The attempts follow each other within a fraction of a second, so they cover a
-momentary failure, not an outage. A single store attempt
-can itself take up to 90 seconds before it counts as failed. When they run out, the generation is recorded
-as a failed program (`metadata.results_missing` and
+momentary failure, not an outage. A single store attempt can itself take up to
+90 seconds before it counts as failed. When they run out, the generation is
+recorded as a failed program (`metadata.results_missing` and
 `metadata.evaluation_failed`), also when its results had been read. If that row
 cannot be written either, the job is logged as `JOB LOST` and has no row.
 
