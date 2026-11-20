@@ -278,6 +278,51 @@ complete CLI configuration.
 
 `conda_env` and `activate_script` are mutually exclusive.
 
+#### Evaluation results
+
+Every evaluation must leave two files in its results directory, for the seed
+and for later generations, local or Slurm. `run_shinka_eval` writes both, with
+`metrics.json` first. An evaluator that writes them itself has to follow the
+same contract:
+
+- `correct.json` is a JSON object whose `correct` is a JSON boolean (`true` or
+  `false`, not `"true"` or `1`). An optional `error` string says what failed.
+- `metrics.json` is a JSON object. `combined_score` is a finite number, not
+  NaN, an infinity, a string or a boolean; a missing `combined_score` counts
+  as 0.0. `public` and `private` are JSON objects when present. `text_feedback`
+  is optional.
+
+A program is stored as correct only when both files can be read and are valid,
+`correct` is `true` and, for local jobs, the evaluator exited with status 0.
+Otherwise:
+
+- A result that cannot be trusted is stored as an incorrect program with score
+  0.0 and `metadata.evaluation_failed`: a file is missing or unreadable,
+  `correct` is not a boolean, a correct program has unusable metrics, or a
+  local evaluator reported a correct program and exited non-zero. The
+  diagnostic and the evaluator's own `text_feedback` or `error` go to
+  `text_feedback`. For generations after the seed, what the evaluator reported
+  is kept in `metadata.rejected_evaluation` (`correct`, `metrics`,
+  `exit_status`).
+- A program reported as incorrect is stored as reported, with its feedback and
+  metrics, whatever the exit status. Unusable metric values are replaced by
+  defaults (score 0.0, empty `public` or `private`) and noted in `stderr_log`.
+  The seed is the exception: a local seed evaluator that exits non-zero is
+  stored as a failed evaluation whatever it reported.
+
+A finished job is not dropped when its results cannot be read or stored:
+
+- A results read that raises is retried, five attempts in all.
+- A results read that hangs, for example on a stalled network file system, is
+  waited for once (30 seconds) and then checked without blocking for up to 150
+  seconds in all, so it cannot hold up the other jobs.
+- Storing the program row is retried the same way, five attempts in all.
+
+When the attempts run out, the generation is recorded as a failed program
+(`metadata.results_missing` and `metadata.evaluation_failed`).
+
+#### Slurm seed evaluation
+
 Generation-zero Slurm evaluations require a verified terminal state of
 `COMPLETED` and `ExitCode=0:0` before accepting result files. Verification
 matches the numeric job ID and the unique name set at submission, so a
@@ -297,7 +342,6 @@ inaccessible, ambiguous,
 or otherwise unverified status from both sources fails the seed with a
 diagnostic; partial artifacts are never evidence of successful completion.
 Slurm local fallback jobs instead use the actual subprocess exit status.
-Ordinary asynchronous result retrieval retains its existing contract.
 
 Synchronous Slurm evaluations limit each `sbatch`, `squeue`, `sacct`, and `scontrol`
 command to 30 seconds. Three consecutive status lookup errors fail the seed;

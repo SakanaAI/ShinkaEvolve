@@ -340,11 +340,16 @@ def aggregate_metrics(results, results_dir):
 | Return value | Type | Description |
 |-------------|------|-------------|
 | `metrics` | `dict` | `combined_score` (fitness), `public` (WebUI), `private` (internal) |
-| `correct` | `bool` | `True` = valid, can reproduce; `False` = discarded |
+| `correct` | `bool` | `True` = valid, can reproduce; `False` = stored as incorrect and not used as a parent once a correct program exists |
 | `error_msg` | `str` or `None` | Error description if validation failed |
 
 **Public** metrics appear in WebUI and logs. **Private** metrics are for
 internal analysis and debugging only.
+
+`combined_score` must be a finite number: a correct program with a NaN or
+infinite score, or an evaluator that reports a correct program and exits
+non-zero, is stored as incorrect. See
+[Evaluation results](configuration.md#evaluation-results) for the full contract.
 
 ---
 

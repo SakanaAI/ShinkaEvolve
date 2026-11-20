@@ -99,6 +99,13 @@ Correctness must include:
 - `correct`
 - `error`
 
+Shinka checks these outputs before it stores a program:
+- `correct` must be a JSON boolean, not `"true"` or `1`
+- `combined_score` must be a finite number (no NaN or infinity); `public` and `private` must be JSON objects
+- The evaluator must exit with status 0 when it reports a correct program
+- A result that fails the check is stored as an incorrect program with score 0
+- Write `metrics.json` before `correct.json`
+
 Higher `combined_score` values indicate better performance unless the user explicitly defines an inverted metric that you transform during aggregation.
 
 ## Python Conversion Template

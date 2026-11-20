@@ -39,6 +39,7 @@ Invoke this skill when the user:
      - `extra_data` (`dict`),
      - `text_feedback` (string, can be empty).
    - Confirm `correct.json` exists with `correct` (bool) and `error` (string) fields.
+   - Confirm the values pass Shinka's result check: `correct` is a JSON boolean (not `"true"` or `1`), `combined_score` is a finite number (no NaN or infinity), `public` and `private` are JSON objects, and the evaluator exits with status 0 when it reports a correct program. A result that fails the check is stored as an incorrect program with score 0.
 7. Ask the user if they want to run the evolution themself or whether to use the `shinka-run` skill: 
     - If the user wants to run evolution manually, add `run_evo.py` plus a `shinka.yaml` config with matching language + `init_program_path`.
     - Ask the user if they want to use the `shinka-run` skill to perform optimization with the agent.
