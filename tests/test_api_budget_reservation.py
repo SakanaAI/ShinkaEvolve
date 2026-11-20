@@ -157,6 +157,35 @@ def test_committed_cost_reserves_the_most_expensive_proposal_for_each_in_flight(
     assert runner._get_committed_cost() == pytest.approx(CHARGED + 2 * 0.1137)
 
 
+def test_an_expensive_proposal_is_reserved_only_while_it_is_among_the_last_fifty():
+    """One outlier must not hold back proposals for the rest of a long run."""
+    runner = _runner(charged=1.0, in_flight=0, history=[0.15, *[0.01] * 49])
+    assert runner._proposal_reservation() == pytest.approx(0.15)
+
+    runner._update_avg_proposal_cost(0.01)
+
+    assert runner._proposal_reservation() == pytest.approx(0.01)
+
+
+def test_run_is_not_stopped_while_a_proposal_in_flight_can_lower_the_reservation():
+    """The expensive proposal leaves the last fifty when the one in flight ends."""
+    runner = _runner(
+        charged=CAP - 0.10, in_flight=1, history=[0.15, *[0.01] * 49], cap=CAP
+    )
+
+    # $0.10 of room does not hold the $0.15 reservation: nothing starts.
+    assert _coordinator_tick(runner, wanted=1) == []
+    assert runner.cost_limit_reached is False
+
+    runner.active_proposal_tasks.clear()
+    runner.total_api_cost += 0.01
+    runner._update_avg_proposal_cost(0.01)
+
+    # $0.09 of room holds nine reservations of $0.01.
+    assert _coordinator_tick(runner, wanted=3) == [3]
+    assert runner.cost_limit_reached is False
+
+
 def test_a_charge_already_received_does_not_use_up_a_reservation():
     """A proposal that has paid for one reply may still pay for another."""
     runner = _runner(charged=0.20, in_flight=1, history=[0.10])
@@ -354,5 +383,31 @@ def test_a_proposal_that_failed_after_its_charge_was_journaled_counts_once(tmp_p
         )
 
         assert stored_proposal_costs(db.conn) == pytest.approx([0.05])
+    finally:
+        db.close()
+
+
+def test_resume_reserves_from_the_last_fifty_stored_proposals(tmp_path):
+    """An expensive proposal that 50 newer ones followed is not reserved again."""
+    db = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "programs.sqlite")),
+        embedding_model="",
+        read_only=False,
+    )
+    try:
+        # Stored out of order, as evaluations finish: the generation orders them.
+        for generation in (*range(2, 52), 1):
+            db.record_attempt_event(
+                generation, "proposal", "failed",
+                {"node_kind": "failed_proposal",
+                 "api_costs": 0.15 if generation == 1 else 0.01},
+            )
+        runner = _runner(charged=0.0, in_flight=0, history=[])
+        runner.db = db
+
+        asyncio.run(runner._restore_proposal_costs())
+
+        assert len(runner.completed_proposal_costs) == 51
+        assert runner._proposal_reservation() == pytest.approx(0.01)
     finally:
         db.close()

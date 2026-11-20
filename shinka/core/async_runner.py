@@ -125,6 +125,10 @@ _WANDB_CANDIDATE_STOP = object()
 # raises the hang limit fivefold. It stops at the `time` Slurm job configs
 # default to, or a few hung candidates in a row would stall the run for days.
 _PROVISIONAL_HANG_LIMIT_CAP_SECONDS = 3600.0
+# Under a cost cap each proposal reserves what the most expensive of this many
+# recent proposals cost. All of them would let one outlier hold proposals back
+# for the rest of the run; the last few would forget how long the tail is.
+_PROPOSAL_RESERVATION_WINDOW = 50
 
 
 def _adaptive_hang_limit_seconds(longest_evaluation_seconds: float) -> float:
@@ -1155,13 +1159,16 @@ class ShinkaEvolveRunner:
         )
 
     def _proposal_reservation(self) -> float:
-        """Budget set aside for one proposal: the cost of the most expensive so far.
+        """Budget set aside for one proposal: the most expensive recent one.
 
         Proposal costs have a long tail. A reply that spends its whole output
         budget on reasoning costs several times the average, so the average
-        reserves too little exactly when the cap is close.
+        reserves too little exactly when the cap is close. Only the last
+        _PROPOSAL_RESERVATION_WINDOW proposals count, so that one outlier does
+        not hold proposals back for the rest of the run.
         """
-        return max(self.completed_proposal_costs, default=0.0)
+        recent = self.completed_proposal_costs[-_PROPOSAL_RESERVATION_WINDOW:]
+        return max(recent, default=0.0)
 
     def _get_committed_cost(self) -> float:
         """Known charges plus a reservation for every proposal in flight.
@@ -1191,9 +1198,10 @@ class ShinkaEvolveRunner:
     def _close_proposal_budget(self) -> bool:
         """Latch the cost limit once no further proposal fits under the cap.
 
-        Charges and the reservation only grow, so a cap that cannot cover the
-        next proposal now never will: the run finishes its work in flight and
-        stops, instead of waiting for room that cannot come. A run that has no
+        Charges only grow, and the reservation changes only when a proposal
+        finishes. So once nothing is in flight, a cap that cannot cover the next
+        proposal never will: the run finishes its evaluations and stops,
+        instead of waiting for room that cannot come. A run that has no
         proposal left to start is not held up by a reservation: it ends as it
         would without a cap.
         """
@@ -1212,12 +1220,15 @@ class ShinkaEvolveRunner:
             )
         elif (
             self._get_remaining_generation_slots() > 0
+            # A proposal in flight can still move the reservation.
+            and not self.active_proposal_tasks
             and self._proposals_covered(known_cost) == 0
         ):
             reason = (
                 f"API cost budget cannot cover another proposal: "
                 f"${known_cost:.4f} charged + ${self._proposal_reservation():.4f} "
-                f"reserved (the most expensive proposal so far) > ${budget:.2f}."
+                f"reserved (the most expensive of the last "
+                f"{_PROPOSAL_RESERVATION_WINDOW} proposals) > ${budget:.2f}."
             )
         else:
             return False

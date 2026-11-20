@@ -446,24 +446,27 @@ What it guarantees:
   cap. A charge is known when the reply arrives, not when the request is sent.
 - A proposal starts only if the cap covers the known charges plus one
   reservation for the new proposal and one for every proposal still in flight.
-  The reservation is the cost of the most expensive proposal so far, among the
-  evolved programs and failed proposals of this results directory. What a
-  proposal in flight has already been charged counts on top of its
-  reservation.
-- When the cap cannot cover even one more reservation, the run finishes the
-  work in flight and stops. The log line names the amounts, for example
-  `API cost budget cannot cover another proposal: $0.3978 charged + $0.1497
-  reserved (the most expensive proposal so far) > $0.45`. A run can therefore
-  end with up to one reservation unspent; resume it with a higher cap to use
-  the rest.
+  The reservation is the cost of the most expensive of the last 50 proposals
+  this results directory has paid for, failed ones included. An unusually
+  expensive proposal therefore holds proposals back only until 50 newer ones
+  have finished. What a proposal in flight has already been charged counts on
+  top of its reservation.
+- When no proposal is in flight and the cap cannot cover even one more
+  reservation, the run finishes its evaluations and stops. The log line names
+  the amounts, for example `API cost budget cannot cover another proposal:
+  $0.3978 charged + $0.1497 reserved (the most expensive of the last 50
+  proposals) > $0.45`. A run can therefore end with up to one reservation
+  unspent. To use the rest, resume it with a cap that covers the charges so
+  far plus that reservation: a resumed run reserves from the last 50 stored
+  proposals, and with a smaller raise it stops again before its first request.
 
 What it does not guarantee: that the total stays below the cap. The price of a
 request is known only after the reply, and a request that is in flight when
 the known charges reach the cap is still billed. The total passes the cap by
 at most the cost of those requests. That happens when
 
-- a proposal costs more than its reservation, that is, more than every
-  proposal before it. A proposal joins that history when its program is
+- a proposal costs more than its reservation, that is, more than each of the
+  50 proposals before it. A proposal joins that history when its program is
   handed to evaluation or when it has failed for good;
 - the first `max_proposal_jobs` proposals of a new results directory start.
   They have no cost history yet and so no reservation;
