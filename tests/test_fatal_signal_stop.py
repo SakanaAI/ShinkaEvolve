@@ -14,7 +14,12 @@ import pytest
 from job_lifecycle_test_utils import (
     FakeClock,
 )
-from shinka.launch import JobScheduler, LocalJobConfig, ProcessWithLogging
+from shinka.launch import (
+    JobScheduler,
+    LocalJobConfig,
+    ProcessWithLogging,
+    SlurmCondaJobConfig,
+)
 from shinka.launch import fatal_signals, local
 from shinka.launch import scheduler as scheduler_module
 from signal_stop_test_utils import FATAL_SIGNALS, raise_hooked, recorded_deaths
@@ -342,6 +347,33 @@ def test_evaluation_started_on_the_main_thread_hooks_the_signals_again(
         scheduler.shutdown()
 
     assert fatal_signals._is_hooked(signal.SIGTERM)
+
+
+def test_cancellation_of_a_slurm_job_is_out_of_the_terminals_reach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A closing terminal hangs up its whole foreground process group. The
+    # `scancel` of a stopping run must not be in it, or the job stays.
+    report = tmp_path / "scancel-ran-in"
+    scancel = tmp_path / "scancel"
+    scancel.write_text(
+        "#!/bin/sh\n"
+        # The process group of this very process, and the job it was given.
+        f'echo "$(ps -o pgid= -p $$ | tr -d " ") $1" > {report}\n'
+    )
+    scancel.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    scheduler = JobScheduler(
+        "slurm_conda", SlurmCondaJobConfig(eval_program_path="evaluate.py")
+    )
+    try:
+        assert scheduler._cancel_job("4321") is True
+    finally:
+        scheduler.shutdown()
+
+    group, job = report.read_text().split()
+    assert job == "4321"
+    assert int(group) != os.getpgrp()
 
 
 def _relay(

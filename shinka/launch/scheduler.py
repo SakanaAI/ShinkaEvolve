@@ -474,6 +474,9 @@ class JobScheduler:
                         capture_output=True,
                         text=True,
                         timeout=SLURM_CANCEL_TIMEOUT_SECONDS,
+                        # Out of the terminal's process group: the hangup
+                        # that stops this run must not end its `scancel`.
+                        start_new_session=True,
                     )
                     # A job the controller no longer knows is already gone.
                     return result.returncode == 0 or is_unknown_job_error(
