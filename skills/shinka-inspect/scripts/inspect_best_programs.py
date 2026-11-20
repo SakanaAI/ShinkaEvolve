@@ -21,6 +21,15 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(repo_root))
     from shinka.utils import load_programs_to_df
 
+try:
+    from shinka.database.run_db_path import find_run_db_path
+except ModuleNotFoundError as missing:
+    if missing.name != "shinka.database.run_db_path":
+        raise
+    # The skill can be newer than the installed shinka. Releases up to 0.0.8
+    # have no resolver and always wrote <results_dir>/programs.sqlite.
+    find_run_db_path = None  # type: ignore[assignment]
+
 
 DEFAULT_K = 5
 DEFAULT_MAX_CODE_CHARS = 4000
@@ -111,20 +120,11 @@ def _resolve_db_path(results_dir_or_db: str) -> Path:
     provided = Path(results_dir_or_db).expanduser()
     if provided.suffix in {".sqlite", ".db"}:
         return provided
-
-    candidates = (
-        provided / "programs.sqlite",
-        provided / "evolution_db.sqlite",
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
-    sqlite_files = sorted(provided.glob("*.sqlite"))
-    if sqlite_files:
-        return sqlite_files[0]
-
-    return provided / "programs.sqlite"
+    if find_run_db_path is None:
+        return provided / "programs.sqlite"
+    # The file the run wrote: programs.sqlite, a custom db_path or a
+    # first-release name. Raises if several databases could be meant.
+    return find_run_db_path(provided)
 
 
 def _resolve_output_path(config: InspectConfig, db_path: Path) -> Path:
