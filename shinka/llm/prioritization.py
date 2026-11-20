@@ -81,6 +81,7 @@ class BanditBase(ABC):
         auto_decay: Optional[float] = None,
         shift_by_baseline: bool = True,
         shift_by_parent: bool = True,
+        failure_memory: float = 10.0,
     ):
         self.rng = np.random.default_rng(seed)
 
@@ -104,9 +105,112 @@ class BanditBase(ABC):
             raise ValueError("auto_decay must be in (0, 1]")
         self._auto_decay = auto_decay
 
+        # How many of an arm's latest proposal outcomes its reliability is
+        # estimated over. 0 switches the estimate off.
+        if not (failure_memory == 0.0 or failure_memory >= 1.0):
+            raise ValueError("failure_memory must be 0 or >= 1")
+        self._failure_memory = float(failure_memory)
+        # Recency-weighted counts of proposals that came back with a usable
+        # patch and of proposals that did not.
+        self.recent_delivered = np.zeros(self._n_arms, dtype=np.float64)
+        self.recent_failed = np.zeros(self._n_arms, dtype=np.float64)
+
     @property
     def n_arms(self) -> int:
         return self._n_arms
+
+    def update_delivered(self, arm: Arm) -> None:
+        """Record that a proposal submitted to `arm` came back with a usable patch."""
+        self._record_outcome(self._resolve_arm(arm), self.recent_delivered)
+
+    def update_failed(self, arm: Arm, cost: float = 0.0) -> None:
+        """Record that a proposal submitted to `arm` came back without a usable patch.
+
+        That is an endpoint failure, a rejected request, or replies from which
+        no patch could be applied. `update` is never called for such a
+        proposal, so without this the bandit cannot tell a model that fails
+        from one that has not answered yet.
+
+        `cost` is what the proposal was billed. It is reported here and not
+        through `update_cost`, because a failed proposal says nothing about
+        what a patch from this arm costs: counted as a cost observation, an
+        unbilled failure would make the arm look cheap.
+        """
+        i = self._resolve_arm(arm)
+        self._record_outcome(i, self.recent_failed)
+        self._add_failed_cost(i, cost)
+
+    def _add_failed_cost(self, i: int, cost: float) -> None:
+        """Hook for bandits that track costs: add a failed proposal's bill."""
+
+    def _record_outcome(self, i: int, counts: np.ndarray) -> None:
+        if self._failure_memory == 0.0:
+            return
+        # Forget on the arm's own outcomes, not with time: an arm that is not
+        # drawn stays as unreliable as its last proposals showed it to be.
+        keep = 1.0 - 1.0 / self._failure_memory
+        self.recent_delivered[i] *= keep
+        self.recent_failed[i] *= keep
+        counts[i] += 1.0
+
+    def reliability(self) -> np.ndarray:
+        """Share of each arm's recent proposals that delivered a patch, in (0, 1].
+
+        One delivered proposal is assumed up front. An arm without failures is
+        therefore at 1.0, and an arm that only fails approaches
+        1 / (1 + failure_memory) and never 0: it is still drawn now and then,
+        which is how the bandit notices that it works again.
+        """
+        delivered = 1.0 + self.recent_delivered
+        return delivered / (delivered + self.recent_failed)
+
+    def _discount_by_reliability(
+        self, scores: np.ndarray, idx: np.ndarray
+    ) -> np.ndarray:
+        """Scale the scores of the arms `idx` by how often their proposals deliver.
+
+        Whatever a score promises, reward, exploration bonus or low cost, the
+        arm delivers only on that share of its proposals. A negative score is
+        divided instead, so that failing never raises a score.
+        """
+        reliability = self.reliability()[idx]
+        return np.where(scores >= 0.0, scores * reliability, scores / reliability)
+
+    def _weight_by_reliability(
+        self, probs: np.ndarray, idx: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """Scale selection probabilities by reliability and renormalise them.
+
+        `probs` covers every arm, or the arms `idx` when that is given.
+        """
+        reliability = self.reliability()
+        if idx is not None:
+            reliability = reliability[idx]
+        if np.all(reliability == 1.0):
+            return probs
+        weighted = probs * reliability
+        total = weighted.sum()
+        return weighted / total if total > 0.0 else probs
+
+    def _epsilon_greedy(
+        self, scores: np.ndarray, idx: np.ndarray, epsilon: float
+    ) -> np.ndarray:
+        """Selection probabilities over the arms `idx` from their scores.
+
+        The best reliability-discounted score takes 1 - epsilon and the other
+        arms share epsilon; the result is then weighted by reliability, so an
+        unreliable arm also loses its share of the exploration.
+        """
+        scores = self._discount_by_reliability(scores, idx)
+        winners = scores == scores.max()
+        n_winners = int(winners.sum())
+        p = np.empty(idx.size, dtype=np.float64)
+        if n_winners == idx.size:
+            p[:] = 1.0 / idx.size
+        else:
+            p[winners] = (1.0 - epsilon) / n_winners
+            p[~winners] = epsilon / (idx.size - n_winners)
+        return self._weight_by_reliability(p, idx)
 
     def set_baseline_score(
         self,
@@ -252,6 +356,44 @@ class BanditBase(ABC):
             return None
         return list(self._arm_names)
 
+    def _reliability_caption(self) -> Optional[str]:
+        """Summary-table caption naming the arms whose proposals have failed."""
+        reliability = self.reliability()
+        if np.all(reliability == 1.0):
+            return None
+        names = self._arm_names or [str(i) for i in range(self._n_arms)]
+        failing = ", ".join(
+            f"{_format_arm_display_name(name, max_width=25)} {value:.2f}"
+            for name, value in zip(names, reliability)
+            if value < 1.0
+        )
+        return (
+            "share of recent proposals that returned a patch "
+            f"(scales score and post): {failing}"
+        )
+
+    def _outcome_state(self) -> Dict[str, Any]:
+        return {
+            "recent_delivered": self.recent_delivered.copy(),
+            "recent_failed": self.recent_failed.copy(),
+        }
+
+    def _restore_outcomes(self, state: Dict[str, Any]) -> None:
+        """Restore the outcome counts; a state saved without them has none."""
+        zeros = np.zeros(self.n_arms, dtype=np.float64)
+        delivered = self._align_state_array(state, "recent_delivered", zeros)
+        failed = self._align_state_array(state, "recent_failed", zeros)
+        for counts in (delivered, failed):
+            if not (np.isfinite(counts).all() and (counts >= 0.0).all()):
+                logger.warning(
+                    "Bandit state contains invalid proposal outcome counts; "
+                    "resetting them."
+                )
+                delivered, failed = zeros.copy(), zeros.copy()
+                break
+        self.recent_delivered = delivered
+        self.recent_failed = failed
+
     def _align_state_array(
         self,
         state: Dict[str, Any],
@@ -395,6 +537,7 @@ class AsymmetricUCB(BanditBase):
         cost_exploration_coef: Optional[float] = 0.1,
         cost_power: float = 1.0,
         cost_ref_percentile: float = 50.0,
+        failure_memory: float = 10.0,
     ):
         super().__init__(
             n_arms=n_arms,
@@ -403,6 +546,7 @@ class AsymmetricUCB(BanditBase):
             auto_decay=auto_decay,
             shift_by_baseline=shift_by_baseline,
             shift_by_parent=shift_by_parent,
+            failure_memory=failure_memory,
         )
         if asymmetric_scaling:
             assert shift_by_baseline or shift_by_parent, (
@@ -620,6 +764,12 @@ class AsymmetricUCB(BanditBase):
 
         return c
 
+    def _add_failed_cost(self, i: int, cost: float) -> None:
+        # Raises the arm's cost per delivered proposal; n_costs stays.
+        c = self._finite_or_none(cost, "cost")
+        if c is not None:
+            self.total_costs[i] += c
+
     def _normalized_cost_ratio(
         self,
         idx: np.ndarray,
@@ -665,10 +815,13 @@ class AsymmetricUCB(BanditBase):
             cost_ref = denom_floor
         cost_ref = max(cost_ref, denom_floor)
 
-        # An arm no proposal has been billed for has an unknown cost, not a
-        # cost of zero: a model whose proposals fail before any bill must not
-        # win on price. Assume the reference cost, without the optimism bonus.
-        cost_denom = np.where(have_cost, cost_denom, cost_ref)
+        # An arm no delivered proposal has been billed for has an unknown
+        # cost, not a cost of zero: a model that only fails must not win on
+        # price. Assume the reference cost without the optimism bonus, or
+        # what its failed proposals were billed if that is more.
+        cost_denom = np.where(
+            have_cost, cost_denom, np.maximum(mean_costs, cost_ref)
+        )
 
         return cost_ref / cost_denom
 
@@ -739,17 +892,7 @@ class AsymmetricUCB(BanditBase):
                     k = self.cost_aware_coefficient
                     scores = (1.0 - k) * scores + k * cost_ratio_scaled
 
-            winners = np.where(scores == scores.max())[0]
-            rem = idx.size - winners.size
-            p_sub = np.zeros(idx.size, dtype=np.float64)
-            if rem == 0:
-                p_sub[:] = 1.0 / idx.size
-            else:
-                p_sub[winners] = (1.0 - self.epsilon) / winners.size
-                mask = np.ones(idx.size, dtype=bool)
-                mask[winners] = False
-                p_sub[mask] = self.epsilon / rem
-            probs[idx] = p_sub
+            probs[idx] = self._epsilon_greedy(scores, idx, self.epsilon)
             return probs
         else:
             return self._posterior_batch(idx, samples)
@@ -813,18 +956,7 @@ class AsymmetricUCB(BanditBase):
                     k = self.cost_aware_coefficient
                     scores = (1.0 - k) * scores + k * cost_ratio_scaled
 
-            winners = np.where(scores == scores.max())[0]
-            p = np.zeros(A, dtype=np.float64)
-            if winners.size == A:
-                p[:] = 1.0 / A
-            else:
-                p[winners] = (1.0 - self.epsilon) / winners.size
-                mask = np.ones(A, dtype=bool)
-                mask[winners] = False
-                others = np.where(mask)[0]
-                if others.size > 0:
-                    p[others] = self.epsilon / others.size
-
+            p = self._epsilon_greedy(scores, idx, self.epsilon)
             i = int(self.rng.choice(A, p=p))
             v[i] += 1
             step += 1
@@ -887,6 +1019,7 @@ class AsymmetricUCB(BanditBase):
         n_sub = np.maximum(self.n[idx], 1.0)
         exploration = self.c * np.sqrt(num / n_sub)
         score_raw = exploitation + exploration
+        reliability_caption = self._reliability_caption()
 
         have_costs = (
             np.isfinite(self.min_cost_observed)
@@ -921,6 +1054,8 @@ class AsymmetricUCB(BanditBase):
                 # additive blend: at k=1, only cost matters; at k=0, only reward
                 k = float(self.cost_aware_coefficient)
                 score_used = (1.0 - k) * score_raw + k * cost_ratio_scaled
+
+        score_used = self._discount_by_reliability(score_used, idx)
 
         # Create header information
         exp_base_str = (
@@ -960,6 +1095,7 @@ class AsymmetricUCB(BanditBase):
         # Create rich table
         table = Table(
             title=header_info,
+            caption=reliability_caption,
             box=rich.box.ROUNDED,
             show_header=True,
             header_style="bold cyan",
@@ -1026,6 +1162,7 @@ class AsymmetricUCB(BanditBase):
             "total_costs": self.total_costs.copy(),
             "min_cost_observed": self.min_cost_observed,
             "max_cost_observed": self.max_cost_observed,
+            **self._outcome_state(),
         }
 
     def _reset_reward_state(self) -> None:
@@ -1065,10 +1202,12 @@ class AsymmetricUCB(BanditBase):
             self.total_costs = np.zeros(self.n_arms, dtype=np.float64)
             self.min_cost_observed = np.inf
             self.max_cost_observed = -np.inf
+        self._restore_outcomes(state)
 
 
 class FixedSampler(BanditBase):
-    # samples from fixed prior probabilities; no learning or decay
+    # samples from fixed prior probabilities; learns no rewards, but weights
+    # the probabilities by how often each arm's proposals deliver
     def __init__(
         self,
         n_arms: Optional[int] = None,
@@ -1078,6 +1217,7 @@ class FixedSampler(BanditBase):
         auto_decay: Optional[float] = None,
         shift_by_baseline: bool = True,
         shift_by_parent: bool = True,
+        failure_memory: float = 10.0,
         **kwargs: Any,
     ):
         super().__init__(
@@ -1087,6 +1227,7 @@ class FixedSampler(BanditBase):
             auto_decay=auto_decay,
             shift_by_baseline=shift_by_baseline,
             shift_by_parent=shift_by_parent,
+            failure_memory=failure_memory,
         )
         n = self.n_arms
         if prior_probs is None:
@@ -1136,14 +1277,19 @@ class FixedSampler(BanditBase):
         self.n_costs[i] += 1.0
         return c
 
+    def _add_failed_cost(self, i: int, cost: float) -> None:
+        c = self._finite_or_none(cost, "cost")
+        if c is not None:
+            self.total_costs[i] += c
+
     def posterior(
         self,
         subset: Subset = None,
         samples: Optional[int] = None,
     ) -> np.ndarray:
-        # return fixed selection probabilities per arm
+        # the fixed prior probabilities, weighted by each arm's reliability
         if subset is None:
-            return self.p.copy()
+            return self._weight_by_reliability(self.p.copy())
         idx = self._resolve_subset(subset)
 
         # Handle empty subset
@@ -1157,7 +1303,7 @@ class FixedSampler(BanditBase):
         probs = probs / s
         out = np.zeros(self.n_arms, dtype=np.float64)
         out[idx] = probs
-        return out
+        return self._weight_by_reliability(out)
 
     def decay(self, factor: float) -> None:
         return None
@@ -1171,6 +1317,7 @@ class FixedSampler(BanditBase):
         # Create rich table
         table = Table(
             title="FixedSampler (fixed prior probs)",
+            caption=self._reliability_caption(),
             box=rich.box.ROUNDED,
             show_header=True,
             header_style="bold cyan",
@@ -1208,6 +1355,7 @@ class FixedSampler(BanditBase):
             "n_pulls": self.n_pulls.copy(),
             "n_costs": self.n_costs.copy(),
             "total_costs": self.total_costs.copy(),
+            **self._outcome_state(),
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
@@ -1223,6 +1371,7 @@ class FixedSampler(BanditBase):
         self.total_costs = self._align_state_array(
             state, "total_costs", self.total_costs
         )
+        self._restore_outcomes(state)
 
 
 class ThompsonSampler(BanditBase):
@@ -1240,6 +1389,7 @@ class ThompsonSampler(BanditBase):
         adaptive_scale: bool = True,
         asymmetric_scaling: bool = True,
         exponential_base: Optional[float] = 1.0,
+        failure_memory: float = 10.0,
     ):
         super().__init__(
             n_arms=n_arms,
@@ -1248,6 +1398,7 @@ class ThompsonSampler(BanditBase):
             auto_decay=auto_decay,
             shift_by_baseline=shift_by_baseline,
             shift_by_parent=shift_by_parent,
+            failure_memory=failure_memory,
         )
         if not (0.0 <= epsilon <= 1.0):
             raise ValueError("epsilon must be in [0, 1]")
@@ -1423,9 +1574,11 @@ class ThompsonSampler(BanditBase):
         if A == 0:
             return probs
 
-        # check for completely unseen arms
+        # Arms without any outcome yet come first. A failed proposal is an
+        # outcome: an arm whose proposals only fail never completes one, and
+        # would otherwise be drawn as unseen for the rest of the run.
         n_sub = self.n_completed[idx]
-        unseen = np.where(n_sub <= 0.0)[0]
+        unseen = np.where((n_sub <= 0.0) & (self.recent_failed[idx] <= 0.0))[0]
         if unseen.size > 0:
             n_sub = self.n[idx]
             # Handle empty subset
@@ -1445,18 +1598,7 @@ class ThompsonSampler(BanditBase):
 
         if samples is None or int(samples) <= 1:
             theta = self.rng.beta(self.alpha[idx], self.beta[idx])
-            winners = np.where(theta == theta.max())[0]
-            p = np.zeros(A, dtype=np.float64)
-            if winners.size == A:
-                p[:] = 1.0 / A
-            else:
-                p[winners] = (1.0 - self.epsilon) / winners.size
-                mask = np.ones(A, dtype=bool)
-                mask[winners] = False
-                others = np.where(mask)[0]
-                if others.size > 0:
-                    p[others] = self.epsilon / others.size
-            probs[idx] = p
+            probs[idx] = self._epsilon_greedy(theta, idx, self.epsilon)
             return probs
         else:
             raise NotImplementedError
@@ -1527,7 +1669,9 @@ class ThompsonSampler(BanditBase):
         explore = np.sqrt(
             (a * b) / (np.maximum(a + b, 1e-9) ** 2 * np.maximum(a + b + 1.0, 1e-9))
         )
-        score = exploit + explore
+        score = self._discount_by_reliability(
+            exploit + explore, np.arange(self._n_arms)
+        )
 
         exp_base_str = (
             f"{self.exponential_base:.3f}"
@@ -1545,6 +1689,7 @@ class ThompsonSampler(BanditBase):
 
         table = Table(
             title=header_info,
+            caption=self._reliability_caption(),
             box=rich.box.ROUNDED,
             show_header=True,
             header_style="bold cyan",
@@ -1588,6 +1733,7 @@ class ThompsonSampler(BanditBase):
             "baseline": self._baseline,
             "obs_max": self._obs_max,
             "obs_min": self._obs_min,
+            **self._outcome_state(),
         }
 
     def _reset_reward_state(self) -> None:
@@ -1619,3 +1765,4 @@ class ThompsonSampler(BanditBase):
             )
         ):
             self._restore_observation_range(state)
+        self._restore_outcomes(state)
