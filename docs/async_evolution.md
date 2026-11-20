@@ -93,6 +93,13 @@ oversubscription the runner keeps proposals plus running evaluations at
 `max_evaluation_jobs`, so a reduced evaluation count also reduces the proposals
 in flight, and `max_proposal_jobs` above `max_evaluation_jobs` has no effect.
 
+With `max_api_costs` set, the runner holds proposals back near the cap by what
+finished proposals have cost. Until the first proposal of a run has finished it
+has no such cost, so the proposals that start before then are not held back:
+up to `max_evaluation_jobs` of them, plus `proposal_buffer_max` with controlled
+oversubscription. A cap smaller than the cost of that many proposals can be
+passed. Use fewer jobs when the cap is that tight.
+
 `headless/*` models run one CLI call at a time per runner process, so proposal
 jobs beyond the first wait for their turn. Keep `max_proposal_jobs` small with
 them.
