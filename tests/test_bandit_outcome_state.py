@@ -213,6 +213,13 @@ def test_summary_names_the_models_whose_proposals_failed(make_bandit):
     assert "share of recent proposals that returned a patch" in summary()
     assert "dead 0.47" in summary()
 
+    # A reliability that would print as 1.00 is not worth a caption; it gets
+    # there long before it is exactly 1.0 again.
+    for _ in range(60):
+        bandit.update_delivered("dead")
+    assert 0.995 < bandit.reliability()[DEAD] < 1.0
+    assert "returned a patch" not in summary()
+
 
 def test_failure_memory_zero_ignores_saved_outcome_counts():
     saved = AsymmetricUCB(arm_names=ARMS, seed=0)

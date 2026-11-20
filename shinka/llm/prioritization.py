@@ -441,15 +441,17 @@ class BanditBase(ABC):
 
     def _reliability_caption(self) -> Optional[str]:
         """Summary-table caption naming the arms whose proposals have failed."""
-        reliability = self.reliability()
-        if np.all(reliability == 1.0):
-            return None
         names = self._arm_names or [str(i) for i in range(self._n_arms)]
+        # Only what prints below 1.00: after a failure the reliability comes
+        # close to 1.0 again within tens of deliveries but equals it only
+        # after hundreds.
         failing = ", ".join(
             f"{_format_arm_display_name(name, max_width=25)} {value:.2f}"
-            for name, value in zip(names, reliability)
-            if value < 1.0
+            for name, value in zip(names, self.reliability())
+            if value < 0.995
         )
+        if not failing:
+            return None
         return (
             "share of recent proposals that returned a patch "
             f"(scales post): {failing}"
@@ -484,8 +486,9 @@ class BanditBase(ABC):
             delivered, failed, n_failed = zeros.copy(), zeros.copy(), zeros.copy()
         self.n_failed = n_failed
         # An arm's counts add up to at most failure_memory. A state saved with
-        # a longer memory, or edited, is scaled down to that: it keeps its
-        # reliability and the arm does not take longer than usual to recover.
+        # a longer memory, or edited, is scaled down to that: it keeps the
+        # ratio of its counts and the arm does not take longer than usual to
+        # recover.
         half_total = delivered / 2.0 + failed / 2.0  # the sum can overflow
         half_limit = self._failure_memory / 2.0
         # Rounding puts honest counts a few ulp above the limit; leave those.
