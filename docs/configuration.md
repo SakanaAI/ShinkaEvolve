@@ -38,7 +38,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `llm_models` | `List[str]` | `['gpt-5-mini', 'gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gpt-5.4']` | Mutation model pool. |
 | `llm_dynamic_selection` | `Optional[Union[str, BanditBase]]` | `'ucb'` | Dynamic model selection (`fixed`, `ucb`, `ucb1`, `thompson`, or bandit object). |
 | `llm_dynamic_selection_kwargs` | `dict` | `{'cost_aware_coef': 0.5}` | kwargs forwarded to selected bandit. |
-| `llm_kwargs` | `dict` | `{'temperatures': [0.0, 0.5, 1.0], 'max_tokens': 16384}` | kwargs forwarded to LLM calls. |
+| `llm_kwargs` | `dict` | `{'temperatures': [0.0, 0.5, 1.0], 'max_tokens': 16384}` | Sampling settings for mutation LLM calls. See [LLM sampling settings](#llm-sampling-settings-llm_kwargs). |
 | `meta_rec_interval` | `Optional[int]` | `10` | Generation interval for meta recommendations. |
 | `meta_llm_models` | `Optional[List[str]]` | `None` | Model pool for meta-recommendations. |
 | `meta_llm_kwargs` | `dict` | `{}` | kwargs for meta-recommendation LLM calls. |
@@ -107,6 +107,68 @@ When calling the LLM clients directly, a billed failure can return a
 `QueryResult` with `content=None`, its cost and usage, and an
 `incomplete_reason`. Check `content` before using the answer. Batch clients
 also retain these billed results so callers can include their costs.
+
+#### LLM sampling settings (`llm_kwargs`)
+
+`llm_kwargs`, `meta_llm_kwargs`, `novelty_llm_kwargs` and `prompt_llm_kwargs`
+take the same keys. Each key holds one value or a list; a list is sampled from
+for every request.
+
+| Key | Meaning |
+|-----|---------|
+| `temperatures` | Sampling temperature. Not sent to every model; see below. |
+| `max_tokens` | Output token limit. Reasoning tokens count toward it where the provider bills them as output. |
+| `reasoning_efforts` | Reasoning or thinking effort, one of the names below. Default `disabled`. |
+
+`temperatures` does not apply to Claude models, on Anthropic or Bedrock: the
+API no longer accepts a temperature, so they sample at its default. It is also
+not sent to OpenAI and Azure reasoning models, DeepSeek V4 models, and the
+Gemini models that take a thinking level. A few OpenRouter reasoning models
+only run at temperature 1.0 and get that value.
+
+`reasoning_efforts` accepts `disabled`, `none`, `min`, `minimal`, `low`,
+`medium`, `high`, `xhigh` and `max`, in any letter case. An unset value, `""`
+and YAML `off` mean `disabled`. `auto` is deprecated and treated as `disabled`
+with a warning. Any other name raises an error when the LLM client is built,
+before the first request. Every name works with every model; it is mapped onto
+what the model offers:
+
+| Models | Mapping |
+|--------|---------|
+| Without reasoning (for example `gpt-4.1`) | Ignored. |
+| OpenAI, Azure and OpenRouter reasoning models before GPT-6 | Sent as named, except `min` → `low` and `max` → `high`. `none`, `minimal` and `xhigh` exist only on some of these models. `disabled` sends no effort, or `low` to a model that cannot run without reasoning. |
+| GPT-6 family | `disabled` and `none` → `none`, or `low` on GPT-6 Astra and GPT-6.1 Sol, which require reasoning. `min` and `minimal` → `low`. The rest as named. |
+| Claude with adaptive thinking (Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) | `disabled`, `none`, `min` and `minimal` → `low`. The rest as named. `disabled` and `none` also switch thinking off on Haiku 5.5; on Fable and Opus it stays on. |
+| Models with a thinking-token budget (older Claude models, Gemini models without thinking levels) | `min` and `minimal` 1024 tokens, `low` 2048, `medium` 4096, `high` 8192, `xhigh` 12288, `max` 16384; 1024 when the budget does not fit below `max_tokens`. `disabled` and `none` turn thinking off, or set a 128-token budget on Gemini 2.5 Pro and Gemini 3 Pro preview, which cannot turn it off. |
+| Gemini with thinking levels (3.5 Flash-Lite, 3.6 to 3.8 Flash, Gemini 4) | `min`, `minimal` and `low` → `LOW`; `medium` → `MEDIUM`; `high`, `xhigh` and `max` → `HIGH`. `disabled` and `none` send no level. |
+| DeepSeek reasoning models | `disabled` and `none` turn thinking off. `max` → `max`. Every other name → `high`. |
+
+#### LLM endpoint failures
+
+Provider errors that cannot succeed on a retry are not retried:
+
+- HTTP 401, 402, 403 and 404 mean that the endpoint, key, model or account is
+  wrong for every request. So do the account-wide failures that arrive under
+  other statuses: `API_KEY_INVALID`, `invalid_api_key`, `insufficient_quota`
+  and Anthropic's "credit balance is too low".
+- Any other 4xx except 408, 409, 425, 429 and 499 rejects that one request. The
+  generation is recorded as a failed proposal and the run goes on. An
+  OpenRouter 403 counts as a rejected request, because OpenRouter answers 403
+  when its moderation flags the input.
+
+When an endpoint fails, the proposal is tried again with another model of the
+pool, and a warning names the model that failed. A proposal that finds no
+reachable model counts as an endpoint failure. A single-model pool stops the
+run on the first one. A larger pool records the first two in a row as failed
+proposals and stops the run on the third; a proposal that gets an answer
+restarts the count.
+
+A stopped run lets the evaluations already submitted finish, logs
+`ASYNC EVOLUTION STOPPED: no LLM endpoint was reachable`, and leaves the last
+generation unconsumed. Fix the credentials, the model access or the endpoint,
+then start the run again with the same `results_dir` to resume it.
+`runner.evolution_failed` is `True` after such a run and `shinka_run` exits
+with status 1, as both do when a run produces no evolved program.
 
 W&B logging examples:
 
