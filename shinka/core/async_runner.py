@@ -79,6 +79,7 @@ from shinka.core.billing import (
     load_generated_seed_handoff,
     program_db_costs,
     stored_prompt_evolution_cost,
+    stored_proposal_costs,
 )
 from shinka.core.pipeline_timing import (
     summarize_timing_metadata,
@@ -1152,22 +1153,91 @@ class ShinkaEvolveRunner:
             self.completed_proposal_costs
         )
 
+    def _proposal_reservation(self) -> float:
+        """Budget set aside for one proposal: the cost of the most expensive so far.
+
+        Proposal costs have a long tail. A reply that spends its whole output
+        budget on reasoning costs several times the average, so the average
+        reserves too little exactly when the cap is close.
+        """
+        return max(self.completed_proposal_costs, default=0.0)
+
     def _get_committed_cost(self) -> float:
-        """Use in-flight estimates for proposal admission without double counting."""
-        num_active_proposals = len(self.active_proposal_tasks)
+        """Known charges plus a reservation for every proposal in flight."""
+        known_cost = self._known_api_cost()
+        reserved = len(self.active_proposal_tasks) * self._proposal_reservation()
+        # A proposal in flight may already have posted part of its cost.
+        return max(known_cost, self.total_api_cost + reserved)
+
+    def _proposals_covered(self, cost: float) -> Optional[int]:
+        """How many proposal reservations fit between a cost and the cap.
+
+        None when nothing limits them: no cap, or no proposal has finished yet
+        and there is nothing to reserve.
+        """
+        budget = self.evo_config.max_api_costs
+        reservation = self._proposal_reservation() if budget is not None else 0.0
+        if budget is None or reservation <= 0.0:
+            return None
+        return max(0, math.floor((budget - cost) / reservation * (1 + 1e-9)))
+
+    def _close_proposal_budget(self) -> bool:
+        """Latch the cost limit once no further proposal fits under the cap.
+
+        Charges and the reservation only grow, so a cap that cannot cover the
+        next proposal now never will: the run finishes its work in flight and
+        stops, instead of waiting for room that cannot come.
+        """
+        budget = self.evo_config.max_api_costs
+        if budget is None:
+            return False
+        if self.cost_limit_reached:
+            return True
 
         known_cost = self._known_api_cost()
-        if num_active_proposals == 0:
-            return known_cost
-
-        # Use average cost if we have historical data, otherwise use a conservative estimate
-        if self.avg_proposal_cost > 0:
-            estimated_in_flight = num_active_proposals * self.avg_proposal_cost
+        if self._api_budget_exhausted():
+            reason = (
+                f"API cost budget reached: actual=${self.total_api_cost:.4f} + "
+                f"in-flight=${known_cost - self.total_api_cost:.4f} = "
+                f"${known_cost:.4f} >= ${budget:.2f}."
+            )
+        elif self._proposals_covered(known_cost) == 0:
+            reason = (
+                f"API cost budget cannot cover another proposal: "
+                f"${known_cost:.4f} charged + ${self._proposal_reservation():.4f} "
+                f"reserved (the most expensive proposal so far) > ${budget:.2f}."
+            )
         else:
-            # No historical data yet - don't add estimates to avoid blocking early proposals
-            estimated_in_flight = 0.0
+            return False
 
-        return max(known_cost, self.total_api_cost + estimated_in_flight)
+        self.cost_limit_reached = True
+        logger.info(f"{reason} Stopping evolution...")
+        pending_jobs = len(self.running_jobs)
+        pending_proposals = len(self.active_proposal_tasks)
+        if pending_jobs > 0 or pending_proposals > 0:
+            logger.info(
+                f"⏳ Waiting for {pending_jobs} running jobs and "
+                f"{pending_proposals} active proposals to complete..."
+            )
+        return True
+
+    async def _restore_proposal_costs(self) -> None:
+        """Reserve for a resumed run's proposals what the stored ones cost."""
+
+        def read_stored_costs() -> List[float]:
+            import sqlite3
+
+            conn = sqlite3.connect(
+                self.db.config.db_path, check_same_thread=False, timeout=60.0
+            )
+            try:
+                return stored_proposal_costs(conn)
+            finally:
+                conn.close()
+
+        loop = asyncio.get_event_loop()
+        for cost in await loop.run_in_executor(None, read_stored_costs):
+            self._update_avg_proposal_cost(cost)
 
     def _record_oversubscription_timing_sample(self, metadata: Dict[str, Any]) -> None:
         """Update proposal/evaluation timing EWMAs for adaptive oversubscription."""
@@ -1537,6 +1607,7 @@ class ShinkaEvolveRunner:
         # Count recovered failure charges before initialization or scheduling.
         self.total_api_cost = await self._get_total_api_costs()
         logger.info(f"Loaded existing API costs: ${self.total_api_cost:.4f}")
+        await self._restore_proposal_costs()
         configured_seed = self.evo_config.init_program_path
         seed_path = (
             Path(configured_seed)
@@ -2621,32 +2692,11 @@ class ShinkaEvolveRunner:
                     except Exception as e:
                         logger.error(f"Error retrying failed DB jobs: {e}")
 
-                # Only known charges can trigger shutdown. Estimates can pause
-                # proposal admission while active work is still running.
+                # The run winds down once the cap cannot cover another proposal.
+                # A reservation that only holds proposals back while others are
+                # in flight does not stop it.
                 if self.evo_config.max_api_costs is not None:
-                    committed_cost = self._known_api_cost()
-                    if self._api_budget_exhausted():
-                        # Only log once when we first detect the limit
-                        if not self.cost_limit_reached:
-                            self.cost_limit_reached = True
-                            in_flight_cost = committed_cost - self.total_api_cost
-                            logger.info(
-                                f"API cost budget reached: "
-                                f"actual=${self.total_api_cost:.4f} + "
-                                f"in-flight=${in_flight_cost:.4f} = "
-                                f"${committed_cost:.4f} >= "
-                                f"${self.evo_config.max_api_costs:.2f}. "
-                                "Stopping evolution..."
-                            )
-                            pending_jobs = len(self.running_jobs)
-                            pending_proposals = len(self.active_proposal_tasks)
-                            if pending_jobs > 0 or pending_proposals > 0:
-                                logger.info(
-                                    f"⏳ Waiting for {pending_jobs} "
-                                    f"running jobs and {pending_proposals} "
-                                    "active proposals to complete..."
-                                )
-
+                    if self._close_proposal_budget():
                         # Wait for ALL running jobs and proposals to
                         # complete and be processed. A finished job whose
                         # results read is still running is not processed yet.
@@ -2855,26 +2905,12 @@ class ShinkaEvolveRunner:
                     self.finalization_complete.set()
                     break
 
-                # Estimates pause admission. Only observed costs latch the stop.
-                should_generate_proposals = not self.cost_limit_reached
-                if (
-                    not self.cost_limit_reached
-                    and self.evo_config.max_api_costs is not None
-                ):
-                    committed_cost = self._get_committed_cost()
-                    exhausted = self._api_budget_exhausted()
-                    if exhausted or committed_cost >= self.evo_config.max_api_costs:
-                        should_generate_proposals = False
-                        self.cost_limit_reached = exhausted
-                        if self.verbose:
-                            in_flight_cost = committed_cost - self.total_api_cost
-                            logger.info(
-                                f"Pausing proposal admission at the API budget: "
-                                f"actual=${self.total_api_cost:.4f} + "
-                                f"in-flight=${in_flight_cost:.4f} = "
-                                f"${committed_cost:.4f} >= ${self.evo_config.max_api_costs:.2f} "
-                                f"(avg proposal cost: ${self.avg_proposal_cost:.4f})"
-                            )
+                # A proposal starts only if the cap covers a reservation for it
+                # and for every proposal in flight.
+                should_generate_proposals = not self._close_proposal_budget()
+                affordable_proposals = self._proposals_covered(
+                    self._get_committed_cost()
+                )
 
                 # Determine how many proposals to generate
                 # Keep the pipeline full: aim for (running_jobs + active_proposals) = max_evaluation_jobs
@@ -2890,6 +2926,23 @@ class ShinkaEvolveRunner:
                     proposal_slots_remaining,
                     self.max_proposal_jobs - len(self.active_proposal_tasks),
                 )
+                if (
+                    should_generate_proposals
+                    and affordable_proposals is not None
+                    and proposals_needed > affordable_proposals
+                ):
+                    if self.verbose:
+                        logger.info(
+                            f"Holding back {proposals_needed - affordable_proposals} "
+                            f"of {proposals_needed} proposals at the API budget: "
+                            f"${self._get_committed_cost():.4f} charged or reserved "
+                            f"for proposals in flight, "
+                            f"${self._proposal_reservation():.4f} reserved per "
+                            f"proposal (average so far "
+                            f"${self.avg_proposal_cost:.4f}), "
+                            f"cap ${self.evo_config.max_api_costs:.2f}"
+                        )
+                    proposals_needed = affordable_proposals
 
                 if proposals_needed > 0 and should_generate_proposals:
                     # Start the needed proposals

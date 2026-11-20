@@ -182,3 +182,43 @@ def stored_prompt_evolution_cost(program_db_path: str | Path) -> float:
     config = SystemPromptConfig(db_path=str(prompt_db_path))
     with closing(SystemPromptDatabase(config, read_only=True)) as stored:
         return stored.get_total_evolution_costs()
+
+
+def stored_proposal_costs(connection: sqlite3.Connection) -> list[float]:
+    """What each stored proposal cost: evolved programs and failed proposals.
+
+    A resumed run reserves budget for its proposals from this history. Meta
+    calls are left out: they are made after a proposal has been evaluated.
+    """
+
+    def records(query: str) -> list[dict[str, Any]]:
+        loaded = []
+        for (raw,) in connection.execute(query):
+            try:
+                record = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                loaded.append(record)
+        return loaded
+
+    programs = [
+        metadata
+        for metadata in records("SELECT metadata FROM programs WHERE generation > 0")
+        if not (metadata.get("_is_island_copy") or metadata.get("_spawned_island"))
+    ]
+    failed_proposals = [
+        details
+        for details in records(
+            "SELECT details FROM attempt_log WHERE generation > 0 AND status = 'failed'"
+        )
+        if details.get("node_kind") == "failed_proposal"
+    ]
+    costs = (
+        sum(
+            record.get(field, 0.0) or 0.0
+            for field in ("api_costs", "embed_cost", "novelty_cost")
+        )
+        for record in (*programs, *failed_proposals)
+    )
+    return [cost for cost in costs if cost > 0.0]
