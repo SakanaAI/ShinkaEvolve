@@ -665,6 +665,11 @@ class AsymmetricUCB(BanditBase):
             cost_ref = denom_floor
         cost_ref = max(cost_ref, denom_floor)
 
+        # An arm no proposal has been billed for has an unknown cost, not a
+        # cost of zero: a model whose proposals fail before any bill must not
+        # win on price. Assume the reference cost, without the optimism bonus.
+        cost_denom = np.where(have_cost, cost_denom, cost_ref)
+
         return cost_ref / cost_denom
 
     def _restore_cost_range(self, state: Dict[str, Any]) -> None:
