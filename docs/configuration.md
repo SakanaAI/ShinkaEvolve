@@ -177,12 +177,14 @@ Provider errors that cannot succeed on a retry are not retried:
 
 When the endpoint of a mutation model fails, the proposal is tried again with
 another model of the pool, and a warning names the model that failed. Each
-switch uses one of the proposal's resamples (`max_patch_resamples`), and the
-failed model is left out for that proposal only. A proposal that ends without
-an answer from any endpoint counts as an endpoint failure. A single-model pool
-stops the run on the first one. A larger pool records the first two in a row as
-failed proposals and stops the run on the third; a proposal that gets an answer
-restarts the count.
+switch uses one of the proposal's attempts (`max_patch_resamples` for each of
+its `max_novelty_attempts`), and the failed model is left out for that proposal
+only. A proposal whose last attempt failed at the endpoint counts as an
+endpoint failure. A pool with one `llm_models` entry stops the run on the
+first one. A larger pool records the first two in a row as failed proposals and
+stops the run on the third. The entries are counted, not the distinct models:
+the same model listed twice is a pool of two. Any attempt that ends otherwise
+restarts the count: an answer, and also a request the provider rejected.
 
 A stopped run lets the evaluations already submitted finish, logs
 `ASYNC EVOLUTION STOPPED: no LLM endpoint was reachable`, and leaves the last
