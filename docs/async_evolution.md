@@ -45,7 +45,7 @@ runner = ShinkaEvolveRunner(
     job_config=LocalJobConfig(eval_program_path="evaluate.py"),
     db_config=DatabaseConfig(),
     max_evaluation_jobs=2,
-    max_proposal_jobs=3,  # slight proposal oversubscription to keep eval workers busy
+    max_proposal_jobs=3,  # ceiling; going above max_evaluation_jobs needs controlled oversubscription
     max_db_workers=4,
 )
 
@@ -76,7 +76,7 @@ At startup the runner checks the requested worker counts against the machine:
 
 | Knob | Limit | Reason |
 |------|-------|--------|
-| `max_evaluation_jobs` with `LocalJobConfig` | the number of CPU cores, and two per GB of RAM | Each local evaluation is a CPU-bound subprocess. |
+| `max_evaluation_jobs` with `LocalJobConfig` | the smaller of the logical CPU count (`os.cpu_count()`) and two per GB of installed RAM | Each local evaluation is a CPU-bound subprocess. |
 | `max_evaluation_jobs` with a Slurm job config | none | The jobs run on the cluster, not on the submitting machine. |
 | `max_proposal_jobs` | none | A proposal job mostly waits on the LLM. |
 | `max_db_workers` | 8 | Threads on one SQLite database. |
@@ -87,6 +87,11 @@ requested and the granted number:
 ```text
 Concurrency clamp: max_evaluation_jobs requested 16, granted 10 (one CPU-bound evaluation per core, 10 CPU cores)
 ```
+
+`max_proposal_jobs` is a ceiling, not a target. Without controlled
+oversubscription the runner keeps proposals plus running evaluations at
+`max_evaluation_jobs`, so a reduced evaluation count also reduces the proposals
+in flight, and `max_proposal_jobs` above `max_evaluation_jobs` has no effect.
 
 `headless/*` models run one CLI call at a time per runner process, so proposal
 jobs beyond the first wait for their turn. Keep `max_proposal_jobs` small with
@@ -124,20 +129,21 @@ ShinkaEvolveRunner(
 | Medium | 5-20 | eval + 1 to eval + 2 | use adaptive oversubscription |
 | Large | 20+ | eval + 2 to eval + 6 | keep bounded with caps |
 
-Local evaluation jobs above the core count are reduced (see
+Local evaluation jobs above the logical CPU count are reduced (see
 [What the Runner Grants](#what-the-runner-grants)), so the larger rows need a
-Slurm job config or a machine with that many cores.
+Slurm job config or a machine with that many CPUs.
 
 ---
 
 ## Measured Scaling
 
 Throughput relative to one job, measured on a 10-core laptop (8 performance and
-2 efficiency cores, 64 GB RAM) that was also in normal desktop use. Setup:
-`examples/circle_packing` with `shinka_small.yaml`, a CPU-bound evaluation of
-about 2 seconds, equal evaluation and proposal jobs, `max_db_workers=4`, and a
-stub LLM that answers after a fixed delay. Embeddings, novelty checks and
-meta-recommendations were off.
+2 efficiency cores, 64 GB RAM) that was also running other programs (1-minute
+load average 5 to 18 before the runs). Setup: `examples/circle_packing` with
+`shinka_small.yaml`, a CPU-bound evaluation of about 2 seconds, equal evaluation
+and proposal jobs, `max_db_workers=4`, and a stub LLM that answers after a fixed
+delay with a full rewrite. Embeddings, novelty checks and meta-recommendations
+were off. Each cell is the mean of one to three runs of 24 or 40 generations.
 
 | Jobs (evaluation = proposal) | LLM answers in 3 s | LLM answers in 15 s |
 |------------------------------|--------------------|---------------------|
@@ -147,13 +153,19 @@ meta-recommendations were off.
 | 8 | 5.9x | 7.0x |
 | 10 | 6.4x | not measured |
 
-Against the OpenAI API (`gpt-5.4-mini` and `gpt-5.4-nano`, with embeddings and
-novelty checks on) the same example gave 2.0x with 2 jobs and 3.9x with 4.
+The stub numbers need a machine with at least as many CPUs as jobs. With 8 or
+10 jobs they have not been checked against a real LLM API. Against the OpenAI
+API (`gpt-5.4-mini` and `gpt-5.4-nano`, with embeddings and novelty checks on)
+the same example gave about 2x with 2 jobs and 3.9x with 4, as the mean of two
+runs of 16 generations whose speedups ranged from 1.6x to 2.3x and from 3.6x to
+4.1x.
 
-Evaluations that share cores slow each other down: one evaluation took 2.1 s
-with 1 job, 3.1 s with 8 and 3.8 s with 10. If your evaluation scores run time,
-keep `max_evaluation_jobs` well below the core count. The runner process itself
-used 0.13 to 0.19 CPU-seconds per generation, whatever the job count.
+In the stub runs one evaluation took longer the more jobs ran: 2.1 s with 1
+job, 2.2 s with 2, 2.5 s with 4, 3.1 s with 8 and 3.8 s with 10. The OpenAI runs
+with 2 and 4 jobs did not show this (1.8 to 1.9 s throughout). If your
+evaluation scores run time, check its timing at the job count you plan to use.
+The runner process itself used 0.12 to 0.19 CPU-seconds per generation in every
+run.
 
 ---
 

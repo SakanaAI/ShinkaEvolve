@@ -50,7 +50,7 @@ The framework supports **parallel evaluation of candidates** locally or on a Slu
 | 📓 **[Tutorial](https://github.com/SakanaAI/ShinkaEvolve/blob/main/examples/shinka_tutorial.ipynb)** | Interactive walkthrough of Shinka | Hands-on examples, config, best practices |
 | ⚙️  **[Config](https://sakanaai.github.io/ShinkaEvolve/configuration/)** | Comprehensive config reference | All config options & advanced features |
 | 🎨 **[WebUI](https://sakanaai.github.io/ShinkaEvolve/webui/)** | Interactive visualization and monitoring | Real-time tracking, result analysis, debugging | 
-| ⚡ **[Async Evo](https://sakanaai.github.io/ShinkaEvolve/async_evolution/)** | Concurrent throughput (measured: 3.5x with 4 jobs, 6-7x with 8) | Concurrent processing, proposal/eval tuning | 
+| ⚡ **[Async Evo](https://sakanaai.github.io/ShinkaEvolve/async_evolution/)** | Concurrent throughput (measured: about 3.5x with 4 jobs, 6x with 8 on 10 cores) | Concurrent processing, proposal/eval tuning | 
 | 🧠 **[Local Models](https://sakanaai.github.io/ShinkaEvolve/support_local_models/)** | How to use local LLMs and embeddings with Shinka | Running open-source models & integration tips |
 | 🤖 **[Agentic Use](https://sakanaai.github.io/ShinkaEvolve/agentic_usage/)** | Run Shinka with Claude/Codex skills | CLI install, skill placement, setup/run workflows |
 
