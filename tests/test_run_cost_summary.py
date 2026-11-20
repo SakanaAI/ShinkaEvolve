@@ -138,6 +138,18 @@ def test_closing_table_counts_prompt_evolution(db, tmp_path):
     assert _run_accounting(db) == pytest.approx(PROGRAM_ROWS + JOURNAL + 0.04)
 
 
+def test_closing_table_survives_prompt_costs_it_cannot_read(db, tmp_path, caplog):
+    """A summary is no place to fail a run over another database's content."""
+    _add_prompt_evolution_cost(tmp_path, "a lot")  # type: ignore[arg-type]
+
+    summary = _closing_summary(db)
+
+    assert _amount(summary, "Total Combined Cost") == pytest.approx(
+        PROGRAM_ROWS + JOURNAL, abs=1e-4
+    )
+    assert "Prompt evolution costs left out of the summary" in caplog.text
+
+
 def test_running_totals_in_table_titles_are_the_run_accounting(db, tmp_path):
     _add_prompt_evolution_cost(tmp_path, 0.04)
     output = io.StringIO()

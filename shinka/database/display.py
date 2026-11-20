@@ -1,6 +1,5 @@
 import json
 import logging
-import sqlite3
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -61,7 +60,8 @@ class DatabaseDisplay:
             return costs
         try:
             prompt_evolution = stored_prompt_evolution_cost(db_path)
-        except sqlite3.Error as exc:
+        except Exception as exc:
+            # A summary must not fail a run over what the prompt database holds.
             logger.warning("Prompt evolution costs left out of the summary: %s", exc)
             return costs
         return replace(costs, prompt_evolution=prompt_evolution)
