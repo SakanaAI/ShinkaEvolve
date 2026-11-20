@@ -21,6 +21,7 @@ from job_lifecycle_test_utils import (
     write_evaluator_with_worker,
 )
 from shinka.launch import ProcessWithLogging, fatal_signals, local
+from signal_stop_test_utils import FRESH_SIGNALS
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix", reason="requires POSIX process groups"
@@ -141,7 +142,8 @@ def _orchestrator(
     evaluator = write_evaluator_with_worker(tmp_path)
     runner_script = tmp_path / "runner.py"
     runner_script.write_text(
-        dedent(f"""
+        FRESH_SIGNALS
+        + dedent(f"""
             import os
             import sys
             import threading

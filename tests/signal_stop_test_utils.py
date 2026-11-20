@@ -15,6 +15,17 @@ from shinka.launch import fatal_signals, local
 
 FATAL_SIGNALS = [signal.SIGTERM, signal.SIGHUP]
 
+# First lines of a script that a test runs as a process of its own: the fatal
+# signals as a program started from a terminal has them. A test run under
+# `nohup` hands down an ignored SIGHUP, which the hook rightly leaves alone,
+# and the test would wait in vain for the process to die of it.
+FRESH_SIGNALS = """
+import signal
+
+for fatal in (signal.SIGTERM, signal.SIGHUP):
+    signal.signal(fatal, signal.SIG_DFL)
+"""
+
 
 @contextmanager
 def recorded_deaths(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:

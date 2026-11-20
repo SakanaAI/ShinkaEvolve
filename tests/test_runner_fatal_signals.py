@@ -26,6 +26,7 @@ from shinka.core.billing import BillingPersistenceError
 from signal_stop_test_utils import (
     CLEANUP,
     FATAL_SIGNALS,
+    FRESH_SIGNALS,
     raise_hooked,
     recorded_deaths,
     waiting_runner,
@@ -233,7 +234,8 @@ def _killed_runner_events(
     events = tmp_path / "events"
     script = tmp_path / "runner.py"
     script.write_text(
-        dedent("""
+        FRESH_SIGNALS
+        + dedent("""
             import asyncio
             import sys
             import threading
@@ -340,7 +342,8 @@ def test_stopping_runner_kills_its_local_evaluators_before_it_cleans_up(
     events = tmp_path / "events"
     script = tmp_path / "runner.py"
     script.write_text(
-        dedent(f"""
+        FRESH_SIGNALS
+        + dedent(f"""
             import asyncio
             import sys
             from shinka.launch import local

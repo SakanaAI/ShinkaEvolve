@@ -19,7 +19,7 @@ from job_lifecycle_test_utils import (
     write_evaluator_with_worker,
 )
 from shinka.launch import fatal_signals
-from signal_stop_test_utils import FATAL_SIGNALS
+from signal_stop_test_utils import FATAL_SIGNALS, FRESH_SIGNALS
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="requires POSIX signals")
 
@@ -33,7 +33,8 @@ def _run(tmp_path: Path, *, start: str = "", cleanup: str = "") -> Iterator[subp
     """
     script = tmp_path / "run.py"
     script.write_text(
-        dedent("""
+        FRESH_SIGNALS
+        + dedent("""
             import os
             import signal
             import sys
