@@ -50,12 +50,26 @@ def raise_hooked(signum: int) -> None:
 
 
 CLEANUP = [
+    "kill_local:101",
     "flush_charges",
     "finish_wandb",
     "close_db",
     "cancel:101",
     "scheduler.shutdown",
 ]
+
+
+class _LocalEvaluator:
+    """Stands in for evaluator 101's process."""
+
+    def __init__(self, record: Callable[[str], None]) -> None:
+        self._record = record
+
+    def kill_without_reaping(self) -> None:
+        self._record("kill_local:101")
+
+    def __str__(self) -> str:
+        return "101"
 
 
 def waiting_runner(record: Callable[[str], None]) -> ShinkaEvolveRunner:
@@ -76,7 +90,7 @@ def waiting_runner(record: Callable[[str], None]) -> ShinkaEvolveRunner:
     now = time.time()
     runner.running_jobs = [
         AsyncRunningJob(
-            job_id="101",
+            job_id=_LocalEvaluator(record),
             exec_fname="gen_1/main.py",
             results_dir="gen_1/results",
             start_time=now,

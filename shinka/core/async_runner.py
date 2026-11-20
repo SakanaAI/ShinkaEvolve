@@ -1524,6 +1524,13 @@ class ShinkaEvolveRunner:
             self.should_stop.set()
             for task in (*tasks, *self.active_proposal_tasks.values()):
                 task.cancel()
+            # Nobody collects the local evaluators any more. They die now and
+            # not at the end of the cleanup, which still reaps them: whoever
+            # sent SIGTERM may send SIGKILL before the cleanup gets there.
+            for job in list(getattr(self, "running_jobs", ())):
+                kill_at_once = getattr(job.job_id, "kill_without_reaping", None)
+                if kill_at_once is not None:  # Slurm jobs are ids.
+                    kill_at_once()
             try:
                 await finish_cost_recording(self._drain_and_cleanup_async(tasks))
             finally:

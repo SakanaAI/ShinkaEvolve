@@ -10,6 +10,13 @@ from typing import Iterator
 
 import pytest
 
+from job_lifecycle_test_utils import (
+    is_alive,
+    kill_leftovers,
+    wait_until,
+    worker_pid,
+    write_evaluator_with_worker,
+)
 from signal_stop_test_utils import (
     CLEANUP,
     FATAL_SIGNALS,
@@ -186,3 +193,62 @@ def test_signal_ends_a_runner_at_once_whose_run_is_over(tmp_path: Path) -> None:
     )
 
     assert events == ["setup", *CLEANUP]
+
+
+def test_stopping_runner_kills_its_local_evaluators_before_it_cleans_up(
+    tmp_path: Path,
+) -> None:
+    # Whoever sent SIGTERM may follow it with SIGKILL before a slow cleanup
+    # reaches the cancellation of the evaluations.
+    results_dir = tmp_path / "results"
+    evaluator = write_evaluator_with_worker(tmp_path)
+    events = tmp_path / "events"
+    script = tmp_path / "runner.py"
+    script.write_text(
+        dedent(f"""
+            import asyncio
+            import sys
+            from shinka.launch import local
+            from signal_stop_test_utils import waiting_runner
+
+            def record(event):
+                with open({str(events)!r}, "a") as events:
+                    events.write(event + "\\n")
+
+            async def slow_cleanup_step():
+                record("flush_charges")
+                await asyncio.sleep(60)
+
+            runner = waiting_runner(record)
+            runner.running_jobs[0].job_id = local.submit(
+                {str(results_dir)!r},
+                [sys.executable, {str(evaluator)!r}, "--results_dir", {str(results_dir)!r}],
+            )
+            runner._flush_unwritten_charges = slow_cleanup_step
+            runner.run()
+            """)
+    )
+    tests = Path(__file__).resolve().parent
+    runner = subprocess.Popen(
+        [sys.executable, str(script)],
+        env={**os.environ, "PYTHONPATH": f"{tests.parent}{os.pathsep}{tests}"},
+    )
+    evaluator_pid = worker = 0
+    try:
+        worker = worker_pid(results_dir)
+        evaluator_pid = os.getpgid(worker)  # The evaluator leads its group.
+        deadline = time.monotonic() + 60.0
+        while not (events.exists() and "waiting" in events.read_text()):
+            assert runner.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+
+        runner.send_signal(signal.SIGTERM)
+
+        assert wait_until(lambda: not is_alive(evaluator_pid))
+        assert wait_until(lambda: not is_alive(worker))
+        assert runner.poll() is None  # Still cleaning up.
+        assert "flush_charges" in events.read_text()
+    finally:
+        runner.kill()
+        runner.wait()
+        kill_leftovers(*(pid for pid in (evaluator_pid, worker) if pid))
