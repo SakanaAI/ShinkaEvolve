@@ -1,14 +1,18 @@
 """Bandit state persistence that never executes what the state file contains.
 
-States are written as JSON. Runs saved before this format hold a pickle at the
-same path; its values are still read, by `bandit_state_legacy`, without
-unpickling it. That reader is scheduled for removal; its module says when.
+States are written as strict JSON: a non-finite number, which JSON has no token
+for, is the string "Infinity", "-Infinity" or "NaN". Version 1 files wrote
+those as bare tokens, which only Python's parser accepts; they are still read.
+Runs saved before the JSON format hold a pickle at the same path; its values
+are still read, by `bandit_state_legacy`, without unpickling it. That reader is
+scheduled for removal; its module says when.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import stat
 import uuid
@@ -22,18 +26,26 @@ from .bandit_state_legacy import read_legacy_state
 logger = logging.getLogger(__name__)
 
 STATE_FORMAT = "shinka-bandit-state"
-STATE_VERSION = 1
+STATE_VERSION = 2
+_READABLE_VERSIONS = (1, STATE_VERSION)
+_NON_FINITE = {"Infinity": math.inf, "-Infinity": -math.inf, "NaN": math.nan}
+# Fields whose strings are names. Everywhere else a string is a number.
+_NAME_FIELDS = frozenset({"arm_names"})
+
 
 class BanditStateError(ValueError):
     """The bandit state file cannot be read as bandit state."""
 
 
 def write_bandit_state(path: Path, state: dict[str, Any]) -> None:
-    """Atomically write a bandit state as JSON."""
+    """Atomically write a bandit state as strict JSON."""
     document = {
         "format": STATE_FORMAT,
         "version": STATE_VERSION,
-        "state": {key: _plain(key, value) for key, value in state.items()},
+        "state": {
+            key: _non_finite_as_strings(_plain(key, value))
+            for key, value in state.items()
+        },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -41,9 +53,9 @@ def write_bandit_state(path: Path, state: dict[str, Any]) -> None:
         # A plain exclusive create, not a private temporary file: the state
         # keeps the permissions the umask grants, as a direct write would.
         with open(temp_path, "x", encoding="utf-8") as handle:
-            # Infinity and NaN are valid state (log-space zeros, empty ranges);
-            # Python's JSON dialect round-trips them.
-            json.dump(document, handle)
+            # Infinity and NaN are valid state (log-space zeros, empty ranges)
+            # and were turned into strings above; a bare token is refused.
+            json.dump(document, handle, allow_nan=False)
             handle.flush()
             os.fsync(handle.fileno())
         if path.exists():
@@ -76,11 +88,16 @@ def _state_from_json(data: bytes) -> dict[str, Any]:
     if (
         not isinstance(document, dict)
         or document.get("format") != STATE_FORMAT
-        or document.get("version") != STATE_VERSION
+        or document.get("version") not in _READABLE_VERSIONS
         or not isinstance(document.get("state"), dict)
     ):
         raise BanditStateError("bandit state has an unknown format or version")
-    return {key: _plain(key, value) for key, value in document["state"].items()}
+    # json.loads has already turned the bare tokens of a version 1 file into
+    # floats; the strings of a version 2 file follow here.
+    return {
+        key: _plain(key, _non_finite_from_strings(key, value))
+        for key, value in document["state"].items()
+    }
 
 
 def _state_from_legacy_pickle(data: bytes) -> dict[str, Any]:
@@ -89,6 +106,31 @@ def _state_from_legacy_pickle(data: bytes) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - malformed pickles fail in many ways
         raise BanditStateError(f"cannot read legacy bandit state: {exc}") from exc
     return {key: _plain(key, value) for key, value in state.items()}
+
+
+def _non_finite_as_strings(value: Any) -> Any:
+    """Replace the non-finite floats of a plain state value by their names."""
+    if isinstance(value, list):
+        return [_non_finite_as_strings(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "NaN"
+        return "Infinity" if value > 0 else "-Infinity"
+    return value
+
+
+def _non_finite_from_strings(key: str, value: Any) -> Any:
+    """Undo `_non_finite_as_strings` for every field that does not hold names."""
+    if key in _NAME_FIELDS:
+        return value
+    if isinstance(value, list):
+        return [
+            _NON_FINITE.get(item, item) if isinstance(item, str) else item
+            for item in value
+        ]
+    if isinstance(value, str):
+        return _NON_FINITE.get(value, value)
+    return value
 
 
 def _plain(key: str, value: Any) -> Any:
