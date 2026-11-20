@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
 import pytest
 
 import shinka.core.async_runner as async_runner
-from shinka.core import ShinkaEvolveRunner
+from shinka.core import EvolutionConfig, ShinkaEvolveRunner
+from shinka.database import DatabaseConfig
 from shinka.launch import (
     JobConfig,
     LocalJobConfig,
@@ -18,6 +20,7 @@ from shinka.launch import (
 )
 
 RUNNER_LOGGER = "shinka.core.async_runner"
+ASYNC_DOCS = Path(__file__).resolve().parents[1] / "docs" / "async_evolution.md"
 
 
 @pytest.fixture
@@ -205,3 +208,173 @@ def test_slurm_evaluations_are_not_limited_by_the_submitting_machine(
 
     assert granted == (50, 50, 4)
     assert _clamp_warnings(caplog) == []
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "memory_gb", "requested", "granted", "warnings"),
+    [
+        (
+            10,
+            64,
+            (16, 16, 4),
+            (10, 16, 4),
+            [
+                "Concurrency clamp: max_evaluation_jobs requested 16, granted 10 "
+                "(one CPU-bound evaluation per core, 10 CPU cores)"
+            ],
+        ),
+        (
+            10,
+            2,
+            (8, 8, 4),
+            (4, 8, 4),
+            [
+                "Concurrency clamp: max_evaluation_jobs requested 8, granted 4 "
+                "(0.5 GB of RAM assumed per evaluation, 2.0 GB installed)"
+            ],
+        ),
+        (
+            32,
+            64,
+            (2, 2, 16),
+            (2, 2, 8),
+            [
+                "Concurrency clamp: max_db_workers requested 16, granted 8 "
+                "(at most 8 database workers are supported)"
+            ],
+        ),
+    ],
+    ids=["cores", "memory", "db-workers"],
+)
+def test_clamp_warning_reads_as_documented(
+    cpu_count: int,
+    memory_gb: float,
+    requested: tuple[int, int, int],
+    granted: tuple[int, int, int],
+    warnings: list[str],
+    set_memory_gb: Callable[[float], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    set_memory_gb(memory_gb)
+
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        result = _runner()._validate_concurrency_settings(*requested, cpu_count)
+
+    assert result == granted
+    assert _clamp_warnings(caplog) == warnings
+
+
+def test_async_docs_quote_the_clamp_warning_as_the_runner_logs_it(
+    set_memory_gb: Callable[[float], None], caplog: pytest.LogCaptureFixture
+) -> None:
+    set_memory_gb(64)
+
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        _runner()._validate_concurrency_settings(16, 16, 4, 10)
+
+    [warning] = _clamp_warnings(caplog)
+    assert warning in ASYNC_DOCS.read_text(encoding="utf-8").splitlines()
+
+
+def test_unknown_memory_warning_says_the_size_is_assumed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def _fail() -> None:
+        raise OSError("no memory information")
+
+    monkeypatch.setattr(async_runner.psutil, "virtual_memory", _fail)
+
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        _runner()._validate_concurrency_settings(32, 32, 4, 64)
+
+    assert _clamp_warnings(caplog) == [
+        "Concurrency clamp: max_evaluation_jobs requested 32, granted 16 "
+        "(0.5 GB of RAM assumed per evaluation, "
+        "8.0 GB assumed, memory size unknown)"
+    ]
+
+
+def test_a_machine_with_less_memory_than_one_evaluation_still_runs_one(
+    set_memory_gb: Callable[[float], None], caplog: pytest.LogCaptureFixture
+) -> None:
+    set_memory_gb(0.3)
+
+    with caplog.at_level(logging.WARNING, logger=RUNNER_LOGGER):
+        granted = _runner()._validate_concurrency_settings(4, 4, 2, 4)
+
+    assert granted == (1, 4, 2)
+    assert _clamp_warnings(caplog) == [
+        "Concurrency clamp: max_evaluation_jobs requested 4, granted 1 "
+        "(0.5 GB of RAM assumed per evaluation, 0.3 GB installed)"
+    ]
+
+
+def _built_runner(
+    results_dir: Path,
+    job_config: JobConfig,
+    job_type: str,
+    requested: tuple[int, int, int],
+) -> ShinkaEvolveRunner:
+    return ShinkaEvolveRunner(
+        EvolutionConfig(
+            results_dir=str(results_dir),
+            num_generations=1,
+            job_type=job_type,
+            embedding_model=None,
+            llm_models=[],
+            llm_dynamic_selection=None,
+            init_program_path=None,
+        ),
+        job_config,
+        DatabaseConfig(num_islands=1),
+        verbose=False,
+        banner_style="minimal",
+        max_evaluation_jobs=requested[0],
+        max_proposal_jobs=requested[1],
+        max_db_workers=requested[2],
+    )
+
+
+def test_local_runner_is_built_with_the_granted_worker_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    set_memory_gb: Callable[[float], None],
+) -> None:
+    set_memory_gb(16)
+    monkeypatch.setattr(async_runner.os, "cpu_count", lambda: 4)
+    job_config = LocalJobConfig()
+
+    runner = _built_runner(tmp_path, job_config, "local", (12, 40, 9))
+
+    try:
+        assert runner.max_evaluation_jobs == 4
+        assert runner.max_proposal_jobs == 40
+        assert runner.max_db_workers == 8
+        assert runner.evaluation_slot_pool.capacity == 4
+        assert runner.sampling_slot_pool.capacity == 40
+        assert runner.postprocess_slot_pool.capacity == 8
+        # The numeric-thread cap follows the granted evaluations, not the request.
+        assert job_config.numeric_threads_per_job == 1
+    finally:
+        runner.scheduler.shutdown()
+
+
+def test_slurm_runner_is_built_with_the_requested_evaluation_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    set_memory_gb: Callable[[float], None],
+) -> None:
+    set_memory_gb(8)
+    monkeypatch.setattr(async_runner.os, "cpu_count", lambda: 4)
+    job_config = SlurmCondaJobConfig()
+
+    runner = _built_runner(tmp_path, job_config, "slurm_conda", (50, 50, 4))
+
+    try:
+        assert runner.max_evaluation_jobs == 50
+        assert runner.max_proposal_jobs == 50
+        assert runner.max_db_workers == 4
+        assert runner.evaluation_slot_pool.capacity == 50
+        assert job_config.numeric_threads_per_job is None
+    finally:
+        runner.scheduler.shutdown()
