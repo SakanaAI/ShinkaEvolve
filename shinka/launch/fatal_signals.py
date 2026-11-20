@@ -125,7 +125,8 @@ class SignalStop:
 
         If a signal asked the runs to stop and this was the last one to
         finish, this does not return: the process dies of that signal, so
-        that its exit status shows what ended it.
+        that its exit status shows what ended it. As the first process of a
+        container it exits with 128 plus the signal's number instead.
         """
         if self not in _stops:
             return
@@ -269,3 +270,7 @@ def _die_with_evaluators(signum: int) -> None:
         # Then end the way the signal would have ended this process.
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
+        if os.getpid() == 1:
+            # The kernel keeps a signal with its default action from the first
+            # process of a container. Exit as a shell reports such a death.
+            os._exit(128 + signum)

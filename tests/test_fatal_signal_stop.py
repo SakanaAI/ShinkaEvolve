@@ -202,6 +202,26 @@ def test_signal_that_finds_no_run_to_ask_ends_the_process_at_once(
     assert deaths == [signal.SIGTERM]
 
 
+@pytest.mark.parametrize("stopping_a_run", [False, True])
+def test_first_process_of_a_container_exits_when_the_signal_cannot_kill_it(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch, stopping_a_run: bool
+) -> None:
+    # The kernel does not deliver a signal with its default action to pid 1.
+    exits: list[int] = []
+    monkeypatch.setattr(os, "getpid", lambda: 1)
+    monkeypatch.setattr(os, "_exit", exits.append)
+    fatal_signals.kill_evaluators_on_fatal_signals()
+    stop = fatal_signals.stop_on_fatal_signals(lambda received: None)
+    if not stopping_a_run:
+        stop.finish()
+
+    raise_hooked(signal.SIGTERM)
+    stop.finish()
+
+    assert deaths == [signal.SIGTERM]
+    assert exits == [128 + signal.SIGTERM]
+
+
 def test_request_that_cannot_be_passed_on_ends_the_process(deaths: list[int]) -> None:
     def closed_loop(received: signal.Signals) -> None:
         raise RuntimeError("Event loop is closed")
