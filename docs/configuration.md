@@ -11,7 +11,7 @@ Configuration values are resolved in this order (later wins):
 1. Dataclass defaults in code:
    - `shinka/core/config.py` (`EvolutionConfig`)
    - `shinka/database/dbase.py` (`DatabaseConfig`)
-   - `shinka/launch/scheduler.py` (`LocalJobConfig`, `SlurmDockerJobConfig`, `SlurmCondaJobConfig`)
+   - `shinka/launch/job_config.py` (`LocalJobConfig`, `SlurmDockerJobConfig`, `SlurmCondaJobConfig`)
 2. Hydra preset YAMLs in `shinka/configs/`
 3. Task/cluster/variant overrides from Hydra composition
 4. CLI overrides (`shinka_launch ... key=value`, or `shinka_run --set ...`)
@@ -237,7 +237,7 @@ complete CLI configuration.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `eval_program_path` | `Optional[str]` | `'evaluate.py'` | Evaluation script path. |
-| `extra_cmd_args` | `Dict[str, Any]` | `{}` | Extra CLI args forwarded to eval script. |
+| `extra_cmd_args` | `Dict[str, Any]` | `{}` | Extra CLI args forwarded to the eval script as `--key value`. Values reach it literally: `$VAR` and `~` are not expanded. |
 | `eval_verbose` | `bool` | `True` | Print the per-run evaluation banners to stdout. Passed to the evaluation process as `SHINKA_EVAL_VERBOSE`. |
 | `numeric_threads_per_job` | `Optional[int]` | `None` | Thread cap for numeric libraries (OMP, BLAS, MKL, ...) in each evaluation process. `None` leaves the libraries' defaults on Slurm; for local jobs the runner sets it to `cpu_count // max_evaluation_jobs`. |
 
@@ -245,7 +245,7 @@ complete CLI configuration.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `time` | `Optional[str]` | `None` | Optional timeout (`HH:MM:SS`). |
+| `time` | `Optional[str]` | `None` | Wall-clock limit for one evaluation, in any format listed under [Time limits](#time-limits-time). Unset: the [hang limit](#hang-limit-for-local-jobs-without-time) applies. |
 | `conda_env` | `Optional[str]` | `None` | Optional conda env for local execution. |
 | `activate_script` | `Optional[str]` | `None` | Optional sourceable env script, e.g. `.venv/bin/activate`. |
 | `python_executable` | `Optional[str]` | `None` | Interpreter that runs the evaluation script. `None` uses the interpreter running Shinka. Ignored when `conda_env` or `activate_script` is set. |
@@ -258,7 +258,7 @@ complete CLI configuration.
 | `image_tar_path` | `Optional[str]` | `None` | Optional image tar for upload/load. |
 | `docker_flags` | `str` | `''` | Extra docker flags. |
 | `partition` | `str` | `'gpu'` | SLURM partition. |
-| `time` | `str` | `'01:00:00'` | SLURM time limit. |
+| `time` | `str` | `'01:00:00'` | SLURM time limit, passed to `sbatch --time`. See [Time limits](#time-limits-time). |
 | `cpus` | `int` | `1` | CPU request. |
 | `gpus` | `int` | `1` | GPU request. |
 | `mem` | `Optional[str]` | `'8G'` | Memory request. |
@@ -271,12 +271,71 @@ complete CLI configuration.
 | `activate_script` | `Optional[str]` | `None` | Sourceable env script path, e.g. `.venv/bin/activate`. |
 | `modules` | `Optional[List[str]]` | `None` | Modules to load (normalized to `[]` at runtime). |
 | `partition` | `str` | `'gpu'` | SLURM partition. |
-| `time` | `str` | `'01:00:00'` | SLURM time limit. |
+| `time` | `str` | `'01:00:00'` | SLURM time limit, passed to `sbatch --time`. See [Time limits](#time-limits-time). |
 | `cpus` | `int` | `1` | CPU request. |
 | `gpus` | `int` | `1` | GPU request. |
 | `mem` | `Optional[str]` | `'8G'` | Memory request. |
 
 `conda_env` and `activate_script` are mutually exclusive.
+
+#### Time limits (`time`)
+
+`time` takes every format `sbatch --time` accepts, for local and Slurm jobs:
+
+| Format | Example | Meaning |
+|--------|---------|---------|
+| `minutes` | `90` | 90 minutes |
+| `minutes:seconds` | `10:30` | 10 minutes 30 seconds |
+| `hours:minutes:seconds` | `01:00:00` | 1 hour |
+| `days-hours` | `1-12` | 1 day 12 hours |
+| `days-hours:minutes` | `1-12:30` | 1 day 12 hours 30 minutes |
+| `days-hours:minutes:seconds` | `1-12:30:15` | 1 day 12 hours 30 minutes 15 seconds |
+
+A bare number is minutes, not seconds. As in Slurm, fields are not
+range-checked: `00:90:00` is 90 minutes. Slurm job configs also accept
+`unlimited`, `infinite` and `-1`. `LocalJobConfig` rejects those: leave `time`
+unset for a local job without a fixed limit. The value is checked when the job
+config is created, so an invalid `time` raises `ValueError` before any
+evaluation starts.
+
+Quote the value in YAML files: `time: "10:00"`. YAML reads an unquoted `10:00`
+or `1:30:00` as the base-60 number 600 or 5400, which is then taken as minutes
+(10 hours and 90 hours). Values that start with a zero (`00:10:00`),
+`--set job.time=...` and Hydra command-line overrides keep their text.
+
+Who enforces the limit depends on the job type:
+
+- **Local jobs.** The clock starts when the evaluator is launched. The runner
+  kills an evaluation that runs longer than `time`, together with every process
+  it started, and stores the generation as an incorrect program.
+- **Slurm jobs.** `time` goes to `sbatch`, and Slurm enforces it from the moment
+  the job starts running. The runner puts no clock of its own on a Slurm job,
+  so time spent waiting in the queue does not count.
+
+#### Hang limit for local jobs without `time`
+
+When `time` is unset, the runner still stops local evaluations that never
+return. It learns the limit from the run:
+
+- Once an evaluation has finished with a correct result, the limit is
+  `5 x longest successful evaluation + 60 s`. Crashes and incorrect results are
+  left out, so a candidate that fails after one second cannot shrink the limit.
+  This limit has no cap.
+- Before the first success the limit is provisional:
+  `5 x longest evaluation that has ended + 60 s`, whatever its outcome, and at
+  most one hour. Evaluations the limit killed count too, so a limit learned
+  from an early crash grows about fivefold with each kill instead of killing
+  every slower candidate. When it reaches one hour the runner logs a warning:
+  set `time` if your evaluations need longer.
+- The seed evaluation runs before anything is known. Only `time` bounds it.
+- A resumed run evaluates no seed. It starts from the evaluation time stored
+  with its best program when that program is correct. Otherwise it has no limit
+  until one of its own evaluations has ended.
+
+An evaluation over the limit is logged as `Hung job detected`, killed with every
+process it started, and stored as an incorrect program. The limit in use is
+logged as `Hang limit for local evaluations: ...` each time it changes. Slurm
+jobs get no hang limit.
 
 #### Evaluation results
 
@@ -354,6 +413,27 @@ The `squeue` error `Invalid job id specified` triggers terminal verification
 through accounting or the controller. Verification allows six rounds, ten
 seconds apart, with at most one accounting and one
 controller command per round, including command errors and timeouts.
+
+#### Slurm evaluations after the seed
+
+Later generations are submitted with `sbatch` and tracked through the queue:
+
+- One `squeue` call covers every tracked job. It runs at most every 5 seconds
+  and has a 30-second timeout.
+- A job is finished when it has left the queue. A job id the controller no
+  longer knows (`Invalid job id specified`) counts as finished.
+- A failed lookup finishes no job. While the controller is down or `squeue`
+  times out, every tracked job stays active; the run waits and goes on when the
+  controller answers. The outage is logged as a warning, then as an error every
+  5 minutes while it lasts.
+- A job that is held, or has spent 30 minutes in the queue without running, is
+  reported in a warning with its state and reason, for example
+  `12345 PENDING (Priority) for 30 min`. The warning repeats every 30 minutes.
+  The runner does not cancel the job: it holds its evaluation slot until Slurm
+  starts or clears it, or until you cancel it with `scancel`.
+- The results of a job that has left the queue are read and checked as
+  described under [Evaluation results](#evaluation-results). Slurm reports no
+  exit status to the runner, so the exit-status rule applies to local jobs only.
 
 ---
 

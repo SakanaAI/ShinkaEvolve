@@ -325,7 +325,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 |-----|---------------|------|-------------|
 | `eval_program_path` | `"evaluate.py"` | `Optional[str]` | Path to evaluation script |
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
-| `time` | `None` | `Optional[str]` | Time limit for job execution |
+| `time` | `None` | `Optional[str]` | Time limit per evaluation in any `sbatch --time` format (`"90"` is 90 minutes, `"01:30:00"`, `"1-12"`). If None, a hang limit is learned from the longest successful evaluation |
 | `conda_env` | `None` | `Optional[str]` | Conda environment to run jobs in |
 | `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 
@@ -338,7 +338,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | `image_tar_path` | `None` | `Optional[str]` | Path to Docker image tar file |
 | `docker_flags` | `""` | `str` | Additional Docker flags |
 | `partition` | `"gpu"` | `str` | SLURM partition to use |
-| `time` | `"01:00:00"` | `str` | Job time limit |
+| `time` | `"01:00:00"` | `str` | Job time limit in any `sbatch --time` format, enforced by SLURM |
 | `cpus` | `1` | `int` | Number of CPUs to request |
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
@@ -352,12 +352,14 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 | `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 | `modules` | `[]` | `Optional[List[str]]` | Environment modules to load |
 | `partition` | `"gpu"` | `str` | SLURM partition to use |
-| `time` | `"01:00:00"` | `str` | Job time limit |
+| `time` | `"01:00:00"` | `str` | Job time limit in any `sbatch --time` format, enforced by SLURM |
 | `cpus` | `1` | `int` | Number of CPUs to request |
 | `gpus` | `1` | `int` | Number of GPUs to request |
 | `mem` | `"8G"` | `Optional[str]` | Memory to request |
 
 `conda_env` and `activate_script` are mutually exclusive.
+
+See the [Configuration Guide](https://sakanaai.github.io/ShinkaEvolve/configuration/) for the `time` formats, the hang limit of local jobs, how evaluation results are validated, and the remaining job options.
 
 </details>
 
