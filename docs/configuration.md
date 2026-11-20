@@ -393,8 +393,10 @@ complete CLI configuration.
 A bare number is minutes, not seconds. As in Slurm, fields are not
 range-checked: `00:90:00` is 90 minutes. Slurm job configs also accept
 `unlimited`, `infinite` and `-1`. `LocalJobConfig` rejects those: leave `time`
-unset for a local job without a fixed limit. A local `time` of `"0"` is a
-zero-second limit that kills every evaluation. The value is checked when the
+unset for a local job without a fixed limit. A local `time` of `"0"`, given as
+a string, is a zero-second limit: an evaluation is killed the first time the
+runner checks on it. The number 0 (an unquoted `time: 0` in YAML,
+`+job_config.time=0` with Hydra) counts as unset. The value is checked when the
 job config is created, so an invalid `time` is rejected before any evaluation
 starts: the config class raises `ValueError`, and `shinka_launch` and
 `shinka_run` report it as a startup error.
@@ -404,6 +406,13 @@ or `1:30:00` as the base-60 number 600 or 5400, which is then taken as minutes
 (10 hours and 90 hours), and an unquoted `030` as the octal number 24. Clock
 values that start with a zero (`00:10:00`), `--set job.time=...` and Hydra
 command-line overrides keep their text.
+
+With `shinka_launch` and the local preset (`cluster=local`, the default),
+`job_config` has no `time` key. Add one with `+job_config.time=00:05:00`;
+without the `+`, Hydra stops with `Could not override 'job_config.time'`. The
+`time` of a task preset sits under `distributed_job_config` and reaches Slurm
+jobs only, so a local `shinka_launch` run has just the hang limit until you
+add a `time`.
 
 Who enforces the limit depends on the job type:
 
