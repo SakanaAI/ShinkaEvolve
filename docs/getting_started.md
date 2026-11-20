@@ -351,8 +351,9 @@ def aggregate_metrics(results, results_dir):
 internal analysis and debugging only.
 
 `combined_score` must be a finite number: a correct program with a NaN or
-infinite score, or an evaluator that reports a correct program and exits
-non-zero, is stored as incorrect. See
+infinite score is stored as incorrect. So is one whose evaluator reports it
+correct and exits non-zero, for local jobs and the Slurm seed; Slurm reports
+no exit status for later generations. See
 [Evaluation results](configuration.md#evaluation-results) for the full contract.
 
 ---
