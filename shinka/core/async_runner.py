@@ -1179,6 +1179,17 @@ class ShinkaEvolveRunner:
         reserved = len(self.active_proposal_tasks) * self._proposal_reservation()
         return self._known_api_cost() + reserved
 
+    def _awaiting_first_proposal_cost(self) -> bool:
+        """True while a capped run has no proposal cost to reserve from.
+
+        Until the first proposal has shown what one costs, every proposal
+        started is a request the cap cannot account for, so one goes first.
+        """
+        return (
+            self.evo_config.max_api_costs is not None
+            and not self.completed_proposal_costs
+        )
+
     def _proposals_covered(self, cost: float) -> Optional[int]:
         """How many proposal reservations fit between a cost and the cap.
 
@@ -2934,9 +2945,15 @@ class ShinkaEvolveRunner:
                 # A proposal starts only if the cap covers a reservation for it
                 # and for every proposal in flight.
                 should_generate_proposals = not self._close_proposal_budget()
-                affordable_proposals = self._proposals_covered(
-                    self._get_committed_cost()
-                )
+                awaiting_first_cost = self._awaiting_first_proposal_cost()
+                if awaiting_first_cost:
+                    affordable_proposals: Optional[int] = (
+                        0 if self.active_proposal_tasks else 1
+                    )
+                else:
+                    affordable_proposals = self._proposals_covered(
+                        self._get_committed_cost()
+                    )
 
                 # Determine how many proposals to generate
                 # Keep the pipeline full: aim for (running_jobs + active_proposals) = max_evaluation_jobs
@@ -2957,7 +2974,15 @@ class ShinkaEvolveRunner:
                     and affordable_proposals is not None
                     and proposals_needed > affordable_proposals
                 ):
-                    if self.verbose:
+                    if self.verbose and awaiting_first_cost:
+                        logger.info(
+                            f"Holding back {proposals_needed - affordable_proposals} "
+                            f"of {proposals_needed} proposals until the cost of the "
+                            f"first proposal is known: the API budget "
+                            f"(cap ${self.evo_config.max_api_costs:.2f}) has "
+                            f"nothing to reserve from yet"
+                        )
+                    elif self.verbose:
                         logger.info(
                             f"Holding back {proposals_needed - affordable_proposals} "
                             f"of {proposals_needed} proposals at the API budget: "

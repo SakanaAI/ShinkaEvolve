@@ -132,10 +132,38 @@ def test_proposals_are_held_back_released_and_then_stopped_as_charges_arrive():
     assert runner.cost_limit_reached is True
 
 
-def test_first_proposals_start_without_a_cost_history():
+def test_one_proposal_goes_first_when_a_capped_run_has_no_cost_history():
+    """Nothing can be reserved yet, so only one request is exposed to the cap."""
     runner = _runner(charged=0.0, in_flight=0, history=[])
 
-    assert _coordinator_tick(runner, wanted=2) == [2]
+    assert _coordinator_tick(runner, wanted=4) == [1]
+
+
+def test_further_proposals_wait_until_the_cost_of_the_first_is_known(caplog):
+    runner = _runner(charged=0.0, in_flight=1, history=[])
+
+    with caplog.at_level(logging.INFO, logger="shinka.core.async_runner"):
+        assert _coordinator_tick(runner, wanted=3) == []
+    assert runner.cost_limit_reached is False
+    assert "until the cost of the first proposal is known" in caplog.text
+
+    runner.active_proposal_tasks.clear()
+    runner.total_api_cost = 0.05
+    runner._update_avg_proposal_cost(0.05)
+
+    assert _coordinator_tick(runner, wanted=3) == [3]
+
+
+def test_a_first_proposal_that_cost_nothing_opens_up_the_others():
+    runner = _runner(charged=0.0, in_flight=0, history=[0.0])
+
+    assert _coordinator_tick(runner, wanted=3) == [3]
+
+
+def test_first_proposals_all_start_at_once_without_a_cap():
+    runner = _runner(charged=0.0, in_flight=0, history=[], cap=None)
+
+    assert _coordinator_tick(runner, wanted=4) == [4]
 
 
 def test_a_cap_that_exactly_covers_the_next_proposal_admits_it():

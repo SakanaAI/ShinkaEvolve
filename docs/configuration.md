@@ -468,8 +468,9 @@ at most the cost of those requests. That happens when
 - a proposal costs more than its reservation, that is, more than each of the
   50 proposals before it. A proposal joins that history when its program is
   handed to evaluation or when it has failed for good;
-- the first `max_proposal_jobs` proposals of a new results directory start.
-  They have no cost history yet and so no reservation;
+- the first proposal of a new results directory starts. It has no cost
+  history to reserve from, so it runs alone: the other proposal workers start
+  once its cost is known;
 - a meta summary, a prompt evolution step or an LLM-generated initial program
   runs. These calls are not reserved. They start whenever the known charges
   are below the cap, and what they cost is then missing for the proposals in
