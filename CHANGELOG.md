@@ -70,6 +70,15 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Resolve the run database in the `shinka-inspect` skill through the shared
   resolver in PR #231, so custom and first-release names are found. The script
   no longer takes the first `*.sqlite` file in a directory.
+- Limit each worker pool by what its workers cost in PR #235. Proposal jobs,
+  which mostly wait on the LLM, are granted as requested instead of being cut
+  to half the core count. Local evaluation jobs stay limited to one per core
+  and two per GB of RAM, Slurm evaluation jobs are no longer limited by the
+  submitting machine, and database workers stay capped at eight. Every
+  reduction is logged at WARNING with the requested and granted numbers.
+  Configurations the old rule cut now use more CPU and send more concurrent LLM
+  requests. The async guide and README state measured scaling instead of a
+  5-10x speedup.
 
 ### Deprecated
 
