@@ -64,7 +64,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `novelty_llm_models` | `Optional[List[str]]` | `None` | Optional novelty-judge model pool. |
 | `novelty_llm_kwargs` | `dict` | `{}` | kwargs for novelty-judge LLM calls. |
 | `use_text_feedback` | `bool` | `False` | Include text feedback in mutation prompts. |
-| `max_api_costs` | `Optional[float]` | `None` | Stops new paid API requests once known charges reach this amount in USD. |
+| `max_api_costs` | `Optional[float]` | `None` | Budget in USD for the paid API calls of a run, counted across resumes. Proposals start only while it covers a reservation for them; it is not a hard limit. See [API Cost Cap](#api-cost-cap). |
 | `enable_controlled_oversubscription` | `bool` | `False` | Enable bounded proposal oversubscription when proposal generation is slower than evaluation. |
 | `proposal_target_mode` | `str` | `'adaptive'` | Proposal target controller mode: `adaptive` or `fixed`. |
 | `proposal_target_min_samples` | `int` | `5` | Minimum completed timing samples required before adaptive targeting activates. |
@@ -692,6 +692,62 @@ evo_config:
 
 Use `max_proposal_jobs: 1` if you want sync-like proposal behavior with no
 proposal backlog.
+
+### API Cost Cap
+
+`max_api_costs` is a budget in USD for every paid API call of a run: proposals,
+embeddings, novelty checks, meta summaries and prompt evolution. A resumed run
+starts from the charges already stored in its results directory.
+
+What it guarantees:
+
+- No paid request starts once the charges the run knows of have reached the
+  cap. A charge is known when the reply arrives, not when the request is sent.
+- A proposal starts only if the cap covers the known charges plus one
+  reservation for the new proposal and one for every proposal still in flight.
+  The reservation is the cost of the most expensive of the last 50 proposals
+  this results directory has paid for, failed ones included. An unusually
+  expensive proposal therefore holds proposals back only until 50 newer ones
+  have finished. What a proposal in flight has already been charged counts on
+  top of its reservation.
+- When no proposal is in flight and the cap cannot cover even one more
+  reservation, the run finishes its evaluations and stops. The log line names
+  the amounts, for example `API cost budget cannot cover another proposal:
+  $0.3978 charged + $0.1497 reserved (the most expensive of the last 50
+  proposals) > $0.45`. A run can therefore end with up to one reservation
+  unspent. To use the rest, resume it with a cap that covers the charges so
+  far plus that reservation: a resumed run reserves from the last 50 stored
+  proposals, and with a smaller raise it stops again before its first request.
+
+What it does not guarantee: that the total stays below the cap. The price of a
+request is known only after the reply, and a request that is in flight when
+the known charges reach the cap is still billed. The total passes the cap by
+at most the cost of those requests. That happens when
+
+- a proposal costs more than its reservation, that is, more than each of the
+  50 proposals before it. A proposal joins that history when its program is
+  handed to evaluation or when it has failed for good;
+- a proposal starts before any proposal of the results directory has been
+  charged. There is nothing to reserve from yet, so proposals run one at a
+  time until one has joined the history; then the other proposal workers
+  start;
+- a meta summary, a prompt evolution step or an LLM-generated initial program
+  runs. These calls are not reserved. They start whenever the known charges
+  are below the cap, and what they cost is then missing for the proposals in
+  flight.
+
+One LLM request costs at most about `max_tokens` output tokens at the model's
+output price, plus its prompt; reasoning tokens count as output. With
+`max_tokens: 32768`, one `gpt-5.4-mini` reply that spends the whole output
+budget costs $0.15. To keep the total below a fixed limit, set the cap lower
+than the limit by that amount for every request that can be in flight at
+once, or lower `max_tokens` and the reasoning effort. In flight at once are
+
+- one request for each of the `max_proposal_jobs` proposal workers;
+- the requests of a meta summary. It sends one request for every program
+  evaluated since the last summary, all at the same time: `meta_rec_interval`
+  of them (10 by default), or more when several evaluations finish together;
+- the request of a prompt evolution step.
 
 ### Database Presets
 
