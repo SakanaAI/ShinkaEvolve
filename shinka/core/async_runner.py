@@ -18,7 +18,7 @@ import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from contextvars import Token
+from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
@@ -52,6 +52,7 @@ from shinka.llm import (
     AsymmetricUCB,
     ThompsonSampler,
 )
+from shinka.llm.prioritization import ProposalOutcomes
 from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
 from shinka.core.endpoint_failures import (
     endpoint_failures_before_stop,
@@ -114,6 +115,11 @@ from shinka.utils.general import load_result_logs
 from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
+
+# The outcomes of the proposal task this coroutine runs in, if it runs in one.
+_task_outcomes: ContextVar[Optional[ProposalOutcomes]] = ContextVar(
+    "task_outcomes", default=None
+)
 
 _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
@@ -3161,6 +3167,10 @@ class ShinkaEvolveRunner:
 
         costs_transferred = False
         scope, token = self._begin_api_cost_scope()
+        # The model is selected once and may be called many times below; the
+        # bandit hears once per model what the task got from it.
+        outcomes = ProposalOutcomes(getattr(self, "llm_selection", None))
+        outcomes_token = _task_outcomes.set(outcomes)
         try:
             # Select LLM once per program generation (before all loops)
             model_sample_probs = None
@@ -3369,6 +3379,8 @@ class ShinkaEvolveRunner:
                 if proposal_accepted:
                     break
 
+            outcomes.report()
+
             # Add meta-recommendations/summary/scratchpad to meta_patch_data (same as sync runner)
             if meta_recs is not None:
                 meta_patch_data["meta_recommendations"] = meta_recs
@@ -3548,6 +3560,7 @@ class ShinkaEvolveRunner:
                 )
             raise
         finally:
+            _task_outcomes.reset(outcomes_token)
             await self._finish_api_cost_scope(scope, token, "proposal", generation)
 
     async def _save_patch_attempt_async(
@@ -3626,6 +3639,23 @@ class ShinkaEvolveRunner:
 
         metadata_file = attempt_dir / "metadata.json"
         await write_file_async(str(metadata_file), json.dumps(metadata, indent=2))
+
+    def _proposal_delivered(self, model_name: str) -> None:
+        """Note that a proposal call to `model_name` returned a usable patch."""
+        outcomes = _task_outcomes.get()
+        if outcomes is not None:
+            outcomes.delivered(model_name)
+        elif self.llm_selection is not None:
+            # Not inside a proposal task: the call is all there is to report.
+            self.llm_selection.update_delivered(model_name)
+
+    def _proposal_failed(self, model_name: str, cost: float) -> None:
+        """Note that a proposal call to `model_name` returned no usable patch."""
+        outcomes = _task_outcomes.get()
+        if outcomes is not None:
+            outcomes.failed(model_name, cost)
+        elif self.llm_selection is not None:
+            self.llm_selection.update_failed(arm=model_name, cost=cost)
 
     def _other_model_probs(
         self,
@@ -4136,11 +4166,11 @@ class ShinkaEvolveRunner:
                         )
                         self._print_metadata_table(meta_patch_data, generation)
 
-                    # Update LLM selection: cost and outcome. Reported last, so
-                    # a proposal that breaks above is not reported as delivered.
+                    # Update LLM selection: cost and outcome. Noted last, so a
+                    # proposal that breaks above does not count as delivered.
                     if self.llm_selection is not None:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-                        self.llm_selection.update_delivered(model_name)
+                        self._proposal_delivered(model_name)
                     return patch_txt, meta_patch_data, True
 
                 # Patch application failed
@@ -4193,7 +4223,7 @@ class ShinkaEvolveRunner:
             # No usable patch: a failed proposal for the LLM selection. Its
             # bill is no cost observation, so update_cost is not called.
             if self.llm_selection is not None:
-                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
+                self._proposal_failed(model_name, total_costs)
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
@@ -4207,8 +4237,8 @@ class ShinkaEvolveRunner:
 
         except LLMEndpointError as exc:
             if self.llm_selection is not None and "model_name" in llm_kwargs:
-                self.llm_selection.update_failed(
-                    arm=llm_kwargs["model_name"], cost=total_costs + exc.cost
+                self._proposal_failed(
+                    llm_kwargs["model_name"], total_costs + exc.cost
                 )
             metadata = {
                 "api_costs": total_costs + exc.cost,
@@ -4222,9 +4252,7 @@ class ShinkaEvolveRunner:
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
             if self.llm_selection is not None and "model_name" in llm_kwargs:
-                self.llm_selection.update_failed(
-                    arm=llm_kwargs["model_name"], cost=total_costs
-                )
+                self._proposal_failed(llm_kwargs["model_name"], total_costs)
             return None, {
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
                 "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
@@ -4414,11 +4442,11 @@ class ShinkaEvolveRunner:
                     if self.verbose:
                         self._print_metadata_table(meta_patch_data, generation)
 
-                    # Update LLM selection: cost and outcome. Reported last, so
-                    # a proposal that breaks above is not reported as delivered.
+                    # Update LLM selection: cost and outcome. Noted last, so a
+                    # proposal that breaks above does not count as delivered.
                     if self.llm_selection is not None:
                         self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-                        self.llm_selection.update_delivered(model_name)
+                        self._proposal_delivered(model_name)
                     return patch_txt, meta_patch_data, True
                 else:
                     # Failure, try again
@@ -4468,7 +4496,7 @@ class ShinkaEvolveRunner:
             # No usable patch: a failed proposal for the LLM selection. Its
             # bill is no cost observation, so update_cost is not called.
             if self.llm_selection is not None:
-                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
+                self._proposal_failed(model_name, total_costs)
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
@@ -4485,8 +4513,8 @@ class ShinkaEvolveRunner:
         except LLMEndpointError as exc:
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
             if self.llm_selection is not None and "model_name" in llm_kwargs:
-                self.llm_selection.update_failed(
-                    arm=llm_kwargs["model_name"], cost=total_costs + exc.cost
+                self._proposal_failed(
+                    llm_kwargs["model_name"], total_costs + exc.cost
                 )
             metadata = {
                 "api_costs": total_costs + exc.cost,
@@ -4502,9 +4530,7 @@ class ShinkaEvolveRunner:
             # Restore original task_sys_msg in case of exception
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
             if self.llm_selection is not None and "model_name" in llm_kwargs:
-                self.llm_selection.update_failed(
-                    arm=llm_kwargs["model_name"], cost=total_costs
-                )
+                self._proposal_failed(llm_kwargs["model_name"], total_costs)
             return (
                 None,
                 {

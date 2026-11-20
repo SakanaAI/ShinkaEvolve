@@ -1822,3 +1822,46 @@ class ThompsonSampler(BanditBase):
         ):
             self._restore_observation_range(state)
         self._restore_outcomes(state)
+
+
+class ProposalOutcomes:
+    """What each model made of one proposal task, reported to the bandit once.
+
+    A task picks its model once and may then call it several times: patch
+    resamples, novelty retries. If every call were an outcome, one unlucky
+    task or one bad minute of a provider would fill most of an arm's failure
+    memory. The calls are collected here instead, and `report` tells the
+    bandit once per model: delivered if any of its calls returned a patch,
+    failed if none did.
+
+    A failed report carries what the model's failed calls were billed. The
+    failed calls of a model that delivered in the same task are not passed
+    on; its cost observations stay one per delivered patch.
+    """
+
+    def __init__(self, bandit: Optional[BanditBase]):
+        self._bandit = bandit
+        # In the order the models were first called.
+        self._delivered: Dict[Arm, bool] = {}
+        self._failed_bills: Dict[Arm, float] = {}
+
+    def delivered(self, arm: Arm) -> None:
+        """A call to `arm` returned a usable patch."""
+        self._delivered[arm] = True
+
+    def failed(self, arm: Arm, cost: float = 0.0) -> None:
+        """A call to `arm` returned no usable patch and was billed `cost`."""
+        self._delivered.setdefault(arm, False)
+        self._failed_bills[arm] = self._failed_bills.get(arm, 0.0) + cost
+
+    def report(self) -> None:
+        """Tell the bandit and forget; a second call has nothing to report."""
+        outcomes, self._delivered = self._delivered, {}
+        bills, self._failed_bills = self._failed_bills, {}
+        if self._bandit is None:
+            return
+        for arm, delivered in outcomes.items():
+            if delivered:
+                self._bandit.update_delivered(arm)
+            else:
+                self._bandit.update_failed(arm, cost=bills.get(arm, 0.0))

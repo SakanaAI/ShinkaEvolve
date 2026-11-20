@@ -4,16 +4,18 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
 import pytest
 
 from shinka.core import async_runner
 from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.database import Program
-from shinka.llm.prioritization import AsymmetricUCB, BanditBase
+from shinka.llm.prioritization import AsymmetricUCB, BanditBase, ProposalOutcomes
 from shinka.llm.providers.errors import LLMEndpointError, RequestRejectedError
 from shinka.llm.providers.result import QueryResult
 
 MODEL = "model-a"
+OTHER = "model-b"
 RESPONSE = "<NAME>tweak</NAME>\n```python\nx = 2\n```"
 REPLY_COST = 0.03
 
@@ -379,3 +381,158 @@ def test_bandit_with_its_own_arm_names_keeps_working(
     assert metadata["endpoint_error"] == {"status_code": 401, "code": "invalid_api_key"}
     assert bandit.submitted == [2, 0]
     assert bandit.costs == [REPLY_COST, 0.0]
+
+
+class _SelectingBandit(_RecordingBandit):
+    """Selects the first of the two models for every task."""
+
+    def select_llm(self) -> Tuple[Any, Any]:
+        return np.array([1.0, 0.0]), np.array([0.5, 0.5])
+
+
+class _PoolLLM:
+    """Two models; `replies[model]()` answers a query sent to that model."""
+
+    model_names = [MODEL, OTHER]
+    model_sample_probs = [0.5, 0.5]
+
+    def __init__(self, replies: Dict[str, Callable[[], Optional[QueryResult]]]) -> None:
+        self.replies = replies
+
+    def get_kwargs(self, model_sample_probs: Any = None) -> Dict[str, Any]:
+        model = self.model_names[int(np.argmax(model_sample_probs))]
+        return {"model_name": model, "temperature": 0.0}
+
+    async def query(self, **kwargs: Any) -> Optional[QueryResult]:
+        return self.replies[kwargs["llm_kwargs"]["model_name"]]()
+
+
+def _run_task(
+    replies: Dict[str, Callable[[], Optional[QueryResult]]], bandit: Any
+) -> None:
+    """One proposal task as the runner runs it: one selection, then the
+    resample and novelty loops around the real patch call."""
+    runner = _build_runner(_reply, bandit)
+    runner.llm = _PoolLLM(replies)
+    runner.evo_config = SimpleNamespace(
+        max_patch_attempts=1,
+        max_patch_resamples=3,
+        max_novelty_attempts=3,
+        max_api_costs=None,
+        language="python",
+    )
+    runner.db_config = SimpleNamespace(parent_selection_strategy="weighted")
+    runner.novelty_judge = None
+    runner.slot_available = asyncio.Event()
+    parent = Program(id="parent", code="x = 1", generation=0)
+
+    async def sample(**_kwargs: Any) -> Tuple[Any, ...]:
+        return parent, [], [], False
+
+    async def no_embedding(_exec_fname: str) -> Tuple[None, float]:
+        return None, 0.0
+
+    async def settled(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def not_submitted(**_kwargs: Any) -> None:
+        raise RuntimeError("the test stops before evaluation")
+
+    runner.async_db = SimpleNamespace(sample_with_fix_mode_async=sample)
+    runner._get_code_embedding_async = no_embedding
+    runner._record_terminal_failed_proposal = settled
+    runner._record_evaluation_charge = settled
+    runner._record_unattached_cost = settled
+    runner._submit_evaluation_job_with_slot = not_submitted
+    asyncio.run(
+        runner._generate_evolved_proposal(
+            1, "task", "unused", "unused", None, None, None, 0, None, 1
+        )
+    )
+
+
+def _outcomes(bandit: _RecordingBandit) -> List[Tuple[Any, ...]]:
+    return [call for call in bandit.calls if call[0] in ("delivered", "failed")]
+
+
+def test_task_whose_patches_never_apply_reports_one_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three novelty attempts of three resamples call the same model nine times."""
+    monkeypatch.setattr(async_runner, "apply_patch_async", _patch_does_not_apply)
+    bandit = _SelectingBandit()
+
+    _run_task({MODEL: _reply}, bandit)
+
+    assert bandit.calls.count(("submitted", MODEL)) == 9
+    assert _outcomes(bandit) == [("failed", MODEL, pytest.approx(9 * REPLY_COST))]
+
+
+def test_task_that_delivers_after_failed_resamples_reports_no_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = iter([_patch_does_not_apply, _patch_does_not_apply, _patch_applies])
+
+    async def third_time_lucky(**kwargs: Any) -> Tuple[Any, ...]:
+        return await next(applied)(**kwargs)
+
+    monkeypatch.setattr(async_runner, "apply_patch_async", third_time_lucky)
+    bandit = _SelectingBandit()
+
+    _run_task({MODEL: _reply}, bandit)
+
+    assert bandit.calls.count(("submitted", MODEL)) == 3
+    assert _outcomes(bandit) == [("delivered", MODEL)]
+    # The cost observation is the call that delivered, as before.
+    assert ("cost", MODEL, REPLY_COST) in bandit.calls
+
+
+def test_task_that_moves_to_another_model_reports_both_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(async_runner, "apply_patch_async", _patch_applies)
+    bandit = _SelectingBandit()
+
+    _run_task(
+        {MODEL: _raise(LLMEndpointError(401, "invalid_api_key")), OTHER: _reply},
+        bandit,
+    )
+
+    assert _outcomes(bandit) == [("failed", MODEL, 0.0), ("delivered", OTHER)]
+
+
+def test_cancelled_task_reports_no_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(async_runner, "apply_patch_async", _patch_does_not_apply)
+    replies = iter([_reply, _raise(asyncio.CancelledError())])
+    bandit = _SelectingBandit()
+
+    with pytest.raises(asyncio.CancelledError):
+        _run_task({MODEL: lambda: next(replies)()}, bandit)
+
+    assert bandit.calls.count(("submitted", MODEL)) == 2
+    assert _outcomes(bandit) == []
+
+
+def test_outcomes_of_one_task_reach_the_real_bandit_once() -> None:
+    bandit = AsymmetricUCB(arm_names=[MODEL, OTHER], cost_aware_coef=0.5)
+    outcomes = ProposalOutcomes(bandit)
+
+    for _ in range(9):
+        outcomes.failed(MODEL, cost=REPLY_COST)
+    outcomes.failed(OTHER, cost=REPLY_COST)
+    outcomes.delivered(OTHER)
+    outcomes.report()
+    outcomes.report()  # Nothing is left to report.
+
+    assert bandit.recent_failed.tolist() == [1.0, 0.0]
+    assert bandit.recent_delivered.tolist() == [0.0, 1.0]
+    # The bills of a model that gave the task nothing are its cost so far.
+    assert bandit.total_costs.tolist() == [pytest.approx(9 * REPLY_COST), 0.0]
+
+
+def test_outcomes_without_a_bandit_are_dropped() -> None:
+    outcomes = ProposalOutcomes(None)
+    outcomes.failed(MODEL)
+    outcomes.delivered(OTHER)
+
+    outcomes.report()
