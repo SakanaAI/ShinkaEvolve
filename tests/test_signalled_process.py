@@ -123,9 +123,13 @@ BUSY_STEP = """
     import hashlib
 
     def rounds_for(seconds):
-        rounds, started = 50_000, time.perf_counter()
-        hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
-        per_second = rounds / (time.perf_counter() - started)
+        # By the fastest of five short calls: one that shared its core with
+        # other processes counts too few rounds, and the step ends early.
+        per_second = 0.0
+        for _ in range(5):
+            rounds, started = 50_000, time.perf_counter()
+            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
+            per_second = max(per_second, rounds / (time.perf_counter() - started))
         return int(per_second * seconds)
 
     def busy(seconds, rounds=None):
