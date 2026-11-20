@@ -88,6 +88,10 @@ requested and the granted number:
 Concurrency clamp: max_evaluation_jobs requested 16, granted 10 (one CPU-bound evaluation per core, 10 CPU cores)
 ```
 
+`os.cpu_count()` is the CPU count of the whole machine. In a container or a
+Slurm allocation that was given fewer CPUs it is too high, so set
+`max_evaluation_jobs` to the number you were given.
+
 With a Slurm job config the runner does not know the cluster's limits. Keep
 `max_evaluation_jobs` at or below the number of jobs your account may have
 submitted at one time (`MaxSubmitJobs` of your Slurm association or QOS). A
