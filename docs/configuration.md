@@ -112,35 +112,41 @@ also retain these billed results so callers can include their costs.
 
 `llm_kwargs`, `meta_llm_kwargs`, `novelty_llm_kwargs` and `prompt_llm_kwargs`
 take the same keys. Each key holds one value or a list; a list is sampled from
-for every request.
+for each query.
 
-| Key | Meaning |
-|-----|---------|
-| `temperatures` | Sampling temperature. Not sent to every model; see below. |
-| `max_tokens` | Output token limit. Reasoning tokens count toward it where the provider bills them as output. |
-| `reasoning_efforts` | Reasoning or thinking effort, one of the names below. Default `disabled`. |
+| Key | Meaning | When the key is missing |
+|-----|---------|-------------------------|
+| `temperatures` | Sampling temperature. Not sent to every model; see below. | `0.75` |
+| `max_tokens` | Output token limit. Reasoning tokens count toward it where the provider bills them as output. Capped at 128000 for Claude models with adaptive thinking and at 64000 for older Claude reasoning models. | `4096` |
+| `reasoning_efforts` | Reasoning or thinking effort, one of the names below. | `disabled` |
+
+The missing-key values are the client's own defaults, not the `llm_kwargs`
+default of the table above. They apply to `meta_llm_kwargs`,
+`novelty_llm_kwargs` and `prompt_llm_kwargs`, which default to `{}`, and to an
+`llm_kwargs` you replace as a whole: `{"reasoning_efforts": "high"}` alone
+runs with `max_tokens` 4096.
 
 `temperatures` does not apply to Claude models, on Anthropic or Bedrock: the
 API no longer accepts a temperature, so they sample at its default. It is also
-not sent to OpenAI and Azure reasoning models, DeepSeek V4 models, and the
-Gemini models that take a thinking level. A few OpenRouter reasoning models
-only run at temperature 1.0 and get that value.
+not sent to OpenAI reasoning models, DeepSeek V4 models, and the Gemini models
+that take a thinking level. OpenRouter models listed as reasoning models always
+get temperature 1.0.
 
 `reasoning_efforts` accepts `disabled`, `none`, `min`, `minimal`, `low`,
 `medium`, `high`, `xhigh` and `max`, in any letter case. An unset value, `""`
-and YAML `off` mean `disabled`. `auto` is deprecated and treated as `disabled`
-with a warning. Any other name raises an error when the LLM client is built,
-before the first request. Every name works with every model; it is mapped onto
-what the model offers:
+and an unquoted `off` in a YAML file mean `disabled`. `auto` is deprecated and
+treated as `disabled` with a warning. Any other name raises an error when the
+LLM client is built, before the first request. Every name is accepted for
+every model and mapped onto what the model offers:
 
 | Models | Mapping |
 |--------|---------|
-| Without reasoning (for example `gpt-4.1`) | Ignored. |
-| OpenAI, Azure and OpenRouter reasoning models before GPT-6 | Sent as named, except `min` → `low` and `max` → `high`. `none`, `minimal` and `xhigh` exist only on some of these models. `disabled` sends no effort, or `low` to a model that cannot run without reasoning. |
+| Models the pricing catalog does not list as reasoning models (for example `gpt-4.1` and `local/...` endpoints) | Ignored. |
+| OpenAI and OpenRouter reasoning models before GPT-6 | Sent as named, except `min` → `low` and `max` → `high`. `none`, `minimal` and `xhigh` exist only on some of these models: where the model lacks the level, the name is still sent and the provider decides. `disabled` sends no effort, so the provider's default applies, or `low` to a model that cannot run without reasoning. |
 | GPT-6 family | `disabled` and `none` → `none`, or `low` on GPT-6 Astra and GPT-6.1 Sol, which require reasoning. `min` and `minimal` → `low`. The rest as named. |
-| Claude with adaptive thinking (Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) | `disabled`, `none`, `min` and `minimal` → `low`. The rest as named. `disabled` and `none` also switch thinking off on Haiku 5.5; on Fable and Opus it stays on. |
-| Models with a thinking-token budget (older Claude models, Gemini models without thinking levels) | `min` and `minimal` 1024 tokens, `low` 2048, `medium` 4096, `high` 8192, `xhigh` 12288, `max` 16384; 1024 when the budget does not fit below `max_tokens`. `disabled` and `none` turn thinking off, or set a 128-token budget on Gemini 2.5 Pro and Gemini 3 Pro preview, which cannot turn it off. |
-| Gemini with thinking levels (3.5 Flash-Lite, 3.6 to 3.8 Flash, Gemini 4) | `min`, `minimal` and `low` → `LOW`; `medium` → `MEDIUM`; `high`, `xhigh` and `max` → `HIGH`. `disabled` and `none` send no level. |
+| Claude with adaptive thinking (Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) | `disabled`, `none`, `min` and `minimal` → `low`. The rest as named. `disabled` and `none` also set thinking to `disabled` on Haiku 5.5 and to `between_tools` on Sonnet 5.5; on Fable and Opus it stays adaptive. |
+| Models with a thinking-token budget (older Claude models, Gemini models without thinking levels) | `min` and `minimal` 1024 tokens, `low` 2048, `medium` 4096, `high` 8192, `xhigh` 12288, `max` 16384. A budget that is not below `max_tokens` falls back to 1024: with `max_tokens: 16384`, `max` gives 1024, so set `max_tokens` above the budget you want. `disabled` and `none` turn thinking off, or set a 128-token budget on Gemini 2.5 Pro and Gemini 3 Pro preview, which cannot turn it off. |
+| Gemini with thinking levels (3.5 Flash-Lite, 3.6 to 3.8 Flash, Gemini 4) | `min`, `minimal` and `low` → `LOW`, except `min` and `minimal` → `MINIMAL` on 3.5 Flash-Lite; `medium` → `MEDIUM`; `high`, `xhigh` and `max` → `HIGH`. `disabled` and `none` send no level. |
 | DeepSeek reasoning models | `disabled` and `none` turn thinking off. `max` → `max`. Every other name → `high`. |
 
 #### LLM endpoint failures
@@ -151,16 +157,22 @@ Provider errors that cannot succeed on a retry are not retried:
   wrong for every request. So do the account-wide failures that arrive under
   other statuses: `API_KEY_INVALID`, `invalid_api_key`, `insufficient_quota`
   and Anthropic's "credit balance is too low".
-- Any other 4xx except 408, 409, 425, 429 and 499 rejects that one request. The
-  generation is recorded as a failed proposal and the run goes on. An
-  OpenRouter 403 counts as a rejected request, because OpenRouter answers 403
-  when its moderation flags the input.
+- Any other 4xx except 408, 409, 425, 429 and 499 rejects that one request: it
+  is not sent again as it is. The proposal is resampled like any other failed
+  patch, and if no attempt succeeds the generation is recorded as a failed
+  proposal and the run goes on. An OpenRouter 403 counts as a rejected request,
+  because OpenRouter answers 403 when its moderation flags the input.
+- A provider's `x-should-retry` response header takes precedence for every
+  error outside the first bullet: `false` makes it a rejected request, `true`
+  keeps it retried.
 
-When an endpoint fails, the proposal is tried again with another model of the
-pool, and a warning names the model that failed. A proposal that finds no
-reachable model counts as an endpoint failure. A single-model pool stops the
-run on the first one. A larger pool records the first two in a row as failed
-proposals and stops the run on the third; a proposal that gets an answer
+When the endpoint of a mutation model fails, the proposal is tried again with
+another model of the pool, and a warning names the model that failed. Each
+switch uses one of the proposal's resamples (`max_patch_resamples`), and the
+failed model is left out for that proposal only. A proposal that ends without
+an answer from any endpoint counts as an endpoint failure. A single-model pool
+stops the run on the first one. A larger pool records the first two in a row as
+failed proposals and stops the run on the third; a proposal that gets an answer
 restarts the count.
 
 A stopped run lets the evaluations already submitted finish, logs
@@ -168,7 +180,8 @@ A stopped run lets the evaluations already submitted finish, logs
 generation unconsumed. Fix the credentials, the model access or the endpoint,
 then start the run again with the same `results_dir` to resume it.
 `runner.evolution_failed` is `True` after such a run and `shinka_run` exits
-with status 1, as both do when a run produces no evolved program.
+with status 1, as both do when a run of more than one generation produces no
+evolved program. `shinka_launch` does not report the stop in its exit status.
 
 W&B logging examples:
 
@@ -245,28 +258,31 @@ A run stores its programs in `<results_dir>/<db_path>`, or in
 `<results_dir>/programs.sqlite` when `db_path` is unset, as in the shipped
 presets and examples. Rules for `db_path` in a run:
 
-- Only the file name counts. The database always sits directly in
+- Only the file name counts. A new database always sits directly in
   `results_dir`, because the prompt database, the meta files, the web UI and
   the analysis helpers look next to it. An absolute path or a path with
   directories is reduced to its file name and the runner logs a warning: set
   `results_dir` to move a run.
-- Give the name a `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
+- Give the name a lower-case `.sqlite` or `.db` suffix. The web UI, `load_programs_to_df`
   and the resume rule below recognise database files by it; the runner warns
   about any other name. `prompts.sqlite` and `prompts.db`, in any letter case,
   belong to the prompt database and are refused, as is a value that names no
   file (`..`).
 - A run never starts at generation 0 next to programs it did not ask for. If
   the configured file has no programs but `programs.sqlite` or a database of the
-  first releases (`evolution_db.sqlite`) does, the run resumes in that one and
-  logs a warning. Use a new `results_dir` to start over.
+  first releases does, the run resumes in that one and logs a warning. The
+  first-release places are `evolution_db.sqlite`, a file named `None`, and the
+  nested path `<results_dir>/<db_path>` for a `db_path` with directories. Use a
+  new `results_dir` to start over.
 - Programs under any other name are not adopted. If the configured file has no
   programs and another database in `results_dir` does (the run was started with
   a `db_path` the configuration no longer has, or somebody left a copy there),
   the runner stops with an error that lists the files: set `db_path` to the one
   to continue.
 - A configured database that exists but cannot be read (damaged, locked, not
-  permitted, or not a program database) is not swapped for another file in the
-  directory. The run fails when it opens it.
+  permitted, or with a `programs` table of another layout) is not swapped for
+  another file in the directory. The run fails when it opens it. A file without
+  a `programs` table counts as having no programs.
 
 The database presets carry `db_path: null`, so `db_config.db_path=<name>` works
 as a Hydra override. With `shinka_run`, use `--set db.db_path=<name>`.
@@ -274,10 +290,12 @@ as a Hydra override. With `shinka_run`, use `--set db.db_path=<name>`.
 `load_programs_to_df(results_dir)`, `python -m shinka.plots.code_path_anim` and
 the `shinka-inspect` skill look in the same places. Because reading changes
 nothing, they also load a database under an unknown name when it is the only
-one in the directory, and `load_programs_to_df` prints the name of the file it
-loaded instead of `programs.sqlite`. With several such databases none of them
-guesses; `load_programs_to_df` and the skill take the path of the file instead.
-A `ProgramDatabase` you open yourself uses `db_path` as the full file path.
+one in the directory. When `load_programs_to_df` loads another file than
+`programs.sqlite`, it prints `Loading <name>: programs.sqlite holds no programs.`
+With several such databases none of them guesses: `load_programs_to_df` prints
+the error and returns `None`, and the skill stops with it. Both take the path
+of the database file instead of the directory. A `ProgramDatabase` you open
+yourself uses `db_path` as the full file path.
 
 `island_selection_strategy` picks the island a parent is sampled from. `uniform`
 treats all islands alike and `equal` picks the island with the fewest correct
@@ -352,7 +370,7 @@ complete CLI configuration.
 
 #### Time limits (`time`)
 
-`time` takes every format `sbatch --time` accepts, for local and Slurm jobs:
+`time` takes the numeric formats of `sbatch --time`, for local and Slurm jobs:
 
 | Format | Example | Meaning |
 |--------|---------|---------|
@@ -366,20 +384,23 @@ complete CLI configuration.
 A bare number is minutes, not seconds. As in Slurm, fields are not
 range-checked: `00:90:00` is 90 minutes. Slurm job configs also accept
 `unlimited`, `infinite` and `-1`. `LocalJobConfig` rejects those: leave `time`
-unset for a local job without a fixed limit. The value is checked when the job
-config is created, so an invalid `time` raises `ValueError` before any
-evaluation starts.
+unset for a local job without a fixed limit. A local `time` of `"0"` is a
+zero-second limit that kills every evaluation. The value is checked when the
+job config is created, so an invalid `time` is rejected before any evaluation
+starts: the config class raises `ValueError`, and `shinka_launch` and
+`shinka_run` report it as a startup error.
 
 Quote the value in YAML files: `time: "10:00"`. YAML reads an unquoted `10:00`
 or `1:30:00` as the base-60 number 600 or 5400, which is then taken as minutes
-(10 hours and 90 hours). Values that start with a zero (`00:10:00`),
-`--set job.time=...` and Hydra command-line overrides keep their text.
+(10 hours and 90 hours), and an unquoted `030` as the octal number 24. Clock
+values that start with a zero (`00:10:00`), `--set job.time=...` and Hydra
+command-line overrides keep their text.
 
 Who enforces the limit depends on the job type:
 
 - **Local jobs.** The clock starts when the evaluator is launched. The runner
-  kills an evaluation that runs longer than `time`, together with every process
-  it started, and stores the generation as an incorrect program.
+  kills an evaluation that runs longer than `time`, together with its process
+  group, and stores the generation as an incorrect program.
 - **Slurm jobs.** `time` goes to `sbatch`, and Slurm enforces it from the moment
   the job starts running. The runner puts no clock of its own on a Slurm job,
   so time spent waiting in the queue does not count.
@@ -392,20 +413,23 @@ return. It learns the limit from the run:
 - Once an evaluation has finished with a correct result, the limit is
   `5 x longest successful evaluation + 60 s`. Crashes and incorrect results are
   left out, so a candidate that fails after one second cannot shrink the limit.
-  This limit has no cap.
+  This limit has no cap, and only a longer success raises it: a candidate that
+  needs more than five times the longest success so far is killed every time.
+  Set `time` if your runtimes vary that much.
 - Before the first success the limit is provisional:
   `5 x longest evaluation that has ended + 60 s`, whatever its outcome, and at
   most one hour. Evaluations the limit killed count too, so a limit learned
   from an early crash grows about fivefold with each kill instead of killing
   every slower candidate. When it reaches one hour the runner logs a warning:
-  set `time` if your evaluations need longer.
+  set `time` if your evaluations need longer. The first success replaces the
+  provisional limit, which can lower it.
 - The seed evaluation runs before anything is known. Only `time` bounds it.
 - A resumed run evaluates no seed. It starts from the evaluation time stored
   with its best program when that program is correct. Otherwise it has no limit
   until one of its own evaluations has ended.
 
-An evaluation over the limit is logged as `Hung job detected`, killed with every
-process it started, and stored as an incorrect program. The limit in use is
+An evaluation over the limit is logged as `Hung job detected`, killed with its
+process group, and stored as an incorrect program. The limit in use is
 logged as `Hang limit for local evaluations: ...` each time it changes. Slurm
 jobs get no hang limit.
 
@@ -419,38 +443,43 @@ same contract:
 - `correct.json` is a JSON object whose `correct` is a JSON boolean (`true` or
   `false`, not `"true"` or `1`). An optional `error` string says what failed.
 - `metrics.json` is a JSON object. `combined_score` is a finite number, not
-  NaN, an infinity, a string or a boolean; a missing `combined_score` counts
-  as 0.0. `public` and `private` are JSON objects when present. `text_feedback`
+  NaN, an infinity, `null`, a string or a boolean; a missing `combined_score`
+  counts as 0.0. `public` and `private` are JSON objects when present. `text_feedback`
   is optional.
 
 A program is stored as correct only when both files can be read and are valid,
-`correct` is `true` and, for local jobs, the evaluator exited with status 0.
-Otherwise:
+`correct` is `true` and, for local jobs and the Slurm seed, the evaluator
+exited with status 0. Otherwise:
 
 - A result that cannot be trusted is stored as an incorrect program with score
   0.0 and `metadata.evaluation_failed`: a file is missing or unreadable,
   `correct` is not a boolean, a correct program has unusable metrics, or a
-  local evaluator reported a correct program and exited non-zero. The
-  diagnostic and the evaluator's own `text_feedback` or `error` go to
-  `text_feedback`. For generations after the seed, what the evaluator reported
-  is kept in `metadata.rejected_evaluation` (`correct`, `metrics`,
-  `exit_status`).
+  local evaluator reported a correct program and exited non-zero. For
+  generations after the seed, the diagnostic and the evaluator's own
+  `text_feedback` or `error` go to `text_feedback`, and what the evaluator
+  reported is kept in `metadata.rejected_evaluation` (`correct`, `metrics`,
+  `exit_status`). A failed seed stores the diagnostic only.
 - A program reported as incorrect is stored as reported, with its feedback and
   metrics, whatever the exit status. Unusable metric values are replaced by
   defaults (score 0.0, empty `public` or `private`) and noted in `stderr_log`.
-  The seed is the exception: a local seed evaluator that exits non-zero is
-  stored as a failed evaluation whatever it reported.
+  The seed is the exception: a seed evaluator that exits non-zero is stored
+  as a failed evaluation whatever it reported. An evaluator that exits
+  non-zero for an incorrect program therefore loses its feedback on the seed.
 
-A finished job is not dropped when its results cannot be read or stored:
+A finished job is kept when its results cannot be read or stored at first:
 
 - A results read that raises is retried, five attempts in all.
 - A results read that hangs, for example on a stalled network file system, is
   waited for once (30 seconds) and then checked without blocking for up to 150
-  seconds in all, so it cannot hold up the other jobs.
+  seconds in all, so it holds up the other jobs only during those first 30
+  seconds.
 - Storing the program row is retried the same way, five attempts in all.
 
-When the attempts run out, the generation is recorded as a failed program
-(`metadata.results_missing` and `metadata.evaluation_failed`).
+The attempts follow each other within a fraction of a second, so they cover a
+momentary failure, not an outage. When they run out, the generation is recorded
+as a failed program (`metadata.results_missing` and
+`metadata.evaluation_failed`), also when its results had been read. If that row
+cannot be written either, the job is logged as `JOB LOST` and has no row.
 
 #### Slurm seed evaluation
 
@@ -490,22 +519,24 @@ controller command per round, including command errors and timeouts.
 
 Later generations are submitted with `sbatch` and tracked through the queue:
 
-- One `squeue` call covers every tracked job. It runs at most every 5 seconds
-  and has a 30-second timeout.
+- Tracked jobs are polled together with one `squeue` call, at most every 5
+  seconds and with a 30-second timeout.
 - A job is finished when it has left the queue. A job id the controller no
   longer knows (`Invalid job id specified`) counts as finished.
 - A failed lookup finishes no job. While the controller is down or `squeue`
   times out, every tracked job stays active; the run waits and goes on when the
   controller answers. The outage is logged as a warning, then as an error every
   5 minutes while it lasts.
-- A job that is held, or has spent 30 minutes in the queue without running, is
-  reported in a warning with its state and reason, for example
-  `12345 PENDING (Priority) for 30 min`. The warning repeats every 30 minutes.
-  The runner does not cancel the job: it holds its evaluation slot until Slurm
-  starts or clears it, or until you cancel it with `scancel`.
+- A job that is held, or has spent 30 minutes in the queue in any state other
+  than `RUNNING`, is reported in a warning with its state and reason, for
+  example `12345 PENDING (Priority) for 30 min`. The warning repeats every 30
+  minutes. The runner does not cancel the job: it holds its evaluation slot
+  until Slurm starts it or removes it from the queue, or until you cancel it
+  with `scancel`.
 - The results of a job that has left the queue are read and checked as
   described under [Evaluation results](#evaluation-results). Slurm reports no
-  exit status to the runner, so the exit-status rule applies to local jobs only.
+  exit status to the runner for these jobs, so the exit-status rule does not
+  apply to them.
 
 ---
 

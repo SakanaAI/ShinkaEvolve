@@ -325,7 +325,7 @@ Class defaults below come from `shinka/database/dbase.py` (`DatabaseConfig`). Hy
 |-----|---------------|------|-------------|
 | `eval_program_path` | `"evaluate.py"` | `Optional[str]` | Path to evaluation script |
 | `extra_cmd_args` | `{}` | `Dict[str, Any]` | Additional command line arguments |
-| `time` | `None` | `Optional[str]` | Time limit per evaluation in any `sbatch --time` format (`"90"` is 90 minutes, `"01:30:00"`, `"1-12"`). If None, a hang limit is learned from the longest successful evaluation |
+| `time` | `None` | `Optional[str]` | Time limit per evaluation in the numeric `sbatch --time` formats (`"90"` is 90 minutes, `"01:30:00"`, `"1-12"`). If None, a hang limit is learned from the longest successful evaluation |
 | `conda_env` | `None` | `Optional[str]` | Conda environment to run jobs in |
 | `activate_script` | `None` | `Optional[str]` | Sourceable env script path, e.g. `.venv/bin/activate` |
 
