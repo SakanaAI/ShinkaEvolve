@@ -37,7 +37,7 @@ Concurrency is configured on `ShinkaEvolveRunner`, not on `EvolutionConfig`.
 | `language` | `str` | `'python'` | Language tag for prompts + file handling. |
 | `llm_models` | `List[str]` | `['gpt-5-mini', 'gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gpt-5.4']` | Mutation model pool. |
 | `llm_dynamic_selection` | `Optional[Union[str, BanditBase]]` | `'ucb'` | Dynamic model selection (`fixed`, `ucb`, `ucb1`, `thompson`, or bandit object). |
-| `llm_dynamic_selection_kwargs` | `dict` | `{'cost_aware_coef': 0.5}` | kwargs forwarded to selected bandit. |
+| `llm_dynamic_selection_kwargs` | `dict` | `{'cost_aware_coef': 0.5}` | kwargs forwarded to selected bandit. See [Model selection and failing models](#model-selection-and-failing-models). |
 | `llm_kwargs` | `dict` | `{'temperatures': [0.0, 0.5, 1.0], 'max_tokens': 16384}` | Sampling settings for mutation LLM calls. See [LLM sampling settings](#llm-sampling-settings-llm_kwargs). |
 | `meta_rec_interval` | `Optional[int]` | `10` | Generation interval for meta recommendations. |
 | `meta_llm_models` | `Optional[List[str]]` | `None` | Model pool for meta-recommendations. |
@@ -157,6 +157,94 @@ other deployment falls under the first row, also when it serves a reasoning
 model: for `azure-gpt-5-mini` or `azure-o4-mini`, `reasoning_efforts` is
 ignored without a warning and a `temperatures` value is sent, where
 `gpt-5-mini` and `o4-mini` get the effort and no temperature.
+
+#### Model selection and failing models
+
+`llm_dynamic_selection` chooses the model of each proposal task from
+`llm_models`. `ucb` (also `ucb1`) and `thompson` learn from the scores of the
+evaluated programs, `fixed` draws from fixed probabilities, and `null` uses no
+bandit. The UCB settings are described in
+[UCB1 Bandit LLM Selection](bandit_selection.md).
+
+The runner also tells the bandit, once per proposal task and model, whether
+the model delivered a patch. A task counts as failed for a model that gave it
+no patch: its endpoint failed, its request was rejected, or none of its
+replies in the task held a patch that applies. Cancelled tasks, tasks stopped by the API cost
+cap and errors on the runner's side, such as a full disk, are not counted.
+
+`failure_memory` in `llm_dynamic_selection_kwargs` sets what the bandit does
+with that:
+
+| Selection | Default `failure_memory` | Behaviour |
+|-----------|--------------------------|-----------|
+| `ucb`, `ucb1`, `thompson` | `10` | A model whose tasks fail is drawn less. |
+| `fixed` | `0` | The split stays fixed when a model fails. Set `failure_memory` to weight it as well. |
+
+With `failure_memory` above 0:
+
+- A model's reliability is the share of its last `failure_memory` tasks that
+  delivered. A new model counts as reliable; its first failed task puts it at
+  0.47.
+- A model keeps only the reliable part of its selection probability, measured
+  against the most reliable model of the pool, and the other models share the
+  rest. A failure rate that every model has, as on a hard task, moves nothing.
+- A model that has failed keeps a probe share of at most
+  `1 / (number of models * (1 + failure_memory))`, so that it is still tried
+  and gets its weight back once it works again. A dead model in a pool of two
+  is drawn for about 4.5% of the tasks once its reliability is at 0, and for
+  about 8 of the first 50 while it gets there.
+- Resuming a run forgets half of each model's remembered failures, so a model
+  that was repaired while the run was stopped is back in use within about ten
+  proposals.
+
+`failure_memory: 0` switches the weighting and the probe share off. Three
+things stay as they are:
+
+- Cost-aware `ucb` does not treat a model without a cost report as free, and
+  the bill of a failed task is no cost observation. A dead model in a pool of
+  two still gets 11 to 17 of 50 tasks, fewer when its failures are billed.
+- `thompson` stops treating a model as untried after its first failed task. A
+  dead model in a pool of two still gets about 30 of 50 tasks.
+- Failed tasks are still counted and saved with the bandit state.
+
+`llm_dynamic_selection_kwargs` is replaced as a whole, like `llm_kwargs`. In
+`EvolutionConfig`, in a `shinka_run` config file and with `shinka_run --set`,
+`{"failure_memory": 0}` alone therefore also drops `cost_aware_coef` to its
+class default of 0. Write both keys to change only the weighting:
+
+```yaml
+evo:
+  llm_dynamic_selection: ucb
+  llm_dynamic_selection_kwargs:
+    cost_aware_coef: 0.5
+    failure_memory: 0
+```
+
+With `shinka_launch`, a preset that sets the kwargs itself (`medium_budget`,
+the default) takes one more key and keeps the others; the `+` is required
+because the key is new:
+
+```bash
+shinka_launch '+evo_config.llm_dynamic_selection_kwargs.failure_memory=0'
+```
+
+`large_budget` sets no kwargs, so the same override would again leave
+`failure_memory` as the only key. Pass both there:
+
+```bash
+shinka_launch evolution=large_budget \
+  '+evo_config.llm_dynamic_selection_kwargs={cost_aware_coef:0.5,failure_memory:0}'
+```
+
+`thompson` has no cost term and ignores `cost_aware_coef`,
+`cost_exploration_coef`, `cost_power` and `cost_ref_percentile`. `fixed`
+ignores every key it does not know, so a misspelt `failure_memory` is not
+reported.
+
+The bandit state is saved as `bandit_state.pkl` in the results directory.
+Despite the name it is JSON, format version 2 since the outcome counts were
+added. A Shinka version from before that does not read the file: it starts a
+fresh bandit and overwrites the file on its next save.
 
 #### LLM endpoint failures
 

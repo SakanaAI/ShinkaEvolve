@@ -18,7 +18,7 @@ import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from contextvars import Token
+from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
@@ -53,7 +53,12 @@ from shinka.llm import (
     AsymmetricUCB,
     ThompsonSampler,
 )
-from shinka.llm.providers.errors import BilledCancellationError, LLMEndpointError
+from shinka.llm.prioritization import ProposalOutcomes
+from shinka.llm.providers.errors import (
+    BilledCancellationError,
+    LLMEndpointError,
+    NonRetryableLLMError,
+)
 from shinka.core.endpoint_failures import (
     endpoint_failures_before_stop,
     probabilities_without,
@@ -119,10 +124,27 @@ from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
 
+# Settings of AsymmetricUCB's cost term, among them the default selection kwargs.
+_UCB_COST_KWARGS = (
+    "cost_aware_coef",
+    "cost_exploration_coef",
+    "cost_power",
+    "cost_ref_percentile",
+)
+
+# The outcomes of the proposal task this coroutine runs in, if it runs in one.
+_task_outcomes: ContextVar[Optional[ProposalOutcomes]] = ContextVar(
+    "task_outcomes", default=None
+)
+
 _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
 _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
 _WANDB_CANDIDATE_STOP = object()
+# How long a run that a signal stopped waits for a database lock before it
+# leaves the write-ahead log as it is. The fold itself takes milliseconds for
+# the few megabytes a log usually holds, and half a second for 300 MB.
+_WAL_FOLD_LOCK_SECONDS = 5.0
 # While no local evaluation has succeeded, each one killed for running too long
 # raises the hang limit fivefold. It stops at the `time` Slurm job configs
 # default to, or a few hung candidates in a row would stall the run for days.
@@ -475,29 +497,7 @@ class ShinkaEvolveRunner:
         self.console = RichTeeConsole(Console(), Path(log_filename))
 
         # Initialize LLM selection strategy
-        if evo_config.llm_dynamic_selection is None:
-            self.llm_selection = None
-        elif isinstance(evo_config.llm_dynamic_selection, BanditBase):
-            self.llm_selection = evo_config.llm_dynamic_selection
-        elif evo_config.llm_dynamic_selection.lower() == "fixed":
-            self.llm_selection = FixedSampler(
-                arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
-            )
-        elif (evo_config.llm_dynamic_selection.lower() == "ucb") or (
-            evo_config.llm_dynamic_selection.lower() == "ucb1"
-        ):
-            self.llm_selection = AsymmetricUCB(
-                arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
-            )
-        elif evo_config.llm_dynamic_selection.lower() == "thompson":
-            self.llm_selection = ThompsonSampler(
-                arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
-            )
-        else:
-            raise ValueError("Invalid llm_dynamic_selection")
+        self.llm_selection = self._llm_selection_from(evo_config)
 
         # Store db_config for later initialization (after results_dir is set)
         # Database will be initialized in _setup_async()
@@ -695,6 +695,33 @@ class ShinkaEvolveRunner:
         # Meta task logging state (to reduce verbosity)
         self._last_meta_log_state: dict | None = None
         self._last_meta_log_info_time: float | None = None
+
+    @staticmethod
+    def _llm_selection_from(evo_config: EvolutionConfig) -> Optional[BanditBase]:
+        """The model-selection bandit `evo_config` asks for, or None."""
+        selection = evo_config.llm_dynamic_selection
+        if selection is None or isinstance(selection, BanditBase):
+            return selection
+        name = selection.lower()
+        models = evo_config.llm_models
+        kwargs = dict(evo_config.llm_dynamic_selection_kwargs)
+        if name == "fixed":
+            return FixedSampler(arm_names=models, **kwargs)
+        if name in ("ucb", "ucb1"):
+            return AsymmetricUCB(arm_names=models, **kwargs)
+        if name == "thompson":
+            # The default kwargs set the cost term of UCB. Thompson sampling
+            # has none and must still start from the default config.
+            ignored = sorted(key for key in kwargs if key in _UCB_COST_KWARGS)
+            if ignored:
+                logger.info(
+                    "Thompson sampling has no cost term; ignoring %s.",
+                    ", ".join(ignored),
+                )
+            for key in ignored:
+                del kwargs[key]
+            return ThompsonSampler(arm_names=models, **kwargs)
+        raise ValueError("Invalid llm_dynamic_selection")
 
     def _save_bandit_state(self) -> None:
         """Save the LLM selection bandit state to disk."""
@@ -1415,10 +1442,27 @@ class ShinkaEvolveRunner:
             if "no running event loop" not in str(exc):
                 raise
 
-        asyncio.run(self.run_async())
+        # Local import: this method is the only runner region that needs it.
+        from shinka.launch.fatal_signals import outlive_stopping_runs
+
+        # A run that SIGTERM or SIGHUP stops ends the process once the loop has
+        # closed and the threads it handed work to are done, as after Ctrl-C.
+        until_the_loop_has_closed = outlive_stopping_runs()
+        try:
+            asyncio.run(self.run_async())
+        finally:
+            until_the_loop_has_closed.finish()
 
     async def run_async(self):
-        """Run evolution while retaining provider clients for this loop user."""
+        """Run evolution while retaining provider clients for this loop user.
+
+        SIGTERM and SIGHUP stop the run as Ctrl-C does, unless the application
+        handles them itself. The process then dies of the signal as soon as
+        the run has cleaned up: inside this call, before the application's
+        own tasks and ``finally`` blocks get to run. An application that has
+        more to finish holds the process until then with
+        ``shinka.launch.fatal_signals.outlive_stopping_runs()``, as ``run`` does.
+        """
         from shinka.llm.client import async_client_cache_scope
 
         async with async_client_cache_scope():
@@ -1426,10 +1470,32 @@ class ShinkaEvolveRunner:
 
     async def _run_async(self):
         """Main async evolution loop."""
+        # Local import: this method is the only runner region that needs it.
+        from shinka.launch.fatal_signals import (
+            runs_are_stopping,
+            stop_on_fatal_signals,
+        )
+
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
+        loop = asyncio.get_running_loop()
+        run_task = asyncio.current_task()
+
+        def stop_the_run(received) -> None:
+            logger.warning(
+                f"🛑 Received {received.name}: stopping the run as Ctrl-C would. "
+                "A SIGTERM a second or more from now ends it at once."
+            )
+            # A run that is already cleaning up finishes that.
+            if run_task is not None and not getattr(self, "_closing_run", False):
+                run_task.cancel()
+
+        # SIGTERM and SIGHUP cancel this task, like Ctrl-C in `asyncio.run`.
+        signal_stop = stop_on_fatal_signals(
+            lambda received: loop.call_soon_threadsafe(stop_the_run, received)
+        )
 
         try:
             # Setup initial program (results_dir now set)
@@ -1579,18 +1645,73 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
-            # Stop producers before waiting on any shielded provider calls.
-            self._closing_run = True
-            self.should_stop.set()
-            for task in (*tasks, *self.active_proposal_tasks.values()):
-                task.cancel()
-            await finish_cost_recording(self._drain_and_cleanup_async(tasks))
+            try:
+                # Stop producers before waiting on any shielded provider calls.
+                self._closing_run = True
+                self.should_stop.set()
+                for task in (*tasks, *self.active_proposal_tasks.values()):
+                    task.cancel()
+                # Nobody collects the local evaluators any more. They die now
+                # and not at the end of the cleanup, which still reaps them:
+                # whoever sent SIGTERM may send SIGKILL before the cleanup
+                # gets there.
+                for job in list(getattr(self, "running_jobs", ())):
+                    kill_at_once = getattr(job.job_id, "kill_without_reaping", None)
+                    if kill_at_once is None:  # Slurm jobs are ids.
+                        continue
+                    try:
+                        kill_at_once()
+                    except Exception as exc:
+                        # The cleanup below cancels it, and says so if it cannot.
+                        logger.warning(f"Could not kill evaluator {job.job_id}: {exc}")
+                await finish_cost_recording(self._drain_and_cleanup_async(tasks))
+            finally:
+                # A run that a signal stopped ends the process with the
+                # signal's status: here, or in `run` once the loop has closed.
+                if runs_are_stopping():
+                    self._fold_write_ahead_logs()
+                signal_stop.finish()
 
         if billing_error := getattr(self, "_billing_error", None):
             raise billing_error
 
         # Print final summary
         await self._print_final_summary()
+
+    def _fold_write_ahead_logs(self) -> None:
+        """Write what the databases hold in their `-wal` files into the files.
+
+        A connection that closes does this, which is how Ctrl-C leaves the
+        databases. A process that dies of a signal closes none: its latest
+        programs would stay in `programs.sqlite-wal`, and a copy of
+        `programs.sqlite` alone would lack them.
+        """
+        import sqlite3
+
+        for database in (getattr(self, "db", None), getattr(self, "prompt_db", None)):
+            path = getattr(getattr(database, "config", None), "db_path", None)
+            if not path or not Path(path).is_file():
+                continue  # No database yet, or one in memory.
+            try:
+                # A connection of its own: this may not be the thread that
+                # opened the run's. It waits this long for a lock, no longer.
+                connection = sqlite3.connect(
+                    str(path), timeout=_WAL_FOLD_LOCK_SECONDS
+                )
+                try:
+                    blocked = connection.execute(
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    ).fetchone()[0]
+                finally:
+                    connection.close()
+                reason = "another connection is using the database"
+            except sqlite3.Error as exc:
+                blocked, reason = True, str(exc)
+            if blocked:
+                logger.warning(
+                    f"Could not write all of {path}-wal into the database "
+                    f"({reason}): keep the two files together"
+                )
 
     async def _drain_and_cleanup_async(self, tasks: list[asyncio.Task]) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -3246,6 +3367,10 @@ class ShinkaEvolveRunner:
 
         costs_transferred = False
         scope, token = self._begin_api_cost_scope()
+        # The model is selected once and may be called many times below; the
+        # bandit hears once per model what the task got from it.
+        outcomes = ProposalOutcomes(getattr(self, "llm_selection", None))
+        outcomes_token = _task_outcomes.set(outcomes)
         try:
             # Select LLM once per program generation (before all loops)
             model_sample_probs = None
@@ -3454,6 +3579,8 @@ class ShinkaEvolveRunner:
                 if proposal_accepted:
                     break
 
+            outcomes.report()
+
             # Add meta-recommendations/summary/scratchpad to meta_patch_data (same as sync runner)
             if meta_recs is not None:
                 meta_patch_data["meta_recommendations"] = meta_recs
@@ -3633,6 +3760,7 @@ class ShinkaEvolveRunner:
                 )
             raise
         finally:
+            _task_outcomes.reset(outcomes_token)
             await self._finish_api_cost_scope(scope, token, "proposal", generation)
 
     async def _save_patch_attempt_async(
@@ -3711,6 +3839,40 @@ class ShinkaEvolveRunner:
 
         metadata_file = attempt_dir / "metadata.json"
         await write_file_async(str(metadata_file), json.dumps(metadata, indent=2))
+
+    def _model_refused_request(
+        self, error: Exception, llm_kwargs: Dict[str, Any]
+    ) -> bool:
+        """Whether an error of a proposal call counts against the model called.
+
+        A request the model's endpoint refused does. Anything else broke on
+        the runner's side, a full disk or a bug in applying the patch, and
+        says nothing about the model; like a cancelled call it is not
+        reported. Errors of the request that may pass on a retry never get
+        here: the client retries them and then returns an empty reply.
+        """
+        return (
+            self.llm_selection is not None
+            and "model_name" in llm_kwargs
+            and isinstance(error, NonRetryableLLMError)
+        )
+
+    def _proposal_delivered(self, model_name: str) -> None:
+        """Note that a proposal call to `model_name` returned a usable patch."""
+        outcomes = _task_outcomes.get()
+        if outcomes is not None:
+            outcomes.delivered(model_name)
+        elif self.llm_selection is not None:
+            # Not inside a proposal task: the call is all there is to report.
+            self.llm_selection.update_delivered(model_name)
+
+    def _proposal_failed(self, model_name: str, cost: float) -> None:
+        """Note that a proposal call to `model_name` returned no usable patch."""
+        outcomes = _task_outcomes.get()
+        if outcomes is not None:
+            outcomes.failed(model_name, cost)
+        elif self.llm_selection is not None:
+            self.llm_selection.update_failed(arm=model_name, cost=cost)
 
     def _other_model_probs(
         self,
@@ -4199,10 +4361,6 @@ class ShinkaEvolveRunner:
                         success=True,
                     )
 
-                    # Update LLM selection costs
-                    if self.llm_selection is not None:
-                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-
                     meta_patch_data = {
                         "api_costs": total_costs,
                         "patch_type": patch_type,
@@ -4225,6 +4383,11 @@ class ShinkaEvolveRunner:
                         )
                         self._print_metadata_table(meta_patch_data, generation)
 
+                    # Update LLM selection: cost and outcome. Noted last, so a
+                    # proposal that breaks above does not count as delivered.
+                    if self.llm_selection is not None:
+                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                        self._proposal_delivered(model_name)
                     return patch_txt, meta_patch_data, True
 
                 # Patch application failed
@@ -4257,10 +4420,6 @@ class ShinkaEvolveRunner:
                     )
                     msg_history = response.new_msg_history if response else []
 
-            # Update LLM selection costs
-            if self.llm_selection is not None:
-                self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-
             # All attempts failed
             meta_patch_data = {
                 "api_costs": total_costs,
@@ -4278,6 +4437,10 @@ class ShinkaEvolveRunner:
                 "non_retryable": bool(output_limit_error),
             }
 
+            # No usable patch: a failed proposal for the LLM selection. Its
+            # bill is no cost observation, so update_cost is not called.
+            if self.llm_selection is not None:
+                self._proposal_failed(model_name, total_costs)
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
@@ -4290,6 +4453,10 @@ class ShinkaEvolveRunner:
             raise
 
         except LLMEndpointError as exc:
+            if self.llm_selection is not None and "model_name" in llm_kwargs:
+                self._proposal_failed(
+                    llm_kwargs["model_name"], total_costs + exc.cost
+                )
             metadata = {
                 "api_costs": total_costs + exc.cost,
                 "error_attempt": str(exc),
@@ -4301,6 +4468,8 @@ class ShinkaEvolveRunner:
 
         except Exception as e:
             logger.error(f"Error in fix patch async: {e}")
+            if self._model_refused_request(e, llm_kwargs):
+                self._proposal_failed(llm_kwargs["model_name"], total_costs)
             return None, {
                 "api_costs": total_costs if "total_costs" in locals() else 0.0,
                 "error_attempt": f"{output_limit_error} ({e})" if output_limit_error else str(e),
@@ -4470,10 +4639,6 @@ class ShinkaEvolveRunner:
                         success=True,
                     )
 
-                    # Update LLM selection costs
-                    if self.llm_selection is not None:
-                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-
                     meta_patch_data = {
                         "api_costs": total_costs,
                         "patch_type": patch_type,
@@ -4494,6 +4659,11 @@ class ShinkaEvolveRunner:
                     if self.verbose:
                         self._print_metadata_table(meta_patch_data, generation)
 
+                    # Update LLM selection: cost and outcome. Noted last, so a
+                    # proposal that breaks above does not count as delivered.
+                    if self.llm_selection is not None:
+                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                        self._proposal_delivered(model_name)
                     return patch_txt, meta_patch_data, True
                 else:
                     # Failure, try again
@@ -4521,10 +4691,6 @@ class ShinkaEvolveRunner:
                         else []
                     )
 
-            # Update LLM selection costs
-            if self.llm_selection is not None:
-                self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-
             # All attempts failed
             meta_patch_data = {
                 "api_costs": total_costs,
@@ -4544,6 +4710,10 @@ class ShinkaEvolveRunner:
                 "non_retryable": bool(output_limit_error),
             }
 
+            # No usable patch: a failed proposal for the LLM selection. Its
+            # bill is no cost observation, so update_cost is not called.
+            if self.llm_selection is not None:
+                self._proposal_failed(model_name, total_costs)
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
@@ -4559,6 +4729,10 @@ class ShinkaEvolveRunner:
 
         except LLMEndpointError as exc:
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            if self.llm_selection is not None and "model_name" in llm_kwargs:
+                self._proposal_failed(
+                    llm_kwargs["model_name"], total_costs + exc.cost
+                )
             metadata = {
                 "api_costs": total_costs + exc.cost,
                 "error_attempt": str(exc),
@@ -4572,6 +4746,8 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async patch generation: {e}")
             # Restore original task_sys_msg in case of exception
             self.prompt_sampler.task_sys_msg = original_task_sys_msg
+            if self._model_refused_request(e, llm_kwargs):
+                self._proposal_failed(llm_kwargs["model_name"], total_costs)
             return (
                 None,
                 {
