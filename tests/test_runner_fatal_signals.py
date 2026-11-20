@@ -147,13 +147,19 @@ def test_run_that_no_signal_stopped_leaves_the_log_to_the_closing_connection(
 
 @pytest.mark.parametrize("signum", FATAL_SIGNALS)
 def test_fatal_signal_stops_a_run_the_way_ctrl_c_does(
-    deaths: list[int], cleanup_events: list[str], signum: int
+    deaths: list[int],
+    cleanup_events: list[str],
+    caplog: pytest.LogCaptureFixture,
+    signum: int,
 ) -> None:
-    _signal_a_waiting_run(signum, cleanup_events, during="waiting")
+    with caplog.at_level(logging.ERROR, logger="shinka.launch.fatal_signals"):
+        _signal_a_waiting_run(signum, cleanup_events, during="waiting")
 
     # Charges saved, database closed, evaluations cancelled; then the signal.
     assert cleanup_events == ["setup", "waiting", *CLEANUP]
     assert deaths == [signum]
+    # The cancellation that stopped the run is no failure of the run.
+    assert caplog.messages == []
 
 
 def test_signalled_run_cleans_up_when_an_evaluator_cannot_be_killed(
@@ -221,7 +227,7 @@ def test_signalled_run_dies_of_the_signal_when_its_cleanup_fails(
     with caplog.at_level(logging.ERROR, logger="shinka.launch.fatal_signals"):
         asyncio.run(asyncio.wait_for(run(), timeout=10.0))
 
-    assert cleanup_events[-3:] == ["close_db", "cancel:101", "scheduler.shutdown"]
+    assert cleanup_events[-4:] == CLEANUP[-4:]
     assert deaths == [signal.SIGTERM]
     # Nothing else reports the error of a process that dies here.
     assert "journal unavailable" in caplog.text

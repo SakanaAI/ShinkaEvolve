@@ -321,6 +321,52 @@ def test_application_that_handles_the_signals_stops_its_runs_itself(
     assert deaths == []
 
 
+def test_run_under_nohup_is_stopped_by_the_signal_that_is_left(
+    deaths: list[int],
+) -> None:
+    # `nohup` ignores SIGHUP, which stays ignored; SIGTERM still stops the run.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    asked: list[int] = []
+    stop = fatal_signals.stop_on_fatal_signals(asked.append)
+
+    assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+
+    raise_hooked(signal.SIGTERM)
+
+    assert asked == [signal.SIGTERM]
+    assert deaths == []
+
+    stop.finish()
+
+    assert deaths == [signal.SIGTERM]
+
+
+def test_forked_child_starts_without_its_parents_runs_and_request(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without the relay's pipe, which the child would close: it is this
+    # process's own here.
+    monkeypatch.setattr(fatal_signals, "_signal_reports", None)
+    fatal_signals.stop_on_fatal_signals(lambda received: None)
+    raise_hooked(signal.SIGTERM)
+    fatal_signals._unhandled_since[signal.SIGHUP] = time.monotonic()
+
+    fatal_signals._forget_the_parent_after_fork()  # What a forked child runs.
+
+    assert fatal_signals._stops == []
+    assert fatal_signals._unhandled_since == {}
+
+    # A run that the child starts is not asked to stop for its parent's signal.
+    asked: list[int] = []
+    stop = fatal_signals.stop_on_fatal_signals(asked.append)
+
+    assert asked == []
+
+    stop.finish()
+
+    assert deaths == []
+
+
 def test_run_off_the_main_thread_leaves_the_signals_alone(deaths: list[int]) -> None:
     def run() -> None:
         stop = fatal_signals.stop_on_fatal_signals(lambda received: None)

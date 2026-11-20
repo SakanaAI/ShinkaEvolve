@@ -66,6 +66,7 @@ CLEANUP = [
     "finish_wandb",
     "close_db",
     "cancel:101",
+    "cancel:202",
     "scheduler.shutdown",
 ]
 
@@ -84,7 +85,9 @@ class _LocalEvaluator:
 
 
 def waiting_runner(record: Callable[[str], None]) -> ShinkaEvolveRunner:
-    """A runner with one evaluation running, which records "waiting" and waits.
+    """A runner with two evaluations running, which records "waiting" and waits.
+
+    Evaluation 101 is a local process, 202 a Slurm job, which is only an id.
 
     Its cleanup records the `CLEANUP` events, in that order when it is complete.
     """
@@ -101,14 +104,15 @@ def waiting_runner(record: Callable[[str], None]) -> ShinkaEvolveRunner:
     now = time.time()
     runner.running_jobs = [
         AsyncRunningJob(
-            job_id=_LocalEvaluator(record),
-            exec_fname="gen_1/main.py",
-            results_dir="gen_1/results",
+            job_id=job_id,
+            exec_fname=f"gen_{generation}/main.py",
+            results_dir=f"gen_{generation}/results",
             start_time=now,
             proposal_started_at=now,
             evaluation_submitted_at=now,
-            generation=1,
+            generation=generation,
         )
+        for generation, job_id in enumerate((_LocalEvaluator(record), "202"), start=1)
     ]
 
     async def note(event: str) -> bool:
