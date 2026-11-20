@@ -66,6 +66,25 @@ class DatabaseDisplay:
             return costs
         return replace(costs, prompt_evolution=prompt_evolution)
 
+    def _failed_generations(self, target: int) -> set[int]:
+        """Generations below the target whose proposal failed for good."""
+        has_journal = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attempt_log'"
+        ).fetchone()
+        if not has_journal:
+            return set()
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT generation FROM attempt_log
+            WHERE status = 'failed' AND generation >= 0 AND generation < ?
+              AND CASE WHEN json_valid(details) THEN
+                  json_extract(details, '$.node_kind') = 'failed_proposal'
+              END
+            """,
+            (target,),
+        )
+        return {row[0] for row in rows}
+
     def print_program_summary(self, program, console: Optional[RichConsole] = None):
         """Print a rich summary of a newly added program in two rows."""
         _console = console or self.default_console or RichConsole()
@@ -257,6 +276,10 @@ class DatabaseDisplay:
         summary_table.add_row("Total DB Rows", total_programs_display)
         if total_program_target is not None:
             summary_table.add_row("Stored Generations", f"{len(stored_generations)} / {total_program_target}")
+            failed_generations = self._failed_generations(total_program_target)
+            summary_table.add_row(
+                "Failed Generations", str(len(failed_generations - stored_generations))
+            )
         summary_table.add_row("Seed Programs", str(seed_programs))
         summary_table.add_row("Island Copies", str(island_copies))
         summary_table.add_row("Evolved Programs", str(evolved_programs))

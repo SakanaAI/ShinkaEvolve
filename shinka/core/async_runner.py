@@ -7081,14 +7081,15 @@ class ShinkaEvolveRunner:
         )
         logger.info("=" * 80)
         logger.info(f"Target generations: {self.evo_config.num_generations}")
-        logger.info(f"Stored programs: {self.completed_generations}")
         logger.info(
-            "Generations without program (proposal generation exhausted retries): %s",
-            len(missing_generations),
+            f"Generations with a program: {self.completed_generations} "
+            f"of {self.evo_config.num_generations}"
         )
         logger.info(
-            "Generation IDs without program after proposal retries: %s",
-            missing_generations,
+            "Failed generations (no program; not proposed again, also not on "
+            "resume): %s%s",
+            len(missing_generations),
+            f" {missing_generations}" if missing_generations else "",
         )
         logger.info(f"Total proposals generated: {self.total_proposals_generated}")
         logger.info(f"Total API cost: ${self.total_api_cost:.4f}")
