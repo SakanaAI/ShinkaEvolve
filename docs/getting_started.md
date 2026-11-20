@@ -90,6 +90,10 @@ AZURE_API_ENDPOINT=https://your-resource.openai.azure.com
 evo_config = EvolutionConfig(llm_models=["azure-gpt-5-mini"])
 ```
 
+`reasoning_efforts` is ignored for an Azure deployment of a reasoning model
+before GPT-6, such as this one: see
+[LLM sampling settings](configuration.md#llm-sampling-settings-llm_kwargs).
+
 Azure v1 LLM calls do not require `AZURE_API_VERSION`. Azure embedding models
 still use the versioned Azure API client and additionally require, for example,
 `AZURE_API_VERSION=2024-02-01`.
@@ -340,11 +344,17 @@ def aggregate_metrics(results, results_dir):
 | Return value | Type | Description |
 |-------------|------|-------------|
 | `metrics` | `dict` | `combined_score` (fitness), `public` (WebUI), `private` (internal) |
-| `correct` | `bool` | `True` = valid, can reproduce; `False` = discarded |
+| `correct` | `bool` | `True` = valid, can reproduce; `False` = stored as incorrect and not used as a parent once a correct program exists |
 | `error_msg` | `str` or `None` | Error description if validation failed |
 
 **Public** metrics appear in WebUI and logs. **Private** metrics are for
 internal analysis and debugging only.
+
+`combined_score` must be a finite number: a correct program with a NaN or
+infinite score is stored as incorrect. So is one whose evaluator reports it
+correct and exits non-zero, for local jobs and the Slurm seed; Slurm reports
+no exit status for later generations. See
+[Evaluation results](configuration.md#evaluation-results) for the full contract.
 
 ---
 
