@@ -91,6 +91,8 @@ class JobScheduler:
 
         if self.job_type == "local":
             self.monitor = monitor_local
+            # Hooked now and again before each evaluation: an application may
+            # add and remove a handler of its own, which leaves the default.
             kill_evaluators_on_fatal_signals()
         elif self.job_type in SLURM_JOB_TYPES:
             self.monitor = monitor_slurm
@@ -203,6 +205,7 @@ class JobScheduler:
             if timeout is not None:
                 # Reject an invalid timeout before starting the subprocess.
                 parse_time_to_seconds(timeout)
+            kill_evaluators_on_fatal_signals()
             job_id = submit_local(
                 results_dir_t,
                 cmd,
@@ -291,6 +294,7 @@ class JobScheduler:
         cmd = self._build_command(exec_fname_t, results_dir_t)
         if self.job_type == "local":
             assert isinstance(self.config, LocalJobConfig)
+            kill_evaluators_on_fatal_signals()
             return submit_local(
                 results_dir_t,
                 cmd,

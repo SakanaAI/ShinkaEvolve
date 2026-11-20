@@ -44,6 +44,7 @@ _asked_to_stop: Optional[Tuple[int, float]] = None
 # more than needed: signals this soon after the first are the same request.
 # A later one comes from somebody who will not wait for the run to stop.
 _SAME_REQUEST_SECONDS = 1.0
+_warned_that_nothing_is_hooked = False
 
 
 def _forget_the_parent_after_fork() -> None:
@@ -71,15 +72,39 @@ def kill_evaluators_on_fatal_signals() -> None:
     """Take running evaluators along when SIGTERM or SIGHUP ends this process.
 
     Only default dispositions are replaced: a handler the application
-    installed, or ``nohup``, stays in charge.
+    installed, or ``nohup``, stays in charge. Python installs signal handlers
+    from the main thread only: elsewhere this warns, once, when a signal still
+    has its default disposition.
     """
-    if os.name != "posix" or threading.current_thread() is not threading.main_thread():
+    if os.name != "posix":
+        return
+    if threading.current_thread() is not threading.main_thread():
+        _warn_once_that_nothing_is_hooked()
         return
     for signum in _fatal_signals():
         if signal.getsignal(signum) is signal.SIG_DFL:
             signal.signal(signum, _on_fatal_signal)
     if any(_is_hooked(signum) for signum in _fatal_signals()):
         _relay_fatal_signals_to_the_main_thread()
+
+
+def _warn_once_that_nothing_is_hooked() -> None:
+    global _warned_that_nothing_is_hooked
+    unhooked = [
+        signal.Signals(signum).name
+        for signum in _fatal_signals()
+        if signal.getsignal(signum) is signal.SIG_DFL
+    ]
+    if _warned_that_nothing_is_hooked or not unhooked:
+        return
+    _warned_that_nothing_is_hooked = True
+    logger.warning(
+        "%s would end this process and leave its evaluators running: Python "
+        "installs signal handlers from the main thread only. Call shinka."
+        "launch.fatal_signals.kill_evaluators_on_fatal_signals() from the main "
+        "thread.",
+        " and ".join(unhooked),
+    )
 
 
 class SignalStop:

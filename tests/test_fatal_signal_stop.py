@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -20,7 +22,9 @@ from job_lifecycle_test_utils import (
     worker_pid,
     write_evaluator_with_worker,
 )
-from shinka.launch import ProcessWithLogging, fatal_signals, local
+from shinka.launch import JobScheduler, LocalJobConfig, ProcessWithLogging
+from shinka.launch import fatal_signals, local
+from shinka.launch import scheduler as scheduler_module
 from signal_stop_test_utils import FATAL_SIGNALS, raise_hooked, recorded_deaths
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="requires POSIX signals")
@@ -169,6 +173,69 @@ def test_run_off_the_main_thread_leaves_the_signals_alone(deaths: list[int]) -> 
     assert fatal_signals._stops == []
     assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
     assert deaths == []
+
+
+def _build_a_scheduler_in_a_thread() -> None:
+    def build() -> None:
+        JobScheduler("local", LocalJobConfig(eval_program_path="evaluate.py")).shutdown()
+
+    thread = threading.Thread(target=build)
+    thread.start()
+    thread.join()
+
+
+def test_scheduler_built_off_the_main_thread_says_that_nothing_is_hooked(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Python installs signal handlers from the main thread only.
+    monkeypatch.setattr(fatal_signals, "_warned_that_nothing_is_hooked", False)
+
+    with caplog.at_level(logging.WARNING, logger=fatal_signals.__name__):
+        _build_a_scheduler_in_a_thread()
+        _build_a_scheduler_in_a_thread()
+
+    [warning] = caplog.messages
+    assert "SIGTERM and SIGHUP would end this process" in warning
+    assert "kill_evaluators_on_fatal_signals() from the main thread" in warning
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+def test_scheduler_built_off_the_main_thread_is_quiet_when_the_signals_are_hooked(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(fatal_signals, "_warned_that_nothing_is_hooked", False)
+    fatal_signals.kill_evaluators_on_fatal_signals()
+
+    with caplog.at_level(logging.WARNING, logger=fatal_signals.__name__):
+        _build_a_scheduler_in_a_thread()
+
+    assert caplog.messages == []
+
+
+@pytest.mark.parametrize("start", ["submit_async", "run"])
+def test_evaluation_started_on_the_main_thread_hooks_the_signals_again(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch, tmp_path: Path, start: str
+) -> None:
+    scheduler = JobScheduler("local", LocalJobConfig(eval_program_path="evaluate.py"))
+    # An application that adds and removes a handler of its own leaves the
+    # default behind, not the hook it replaced.
+    loop = asyncio.new_event_loop()
+    loop.add_signal_handler(signal.SIGTERM, lambda: None)
+    loop.remove_signal_handler(signal.SIGTERM)
+    loop.close()
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+    evaluator = MagicMock(spec=ProcessWithLogging)
+    evaluator.runtime_seconds.return_value = 0.1
+    monkeypatch.setattr(scheduler_module, "submit_local", lambda *a, **k: evaluator)
+    monkeypatch.setattr(
+        scheduler_module, "monitor_local_evaluation", lambda *a, **k: {}
+    )
+    try:
+        getattr(scheduler, start)("main.py", str(tmp_path))
+    finally:
+        scheduler.shutdown()
+
+    assert fatal_signals._is_hooked(signal.SIGTERM)
 
 
 def _relay(
