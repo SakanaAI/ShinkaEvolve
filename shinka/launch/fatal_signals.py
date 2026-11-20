@@ -262,19 +262,25 @@ def _runs_are_stopping_for(signum: int, received_at: float) -> bool:
             signum == signal.SIGHUP
             or received_at - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
         )
-    requests = [stop._ask_to_stop for stop in _stops if stop._ask_to_stop is not None]
-    if not requests:
+    to_ask = [
+        (stop, stop._ask_to_stop) for stop in _stops if stop._ask_to_stop is not None
+    ]
+    if not to_ask:
         return False
     # Counted from now, not from when the signal arrived: a handler that ran
     # late leaves reports with the relay, of the signal's twin and of the
     # relay's own repeats, and the relay answers them only after this.
     _asked_to_stop = (signum, time.monotonic())
-    try:
-        for ask_to_stop in requests:
+    asked = False
+    for stop, ask_to_stop in to_ask:
+        try:
             ask_to_stop(signal.Signals(signum))
-    except Exception:
-        return False  # Nobody would stop that run.
-    return True
+            asked = True
+        except Exception:
+            # Nobody would stop that run, so nobody waits for it either: a
+            # run whose event loop has closed never says that it finished.
+            _stops.remove(stop)
+    return asked
 
 
 def _die_with_evaluators(signum: int) -> None:

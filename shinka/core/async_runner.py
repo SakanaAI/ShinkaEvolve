@@ -1526,19 +1526,25 @@ class ShinkaEvolveRunner:
             logger.error(f"Error in async evolution run: {e}")
             raise
         finally:
-            # Stop producers before waiting on any shielded provider calls.
-            self._closing_run = True
-            self.should_stop.set()
-            for task in (*tasks, *self.active_proposal_tasks.values()):
-                task.cancel()
-            # Nobody collects the local evaluators any more. They die now and
-            # not at the end of the cleanup, which still reaps them: whoever
-            # sent SIGTERM may send SIGKILL before the cleanup gets there.
-            for job in list(getattr(self, "running_jobs", ())):
-                kill_at_once = getattr(job.job_id, "kill_without_reaping", None)
-                if kill_at_once is not None:  # Slurm jobs are ids.
-                    kill_at_once()
             try:
+                # Stop producers before waiting on any shielded provider calls.
+                self._closing_run = True
+                self.should_stop.set()
+                for task in (*tasks, *self.active_proposal_tasks.values()):
+                    task.cancel()
+                # Nobody collects the local evaluators any more. They die now
+                # and not at the end of the cleanup, which still reaps them:
+                # whoever sent SIGTERM may send SIGKILL before the cleanup
+                # gets there.
+                for job in list(getattr(self, "running_jobs", ())):
+                    kill_at_once = getattr(job.job_id, "kill_without_reaping", None)
+                    if kill_at_once is None:  # Slurm jobs are ids.
+                        continue
+                    try:
+                        kill_at_once()
+                    except Exception as exc:
+                        # The cleanup below cancels it, and says so if it cannot.
+                        logger.warning(f"Could not kill evaluator {job.job_id}: {exc}")
                 await finish_cost_recording(self._drain_and_cleanup_async(tasks))
             finally:
                 # A run that a signal stopped ends the process with the

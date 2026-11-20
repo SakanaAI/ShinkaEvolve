@@ -280,6 +280,28 @@ def test_request_that_cannot_be_passed_on_ends_the_process(deaths: list[int]) ->
     assert deaths == [signal.SIGTERM]
 
 
+def test_run_that_cannot_be_asked_does_not_keep_the_others_from_stopping(
+    deaths: list[int],
+) -> None:
+    # A run that ended without saying so: its event loop is closed.
+    def closed_loop(received: signal.Signals) -> None:
+        raise RuntimeError("Event loop is closed")
+
+    asked: list[int] = []
+    fatal_signals.stop_on_fatal_signals(closed_loop)
+    stop = fatal_signals.stop_on_fatal_signals(asked.append)
+
+    raise_hooked(signal.SIGTERM)
+
+    assert asked == [signal.SIGTERM]
+    assert deaths == []
+
+    # Nobody waits for the run that could not be asked.
+    stop.finish()
+
+    assert deaths == [signal.SIGTERM]
+
+
 def test_application_that_handles_the_signals_stops_its_runs_itself(
     deaths: list[int],
 ) -> None:

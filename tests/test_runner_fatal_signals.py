@@ -155,6 +155,26 @@ def test_fatal_signal_stops_a_run_the_way_ctrl_c_does(
     assert deaths == [signum]
 
 
+def test_signalled_run_cleans_up_when_an_evaluator_cannot_be_killed(
+    deaths: list[int], cleanup_events: list[str]
+) -> None:
+    def with_an_evaluator_of_somebody_else(runner: ShinkaEvolveRunner) -> None:
+        def refuse() -> None:
+            raise PermissionError("Operation not permitted")
+
+        runner.running_jobs[0].job_id.kill_without_reaping = refuse
+
+    _signal_a_waiting_run(
+        signal.SIGTERM,
+        cleanup_events,
+        during="waiting",
+        prepare=with_an_evaluator_of_somebody_else,
+    )
+
+    assert cleanup_events == ["setup", "waiting", *CLEANUP[1:]]
+    assert deaths == [signal.SIGTERM]
+
+
 def test_fatal_signal_during_the_cleanup_of_a_run_that_ended_lets_it_finish(
     deaths: list[int], cleanup_events: list[str]
 ) -> None:
