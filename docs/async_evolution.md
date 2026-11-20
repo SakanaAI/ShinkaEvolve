@@ -70,7 +70,27 @@ await runner.run_async()
 `max_proposal_jobs=1` gives sequential proposal generation behavior.
 All concurrency knobs live on `ShinkaEvolveRunner`.
 
-Suitable concurrency depends on your machine. In practice, leave enough CPU capacity for the database workers, evaluation jobs, and proposal sampling jobs to run without starving each other.
+### What the Runner Grants
+
+At startup the runner checks the requested worker counts against the machine:
+
+| Knob | Limit | Reason |
+|------|-------|--------|
+| `max_evaluation_jobs` with `LocalJobConfig` | the number of CPU cores, and two per GB of RAM | Each local evaluation is a CPU-bound subprocess. |
+| `max_evaluation_jobs` with a Slurm job config | none | The jobs run on the cluster, not on the submitting machine. |
+| `max_proposal_jobs` | none | A proposal job mostly waits on the LLM. |
+| `max_db_workers` | 8 | Threads on one SQLite database. |
+
+A request above a limit is reduced, and the runner logs a warning with the
+requested and the granted number:
+
+```text
+Concurrency clamp: max_evaluation_jobs requested 16, granted 10 (one CPU-bound evaluation per core, 10 CPU cores)
+```
+
+`headless/*` models run one CLI call at a time per runner process, so proposal
+jobs beyond the first wait for their turn. Keep `max_proposal_jobs` small with
+them.
 
 When sampling/proposal generation is slower than evaluation, set
 `max_proposal_jobs > max_evaluation_jobs` and enable controlled oversubscription.
@@ -103,6 +123,37 @@ ShinkaEvolveRunner(
 | Small | 2-6 | eval + 1 | good default if eval waits on proposals |
 | Medium | 5-20 | eval + 1 to eval + 2 | use adaptive oversubscription |
 | Large | 20+ | eval + 2 to eval + 6 | keep bounded with caps |
+
+Local evaluation jobs above the core count are reduced (see
+[What the Runner Grants](#what-the-runner-grants)), so the larger rows need a
+Slurm job config or a machine with that many cores.
+
+---
+
+## Measured Scaling
+
+Throughput relative to one job, measured on a 10-core laptop (8 performance and
+2 efficiency cores, 64 GB RAM) that was also in normal desktop use. Setup:
+`examples/circle_packing` with `shinka_small.yaml`, a CPU-bound evaluation of
+about 2 seconds, equal evaluation and proposal jobs, `max_db_workers=4`, and a
+stub LLM that answers after a fixed delay. Embeddings, novelty checks and
+meta-recommendations were off.
+
+| Jobs (evaluation = proposal) | LLM answers in 3 s | LLM answers in 15 s |
+|------------------------------|--------------------|---------------------|
+| 1 | 11.4 generations/min | 3.5 generations/min |
+| 2 | 1.9x | not measured |
+| 4 | 3.5x | not measured |
+| 8 | 5.9x | 7.0x |
+| 10 | 6.4x | not measured |
+
+Against the OpenAI API (`gpt-5.4-mini` and `gpt-5.4-nano`, with embeddings and
+novelty checks on) the same example gave 2.0x with 2 jobs and 3.9x with 4.
+
+Evaluations that share cores slow each other down: one evaluation took 2.1 s
+with 1 job, 3.1 s with 8 and 3.8 s with 10. If your evaluation scores run time,
+keep `max_evaluation_jobs` well below the core count. The runner process itself
+used 0.13 to 0.19 CPU-seconds per generation, whatever the job count.
 
 ---
 
@@ -205,6 +256,6 @@ runner = ShinkaEvolveRunner(
 - Too many requests: reduce `max_proposal_jobs`.
 - Proposal backlog grows too much: lower `proposal_buffer_max` or `proposal_target_ratio_cap`.
 - Evaluation workers idle: raise `max_proposal_jobs` modestly and keep controlled oversubscription enabled.
-- Memory pressure: lower `max_proposal_jobs` and `max_evaluation_jobs`.
+- Memory pressure: lower `max_evaluation_jobs` first (each local evaluation is its own process), then `max_proposal_jobs`.
 - DB contention: lower `max_db_workers`.
 - File I/O errors: ensure `aiofiles` installed.
