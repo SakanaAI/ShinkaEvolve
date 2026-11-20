@@ -494,12 +494,15 @@ A finished job is kept when its results cannot be read or stored at first:
 - A results read that raises is retried, five attempts in all.
 - A results read that hangs, for example on a stalled network file system, is
   waited for once (30 seconds) and then checked without blocking for up to 150
-  seconds in all, so it holds up the other jobs only during those first 30
-  seconds.
+  seconds in all, so one stuck read holds up the other jobs only during those
+  first 30 seconds. While it is stuck it keeps one of the four scheduler
+  threads that submissions, status checks and result reads share: with four
+  reads stuck at once, those wait until one of them returns.
 - Storing the program row is retried the same way, five attempts in all.
 
 The attempts follow each other within a fraction of a second, so they cover a
-momentary failure, not an outage. When they run out, the generation is recorded
+momentary failure, not an outage. A single store attempt
+can itself take up to 90 seconds before it counts as failed. When they run out, the generation is recorded
 as a failed program (`metadata.results_missing` and
 `metadata.evaluation_failed`), also when its results had been read. If that row
 cannot be written either, the job is logged as `JOB LOST` and has no row.
