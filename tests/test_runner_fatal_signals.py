@@ -327,15 +327,26 @@ def test_signal_ends_a_runner_at_once_whose_run_is_over(tmp_path: Path) -> None:
         async def fail():
             raise RuntimeError("the run fails by itself")
 
+        run_async = runner._run_async
+
+        async def run_and_say_when_it_is_over():
+            # The end of the cleanup is not yet the end of the run: the run
+            # is over once it no longer waits for a signal.
+            try:
+                await run_async()
+            finally:
+                record("run_over")
+
         runner._setup_async = setup_with_a_stuck_thread
         runner._verify_database_ready = fail
+        runner._run_async = run_and_say_when_it_is_over
         runner.run()
         """
     events = _killed_runner_events(
-        tmp_path, signal.SIGTERM, fail_with_a_thread_running, signal_at="scheduler.shutdown"
+        tmp_path, signal.SIGTERM, fail_with_a_thread_running, signal_at="run_over"
     )
 
-    assert events == ["setup", *CLEANUP]
+    assert events == ["setup", *CLEANUP, "run_over"]
 
 
 def test_stopping_runner_kills_its_local_evaluators_before_it_cleans_up(
@@ -394,8 +405,8 @@ def test_stopping_runner_kills_its_local_evaluators_before_it_cleans_up(
 
         assert wait_until(lambda: not is_alive(evaluator_pid))
         assert wait_until(lambda: not is_alive(worker))
+        assert wait_until(lambda: "flush_charges" in events.read_text())
         assert runner.poll() is None  # Still cleaning up.
-        assert "flush_charges" in events.read_text()
     finally:
         runner.kill()
         runner.wait()

@@ -137,14 +137,23 @@ def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
     tmp_path: Path,
 ) -> None:
     # SIGTERM, which a later one of would end the run: a hangup never does.
-    with _run(tmp_path, start=BUSY_STEP, cleanup="busy(2.0)") as run:
-        run.send_signal(signal.SIGTERM)
-        assert wait_until((tmp_path / "stopping").exists)
-        time.sleep(0.2)
+    # The process sends itself the twin, by its own clock: a test that
+    # stalls for a second would send a later signal instead.
+    twin_during_a_busy_step = """
+        rounds = rounds_for(2.0)
+        threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGTERM)).start()
+        started = time.perf_counter()
+        busy(2.0, rounds)
+        (here / "busy").write_text(str(time.perf_counter() - started))
+        """
+    with _run(tmp_path, start=BUSY_STEP, cleanup=twin_during_a_busy_step) as run:
         run.send_signal(signal.SIGTERM)
 
         assert run.wait(timeout=20.0) == -signal.SIGTERM
         assert (tmp_path / "cleaned").exists()
+        # Otherwise the twin was handled inside the window by any clock.
+        busy_seconds = float((tmp_path / "busy").read_text())
+        assert busy_seconds > fatal_signals._SAME_REQUEST_SECONDS + 0.3
 
 
 def test_twin_signals_that_find_the_main_thread_busy_are_one_request(
