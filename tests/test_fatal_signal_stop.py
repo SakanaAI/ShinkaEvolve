@@ -88,6 +88,29 @@ def test_later_signal_ends_the_process_at_once_with_its_evaluators(
     assert deaths == [signal.SIGTERM]
 
 
+@pytest.mark.parametrize("first", FATAL_SIGNALS)
+def test_later_hangup_does_not_end_a_stopping_run(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch, first: int
+) -> None:
+    # A closing terminal hangs up a second time when its shell exits, however
+    # long that takes: with an exit hook, or a slow history file, seconds.
+    clock = FakeClock()
+    clock.install(monkeypatch, fatal_signals)
+    stop = fatal_signals.stop_on_fatal_signals(lambda received: None)
+
+    raise_hooked(first)
+    clock.sleep(3 * fatal_signals._SAME_REQUEST_SECONDS)
+    raise_hooked(signal.SIGHUP)
+
+    assert deaths == []
+
+    # SIGTERM is what somebody sends who will not wait.
+    raise_hooked(signal.SIGTERM)
+
+    assert deaths == [signal.SIGTERM]
+    stop.finish()
+
+
 def test_same_request_is_counted_from_the_first_signal(
     deaths: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -117,18 +140,18 @@ def test_signal_handled_late_counts_from_when_it_arrived(
     asked: list[int] = []
     stop = fatal_signals.stop_on_fatal_signals(asked.append)
 
-    raise_hooked(signal.SIGHUP)
-    fatal_signals._unhandled_since[signal.SIGHUP] = clock.monotonic() + 0.002
+    raise_hooked(signal.SIGTERM)
+    fatal_signals._unhandled_since[signal.SIGTERM] = clock.monotonic() + 0.002
     clock.sleep(3 * fatal_signals._SAME_REQUEST_SECONDS)
-    raise_hooked(signal.SIGHUP)
+    raise_hooked(signal.SIGTERM)
 
     assert deaths == []
     assert fatal_signals._unhandled_since == {}
 
     # The next one is judged by its own arrival again.
-    raise_hooked(signal.SIGHUP)
+    raise_hooked(signal.SIGTERM)
 
-    assert deaths == [signal.SIGHUP]
+    assert deaths == [signal.SIGTERM]
     stop.finish()
 
 

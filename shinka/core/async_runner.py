@@ -1360,7 +1360,7 @@ class ShinkaEvolveRunner:
         def stop_the_run(received) -> None:
             logger.warning(
                 f"🛑 Received {received.name}: stopping the run as Ctrl-C would. "
-                "A further signal, a second or more from now, ends it at once."
+                "A SIGTERM a second or more from now ends it at once."
             )
             # A run that is already cleaning up finishes that.
             if run_task is not None and not getattr(self, "_closing_run", False):

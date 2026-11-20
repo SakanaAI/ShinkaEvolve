@@ -101,6 +101,21 @@ def test_closing_terminal_does_not_cut_the_cleanup_short(tmp_path: Path) -> None
         assert (tmp_path / "cleaned").exists()
 
 
+def test_terminal_whose_shell_exits_slowly_does_not_cut_the_cleanup_short(
+    tmp_path: Path,
+) -> None:
+    # The shell hangs up its jobs, and the kernel hangs up again once the
+    # shell has exited: seconds later when the shell has an exit hook.
+    with _run(tmp_path, cleanup="time.sleep(2.5)") as run:
+        run.send_signal(signal.SIGHUP)
+        assert wait_until((tmp_path / "stopping").exists)
+        time.sleep(fatal_signals._SAME_REQUEST_SECONDS + 0.2)
+        run.send_signal(signal.SIGHUP)
+
+        assert run.wait(timeout=10.0) == -signal.SIGHUP
+        assert (tmp_path / "cleaned").exists()
+
+
 def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
     tmp_path: Path,
 ) -> None:
@@ -114,13 +129,14 @@ def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
             per_second = rounds / (time.perf_counter() - started)
             hashlib.pbkdf2_hmac("sha256", b"password", b"salt", int(per_second * seconds))
         """
+    # SIGTERM, which a later one of would end the run: a hangup never does.
     with _run(tmp_path, start=busy_step, cleanup="busy(2.0)") as run:
-        run.send_signal(signal.SIGHUP)
+        run.send_signal(signal.SIGTERM)
         assert wait_until((tmp_path / "stopping").exists)
         time.sleep(0.2)
-        run.send_signal(signal.SIGHUP)
+        run.send_signal(signal.SIGTERM)
 
-        assert run.wait(timeout=20.0) == -signal.SIGHUP
+        assert run.wait(timeout=20.0) == -signal.SIGTERM
         assert (tmp_path / "cleaned").exists()
 
 

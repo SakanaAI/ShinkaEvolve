@@ -3,8 +3,8 @@
 Neither signal runs exit handlers, so evaluators in their own process group,
 or on a cluster, would outlive the process. A run that has asked for it is
 stopped by the first signal the way Ctrl-C stops it, and dies of the signal
-once it has cleaned up. Without such a run, or when a later signal shows that
-nobody will wait, local evaluators are killed and the process dies at once.
+once it has cleaned up. Without such a run, or when a later SIGTERM shows
+that nobody will wait, local evaluators are killed and the process dies at once.
 """
 
 import logging
@@ -46,7 +46,9 @@ _asked_to_stop: Optional[Tuple[int, float]] = None
 # A closing terminal sends SIGHUP twice within milliseconds, a service manager
 # may send SIGHUP right after SIGTERM, and the relay may repeat a signal once
 # more than needed: signals this soon after the first are the same request.
-# A later one comes from somebody who will not wait for the run to stop.
+# A later SIGTERM comes from somebody who will not wait for the run to stop.
+# A later SIGHUP does not: a closing terminal sends its second one when the
+# shell exits, which takes as long as the shell's exit hooks do.
 _SAME_REQUEST_SECONDS = 1.0
 _warned_that_nothing_is_hooked = False
 
@@ -150,8 +152,9 @@ def stop_on_fatal_signals(ask_to_stop: Callable[[signal.Signals], None]) -> Sign
     instructions of the main thread: it should only pass the request on, such
     as with ``loop.call_soon_threadsafe``. A run that starts while others
     are stopping is asked at once. Signals that arrive within a second
-    of the first are the same request. A later one kills the local evaluators
-    and ends the process at once, whatever the run has cleaned up by then.
+    of the first are the same request, and so is any later SIGHUP. A later
+    SIGTERM kills the local evaluators and ends the process at once, whatever
+    the run has cleaned up by then.
 
     Call ``finish`` on the result when the run has ended and cleaned up.
     Nothing is hooked off the main thread, or for a signal the application
@@ -245,7 +248,8 @@ def _runs_are_stopping_for(signum: int, received_at: float) -> bool:
     global _asked_to_stop
     if _asked_to_stop is not None:
         return bool(_stops) and (
-            received_at - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
+            signum == signal.SIGHUP
+            or received_at - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
         )
     requests = [stop._ask_to_stop for stop in _stops if stop._ask_to_stop is not None]
     if not requests:
