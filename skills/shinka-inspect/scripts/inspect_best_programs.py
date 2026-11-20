@@ -21,6 +21,15 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(repo_root))
     from shinka.utils import load_programs_to_df
 
+try:
+    from shinka.database.run_db_path import find_run_db_path
+except ModuleNotFoundError as missing:
+    if missing.name != "shinka.database.run_db_path":
+        raise
+    # The skill can be newer than the installed shinka: releases up to 0.0.8
+    # have no resolver.
+    find_run_db_path = None  # type: ignore[assignment]
+
 
 DEFAULT_K = 5
 DEFAULT_MAX_CODE_CHARS = 4000
@@ -107,24 +116,50 @@ def _parse_args() -> InspectConfig:
     )
 
 
+_DB_SUFFIXES = {".sqlite", ".db"}
+_PROMPT_DB_NAMES = {"prompts.sqlite", "prompts.db"}
+
+
 def _resolve_db_path(results_dir_or_db: str) -> Path:
     provided = Path(results_dir_or_db).expanduser()
-    if provided.suffix in {".sqlite", ".db"}:
+    if provided.suffix in _DB_SUFFIXES:
         return provided
+    if find_run_db_path is None:
+        return _find_db_without_resolver(provided)
+    # The file the run wrote: programs.sqlite, a custom db_path or a
+    # first-release name. Raises if several databases could be meant.
+    return find_run_db_path(provided)
 
-    candidates = (
-        provided / "programs.sqlite",
-        provided / "evolution_db.sqlite",
+
+def _find_db_without_resolver(results_dir: Path) -> Path:
+    # What a shinka without the resolver wrote: programs.sqlite, or the
+    # evolution_db.sqlite its first presets configured.
+    default = results_dir / "programs.sqlite"
+    legacy = results_dir / "evolution_db.sqlite"
+    for known in (default, legacy):
+        if known.exists():
+            return known
+    # Otherwise a run of a newer shinka with a custom db_path, or a database
+    # the user named: taken if it is the only one, never guessed between.
+    others = sorted(
+        path
+        for path in (results_dir.iterdir() if results_dir.is_dir() else ())
+        if path.suffix in _DB_SUFFIXES and path.name.lower() not in _PROMPT_DB_NAMES
     )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
+    if len(others) > 1:
+        names = ", ".join(path.name for path in others)
+        raise ValueError(
+            f"{results_dir} holds several program databases ({names}) and none "
+            f"is named {default.name}. Pass the path of the file to load."
+        )
+    return others[0] if others else default
 
-    sqlite_files = sorted(provided.glob("*.sqlite"))
-    if sqlite_files:
-        return sqlite_files[0]
 
-    return provided / "programs.sqlite"
+def _loader_path(db_path: Path) -> Path:
+    # load_programs_to_df takes a path for a database file only by its suffix.
+    # The first releases wrote a file named `None`: the loader finds it from
+    # the run directory, where it resolves the same file.
+    return db_path if db_path.suffix in _DB_SUFFIXES else db_path.parent
 
 
 def _resolve_output_path(config: InspectConfig, db_path: Path) -> Path:
@@ -291,7 +326,7 @@ def main() -> int:
     output_path = _resolve_output_path(config, db_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    loaded = load_programs_to_df(str(db_path), verbose=False)
+    loaded = load_programs_to_df(str(_loader_path(db_path)), verbose=False)
     programs_df = loaded[0] if isinstance(loaded, tuple) else loaded
     if programs_df is None:
         raise RuntimeError(f"Failed to load programs DataFrame from: {db_path}")
