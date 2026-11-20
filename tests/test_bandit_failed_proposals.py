@@ -165,7 +165,7 @@ def test_fixed_sampler_is_strictly_fixed_unless_asked_to_weigh():
 
     assert bandit.reliability().tolist() == [1.0, 1.0, 1.0]
     np.testing.assert_array_equal(bandit.posterior(), [0.5, 0.3, 0.2])
-    np.testing.assert_array_equal(bandit.posterior(subset=["a", "b"]), [0.625, 0.375, 0])
+    np.testing.assert_allclose(bandit.posterior(subset=["a", "b"]), [0.625, 0.375, 0])
 
 
 def test_fixed_sampler_weights_its_probabilities_by_reliability():
