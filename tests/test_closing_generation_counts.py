@@ -79,14 +79,18 @@ def test_closing_log_counts_generations_with_a_program_and_failed_ones(db, caplo
     assert re.search(r"Failed generations \(.*\): 2 \[2, 4\]", log), log
 
 
-def test_closing_table_counts_failed_generations(db):
+def _closing_table(database) -> str:
     output = io.StringIO()
-    db.print_summary(
+    database.print_summary(
         console=Console(file=output, color_system=None, width=200),
         total_program_target=TARGET,
     )
+    return output.getvalue()
 
-    table = output.getvalue()
+
+def test_closing_table_counts_failed_generations(db):
+    table = _closing_table(db)
+
     assert re.search(rf"Stored Generations\W+3 / {TARGET}\b", table), table
     assert re.search(r"Failed Generations\W+2\b", table), table
 
@@ -102,3 +106,24 @@ def test_failed_generation_with_a_stored_program_is_not_counted_as_failed(db):
     )
 
     assert re.search(r"Failed Generations\W+2\b", output.getvalue())
+
+
+def test_log_and_table_agree_on_a_failure_an_early_release_journaled(db, caplog):
+    """Early releases wrote NaN literals, which SQLite's JSON functions reject."""
+    db.conn.execute(
+        "INSERT INTO attempt_log (generation, stage, status, details, created_at) "
+        "VALUES (5, 'proposal', 'failed', "
+        """'{"node_kind": "failed_proposal", "api_costs": NaN}', 0)"""
+    )
+    db.conn.commit()
+
+    assert re.search(r"Failed generations \(.*\): 3 \[2, 4, 5\]", _closing_log(db, caplog))
+    assert re.search(r"Failed Generations\W+3\b", _closing_table(db))
+
+
+def test_closing_table_counts_no_failed_generation_without_a_journal(db):
+    """A database written before the journal existed still gets its summary."""
+    db.cursor.execute("DROP TABLE attempt_log")
+    db.conn.commit()
+
+    assert re.search(r"Failed Generations\W+0\b", _closing_table(db))

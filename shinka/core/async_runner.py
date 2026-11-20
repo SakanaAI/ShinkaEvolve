@@ -75,6 +75,7 @@ from shinka.core.billing import (
     GeneratedSeedHandoff,
     api_cost_in_metadata,
     cancellation_with_cost,
+    failed_proposal_generations,
     finish_cost_recording,
     load_generated_seed_handoff,
     program_db_costs,
@@ -7313,18 +7314,7 @@ class ShinkaEvolveRunner:
             WHERE status = 'failed' AND generation >= 0
             """
         )
-        terminal_generations = set()
-        for generation, details_json in self.db.cursor.fetchall():
-            try:
-                details = json.loads(details_json or "{}")
-            except (ValueError, TypeError):
-                continue
-            if (
-                isinstance(details, dict)
-                and details.get("node_kind") == "failed_proposal"
-            ):
-                terminal_generations.add(int(generation))
-        return sorted(terminal_generations)
+        return sorted(failed_proposal_generations(self.db.cursor.fetchall()))
 
     def _recover_terminal_proposal_failures(
         self, persisted_generations: set[int]

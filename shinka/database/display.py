@@ -77,22 +77,19 @@ class DatabaseDisplay:
 
     def _failed_generations(self, target: int) -> set[int]:
         """Generations below the target whose proposal failed for good."""
+        from shinka.core.billing import failed_proposal_generations
+
         has_journal = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attempt_log'"
         ).fetchone()
         if not has_journal:
             return set()
-        rows = self.conn.execute(
-            """
-            SELECT DISTINCT generation FROM attempt_log
-            WHERE status = 'failed' AND generation >= 0 AND generation < ?
-              AND CASE WHEN json_valid(details) THEN
-                  json_extract(details, '$.node_kind') = 'failed_proposal'
-              END
-            """,
+        entries = self.conn.execute(
+            "SELECT generation, details FROM attempt_log "
+            "WHERE status = 'failed' AND generation >= 0 AND generation < ?",
             (target,),
         )
-        return {row[0] for row in rows}
+        return failed_proposal_generations(entries)
 
     def print_program_summary(self, program, console: Optional[RichConsole] = None):
         """Print a rich summary of a newly added program in two rows."""

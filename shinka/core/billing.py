@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import astuple, dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Iterator
+from typing import Any, Awaitable, Iterable, Iterator
 
 from shinka.database.display import stored_number
 from shinka.database.prompt_dbase import SystemPromptConfig, SystemPromptDatabase
@@ -98,6 +98,26 @@ async def finish_cost_recording(operation: Awaitable[object]) -> None:
                 continue
         task.result()
         raise
+
+
+def failed_proposal_generations(
+    entries: Iterable[tuple[int, str | None]],
+) -> set[int]:
+    """Generations whose proposal failed for good, among journal entries.
+
+    Each entry is the generation and the details of a failed attempt. The
+    details are parsed in Python: SQLite's JSON functions reject the NaN
+    literals that early releases stored, and would drop those entries.
+    """
+    failed = set()
+    for generation, raw_details in entries:
+        try:
+            details = json.loads(raw_details or "{}")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(details, dict) and details.get("node_kind") == "failed_proposal":
+            failed.add(int(generation))
+    return failed
 
 
 def journaled_api_costs(
