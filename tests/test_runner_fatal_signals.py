@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
@@ -72,10 +73,9 @@ def _signal_a_waiting_run(
     asyncio.run(asyncio.wait_for(run(), timeout=10.0))
 
 
-@pytest.fixture
-def database(tmp_path: Path) -> Iterator[SimpleNamespace]:
-    """A run's database with a program that is in its write-ahead log only."""
-    path = tmp_path / "programs.sqlite"
+@contextmanager
+def _database_with_a_log(path: Path) -> Iterator[SimpleNamespace]:
+    """A database of a run with a program that is in its write-ahead log only."""
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA journal_mode = WAL;")
     connection.execute("CREATE TABLE programs (id TEXT)")
@@ -83,9 +83,27 @@ def database(tmp_path: Path) -> Iterator[SimpleNamespace]:
     connection.commit()
     try:
         # Open until the process ends, as the runner's connection is.
-        yield SimpleNamespace(conn=connection, config=SimpleNamespace(db_path=str(path)))
+        yield SimpleNamespace(
+            conn=connection,
+            config=SimpleNamespace(db_path=str(path)),
+            # What the cleanup asks of the two databases of a run.
+            get_all_programs=lambda: [],
+            recompute_all_percentiles=lambda scores, score_of: None,
+        )
     finally:
         connection.close()
+
+
+@pytest.fixture
+def database(tmp_path: Path) -> Iterator[SimpleNamespace]:
+    with _database_with_a_log(tmp_path / "programs.sqlite") as database:
+        yield database
+
+
+@pytest.fixture
+def prompt_database(tmp_path: Path) -> Iterator[SimpleNamespace]:
+    with _database_with_a_log(tmp_path / "prompts.sqlite") as database:
+        yield database
 
 
 def _programs_in_the_file_alone(database: SimpleNamespace, tmp_path: Path) -> list[str]:
@@ -121,6 +139,26 @@ def test_signalled_run_leaves_its_programs_in_the_database_file(
     assert deaths == [signum]
     assert _programs_in_the_file_alone(database, tmp_path) == ["latest"]
     assert Path(f"{database.config.db_path}-wal").stat().st_size == 0
+
+
+def test_signalled_run_leaves_its_prompts_in_their_database_file_too(
+    deaths: list[int],
+    cleanup_events: list[str],
+    database: SimpleNamespace,
+    prompt_database: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    def with_databases(runner: ShinkaEvolveRunner) -> None:
+        runner.db = database
+        runner.prompt_db = prompt_database
+
+    _signal_a_waiting_run(
+        signal.SIGTERM, cleanup_events, during="waiting", prepare=with_databases
+    )
+
+    assert deaths == [signal.SIGTERM]
+    for stored in (database, prompt_database):
+        assert _programs_in_the_file_alone(stored, tmp_path) == ["latest"]
 
 
 def test_run_that_no_signal_stopped_leaves_the_log_to_the_closing_connection(
