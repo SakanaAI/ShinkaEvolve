@@ -1068,48 +1068,67 @@ class ShinkaEvolveRunner:
         max_db_workers: int,
         cpu_count: int,
     ) -> Tuple[int, int, int]:
-        """Validate and adjust concurrency settings based on available CPU cores."""
+        """Limit each worker pool by what its workers cost on this machine.
 
-        # Get system memory info
+        - Local evaluation jobs are CPU-bound subprocesses: at most one per core,
+          and at most two per GB of RAM (0.5 GB assumed per evaluation).
+        - Slurm evaluation jobs run on the cluster and are granted as requested.
+        - Proposal jobs spend most of their time waiting on the LLM; their local
+          work is patch application and one syntax-check subprocess per patch.
+          They are granted as requested. The pipeline target bounds how many are
+          in flight (`_compute_proposal_pipeline_target`).
+        - Database workers are threads on one SQLite database. The limit of
+          eight is kept from the previous rule and has not been measured.
+
+        Every pool that is granted less than requested is logged at WARNING.
+        """
+        max_supported_db_workers = 8
+
         try:
             memory_gb = psutil.virtual_memory().total / (1024**3)
+            memory_source = "installed"
         except Exception:
-            memory_gb = 8  # Default assumption
+            memory_gb = 8
+            memory_source = "assumed, memory size unknown"
 
-        # Conservative approach: don't exceed CPU count for total active threads
-        # Formula: evaluation_jobs + proposal_jobs + db_workers + overhead <= cpu_count * 1.5
-        max_total_threads = int(cpu_count * 1.5)  # Allow some oversubscription
+        evaluation_memory_limit = max(1, int(memory_gb * 2))
+        if cpu_count <= evaluation_memory_limit:
+            evaluation_limit = cpu_count
+            evaluation_reason = (
+                f"one CPU-bound evaluation per core, {cpu_count} CPU cores"
+            )
+        else:
+            evaluation_limit = evaluation_memory_limit
+            evaluation_reason = (
+                "0.5 GB of RAM assumed per evaluation, "
+                f"{memory_gb:.1f} GB {memory_source}"
+            )
 
-        # Memory-based constraints (each concurrent job can use ~200-500MB)
-        memory_based_limit = max(1, int(memory_gb * 2))  # Conservative: 2 jobs per GB
+        def grant(name: str, requested: int, limit: int, reason: str) -> int:
+            granted = min(requested, limit)
+            if granted < requested:
+                logger.warning(
+                    "Concurrency clamp: %s requested %d, granted %d (%s)",
+                    name,
+                    requested,
+                    granted,
+                    reason,
+                )
+            return granted
 
-        # Apply individual limits based on CPU and memory
-        max_evaluation_jobs = min(max_evaluation_jobs, cpu_count, memory_based_limit)
-        max_proposal_jobs = min(
-            max_proposal_jobs, max(1, cpu_count // 2), memory_based_limit // 2
+        if isinstance(self.job_config, LocalJobConfig):
+            max_evaluation_jobs = grant(
+                "max_evaluation_jobs",
+                max_evaluation_jobs,
+                evaluation_limit,
+                evaluation_reason,
+            )
+        max_db_workers = grant(
+            "max_db_workers",
+            max_db_workers,
+            max_supported_db_workers,
+            f"at most {max_supported_db_workers} database workers are supported",
         )
-        max_db_workers = min(
-            max_db_workers, max(1, cpu_count // 2), 8
-        )  # DB workers are less memory intensive
-
-        # Check total thread usage
-        total_threads = max_evaluation_jobs + max_proposal_jobs + max_db_workers
-
-        if total_threads > max_total_threads:
-            # Scale down proportionally while maintaining minimums
-            scale_factor = max_total_threads / total_threads
-
-            max_evaluation_jobs = max(1, int(max_evaluation_jobs * scale_factor))
-            max_proposal_jobs = max(1, int(max_proposal_jobs * scale_factor))
-            max_db_workers = max(1, int(max_db_workers * scale_factor))
-
-            if self.verbose:
-                logger.warning(
-                    f"⚠️  Scaled down concurrency settings to fit {cpu_count} CPU cores:"
-                )
-                logger.warning(
-                    f"   Total threads: {total_threads} → {max_evaluation_jobs + max_proposal_jobs + max_db_workers}"
-                )
 
         if self.verbose:
             logger.info("🖥️  System resources detected:")
@@ -1119,19 +1138,6 @@ class ShinkaEvolveRunner:
             logger.info(f"   • Evaluation jobs: {max_evaluation_jobs}")
             logger.info(f"   • Proposal jobs: {max_proposal_jobs}")
             logger.info(f"   • DB workers: {max_db_workers}")
-            logger.info(
-                f"   • Total threads: {max_evaluation_jobs + max_proposal_jobs + max_db_workers}"
-            )
-
-            # Warn if settings seem too high
-            if max_evaluation_jobs + max_proposal_jobs > cpu_count:
-                logger.warning(
-                    "⚠️  High concurrency settings may cause CPU oversubscription"
-                )
-            if max_evaluation_jobs + max_proposal_jobs > memory_based_limit:
-                logger.warning(
-                    f"⚠️  High concurrency settings may cause memory pressure (limit: {memory_based_limit})"
-                )
 
         return max_evaluation_jobs, max_proposal_jobs, max_db_workers
 

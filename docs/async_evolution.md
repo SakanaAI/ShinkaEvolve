@@ -45,7 +45,7 @@ runner = ShinkaEvolveRunner(
     job_config=LocalJobConfig(eval_program_path="evaluate.py"),
     db_config=DatabaseConfig(),
     max_evaluation_jobs=2,
-    max_proposal_jobs=3,  # slight proposal oversubscription to keep eval workers busy
+    max_proposal_jobs=3,  # ceiling; going above max_evaluation_jobs needs controlled oversubscription
     max_db_workers=4,
 )
 
@@ -70,7 +70,52 @@ await runner.run_async()
 `max_proposal_jobs=1` gives sequential proposal generation behavior.
 All concurrency knobs live on `ShinkaEvolveRunner`.
 
-Suitable concurrency depends on your machine. In practice, leave enough CPU capacity for the database workers, evaluation jobs, and proposal sampling jobs to run without starving each other.
+### What the Runner Grants
+
+At startup the runner checks the requested worker counts against the machine:
+
+| Knob | Limit | Reason |
+|------|-------|--------|
+| `max_evaluation_jobs` with `LocalJobConfig` | the smaller of the logical CPU count (`os.cpu_count()`) and two per GB of installed RAM | Each local evaluation is a CPU-bound subprocess. |
+| `max_evaluation_jobs` with a Slurm job config | none | The jobs run on the cluster, not on the submitting machine. |
+| `max_proposal_jobs` | none | A proposal job mostly waits on the LLM. |
+| `max_db_workers` | 8 | Threads on one SQLite database. |
+
+A request above a limit is reduced, and the runner logs a warning with the
+requested and the granted number:
+
+```text
+Concurrency clamp: max_evaluation_jobs requested 16, granted 10 (one CPU-bound evaluation per core, 10 CPU cores)
+```
+
+`os.cpu_count()` is the CPU count of the whole machine. In a container or a
+Slurm allocation that was given fewer CPUs it is too high, so set
+`max_evaluation_jobs` to the number you were given.
+
+With a Slurm job config the runner does not know the cluster's limits. Keep
+`max_evaluation_jobs` at or below the number of jobs your account may have
+submitted at one time (`MaxSubmitJobs` of your Slurm association or QOS). A
+submission that `sbatch` rejects is recorded as a failed generation, and the
+LLM calls for its proposal are already paid for. Jobs above a limit on running
+jobs wait in the queue, and each holds an evaluation slot until Slurm starts it.
+
+`max_proposal_jobs` is a ceiling, not a target. Without controlled
+oversubscription the runner keeps proposals plus running evaluations at
+`max_evaluation_jobs`, so a reduced evaluation count also reduces the proposals
+in flight, and `max_proposal_jobs` above `max_evaluation_jobs` has no effect.
+
+With `max_api_costs` set, the cap also limits the proposals in flight. A run
+whose results directory has no proposal cost on record starts one proposal and
+holds the others back until that one has been handed to evaluation or has
+failed; then the other proposal jobs start. From then on a proposal starts only
+while the cap covers a reservation for it and for every proposal in flight, so
+near the cap fewer proposals run than the job counts allow. The total can still
+pass the cap by the requests that are in flight when it is reached, and more
+jobs mean more of those. See [API Cost Cap](configuration.md#api-cost-cap).
+
+`headless/*` models run one CLI call at a time per runner process, so proposal
+jobs beyond the first wait for their turn. Keep `max_proposal_jobs` small with
+them.
 
 When sampling/proposal generation is slower than evaluation, set
 `max_proposal_jobs > max_evaluation_jobs` and enable controlled oversubscription.
@@ -103,6 +148,44 @@ ShinkaEvolveRunner(
 | Small | 2-6 | eval + 1 | good default if eval waits on proposals |
 | Medium | 5-20 | eval + 1 to eval + 2 | use adaptive oversubscription |
 | Large | 20+ | eval + 2 to eval + 6 | keep bounded with caps |
+
+Local evaluation jobs above the logical CPU count are reduced (see
+[What the Runner Grants](#what-the-runner-grants)), so the larger rows need a
+Slurm job config or a machine with that many CPUs.
+
+---
+
+## Measured Scaling
+
+Throughput relative to one job, measured on a 10-core laptop (8 performance and
+2 efficiency cores, 64 GB RAM) that was also running other programs (1-minute
+load average 5 to 18 before the runs). Setup: `examples/circle_packing` with
+`shinka_small.yaml`, a CPU-bound evaluation of about 2 seconds, equal evaluation
+and proposal jobs, `max_db_workers=4`, and a stub LLM that answers after a fixed
+delay with a full rewrite. Embeddings, novelty checks and meta-recommendations
+were off. Each cell is the mean of one to three runs of 24 or 40 generations.
+
+| Jobs (evaluation = proposal) | LLM answers in 3 s | LLM answers in 15 s |
+|------------------------------|--------------------|---------------------|
+| 1 | 11.4 generations/min | 3.5 generations/min |
+| 2 | 1.9x | not measured |
+| 4 | 3.5x | not measured |
+| 8 | 5.9x | 7.0x |
+| 10 | 6.4x | not measured |
+
+The stub numbers need a machine with at least as many CPUs as jobs. With 8 or
+10 jobs they have not been checked against a real LLM API. Against the OpenAI
+API (`gpt-5.4-mini` and `gpt-5.4-nano`, with embeddings and novelty checks on)
+the same example gave about 2x with 2 jobs and 3.9x with 4, as the mean of two
+runs of 16 generations whose speedups ranged from 1.6x to 2.3x and from 3.6x to
+4.1x.
+
+In the stub runs one evaluation took longer the more jobs ran: 2.1 s with 1
+job, 2.2 s with 2, 2.5 s with 4, 3.1 s with 8 and 3.8 s with 10. The OpenAI runs
+with 2 and 4 jobs did not show this (1.8 to 1.9 s throughout). If your
+evaluation scores run time, check its timing at the job count you plan to use.
+The runner process itself used 0.12 to 0.19 CPU-seconds per generation in every
+run.
 
 ---
 
@@ -205,6 +288,6 @@ runner = ShinkaEvolveRunner(
 - Too many requests: reduce `max_proposal_jobs`.
 - Proposal backlog grows too much: lower `proposal_buffer_max` or `proposal_target_ratio_cap`.
 - Evaluation workers idle: raise `max_proposal_jobs` modestly and keep controlled oversubscription enabled.
-- Memory pressure: lower `max_proposal_jobs` and `max_evaluation_jobs`.
+- Memory pressure: lower `max_evaluation_jobs` first (each local evaluation is its own process), then `max_proposal_jobs`.
 - DB contention: lower `max_db_workers`.
 - File I/O errors: ensure `aiofiles` installed.
