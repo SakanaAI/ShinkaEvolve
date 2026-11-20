@@ -463,10 +463,10 @@ the known charges reach the cap is still billed. The total passes the cap by
 at most the cost of those requests. That happens when
 
 - a proposal costs more than its reservation, that is, more than every
-  proposal before it. The first `max_proposal_jobs` proposals of a new results
-  directory start without any cost history and so without a reservation. A
-  proposal joins the history when its program is handed to evaluation or when
-  it has failed for good;
+  proposal before it. A proposal joins that history when its program is
+  handed to evaluation or when it has failed for good;
+- the first `max_proposal_jobs` proposals of a new results directory start.
+  They have no cost history yet and so no reservation;
 - a meta summary, a prompt evolution step or an LLM-generated initial program
   runs. These calls are not reserved. They start whenever the known charges
   are below the cap, and what they cost is then missing for the proposals in
