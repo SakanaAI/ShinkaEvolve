@@ -148,17 +148,17 @@ class BanditBase(ABC):
         """Index of `arm` in the outcome counts, or None if it has none.
 
         Outcome reports reach every bandit, also a subclass written before
-        they existed that keeps arm names of its own. An arm this class cannot
-        place is left untracked, with one warning, instead of failing the
-        proposal that reports it.
+        they existed that keeps arm names of its own or never initialised this
+        class. An arm that cannot be placed is left untracked, with one
+        warning, instead of failing the proposal that reports it.
         """
         try:
             i = self._resolve_arm(arm)
-        except ValueError:
-            i = -1
-        if 0 <= i < self.recent_failed.size:
-            return i
-        if not self._warned_untracked_arm:
+            if 0 <= i < self.recent_failed.size:
+                return i
+        except (ValueError, AttributeError):
+            pass
+        if not getattr(self, "_warned_untracked_arm", False):
             self._warned_untracked_arm = True
             logger.warning(
                 "Bandit does not know arm %r and cannot track the outcomes of "
@@ -186,7 +186,7 @@ class BanditBase(ABC):
         A new arm is assumed to have delivered one proposal, and that
         assumption fades as real outcomes fill the memory. An arm without
         failures is at 1.0, a first failure halves a new arm, and an arm that
-        only fails goes to 0.
+        only fails approaches 0.
         """
         if self._failure_memory == 0.0:
             return np.ones(self._n_arms, dtype=np.float64)
@@ -205,7 +205,7 @@ class BanditBase(ABC):
         divided instead, so that failing never raises a score.
         """
         reliability = self.reliability()[idx]
-        divisor = np.maximum(reliability, np.finfo(np.float64).tiny)
+        divisor = np.maximum(reliability, 1e-12)
         return np.where(scores >= 0.0, scores * reliability, scores / divisor)
 
     def _weight_by_reliability(
@@ -214,13 +214,20 @@ class BanditBase(ABC):
         eligible: np.ndarray,
         idx: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Scale selection probabilities by reliability and renormalise them.
+        """Let each arm keep only the reliable part of its selection probability.
 
         `probs` and the mask `eligible` cover every arm, or the arms `idx`
-        when that is given. An eligible arm that has failed keeps a probe
-        share: (1 - reliability) / (1 + failure_memory) of an even share. A
-        model that is down is therefore still tried now and then, whatever the
-        bandit's own exploration is set to, and can show that it works again.
+        when that is given. An arm keeps reliability x probability. What it
+        loses goes to the other arms in proportion to what they keep, or to
+        their reliability if none of them keeps anything. Renormalising
+        instead would hand a failing arm that holds most of the probability
+        nearly all of it back.
+
+        An eligible arm that has failed is also probed: with probability
+        (1 - reliability) / (1 + failure_memory) of an even share, and never
+        more than the bandit gave it. A model that is down is therefore still
+        tried now and then, whatever the bandit's own exploration is set to,
+        and can show that it works again.
         """
         reliability = self.reliability()
         if idx is not None:
@@ -228,13 +235,23 @@ class BanditBase(ABC):
         n_eligible = int(eligible.sum())
         if n_eligible == 0 or np.all(reliability == 1.0):
             return probs
-        weighted = probs * reliability
-        total = weighted.sum()
-        if total > 0.0:
-            weighted = weighted / total
-        probe = (1.0 - reliability) / (n_eligible * (1.0 + self._failure_memory))
-        weighted = np.where(eligible, np.maximum(weighted, probe), weighted)
-        return weighted / weighted.sum()
+        kept = probs * reliability
+        lost = probs - kept
+        weighted = kept.copy()
+        for k in np.flatnonzero(lost > 0.0):
+            others = kept.copy()
+            others[k] = 0.0
+            if others.sum() <= 0.0:
+                others = np.where(eligible, reliability, 0.0)
+                others[k] = 0.0
+            if others.sum() > 0.0:
+                weighted += lost[k] * others / others.sum()
+            else:
+                weighted[k] += lost[k]  # no other arm could take it
+        probe = 1.0 / (n_eligible * (1.0 + self._failure_memory))
+        probe = np.minimum(np.where(probs > 0.0, probs, np.inf), probe)
+        probe = np.where(eligible, probe * (1.0 - reliability), 0.0)
+        return weighted * (1.0 - probe.sum()) + probe
 
     def _epsilon_greedy(
         self, scores: np.ndarray, idx: np.ndarray, epsilon: float
@@ -242,8 +259,8 @@ class BanditBase(ABC):
         """Selection probabilities over the arms `idx` from their scores.
 
         The best reliability-discounted score takes 1 - epsilon and the other
-        arms share epsilon; the result is then weighted by reliability, so an
-        unreliable arm also loses its share of the exploration.
+        arms share epsilon; each arm then keeps only the reliable part of its
+        probability, so an unreliable arm also loses its share of exploration.
         """
         scores = self._discount_by_reliability(scores, idx)
         winners = scores == scores.max()
@@ -439,9 +456,10 @@ class BanditBase(ABC):
         # a longer memory, or edited, is scaled down to that: it keeps its
         # reliability and the arm does not take longer than usual to recover.
         half_total = delivered / 2.0 + failed / 2.0  # the sum can overflow
-        scale = np.minimum(
-            1.0, (self._failure_memory / 2.0) / np.maximum(half_total, 0.5)
-        )
+        half_limit = self._failure_memory / 2.0
+        # Rounding puts honest counts a few ulp above the limit; leave those.
+        over = half_total > half_limit * (1.0 + 1e-9)
+        scale = np.where(over, half_limit / np.maximum(half_total, 0.5), 1.0)
         self.recent_delivered = delivered * scale
         self.recent_failed = failed * scale
 

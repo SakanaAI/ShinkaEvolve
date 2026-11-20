@@ -352,12 +352,22 @@ class _OwnNamesBandit(BanditBase):
         return None
 
 
+class _NoBaseInitBandit(_OwnNamesBandit):
+    """Overrides everything it uses and never initialises BanditBase."""
+
+    def __init__(self) -> None:
+        self.index = {MODEL: 0, "model-b": 1}
+        self.submitted = [0, 0]
+        self.costs = [0.0, 0.0]
+
+
+@pytest.mark.parametrize("bandit_class", [_OwnNamesBandit, _NoBaseInitBandit])
 @BOTH_PROPOSAL_KINDS
 def test_bandit_with_its_own_arm_names_keeps_working(
-    run: Callable[[Any], Any], monkeypatch: pytest.MonkeyPatch
+    run: Callable[[Any], Any], bandit_class: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(async_runner, "apply_patch_async", _patch_applies)
-    bandit = _OwnNamesBandit()
+    bandit = bandit_class()
 
     _, _, delivered = run(_build_runner(_reply, bandit))
     _, metadata, failed = run(

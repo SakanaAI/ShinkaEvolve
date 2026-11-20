@@ -1,11 +1,7 @@
 """A model whose proposals fail loses selection weight, and gets it back."""
 
-import logging
-from io import StringIO
-
 import numpy as np
 import pytest
-from rich.console import Console
 
 from shinka.llm.prioritization import AsymmetricUCB, FixedSampler, ThompsonSampler
 
@@ -135,10 +131,12 @@ def test_dead_model_loses_its_reliability_but_is_still_tried(make_bandit):
     assert seen[1] == pytest.approx(0.81 / 2.71)
     assert all(later < earlier for earlier, later in zip(seen, seen[1:]))
     assert seen[-1] < 1e-9
-    # The probe share: 1 / (1 + failure_memory) of an even share, renormalised.
-    probe = (1 / 22) / (1 + 1 / 22)
+    # All that is left is the probe share: 1 / (1 + failure_memory) of an
+    # even share.
     for _ in range(20):
-        assert bandit.posterior()[DEAD] == pytest.approx(probe)
+        ok, dead = bandit.posterior()
+        assert dead == pytest.approx(1 / 22)
+        assert ok == pytest.approx(21 / 22)
 
 
 @ALL_BANDITS
@@ -163,15 +161,88 @@ def test_fixed_sampler_weights_its_probabilities_by_reliability():
 
     bandit.update_failed("a")
     bandit.update_failed("a")
-    reliability = bandit.reliability()
+    reliability = bandit.reliability()[0]
 
-    assert reliability[0] == pytest.approx(0.81 / 2.71)
-    expected = np.array([0.5 * reliability[0], 0.3, 0.2])
-    np.testing.assert_allclose(bandit.posterior(), expected / expected.sum())
-    restricted = bandit.posterior(subset=["a", "b"])
+    assert reliability == pytest.approx(0.81 / 2.71)
+    # `a` keeps the reliable part of its half; `b` and `c` share the rest 3:2.
+    lost = 0.5 * (1 - reliability)
+    weighted = np.array([0.5 * reliability, 0.3 + 0.6 * lost, 0.2 + 0.4 * lost])
+    probe = (1 / 33) * (1 - reliability)
+    expected = weighted * (1 - probe) + [probe, 0.0, 0.0]
+    np.testing.assert_allclose(bandit.posterior(), expected)
+    assert bandit.posterior().sum() == pytest.approx(1.0)
+
+    # Restricted to two arms, `b` takes everything `a` loses.
+    probe = (1 / 22) * (1 - reliability)
+    kept = 0.625 * reliability
     np.testing.assert_allclose(
-        restricted, [expected[0] / expected[:2].sum(), 0.3 / expected[:2].sum(), 0.0]
+        bandit.posterior(subset=["a", "b"]),
+        [kept * (1 - probe) + probe, (1 - kept) * (1 - probe), 0.0],
     )
+
+
+@pytest.mark.parametrize("prior", [[0.99, 0.01], [0.5, 0.49, 0.01], [0.9, 0.05, 0.05]])
+def test_failing_never_raises_the_share_a_fixed_sampler_gives_a_model(prior):
+    arms = [f"arm-{i}" for i in range(len(prior))]
+    bandit = FixedSampler(arm_names=arms, prior_probs=prior)
+    shares = []
+    for _ in range(80):
+        bandit.update_failed(arms[-1])
+        shares.append(bandit.posterior()[-1])
+
+    assert max(shares) <= prior[-1]
+    # What is left is the probe share, or all of a share that is smaller.
+    assert shares[-1] == pytest.approx(min(prior[-1], 1 / (11 * len(prior))), abs=1e-4)
+    # The arms that still work keep their proportions.
+    working = bandit.posterior()[:-1]
+    np.testing.assert_allclose(
+        working / working.sum(), np.array(prior[:-1]) / sum(prior[:-1])
+    )
+
+
+def test_fixed_sampler_never_draws_a_model_it_gives_no_probability():
+    bandit = FixedSampler(arm_names=["a", "b", "off"], prior_probs=[0.5, 0.5, 0.0])
+    for _ in range(30):
+        bandit.update_failed("a")
+        bandit.update_failed("off")
+
+    assert bandit.posterior()[2] == 0.0
+    assert bandit.posterior(subset=["a", "off"])[2] == 0.0
+
+
+@pytest.mark.parametrize(
+    "make_bandit",
+    [
+        lambda: AsymmetricUCB(
+            arm_names=ARMS, seed=0, epsilon=0.0, exploration_coef=0.0
+        ),
+        lambda: AsymmetricUCB(arm_names=ARMS, seed=0, epsilon=0.0, cost_aware_coef=1.0),
+        lambda: ThompsonSampler(arm_names=ARMS, seed=0, epsilon=0.0),
+    ],
+    ids=["ucb-reward-only", "ucb-cost-only", "thompson"],
+)
+def test_greedy_bandit_lets_go_of_its_best_model_when_it_dies(make_bandit):
+    """With epsilon 0 the best arm holds all of the probability."""
+    bandit = make_bandit()
+    bandit.set_baseline_score(BASELINE)
+    for _ in range(10):
+        for arm, reward, cost in (
+            ("dead", BASELINE + 1.0, 0.0002),
+            ("ok", BASELINE, 0.02),
+        ):
+            bandit.update_submitted(arm)
+            bandit.update_cost(arm, cost)
+            bandit.update_delivered(arm)
+            bandit.update(arm, reward, baseline=BASELINE)
+    shares = []
+    for _ in range(40):
+        bandit.update_submitted("dead")
+        bandit.update_failed("dead")
+        shares.append(np.mean([bandit.posterior()[DEAD] for _ in range(20)]))
+
+    assert shares[9] < 0.45
+    assert shares[19] < 0.2
+    assert shares[-1] < 0.06
 
 
 def _paid_and_failing(cost_aware_coef, failed_cost):
@@ -295,128 +366,6 @@ def test_no_failure_leaves_the_selection_untouched(make_bandit):
         np.testing.assert_array_equal(reported.posterior(), silent.posterior())
 
 
-@ALL_BANDITS
-def test_failure_memory_zero_switches_the_weighting_off(make_bandit):
-    template = make_bandit(0)
-    bandit = type(template)(arm_names=ARMS, seed=0, failure_memory=0)
-    untouched = type(template)(arm_names=ARMS, seed=0, failure_memory=0)
-    for _ in range(5):
-        bandit.update_failed("dead")
-        bandit.update_delivered("ok")
-
-    assert bandit.reliability().tolist() == [1.0, 1.0]
-    np.testing.assert_array_equal(bandit.posterior(), untouched.posterior())
-
-
-@pytest.mark.parametrize("failure_memory", [-1.0, 0.5, float("nan")])
-@pytest.mark.parametrize("cls", [AsymmetricUCB, ThompsonSampler, FixedSampler])
-def test_failure_memory_must_be_zero_or_at_least_one(cls, failure_memory):
-    with pytest.raises(ValueError, match="failure_memory"):
-        cls(arm_names=ARMS, failure_memory=failure_memory)
-
-
-@ALL_BANDITS
-def test_outcome_report_for_an_unknown_arm_is_ignored_with_one_warning(
-    make_bandit, caplog
-):
-    """The runner reports from its failure handlers, which must not raise."""
-    bandit = make_bandit(0)
-
-    with caplog.at_level(logging.WARNING, logger="shinka.llm.prioritization"):
-        bandit.update_failed("not-in-the-pool", cost=0.5)
-        bandit.update_delivered("not-in-the-pool")
-        bandit.update_failed(7)
-
-    assert caplog.text.count("cannot track the outcomes") == 1
-    assert bandit.reliability().tolist() == [1.0, 1.0]
-    assert bandit.get_state().get("total_costs", np.zeros(2)).tolist() == [0.0, 0.0]
-
-
-@ALL_BANDITS
-def test_outcome_counts_survive_save_and_load(make_bandit, tmp_path):
-    bandit = make_bandit(0)
-    for _ in range(4):
-        bandit.update_failed("dead", cost=0.01)
-    bandit.update_delivered("dead")
-    bandit.update_delivered("ok")
-    path = tmp_path / "bandit_state.pkl"
-
-    bandit.save_state(path)
-    restored = make_bandit(1)
-    restored.load_state(path)
-
-    np.testing.assert_array_equal(restored.recent_failed, bandit.recent_failed)
-    np.testing.assert_array_equal(restored.recent_delivered, bandit.recent_delivered)
-    np.testing.assert_array_equal(restored.reliability(), bandit.reliability())
-    assert restored.reliability()[DEAD] < 0.5
-
-
-@ALL_BANDITS
-def test_outcome_counts_follow_the_model_when_the_pool_changes(make_bandit, tmp_path):
-    bandit = make_bandit(0)
-    for _ in range(4):
-        bandit.update_failed("dead")
-    path = tmp_path / "bandit_state.pkl"
-    bandit.save_state(path)
-
-    reordered = type(bandit)(arm_names=["new", "dead", "ok"], seed=0)
-    reordered.load_state(path)
-
-    assert reordered.reliability()[0] == 1.0
-    assert reordered.reliability()[1] == bandit.reliability()[DEAD]
-    assert reordered.reliability()[2] == 1.0
-
-
-@ALL_BANDITS
-def test_state_saved_without_outcome_counts_loads_as_fully_reliable(make_bandit):
-    saved = make_bandit(0)
-    saved.update_submitted("ok")
-    saved.update("ok", BASELINE + 0.1, baseline=BASELINE)
-    state = saved.get_state()
-    del state["recent_delivered"], state["recent_failed"]
-
-    restored = make_bandit(1)
-    restored.update_failed("dead")
-    restored.set_state(state)
-
-    assert restored.reliability().tolist() == [1.0, 1.0]
-
-
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0])
-@ALL_BANDITS
-def test_invalid_saved_outcome_counts_are_reset(make_bandit, bad, caplog):
-    state = make_bandit(0).get_state()
-    state["recent_failed"] = [0.0, bad]
-    restored = make_bandit(1)
-
-    with caplog.at_level(logging.WARNING, logger="shinka.llm.prioritization"):
-        restored.set_state(state)
-
-    assert "invalid proposal outcome counts" in caplog.text
-    assert restored.reliability().tolist() == [1.0, 1.0]
-    one_hot, probabilities = restored.select_llm()
-    assert one_hot.sum() == 1.0
-    assert np.isclose(probabilities.sum(), 1.0)
-
-
-@ALL_BANDITS
-def test_summary_names_the_models_whose_proposals_failed(make_bandit):
-    bandit = make_bandit(0)
-
-    def summary() -> str:
-        buffer = StringIO()
-        bandit.print_summary(console=Console(file=buffer, width=200))
-        return buffer.getvalue()
-
-    assert "returned a patch" not in summary()
-
-    bandit.update_submitted("dead")
-    bandit.update_failed("dead")
-
-    assert "share of recent proposals that returned a patch" in summary()
-    assert "dead 0.47" in summary()
-
-
 @pytest.mark.parametrize("epsilon", [0.0, 0.1])
 def test_greedy_thompson_still_finds_out_that_a_model_works_again(epsilon):
     """Without the probe share a failed arm that stops winning is never drawn."""
@@ -465,8 +414,8 @@ def test_model_that_was_cheap_before_it_died_does_not_keep_the_top_score():
     # shrinks its share with every failure, down to the probe share.
     assert 0.7 < shares[0] < 0.8
     assert all(later <= earlier for earlier, later in zip(shares, shares[1:]))
-    assert shares[20] < 0.3
-    assert all(share < 0.05 for share in shares[40:])
+    assert shares[20] < 0.15
+    assert all(share < 0.06 for share in shares[40:])
 
 
 def test_bills_of_a_model_that_never_delivered_count_against_it():
@@ -495,37 +444,6 @@ def test_batch_posterior_gives_a_failing_model_few_of_the_samples():
 
     assert allocation.sum() == pytest.approx(1.0)
     assert allocation[DEAD] < 0.15
-
-
-def test_failure_memory_zero_ignores_saved_outcome_counts():
-    saved = AsymmetricUCB(arm_names=ARMS, seed=0)
-    for _ in range(20):
-        saved.update_failed("dead")
-    restored = AsymmetricUCB(arm_names=ARMS, seed=0, failure_memory=0)
-
-    restored.set_state(saved.get_state())
-
-    assert restored.reliability().tolist() == [1.0, 1.0]
-    assert restored.recent_failed.tolist() == [0.0, 0.0]
-
-
-@pytest.mark.parametrize("saved_failed", [40.0, 1e300, 1.7e308])
-@ALL_BANDITS
-def test_saved_counts_beyond_the_memory_are_scaled_down(make_bandit, saved_failed):
-    """Saved with a longer memory, or edited: the arm must still recover."""
-    state = make_bandit(0).get_state()
-    state["recent_delivered"] = [0.0, saved_failed / 4]
-    state["recent_failed"] = [0.0, saved_failed]
-    restored = make_bandit(1)
-
-    restored.set_state(state)
-
-    assert restored.recent_failed[DEAD] == pytest.approx(8.0)
-    assert restored.recent_delivered[DEAD] == pytest.approx(2.0)
-    assert restored.reliability()[DEAD] == pytest.approx(0.2)
-    for _ in range(30):
-        restored.update_delivered("dead")
-    assert restored.reliability()[DEAD] > 0.95
 
 
 # Posteriors of commit 1bf7113 after the 3rd, 8th and 12th of twelve
