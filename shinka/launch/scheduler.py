@@ -426,6 +426,9 @@ class JobScheduler:
     ) -> Union[str, ProcessWithLogging]:
         """Submit a job asynchronously without blocking the event loop."""
         loop = asyncio.get_event_loop()
+        if self.job_type == "local":
+            # Here, in the loop's thread: the executor's cannot hook signals.
+            kill_evaluators_on_fatal_signals()
 
         return await loop.run_in_executor(
             self.executor, self.submit_async, exec_fname_t, results_dir_t

@@ -303,7 +303,7 @@ def test_scheduler_built_off_the_main_thread_is_quiet_when_the_signals_are_hooke
     assert caplog.messages == []
 
 
-@pytest.mark.parametrize("start", ["submit_async", "run"])
+@pytest.mark.parametrize("start", ["submit_async", "submit_async_nonblocking", "run"])
 def test_evaluation_started_on_the_main_thread_hooks_the_signals_again(
     deaths: list[int], monkeypatch: pytest.MonkeyPatch, tmp_path: Path, start: str
 ) -> None:
@@ -322,7 +322,10 @@ def test_evaluation_started_on_the_main_thread_hooks_the_signals_again(
         scheduler_module, "monitor_local_evaluation", lambda *a, **k: {}
     )
     try:
-        getattr(scheduler, start)("main.py", str(tmp_path))
+        started = getattr(scheduler, start)("main.py", str(tmp_path))
+        if asyncio.iscoroutine(started):
+            # The runner's way: the evaluator is launched from another thread.
+            asyncio.run(started)
     finally:
         scheduler.shutdown()
 
