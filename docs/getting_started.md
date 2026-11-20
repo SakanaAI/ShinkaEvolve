@@ -90,6 +90,10 @@ AZURE_API_ENDPOINT=https://your-resource.openai.azure.com
 evo_config = EvolutionConfig(llm_models=["azure-gpt-5-mini"])
 ```
 
+`reasoning_efforts` is ignored for an Azure deployment of a reasoning model
+before GPT-6, such as this one: see
+[LLM sampling settings](configuration.md#llm-sampling-settings-llm_kwargs).
+
 Azure v1 LLM calls do not require `AZURE_API_VERSION`. Azure embedding models
 still use the versioned Azure API client and additionally require, for example,
 `AZURE_API_VERSION=2024-02-01`.
