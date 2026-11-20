@@ -181,6 +181,64 @@ def test_fixed_sampler_weights_its_probabilities_by_reliability():
     )
 
 
+def test_models_that_fail_alike_keep_their_shares():
+    """A failure rate the whole pool shares, a hard task or an outage, is no
+    reason to move probability from the preferred model to the others."""
+    bandit = FixedSampler(arm_names=["a", "b", "c"], prior_probs=[0.8, 0.1, 0.1])
+    for arm in ("a", "b", "c"):
+        for _ in range(3):
+            bandit.update_failed(arm)
+    reliability = bandit.reliability()
+    np.testing.assert_allclose(reliability, 0.729 / 3.439)
+
+    # Nothing moves between the arms; each is probed for having failed.
+    probe = (1 / 33) * (1 - reliability[0])
+    np.testing.assert_allclose(
+        bandit.posterior(), np.array([0.8, 0.1, 0.1]) * (1 - 3 * probe) + probe
+    )
+
+
+@pytest.mark.parametrize("cls", [AsymmetricUCB, ThompsonSampler])
+def test_pool_that_fails_alike_keeps_its_best_model_in_front(cls):
+    arms = ["best", "second", "third"]
+    bandit = cls(arm_names=arms, seed=0)
+    bandit.set_baseline_score(BASELINE)
+    for _ in range(20):
+        for arm, gain in (("best", 0.4), ("second", 0.05), ("third", 0.05)):
+            bandit.update_submitted(arm)
+            bandit.update_delivered(arm)
+            bandit.update(arm, BASELINE + gain, baseline=BASELINE)
+    before = np.mean([bandit.posterior() for _ in range(200)], axis=0)
+    for arm in arms:
+        for _ in range(5):
+            bandit.update_submitted(arm)
+            bandit.update_failed(arm)
+
+    after = np.mean([bandit.posterior() for _ in range(200)], axis=0)
+
+    assert bandit.reliability().max() < 0.6
+    assert before[0] > 0.7
+    assert after[0] > before[0] - 0.08
+
+
+def test_most_reliable_model_keeps_its_whole_share():
+    """Arms are weighed against the most reliable one, not against perfect."""
+    bandit = FixedSampler(arm_names=["flaky", "dead"], prior_probs=[0.5, 0.5])
+    for _ in range(20):
+        bandit.update_delivered("flaky")
+    bandit.update_failed("flaky")
+    for _ in range(100):
+        bandit.update_failed("dead")
+    flaky_reliability = bandit.reliability()[0]
+    assert flaky_reliability == pytest.approx(0.89, abs=0.01)
+
+    flaky, dead = bandit.posterior()
+
+    # `dead` is left with its probe share, `flaky` with a much smaller one.
+    assert dead == pytest.approx(1 / 22, abs=1e-3)
+    assert flaky == pytest.approx(1 - dead)
+
+
 @pytest.mark.parametrize("prior", [[0.99, 0.01], [0.5, 0.49, 0.01], [0.9, 0.05, 0.05]])
 def test_failing_never_raises_the_share_a_fixed_sampler_gives_a_model(prior):
     arms = [f"arm-{i}" for i in range(len(prior))]

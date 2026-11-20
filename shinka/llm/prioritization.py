@@ -204,11 +204,15 @@ class BanditBase(ABC):
         """Let each arm keep only the reliable part of its selection probability.
 
         `probs` and the mask `eligible` cover every arm, or the arms `idx`
-        when that is given. An arm keeps reliability x probability. What it
-        loses goes to the other arms in proportion to what they keep, or to
-        their reliability if none of them keeps anything. Renormalising
-        instead would hand a failing arm that holds most of the probability
-        nearly all of it back.
+        when that is given. Arms are weighed against the most reliable
+        eligible arm: that one keeps its probability, another keeps the
+        share its reliability is of the best one's. A failure rate the whole
+        pool shares, a hard task or an outage, therefore moves nothing; with
+        absolute reliabilities the preferred arm, holding the most, would
+        hand the most to the others. What an arm loses goes to the other
+        arms in proportion to what they keep, or to their reliability if
+        none of them keeps anything. Renormalising instead would hand a
+        failing arm that holds most of the probability nearly all of it back.
 
         An eligible arm that has failed is also probed: with probability
         (1 - reliability) / (1 + failure_memory) of an even share, and never
@@ -222,14 +226,19 @@ class BanditBase(ABC):
         n_eligible = int(eligible.sum())
         if n_eligible == 0 or np.all(reliability == 1.0):
             return probs
-        kept = probs * reliability
+        best = float(reliability[eligible].max())
+        if best > 0.0:
+            relative = np.minimum(reliability / best, 1.0)
+        else:
+            relative = np.ones_like(reliability)  # all dead alike
+        kept = probs * relative
         lost = probs - kept
         weighted = kept.copy()
         for k in np.flatnonzero(lost > 0.0):
             others = kept.copy()
             others[k] = 0.0
             if others.sum() <= 0.0:
-                others = np.where(eligible, reliability, 0.0)
+                others = np.where(eligible, relative, 0.0)
                 others[k] = 0.0
             if others.sum() > 0.0:
                 weighted += lost[k] * others / others.sum()
