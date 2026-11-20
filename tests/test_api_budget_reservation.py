@@ -112,6 +112,26 @@ def test_only_as_many_proposals_start_as_the_cap_covers():
     assert started == [2]
 
 
+def test_proposals_are_held_back_released_and_then_stopped_as_charges_arrive():
+    runner = _runner(charged=0.20, in_flight=2, history=[0.10])
+
+    # $0.20 + 2 x $0.10 in flight leaves no room for a third reservation.
+    assert _coordinator_tick(runner, wanted=1) == []
+    assert runner.cost_limit_reached is False
+
+    # One of the two comes back cheap: $0.22 + $0.10 in flight + $0.10 fits.
+    runner.active_proposal_tasks.popitem()
+    runner.total_api_cost += 0.02
+    runner._update_avg_proposal_cost(0.02)
+    assert _coordinator_tick(runner, wanted=1) == [1]
+
+    # Both in flight then cost $0.09: $0.40 + $0.10 cannot fit under $0.45.
+    runner.active_proposal_tasks.clear()
+    runner.total_api_cost += 0.18
+    assert _coordinator_tick(runner, wanted=1) == []
+    assert runner.cost_limit_reached is True
+
+
 def test_first_proposals_start_without_a_cost_history():
     runner = _runner(charged=0.0, in_flight=0, history=[])
 
