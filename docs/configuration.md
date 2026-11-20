@@ -418,7 +418,8 @@ Who enforces the limit depends on the job type:
 
 - **Local jobs.** The clock starts when the evaluator is launched. The runner
   kills an evaluation that runs longer than `time`, together with its process
-  group, and stores the generation as an incorrect program.
+  group (on Windows, the evaluator process alone), and stores the generation as
+  an incorrect program.
 - **Slurm jobs.** `time` goes to `sbatch`, and Slurm enforces it from the moment
   the job starts running. The runner puts no clock of its own on a Slurm job,
   so time spent waiting in the queue does not count.
@@ -431,6 +432,9 @@ return. It learns the limit from the run:
 - Once an evaluation has finished with a correct result, the limit is
   `5 x longest successful evaluation + 60 s`. Crashes and incorrect results are
   left out, so a candidate that fails after one second cannot shrink the limit.
+  A success here is an evaluation that was not killed and whose `correct.json`
+  reports `true`. It counts even when the program is then stored as incorrect
+  because the evaluator exited non-zero or its metrics were unusable.
   This limit has no cap, and only a longer success raises it: a candidate that
   needs more than five times the longest success so far is killed every time.
   Set `time` if your runtimes vary that much.
@@ -447,9 +451,10 @@ return. It learns the limit from the run:
   until one of its own evaluations has ended.
 
 An evaluation over the limit is logged as `Hung job detected`, killed with its
-process group, and stored as an incorrect program. The limit in use is
-logged as `Hang limit for local evaluations: ...` each time it changes. Slurm
-jobs get no hang limit.
+process group (on Windows, the evaluator process alone), and stored as an
+incorrect program. The limit in use is logged at INFO level as
+`Hang limit for local evaluations: ...` each time it changes. Slurm jobs get
+no hang limit.
 
 #### Evaluation results
 
