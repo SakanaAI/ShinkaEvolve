@@ -96,6 +96,50 @@ def test_later_signal_ends_the_process_at_once_with_its_evaluators(
     assert deaths == [signal.SIGTERM]
 
 
+def test_same_request_is_counted_from_the_first_signal(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock()
+    clock.install(monkeypatch, fatal_signals)
+    fatal_signals.stop_on_fatal_signals(lambda received: None)
+
+    raise_hooked(signal.SIGTERM)
+    clock.sleep(0.6 * fatal_signals._SAME_REQUEST_SECONDS)
+    raise_hooked(signal.SIGTERM)
+
+    assert deaths == []
+
+    clock.sleep(0.6 * fatal_signals._SAME_REQUEST_SECONDS)
+    raise_hooked(signal.SIGTERM)
+
+    assert deaths == [signal.SIGTERM]
+
+
+def test_signal_handled_late_counts_from_when_it_arrived(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The twin of the first signal arrives while the main thread is busy in C
+    # code for seconds. The relay saw it arrive; its handler runs afterwards.
+    clock = FakeClock()
+    clock.install(monkeypatch, fatal_signals)
+    asked: list[int] = []
+    stop = fatal_signals.stop_on_fatal_signals(asked.append)
+
+    raise_hooked(signal.SIGHUP)
+    fatal_signals._unhandled_since[signal.SIGHUP] = clock.monotonic() + 0.002
+    clock.sleep(3 * fatal_signals._SAME_REQUEST_SECONDS)
+    raise_hooked(signal.SIGHUP)
+
+    assert deaths == []
+    assert fatal_signals._unhandled_since == {}
+
+    # The next one is judged by its own arrival again.
+    raise_hooked(signal.SIGHUP)
+
+    assert deaths == [signal.SIGHUP]
+    stop.finish()
+
+
 def test_run_that_no_signal_stopped_finishes_and_returns(deaths: list[int]) -> None:
     asked: list[int] = []
     stop = fatal_signals.stop_on_fatal_signals(asked.append)
@@ -280,6 +324,17 @@ def test_relay_does_not_answer_its_own_signal_with_another(
     assert relayed == [signal.SIGTERM]
 
 
+def test_relay_notes_when_a_signal_arrived_that_the_handler_has_not_seen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fatal_signals, "_unhandled_since", {})
+    before = time.monotonic()
+
+    _relay(monkeypatch, [signal.SIGTERM, signal.SIGTERM], [False, False])
+
+    assert before <= fatal_signals._unhandled_since[signal.SIGTERM] <= time.monotonic()
+
+
 def test_relay_repeats_a_signal_until_the_handler_has_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,6 +421,29 @@ def test_closing_terminal_does_not_cut_the_cleanup_short(tmp_path: Path) -> None
         run.send_signal(signal.SIGHUP)
 
         assert run.wait(timeout=10.0) == -signal.SIGHUP
+        assert (tmp_path / "cleaned").exists()
+
+
+def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
+    tmp_path: Path,
+) -> None:
+    # One call into C code that no signal interrupts, such as a slow commit.
+    busy_step = """
+        import hashlib
+
+        def busy(seconds):
+            rounds, started = 50_000, time.perf_counter()
+            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
+            per_second = rounds / (time.perf_counter() - started)
+            hashlib.pbkdf2_hmac("sha256", b"password", b"salt", int(per_second * seconds))
+        """
+    with _run(tmp_path, start=busy_step, cleanup="busy(2.0)") as run:
+        run.send_signal(signal.SIGHUP)
+        assert wait_until((tmp_path / "stopping").exists)
+        time.sleep(0.2)
+        run.send_signal(signal.SIGHUP)
+
+        assert run.wait(timeout=20.0) == -signal.SIGHUP
         assert (tmp_path / "cleaned").exists()
 
 

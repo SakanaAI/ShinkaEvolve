@@ -34,6 +34,10 @@ _RELAY_SECONDS = 0.05
 # reported like any other; this count tells the relay that the handler has run
 # since, so that it does not answer its own signal with another one.
 _handler_runs: Dict[int, int] = {}
+# When the relay first saw a report that no run of the handler has covered
+# yet. A main thread busy in C code runs the handler late, and the signal is
+# judged by when it arrived.
+_unhandled_since: Dict[int, float] = {}
 
 # Runs that the first fatal signal asks to stop.
 _stops: "List[SignalStop]" = []
@@ -52,6 +56,7 @@ def _forget_the_parent_after_fork() -> None:
     global _signal_reports, _asked_to_stop
     _stops.clear()
     _asked_to_stop = None
+    _unhandled_since.clear()
     if _signal_reports is None:
         return
     # The parent's relay would take this process's signals for its own.
@@ -139,9 +144,9 @@ def stop_on_fatal_signals(ask_to_stop: Callable[[signal.Signals], None]) -> Sign
 
     ``ask_to_stop`` is called from the signal handler, between any two
     instructions of the main thread: it should only pass the request on, such
-    as with ``loop.call_soon_threadsafe``. Signals within a second of the
-    first are the same request. A later one kills the local evaluators and
-    ends the process at once, whatever the run has cleaned up by then.
+    as with ``loop.call_soon_threadsafe``. Signals that arrive within a second
+    of the first are the same request. A later one kills the local evaluators
+    and ends the process at once, whatever the run has cleaned up by then.
 
     Call ``finish`` on the result when the run has ended and cleaned up.
     Nothing is hooked off the main thread, or for a signal the application
@@ -205,25 +210,26 @@ def _relay_fatal_signals(read_fd: int, main_thread_id: int) -> None:
             # The handler has run since the last report, for this one too.
             handled[signum] = runs
             continue
+        _unhandled_since.setdefault(signum, time.monotonic())
         signal.pthread_kill(main_thread_id, signum)
         time.sleep(_RELAY_SECONDS)
 
 
 def _on_fatal_signal(signum, frame) -> None:
     _handler_runs[signum] = _handler_runs.get(signum, 0) + 1
-    if not _runs_are_stopping_for(signum):
+    received_at = min(time.monotonic(), _unhandled_since.pop(signum, float("inf")))
+    if not _runs_are_stopping_for(signum, received_at):
         _die_with_evaluators(signum)
 
 
-def _runs_are_stopping_for(signum: int) -> bool:
+def _runs_are_stopping_for(signum: int, received_at: float) -> bool:
     """Ask the runs to stop on the first signal; say if that covers this one."""
     global _asked_to_stop
     if not _stops:
         return False
-    now = time.monotonic()
     if _asked_to_stop is not None:
-        return now - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
-    _asked_to_stop = (signum, now)
+        return received_at - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
+    _asked_to_stop = (signum, received_at)
     try:
         for stop in list(_stops):
             stop._ask_to_stop(signal.Signals(signum))

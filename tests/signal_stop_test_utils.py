@@ -23,6 +23,8 @@ def recorded_deaths(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
     previous = {signum: signal.getsignal(signum) for signum in FATAL_SIGNALS}
     monkeypatch.setattr(fatal_signals, "_stops", [])
     monkeypatch.setattr(fatal_signals, "_asked_to_stop", None)
+    monkeypatch.setattr(fatal_signals, "_unhandled_since", {})
+    monkeypatch.setattr(fatal_signals, "_warned_that_nothing_is_hooked", False)
     monkeypatch.setattr(local, "_LIVE_PROCESSES", set())
     # Without the relay, only the signals a test raises reach the handler.
     monkeypatch.setattr(
