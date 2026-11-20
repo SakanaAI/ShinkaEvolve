@@ -476,9 +476,14 @@ One LLM request costs at most about `max_tokens` output tokens at the model's
 output price, plus its prompt; reasoning tokens count as output. With
 `max_tokens: 32768`, one `gpt-5.4-mini` reply that spends the whole output
 budget costs $0.15. To keep the total below a fixed limit, set the cap lower
-than the limit by that amount for every request that can be in flight at once
-(the proposals of all `max_proposal_jobs` workers, and a meta summary or
-prompt evolution step), or lower `max_tokens` and the reasoning effort.
+than the limit by that amount for every request that can be in flight at
+once, or lower `max_tokens` and the reasoning effort. In flight at once are
+
+- one request for each of the `max_proposal_jobs` proposal workers;
+- the requests of a meta summary. It sends one request for every program
+  evaluated since the last summary, all at the same time: `meta_rec_interval`
+  of them (10 by default), or more when several evaluations finish together;
+- the request of a prompt evolution step.
 
 ### Database Presets
 
