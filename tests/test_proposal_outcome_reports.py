@@ -9,7 +9,7 @@ import pytest
 from shinka.core import async_runner
 from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.database import Program
-from shinka.llm.prioritization import AsymmetricUCB
+from shinka.llm.prioritization import AsymmetricUCB, BanditBase
 from shinka.llm.providers.errors import LLMEndpointError, RequestRejectedError
 from shinka.llm.providers.result import QueryResult
 
@@ -277,3 +277,95 @@ def test_endpoint_failures_turn_the_real_bandit_away_from_the_model(
     assert bandit.n_submitted.tolist() == [3.0, 1.0]
     assert bandit.reliability()[0] == pytest.approx(0.729 / 3.439)
     assert bandit.posterior()[0] < 0.1
+
+
+@pytest.mark.parametrize("raising_step", ["_print_metadata_table", "to_dict"])
+@BOTH_PROPOSAL_KINDS
+def test_proposal_that_breaks_after_its_patch_applied_is_reported_once(
+    run: Callable[[Any], Any], raising_step: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(async_runner, "apply_patch_async", _patch_applies)
+    bandit = _RecordingBandit()
+    runner = _build_runner(_reply, bandit)
+
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("cannot render")
+
+    if raising_step == "to_dict":
+        monkeypatch.setattr(QueryResult, "to_dict", broken)
+    else:
+        runner.verbose = True
+        runner._print_metadata_table = broken
+
+    _, _, success = run(runner)
+
+    assert success is False
+    assert bandit.calls == [("submitted", MODEL), ("failed", MODEL, REPLY_COST)]
+
+
+@BOTH_PROPOSAL_KINDS
+def test_no_attempt_at_all_is_reported_once(run: Callable[[Any], Any]) -> None:
+    bandit = _RecordingBandit()
+    runner = _build_runner(_reply, bandit)
+    runner.evo_config.max_patch_attempts = 0
+
+    _, _, success = run(runner)
+
+    assert success is False
+    assert bandit.calls == [("submitted", MODEL), ("failed", MODEL, 0.0)]
+
+
+class _OwnNamesBandit(BanditBase):
+    """A bandit as users wrote them before outcome reports: it maps model
+    names itself and never gave BanditBase any."""
+
+    def __init__(self) -> None:
+        super().__init__(n_arms=2)
+        self.index = {MODEL: 0, "model-b": 1}
+        self.submitted = [0, 0]
+        self.costs = [0.0, 0.0]
+
+    def update_submitted(self, arm: Any) -> float:
+        self.submitted[self.index[arm]] += 1
+        return float(self.submitted[self.index[arm]])
+
+    def update_cost(self, arm: Any, cost: float) -> float:
+        self.costs[self.index[arm]] += cost
+        return cost
+
+    def update(self, arm: Any, reward: Any, baseline: Any = None) -> None:
+        return None
+
+    def posterior(self, subset: Any = None, samples: Any = None, **_: Any) -> Any:
+        return [0.5, 0.5]
+
+    def decay(self, factor: float) -> None:
+        return None
+
+    def print_summary(self, console: Any = None) -> None:
+        return None
+
+    def get_state(self) -> Dict[str, Any]:
+        return {}
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        return None
+
+
+@BOTH_PROPOSAL_KINDS
+def test_bandit_with_its_own_arm_names_keeps_working(
+    run: Callable[[Any], Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(async_runner, "apply_patch_async", _patch_applies)
+    bandit = _OwnNamesBandit()
+
+    _, _, delivered = run(_build_runner(_reply, bandit))
+    _, metadata, failed = run(
+        _build_runner(_raise(LLMEndpointError(401, "invalid_api_key")), bandit)
+    )
+
+    assert delivered is True
+    assert failed is False
+    assert metadata["endpoint_error"] == {"status_code": 401, "code": "invalid_api_key"}
+    assert bandit.submitted == [2, 0]
+    assert bandit.costs == [REPLY_COST, 0.0]

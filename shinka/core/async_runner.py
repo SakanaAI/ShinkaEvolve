@@ -4114,11 +4114,6 @@ class ShinkaEvolveRunner:
                         success=True,
                     )
 
-                    # Update LLM selection costs
-                    if self.llm_selection is not None:
-                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-                        self.llm_selection.update_delivered(model_name)
-
                     meta_patch_data = {
                         "api_costs": total_costs,
                         "patch_type": patch_type,
@@ -4141,6 +4136,11 @@ class ShinkaEvolveRunner:
                         )
                         self._print_metadata_table(meta_patch_data, generation)
 
+                    # Update LLM selection: cost and outcome. Last step, so
+                    # that nothing fails the proposal after it was reported.
+                    if self.llm_selection is not None:
+                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                        self.llm_selection.update_delivered(model_name)
                     return patch_txt, meta_patch_data, True
 
                 # Patch application failed
@@ -4173,10 +4173,6 @@ class ShinkaEvolveRunner:
                     )
                     msg_history = response.new_msg_history if response else []
 
-            # No usable patch: a failed proposal for the LLM selection
-            if self.llm_selection is not None:
-                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
-
             # All attempts failed
             meta_patch_data = {
                 "api_costs": total_costs,
@@ -4194,6 +4190,10 @@ class ShinkaEvolveRunner:
                 "non_retryable": bool(output_limit_error),
             }
 
+            # No usable patch: a failed proposal for the LLM selection. Its
+            # bill is no cost observation, so update_cost is not called.
+            if self.llm_selection is not None:
+                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
@@ -4394,11 +4394,6 @@ class ShinkaEvolveRunner:
                         success=True,
                     )
 
-                    # Update LLM selection costs
-                    if self.llm_selection is not None:
-                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
-                        self.llm_selection.update_delivered(model_name)
-
                     meta_patch_data = {
                         "api_costs": total_costs,
                         "patch_type": patch_type,
@@ -4419,6 +4414,11 @@ class ShinkaEvolveRunner:
                     if self.verbose:
                         self._print_metadata_table(meta_patch_data, generation)
 
+                    # Update LLM selection: cost and outcome. Last step, so
+                    # that nothing fails the proposal after it was reported.
+                    if self.llm_selection is not None:
+                        self.llm_selection.update_cost(arm=model_name, cost=total_costs)
+                        self.llm_selection.update_delivered(model_name)
                     return patch_txt, meta_patch_data, True
                 else:
                     # Failure, try again
@@ -4446,10 +4446,6 @@ class ShinkaEvolveRunner:
                         else []
                     )
 
-            # No usable patch: a failed proposal for the LLM selection
-            if self.llm_selection is not None:
-                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
-
             # All attempts failed
             meta_patch_data = {
                 "api_costs": total_costs,
@@ -4469,6 +4465,10 @@ class ShinkaEvolveRunner:
                 "non_retryable": bool(output_limit_error),
             }
 
+            # No usable patch: a failed proposal for the LLM selection. Its
+            # bill is no cost observation, so update_cost is not called.
+            if self.llm_selection is not None:
+                self.llm_selection.update_failed(arm=model_name, cost=total_costs)
             return None, meta_patch_data, False
 
         except asyncio.CancelledError as exc:
