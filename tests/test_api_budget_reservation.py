@@ -224,3 +224,72 @@ def test_resume_restores_the_cost_history_of_the_stored_proposals(tmp_path):
         assert runner._proposal_reservation() == pytest.approx(0.1497)
     finally:
         db.close()
+
+
+def test_resume_restores_a_proposal_that_was_in_evaluation_at_the_stop(tmp_path):
+    """It was paid and journaled when handed to evaluation; its row never landed."""
+    db = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "programs.sqlite")),
+        embedding_model="",
+        read_only=False,
+    )
+
+    def hand_to_evaluation(generation: int, cost: float) -> str:
+        charge_id = f"task-{generation}"
+        db.record_attempt_event(
+            generation, "evaluation", "charged",
+            {"node_kind": "evaluation_cost", "api_charge_id": charge_id,
+             "api_costs": cost},
+        )
+        return charge_id
+
+    try:
+        db.add(Program(id="seed", code="x = 0\n", generation=0, correct=True,
+                       combined_score=1.0))
+        for generation in (1, 2):
+            charge_id = hand_to_evaluation(generation, 0.02)
+            db.add(Program(id=f"gen{generation}", code=f"x = {generation}\n",
+                           generation=generation, parent_id="seed", correct=True,
+                           combined_score=2.0,
+                           metadata={"api_costs": 0.02, "api_charge_id": charge_id}))
+        # The run stopped while generation 3 was being evaluated.
+        hand_to_evaluation(3, 0.15)
+        # The paid seed of a run is not a proposal.
+        db.record_attempt_event(
+            0, "evaluation", "charged",
+            {"node_kind": "evaluation_cost", "api_charge_id": "seed-charge",
+             "api_costs": 0.9},
+        )
+
+        # A stored proposal counts once, not again for its journaled charge.
+        assert stored_proposal_costs(db.conn) == pytest.approx([0.02, 0.02, 0.15])
+
+        runner = _runner(charged=0.0, in_flight=0, history=[])
+        runner.db = db
+        asyncio.run(runner._restore_proposal_costs())
+        assert runner._proposal_reservation() == pytest.approx(0.15)
+    finally:
+        db.close()
+
+
+def test_a_proposal_that_failed_after_its_charge_was_journaled_counts_once(tmp_path):
+    db = ProgramDatabase(
+        config=DatabaseConfig(db_path=str(tmp_path / "programs.sqlite")),
+        embedding_model="",
+        read_only=False,
+    )
+    try:
+        db.record_attempt_event(
+            1, "evaluation", "charged",
+            {"node_kind": "evaluation_cost", "api_charge_id": "task-1",
+             "api_costs": 0.05},
+        )
+        db.record_attempt_event(
+            1, "proposal", "failed",
+            {"node_kind": "failed_proposal", "api_charge_id": "task-1",
+             "api_costs": 0.04, "embed_cost": 0.01},
+        )
+
+        assert stored_proposal_costs(db.conn) == pytest.approx([0.05])
+    finally:
+        db.close()

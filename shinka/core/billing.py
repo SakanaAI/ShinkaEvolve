@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import astuple, dataclass
 from pathlib import Path
-from typing import Any, Awaitable
+from typing import Any, Awaitable, Iterator
 
 from shinka.database.prompt_dbase import SystemPromptConfig, SystemPromptDatabase
 from shinka.llm.providers.errors import BilledCancellationError
@@ -194,40 +194,55 @@ def stored_prompt_evolution_cost(program_db_path: str | Path) -> float:
 
 
 def stored_proposal_costs(connection: sqlite3.Connection) -> list[float]:
-    """What each stored proposal cost: evolved programs and failed proposals.
+    """What each stored proposal cost, in the order of their generations.
 
-    A resumed run reserves budget for its proposals from this history. Meta
-    calls are left out: they are made after a proposal has been evaluated.
+    A resumed run reserves budget for its proposals from this history: evolved
+    programs, proposals that failed for good, and proposals that were paid and
+    handed to evaluation but left no program row because the run stopped first.
+    Meta calls are left out: they are made after a proposal has been evaluated.
     """
 
-    def records(query: str) -> list[dict[str, Any]]:
-        loaded = []
-        for (raw,) in connection.execute(query):
+    def records(query: str) -> Iterator[tuple[int, dict[str, Any]]]:
+        for generation, raw in connection.execute(query):
             try:
                 record = json.loads(raw or "{}")
             except json.JSONDecodeError:
                 continue
             if isinstance(record, dict):
-                loaded.append(record)
-        return loaded
+                yield generation, record
 
-    programs = [
-        metadata
-        for metadata in records("SELECT metadata FROM programs WHERE generation > 0")
-        if not (metadata.get("_is_island_copy") or metadata.get("_spawned_island"))
-    ]
-    failed_proposals = [
-        details
-        for details in records(
-            "SELECT details FROM attempt_log WHERE generation > 0 AND status = 'failed'"
-        )
-        if details.get("node_kind") == "failed_proposal"
-    ]
+    proposals: list[tuple[int, dict[str, Any]]] = []
+    counted_charge_ids: set[str] = set()
+    for generation, metadata in records(
+        "SELECT generation, metadata FROM programs WHERE generation > 0"
+    ):
+        if metadata.get("_is_island_copy") or metadata.get("_spawned_island"):
+            continue
+        charge_id = metadata.get("api_charge_id")
+        if isinstance(charge_id, str):
+            counted_charge_ids.add(charge_id)
+        proposals.append((generation, metadata))
+
+    # A proposal is charged in the journal when it is handed to evaluation, and
+    # that entry stays once its program row is stored or its failure recorded.
+    for generation, details in records(
+        "SELECT generation, details FROM attempt_log "
+        "WHERE generation > 0 AND status IN ('failed', 'charged') ORDER BY id"
+    ):
+        if details.get("node_kind") not in {"failed_proposal", "evaluation_cost"}:
+            continue
+        charge_id = details.get("api_charge_id")
+        if isinstance(charge_id, str):
+            if charge_id in counted_charge_ids:
+                continue
+            counted_charge_ids.add(charge_id)
+        proposals.append((generation, details))
+
     costs = (
         sum(
             _stored_cost(record.get(field))
             for field in ("api_costs", "embed_cost", "novelty_cost")
         )
-        for record in (*programs, *failed_proposals)
+        for _, record in sorted(proposals, key=lambda proposal: proposal[0])
     )
     return [cost for cost in costs if cost > 0.0]
