@@ -154,6 +154,19 @@ def test_further_proposals_wait_until_the_cost_of_the_first_is_known(caplog):
     assert _coordinator_tick(runner, wanted=3) == [3]
 
 
+def test_proposals_run_one_at_a_time_until_one_has_joined_the_cost_history():
+    runner = _runner(charged=0.0, in_flight=0, history=[])
+    assert _coordinator_tick(runner, wanted=4) == [1]
+
+    runner.active_proposal_tasks["first"] = object()
+    assert _coordinator_tick(runner, wanted=3) == []
+
+    # It failed before any reply was charged, so nothing joined the history.
+    runner.active_proposal_tasks.clear()
+    assert _coordinator_tick(runner, wanted=4) == [1]
+    assert runner.cost_limit_reached is False
+
+
 def test_a_first_proposal_that_cost_nothing_opens_up_the_others():
     runner = _runner(charged=0.0, in_flight=0, history=[0.0])
 
