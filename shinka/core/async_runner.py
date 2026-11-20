@@ -1338,10 +1338,29 @@ class ShinkaEvolveRunner:
 
     async def _run_async(self):
         """Main async evolution loop."""
+        # Local import: this method is the only runner region that needs it.
+        from shinka.launch.fatal_signals import stop_on_fatal_signals
+
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
         self.last_progress_time = self.start_time  # Initialize progress tracking
         tasks = []  # Initialize tasks list to avoid UnboundLocalError
+        loop = asyncio.get_running_loop()
+        run_task = asyncio.current_task()
+
+        def stop_the_run(received) -> None:
+            logger.warning(
+                f"🛑 Received {received.name}: stopping the run as Ctrl-C would. "
+                "A further signal, a second or more from now, ends it at once."
+            )
+            # A run that is already cleaning up finishes that.
+            if run_task is not None and not getattr(self, "_closing_run", False):
+                run_task.cancel()
+
+        # SIGTERM and SIGHUP cancel this task, like Ctrl-C in `asyncio.run`.
+        signal_stop = stop_on_fatal_signals(
+            lambda received: loop.call_soon_threadsafe(stop_the_run, received)
+        )
 
         try:
             # Setup initial program (results_dir now set)
@@ -1496,7 +1515,11 @@ class ShinkaEvolveRunner:
             self.should_stop.set()
             for task in (*tasks, *self.active_proposal_tasks.values()):
                 task.cancel()
-            await finish_cost_recording(self._drain_and_cleanup_async(tasks))
+            try:
+                await finish_cost_recording(self._drain_and_cleanup_async(tasks))
+            finally:
+                # A run that a signal stopped ends here, with the signal's status.
+                signal_stop.finish()
 
         if billing_error := getattr(self, "_billing_error", None):
             raise billing_error
