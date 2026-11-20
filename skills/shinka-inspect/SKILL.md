@@ -61,4 +61,4 @@ python skills/shinka-inspect/scripts/inspect_best_programs.py \
 - Ranking metric is `combined_score`.
 - If no correct rows exist, script falls back to top-score rows and labels fallback in output.
 - Script is read-only for run artifacts (writes only the markdown bundle).
-- With a `shinka` release that has no shared database lookup (0.0.8 and earlier), the script reads `<results_dir>/programs.sqlite`, or `evolution_db.sqlite` when only that exists. Pass the database file path for any other name.
+- With a `shinka` installed from PyPI at 0.0.8 or earlier, which has no shared database lookup (a source checkout can report 0.0.8 too and have it: check that `shinka.database.run_db_path` imports), the script reads `<results_dir>/programs.sqlite`, or `evolution_db.sqlite` when only that exists. Pass the database file path for any other name.
