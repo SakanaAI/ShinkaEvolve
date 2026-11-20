@@ -268,10 +268,10 @@ def test_failing_for_free_does_not_make_a_model_attractive(
 
     ok, dead = bandit.posterior()
 
-    # `dead` is not the arm that takes 1 - epsilon, and its share of epsilon
-    # is cut by its reliability.
-    assert ok > 0.9
-    assert dead < 0.1
+    # At best `dead` ties with `ok`, which has earned no reward either. Of
+    # that even share it keeps the reliable part, 0.13, and the probe share.
+    assert ok > 0.89
+    assert dead < 0.11
 
 
 def test_arm_without_a_cost_report_is_not_treated_as_free():
@@ -330,24 +330,27 @@ def test_thompson_does_not_keep_drawing_a_model_that_never_completes():
     assert all(bandit.posterior()[DEAD] < 1.0 for _ in range(50))
 
 
-@pytest.mark.parametrize("cls", [AsymmetricUCB, ThompsonSampler])
-def test_failing_never_raises_a_negative_score(cls):
-    """Linear mode without clamping has negative mean rewards."""
-    bandit = cls(
-        arm_names=ARMS,
-        seed=0,
-        shift_by_baseline=False,
-        shift_by_parent=False,
-        asymmetric_scaling=False,
-    )
-    for _ in range(3):
-        bandit.update_failed("dead")
-    scores = np.array([-2.0, -2.0])
+@pytest.mark.parametrize("cost_aware_coef", [0.0, 0.5])
+def test_one_failure_does_not_take_the_lead_from_the_best_model(cost_aware_coef):
+    """A failure costs a model that share of its probability, not its rank."""
+    arms = ["best", "second", "third"]
+    bandit = AsymmetricUCB(arm_names=arms, seed=0, cost_aware_coef=cost_aware_coef)
+    bandit.set_baseline_score(BASELINE)
+    for _ in range(20):
+        for arm, gain in (("best", 0.25), ("second", 0.2), ("third", 0.2)):
+            bandit.update_submitted(arm)
+            bandit.update_cost(arm, PATCH_COST)
+            bandit.update_delivered(arm)
+            bandit.update(arm, BASELINE + gain, baseline=BASELINE)
+    assert bandit.posterior()[0] == pytest.approx(0.8)
 
-    ok, dead = bandit._discount_by_reliability(scores, np.arange(2))
+    bandit.update_submitted("best")
+    bandit.update_failed("best")
 
-    assert ok == -2.0
-    assert dead < ok
+    reliability = bandit.reliability()[0]
+    assert reliability == pytest.approx(0.89, abs=0.01)
+    # Still the best arm: it keeps 1 - epsilon, less the unreliable part.
+    assert bandit.posterior()[0] == pytest.approx(0.8 * reliability, abs=0.01)
 
 
 @ALL_BANDITS

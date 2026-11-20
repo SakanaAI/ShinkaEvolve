@@ -195,19 +195,6 @@ class BanditBase(ABC):
         delivered = assumed + self.recent_delivered
         return delivered / (delivered + self.recent_failed)
 
-    def _discount_by_reliability(
-        self, scores: np.ndarray, idx: np.ndarray
-    ) -> np.ndarray:
-        """Scale the scores of the arms `idx` by how often their proposals deliver.
-
-        Whatever a score promises, reward, exploration bonus or low cost, the
-        arm delivers only on that share of its proposals. A negative score is
-        divided instead, so that failing never raises a score.
-        """
-        reliability = self.reliability()[idx]
-        divisor = np.maximum(reliability, 1e-12)
-        return np.where(scores >= 0.0, scores * reliability, scores / divisor)
-
     def _weight_by_reliability(
         self,
         probs: np.ndarray,
@@ -258,11 +245,15 @@ class BanditBase(ABC):
     ) -> np.ndarray:
         """Selection probabilities over the arms `idx` from their scores.
 
-        The best reliability-discounted score takes 1 - epsilon and the other
-        arms share epsilon; each arm then keeps only the reliable part of its
-        probability, so an unreliable arm also loses its share of exploration.
+        The best score takes 1 - epsilon and the other arms share epsilon;
+        each arm then keeps only the reliable part of its probability, so an
+        unreliable arm also loses its share of exploration.
+
+        Reliability does not touch the scores. Scores of working arms lie
+        close together, so a discount as small as one failure in ten
+        proposals took the lead from the best arm and left it with a
+        non-winner's share, a far larger loss than its failures cost.
         """
-        scores = self._discount_by_reliability(scores, idx)
         winners = scores == scores.max()
         n_winners = int(winners.sum())
         p = np.empty(idx.size, dtype=np.float64)
@@ -430,7 +421,7 @@ class BanditBase(ABC):
         )
         return (
             "share of recent proposals that returned a patch "
-            f"(scales score and post): {failing}"
+            f"(scales post): {failing}"
         )
 
     def _outcome_state(self) -> Dict[str, Any]:
@@ -1124,8 +1115,6 @@ class AsymmetricUCB(BanditBase):
                 k = float(self.cost_aware_coefficient)
                 score_used = (1.0 - k) * score_raw + k * cost_ratio_scaled
 
-        score_used = self._discount_by_reliability(score_used, idx)
-
         # Create header information
         exp_base_str = (
             f"{self.exponential_base:.3f}"
@@ -1738,9 +1727,7 @@ class ThompsonSampler(BanditBase):
         explore = np.sqrt(
             (a * b) / (np.maximum(a + b, 1e-9) ** 2 * np.maximum(a + b + 1.0, 1e-9))
         )
-        score = self._discount_by_reliability(
-            exploit + explore, np.arange(self._n_arms)
-        )
+        score = exploit + explore
 
         exp_base_str = (
             f"{self.exponential_base:.3f}"
