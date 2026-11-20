@@ -119,6 +119,10 @@ _WANDB_CANDIDATE_QUEUE_SIZE = 256
 _WANDB_DROP_WARNING_INTERVAL_SECONDS = 30.0
 _WANDB_POPULATION_INTERVAL_SECONDS = 5.0
 _WANDB_CANDIDATE_STOP = object()
+# How long a run that a signal stopped waits for a database lock before it
+# leaves the write-ahead log as it is. The fold itself takes milliseconds for
+# the few megabytes a log usually holds, and half a second for 300 MB.
+_WAL_FOLD_LOCK_SECONDS = 5.0
 # While no local evaluation has succeeded, each one killed for running too long
 # raises the hang limit fivefold. It stops at the `time` Slurm job configs
 # default to, or a few hung candidates in a row would stall the run for days.
@@ -1348,7 +1352,10 @@ class ShinkaEvolveRunner:
     async def _run_async(self):
         """Main async evolution loop."""
         # Local import: this method is the only runner region that needs it.
-        from shinka.launch.fatal_signals import stop_on_fatal_signals
+        from shinka.launch.fatal_signals import (
+            runs_are_stopping,
+            stop_on_fatal_signals,
+        )
 
         activate_model_catalog(self.pricing_snapshot)
         self.start_time = time.time()
@@ -1536,6 +1543,8 @@ class ShinkaEvolveRunner:
             finally:
                 # A run that a signal stopped ends the process with the
                 # signal's status: here, or in `run` once the loop has closed.
+                if runs_are_stopping():
+                    self._fold_write_ahead_logs()
                 signal_stop.finish()
 
         if billing_error := getattr(self, "_billing_error", None):
@@ -1543,6 +1552,38 @@ class ShinkaEvolveRunner:
 
         # Print final summary
         await self._print_final_summary()
+
+    def _fold_write_ahead_logs(self) -> None:
+        """Write what the databases hold in their `-wal` files into the files.
+
+        A connection that closes does this, which is how Ctrl-C leaves the
+        databases. A process that dies of a signal closes none: its latest
+        programs would stay in `programs.sqlite-wal`, and a copy of
+        `programs.sqlite` alone would lack them.
+        """
+        import sqlite3
+
+        for database in (getattr(self, "db", None), getattr(self, "prompt_db", None)):
+            path = getattr(getattr(database, "config", None), "db_path", None)
+            if not path or not Path(path).is_file():
+                continue  # No database yet, or one in memory.
+            try:
+                # A connection of its own: this may not be the thread that
+                # opened the run's. It waits this long for a lock, no longer.
+                with closing(
+                    sqlite3.connect(str(path), timeout=_WAL_FOLD_LOCK_SECONDS)
+                ) as connection:
+                    blocked = connection.execute(
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    ).fetchone()[0]
+                reason = "another connection is using the database"
+            except sqlite3.Error as exc:
+                blocked, reason = True, str(exc)
+            if blocked:
+                logger.warning(
+                    f"Could not write all of {path}-wal into the database "
+                    f"({reason}): keep the two files together"
+                )
 
     async def _drain_and_cleanup_async(self, tasks: list[asyncio.Task]) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)

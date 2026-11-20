@@ -168,6 +168,16 @@ def stop_on_fatal_signals(ask_to_stop: Callable[[signal.Signals], None]) -> Sign
     return stop
 
 
+def runs_are_stopping() -> bool:
+    """Whether a fatal signal has asked the runs to stop.
+
+    The process then dies of that signal once they have: no exit handler
+    runs and no connection is closed, so whatever has to reach the disk must
+    be written by the cleanup.
+    """
+    return _asked_to_stop is not None
+
+
 def outlive_stopping_runs() -> SignalStop:
     """Keep the process alive, once a signal stops its runs, until ``finish``.
 

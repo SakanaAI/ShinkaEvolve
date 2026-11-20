@@ -1,13 +1,16 @@
 import asyncio
 import logging
 import os
+import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
 from textwrap import dedent
-from typing import Iterator
+from types import SimpleNamespace
+from typing import Callable, Iterator
 
 import pytest
 
@@ -18,6 +21,7 @@ from job_lifecycle_test_utils import (
     worker_pid,
     write_evaluator_with_worker,
 )
+from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.core.billing import BillingPersistenceError
 from signal_stop_test_utils import (
     CLEANUP,
@@ -41,7 +45,13 @@ def cleanup_events() -> list[str]:
     return []
 
 
-def _signal_a_waiting_run(signum: int, events: list[str], *, during: str) -> None:
+def _signal_a_waiting_run(
+    signum: int,
+    events: list[str],
+    *,
+    during: str,
+    prepare: Callable[[ShinkaEvolveRunner], None] = lambda runner: None,
+) -> None:
     """Run the runner's loop and raise the signal when `during` is recorded."""
     raised = False
 
@@ -53,10 +63,85 @@ def _signal_a_waiting_run(signum: int, events: list[str], *, during: str) -> Non
             raise_hooked(signum)
 
     async def run() -> None:
+        runner = waiting_runner(record)
+        prepare(runner)
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.ensure_future(waiting_runner(record)._run_async())
+            await asyncio.ensure_future(runner._run_async())
 
     asyncio.run(asyncio.wait_for(run(), timeout=10.0))
+
+
+@pytest.fixture
+def database(tmp_path: Path) -> Iterator[SimpleNamespace]:
+    """A run's database with a program that is in its write-ahead log only."""
+    path = tmp_path / "programs.sqlite"
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA journal_mode = WAL;")
+    connection.execute("CREATE TABLE programs (id TEXT)")
+    connection.execute("INSERT INTO programs VALUES ('latest')")
+    connection.commit()
+    try:
+        # Open until the process ends, as the runner's connection is.
+        yield SimpleNamespace(conn=connection, config=SimpleNamespace(db_path=str(path)))
+    finally:
+        connection.close()
+
+
+def _programs_in_the_file_alone(database: SimpleNamespace, tmp_path: Path) -> list[str]:
+    """What somebody finds who copies `programs.sqlite` without its `-wal`."""
+    copy = tmp_path / "copy.sqlite"
+    shutil.copy(database.config.db_path, copy)
+    connection = sqlite3.connect(copy)
+    try:
+        return [row[0] for row in connection.execute("SELECT id FROM programs")]
+    except sqlite3.OperationalError:  # Not even the table is in the file.
+        return []
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("signum", FATAL_SIGNALS)
+def test_signalled_run_leaves_its_programs_in_the_database_file(
+    deaths: list[int],
+    cleanup_events: list[str],
+    database: SimpleNamespace,
+    tmp_path: Path,
+    signum: int,
+) -> None:
+    # A process that dies of a signal never closes its connection, which is
+    # what folds the write-ahead log into the file after Ctrl-C.
+    def with_database(runner: ShinkaEvolveRunner) -> None:
+        runner.db = database
+
+    assert _programs_in_the_file_alone(database, tmp_path) == []
+
+    _signal_a_waiting_run(signum, cleanup_events, during="waiting", prepare=with_database)
+
+    assert deaths == [signum]
+    assert _programs_in_the_file_alone(database, tmp_path) == ["latest"]
+    assert Path(f"{database.config.db_path}-wal").stat().st_size == 0
+
+
+def test_run_that_no_signal_stopped_leaves_the_log_to_the_closing_connection(
+    deaths: list[int],
+    cleanup_events: list[str],
+    database: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    async def fail() -> None:
+        raise RuntimeError("the run fails by itself")
+
+    async def run() -> None:
+        runner = waiting_runner(cleanup_events.append)
+        runner.db = database
+        runner._verify_database_ready = fail
+        with pytest.raises(RuntimeError, match="fails by itself"):
+            await asyncio.ensure_future(runner._run_async())
+
+    asyncio.run(asyncio.wait_for(run(), timeout=10.0))
+
+    assert deaths == []
+    assert _programs_in_the_file_alone(database, tmp_path) == []
 
 
 @pytest.mark.parametrize("signum", FATAL_SIGNALS)
