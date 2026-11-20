@@ -123,14 +123,18 @@ BUSY_STEP = """
     import hashlib
 
     def rounds_for(seconds):
-        # By the fastest of five short calls: one that shared its core with
-        # other processes counts too few rounds, and the step ends early.
-        per_second = 0.0
-        for _ in range(5):
-            rounds, started = 50_000, time.perf_counter()
+        # Rounds that keep this thread busy for at least that long. Counted in
+        # the thread's own processor time, so that other processes on its core
+        # do not make it count too few, and over a call of a quarter second,
+        # by when a core that just woke up has reached its speed.
+        rounds = 100_000
+        while True:
+            started = time.thread_time()
             hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds)
-            per_second = max(per_second, rounds / (time.perf_counter() - started))
-        return int(per_second * seconds)
+            took = time.thread_time() - started
+            if took >= 0.25:
+                return int(rounds / took * seconds)
+            rounds *= 2
 
     def busy(seconds, rounds=None):
         hashlib.pbkdf2_hmac("sha256", b"password", b"salt", rounds or rounds_for(seconds))
@@ -144,16 +148,16 @@ def test_twin_signal_handled_after_a_busy_cleanup_step_is_the_same_request(
     # The process sends itself the twin, by its own clock: a test that
     # stalls for a second would send a later signal instead.
     twin_during_a_busy_step = """
-        rounds = rounds_for(2.0)
+        rounds = rounds_for(3.0)
         threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGTERM)).start()
         started = time.perf_counter()
-        busy(2.0, rounds)
+        busy(3.0, rounds)
         (here / "busy").write_text(str(time.perf_counter() - started))
         """
     with _run(tmp_path, start=BUSY_STEP, cleanup=twin_during_a_busy_step) as run:
         run.send_signal(signal.SIGTERM)
 
-        assert run.wait(timeout=20.0) == -signal.SIGTERM
+        assert run.wait(timeout=60.0) == -signal.SIGTERM
         assert (tmp_path / "cleaned").exists()
         # Otherwise the twin was handled inside the window by any clock.
         busy_seconds = float((tmp_path / "busy").read_text())
@@ -180,7 +184,7 @@ def test_twin_signals_that_find_the_main_thread_busy_are_one_request(
         (here / "busy").write_text(str(time.perf_counter() - started))
         """)
     with _run(tmp_path, start=twins_while_busy, cleanup="time.sleep(0.5)") as run:
-        assert run.wait(timeout=20.0) == -signal.SIGTERM
+        assert run.wait(timeout=60.0) == -signal.SIGTERM
         assert (tmp_path / "cleaned").exists()
         # Otherwise the handler ran inside the window and nothing was tested.
         busy_seconds = float((tmp_path / "busy").read_text())
