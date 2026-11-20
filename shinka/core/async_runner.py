@@ -1328,11 +1328,11 @@ class ShinkaEvolveRunner:
                 raise
 
         # Local import: this method is the only runner region that needs it.
-        from shinka.launch.fatal_signals import stop_on_fatal_signals
+        from shinka.launch.fatal_signals import outlive_stopping_runs
 
         # A run that SIGTERM or SIGHUP stops ends the process once the loop has
         # closed and the threads it handed work to are done, as after Ctrl-C.
-        until_the_loop_has_closed = stop_on_fatal_signals(lambda received: None)
+        until_the_loop_has_closed = outlive_stopping_runs()
         try:
             asyncio.run(self.run_async())
         finally:
@@ -1347,7 +1347,7 @@ class ShinkaEvolveRunner:
 
     async def _run_async(self):
         """Main async evolution loop."""
-        # Local import: with `run`, the only runner region that needs it.
+        # Local import: this method is the only runner region that needs it.
         from shinka.launch.fatal_signals import stop_on_fatal_signals
 
         activate_model_catalog(self.pricing_snapshot)

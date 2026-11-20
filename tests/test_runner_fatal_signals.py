@@ -84,8 +84,10 @@ def test_fatal_signal_during_cleanup_does_not_cut_it_short(
     assert deaths == [signal.SIGTERM]
 
 
-def _killed_runner_events(tmp_path: Path, signum: int, runner_script: str) -> list[str]:
-    """Events a runner process records when the signal reaches it as it waits."""
+def _killed_runner_events(
+    tmp_path: Path, signum: int, runner_script: str, *, signal_at: str = "waiting"
+) -> list[str]:
+    """Events a runner process records; the signal reaches it at `signal_at`."""
     events = tmp_path / "events"
     script = tmp_path / "runner.py"
     script.write_text(
@@ -109,7 +111,7 @@ def _killed_runner_events(tmp_path: Path, signum: int, runner_script: str) -> li
     )
     try:
         deadline = time.monotonic() + 60.0
-        while not (events.exists() and "waiting" in events.read_text()):
+        while not (events.exists() and signal_at in events.read_text()):
             assert runner.poll() is None and time.monotonic() < deadline
             time.sleep(0.05)
 
@@ -159,3 +161,28 @@ def test_killed_runner_lets_the_event_loops_threads_finish(tmp_path: Path) -> No
     events = _killed_runner_events(tmp_path, signal.SIGTERM, work_in_a_thread)
 
     assert events == ["setup", "waiting", *CLEANUP, "thread_finished"]
+
+
+def test_signal_ends_a_runner_at_once_whose_run_is_over(tmp_path: Path) -> None:
+    # The run failed by itself and has cleaned up. The loop is closing and
+    # waits for a thread; nothing is left that the signal could ask to stop.
+    fail_with_a_thread_running = """
+        runner = waiting_runner(record)
+        setup = runner._setup_async
+
+        async def setup_with_a_stuck_thread():
+            asyncio.get_running_loop().run_in_executor(None, time.sleep, 30)
+            await setup()
+
+        async def fail():
+            raise RuntimeError("the run fails by itself")
+
+        runner._setup_async = setup_with_a_stuck_thread
+        runner._verify_database_ready = fail
+        runner.run()
+        """
+    events = _killed_runner_events(
+        tmp_path, signal.SIGTERM, fail_with_a_thread_running, signal_at="scheduler.shutdown"
+    )
+
+    assert events == ["setup", *CLEANUP]

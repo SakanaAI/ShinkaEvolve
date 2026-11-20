@@ -175,6 +175,33 @@ def test_process_dies_once_every_run_has_stopped(deaths: list[int]) -> None:
     assert deaths == [signal.SIGTERM]
 
 
+def test_process_outlives_its_stopped_runs_for_whoever_asked_it_to(
+    deaths: list[int],
+) -> None:
+    until_the_loop_has_closed = fatal_signals.outlive_stopping_runs()
+    stop = fatal_signals.stop_on_fatal_signals(lambda received: None)
+
+    raise_hooked(signal.SIGTERM)
+    stop.finish()
+
+    assert deaths == []
+
+    until_the_loop_has_closed.finish()
+
+    assert deaths == [signal.SIGTERM]
+
+
+def test_signal_that_finds_no_run_to_ask_ends_the_process_at_once(
+    deaths: list[int],
+) -> None:
+    # The run has ended by itself; only its event loop is still closing.
+    fatal_signals.outlive_stopping_runs()
+
+    raise_hooked(signal.SIGTERM)
+
+    assert deaths == [signal.SIGTERM]
+
+
 def test_request_that_cannot_be_passed_on_ends_the_process(deaths: list[int]) -> None:
     def closed_loop(received: signal.Signals) -> None:
         raise RuntimeError("Event loop is closed")

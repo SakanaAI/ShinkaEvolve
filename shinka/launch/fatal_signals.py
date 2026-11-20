@@ -39,7 +39,7 @@ _handler_runs: Dict[int, int] = {}
 # judged by when it arrived.
 _unhandled_since: Dict[int, float] = {}
 
-# Runs that the first fatal signal asks to stop.
+# Runs that the first fatal signal asks to stop, and whoever outlives them.
 _stops: "List[SignalStop]" = []
 # The signal that asked them, and when. They die of it once all have stopped.
 _asked_to_stop: Optional[Tuple[int, float]] = None
@@ -115,14 +115,17 @@ def _warn_once_that_nothing_is_hooked() -> None:
 class SignalStop:
     """A run that the first fatal signal stops, and that then dies of it."""
 
-    def __init__(self, ask_to_stop: Callable[[signal.Signals], None]) -> None:
+    def __init__(
+        self, ask_to_stop: Optional[Callable[[signal.Signals], None]]
+    ) -> None:
         self._ask_to_stop = ask_to_stop
 
     def finish(self) -> None:
         """Say that the run has ended and cleaned up.
 
-        Does not return if a signal asked the run to stop: the process then
-        dies of that signal, so that its exit status shows what ended it.
+        If a signal asked the runs to stop and this was the last one to
+        finish, this does not return: the process dies of that signal, so
+        that its exit status shows what ended it.
         """
         if self not in _stops:
             return
@@ -144,7 +147,8 @@ def stop_on_fatal_signals(ask_to_stop: Callable[[signal.Signals], None]) -> Sign
 
     ``ask_to_stop`` is called from the signal handler, between any two
     instructions of the main thread: it should only pass the request on, such
-    as with ``loop.call_soon_threadsafe``. Signals that arrive within a second
+    as with ``loop.call_soon_threadsafe``. A run that starts while others
+    are stopping is asked at once. Signals that arrive within a second
     of the first are the same request. A later one kills the local evaluators
     and ends the process at once, whatever the run has cleaned up by then.
 
@@ -152,16 +156,29 @@ def stop_on_fatal_signals(ask_to_stop: Callable[[signal.Signals], None]) -> Sign
     Nothing is hooked off the main thread, or for a signal the application
     handles itself; the result is then inert.
     """
-    stop = SignalStop(ask_to_stop)
+    stop = _register(SignalStop(ask_to_stop))
+    if stop in _stops and _asked_to_stop is not None:
+        # Started while other runs are stopping for a signal.
+        ask_to_stop(signal.Signals(_asked_to_stop[0]))
+    return stop
+
+
+def outlive_stopping_runs() -> SignalStop:
+    """Keep the process alive, once a signal stops its runs, until ``finish``.
+
+    For whoever has to finish something after the runs have cleaned up, such
+    as closing their event loop. It takes no request itself: a signal that
+    finds no run to ask ends the process at once.
+    """
+    return _register(SignalStop(None))
+
+
+def _register(stop: SignalStop) -> SignalStop:
     kill_evaluators_on_fatal_signals()
     if os.name != "posix" or threading.current_thread() is not threading.main_thread():
         return stop
-    if not any(_is_hooked(signum) for signum in _fatal_signals()):
-        return stop
-    _stops.append(stop)
-    if _asked_to_stop is not None:
-        # Started while other runs are stopping for a signal.
-        ask_to_stop(signal.Signals(_asked_to_stop[0]))
+    if any(_is_hooked(signum) for signum in _fatal_signals()):
+        _stops.append(stop)
     return stop
 
 
@@ -225,14 +242,17 @@ def _on_fatal_signal(signum, frame) -> None:
 def _runs_are_stopping_for(signum: int, received_at: float) -> bool:
     """Ask the runs to stop on the first signal; say if that covers this one."""
     global _asked_to_stop
-    if not _stops:
-        return False
     if _asked_to_stop is not None:
-        return received_at - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
+        return bool(_stops) and (
+            received_at - _asked_to_stop[1] < _SAME_REQUEST_SECONDS
+        )
+    requests = [stop._ask_to_stop for stop in _stops if stop._ask_to_stop is not None]
+    if not requests:
+        return False
     _asked_to_stop = (signum, received_at)
     try:
-        for stop in list(_stops):
-            stop._ask_to_stop(signal.Signals(signum))
+        for ask_to_stop in requests:
+            ask_to_stop(signal.Signals(signum))
     except Exception:
         return False  # Nobody would stop that run.
     return True
