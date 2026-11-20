@@ -9,7 +9,7 @@ Defines how candidate programs are executed once generated.
 Local execution, optionally with a sourced environment or explicit Conda
 environment.
 
-::: shinka.launch.scheduler.LocalJobConfig
+::: shinka.launch.job_config.LocalJobConfig
     handler: python
     options:
       show_source: false
@@ -20,7 +20,7 @@ environment.
 
 SLURM-backed execution with a Conda environment or sourced activation script.
 
-::: shinka.launch.scheduler.SlurmCondaJobConfig
+::: shinka.launch.job_config.SlurmCondaJobConfig
     handler: python
     options:
       show_source: false
@@ -31,7 +31,7 @@ SLURM-backed execution with a Conda environment or sourced activation script.
 
 SLURM-backed execution where the evaluator runs in a container.
 
-::: shinka.launch.scheduler.SlurmDockerJobConfig
+::: shinka.launch.job_config.SlurmDockerJobConfig
     handler: python
     options:
       show_source: false

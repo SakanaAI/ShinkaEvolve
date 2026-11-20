@@ -50,7 +50,7 @@ python skills/shinka-inspect/scripts/inspect_best_programs.py \
 - Use it as the context artifact for next-step mutation planning
 
 ## CLI Arguments
-- `--results-dir`: Path to run directory (or direct DB file path)
+- `--results-dir`: Path to run directory (or direct DB file path). In a run directory the script reads `programs.sqlite`, or the database the run wrote under a custom `db_path` or a first-release name (`evolution_db.sqlite`). If the directory holds several program databases under other names, it stops and asks for the file path.
 - `--k`: Number of programs to include (default `5`)
 - `--out`: Output markdown path (default under results dir)
 - `--max-code-chars`: Per-program code truncation cap (default `4000`)
@@ -61,3 +61,4 @@ python skills/shinka-inspect/scripts/inspect_best_programs.py \
 - Ranking metric is `combined_score`.
 - If no correct rows exist, script falls back to top-score rows and labels fallback in output.
 - Script is read-only for run artifacts (writes only the markdown bundle).
+- With a `shinka` installed from PyPI at 0.0.8 or earlier, which has no shared database lookup (a source checkout can report 0.0.8 too and have it: check that `shinka.database.run_db_path` imports), the script reads `<results_dir>/programs.sqlite`, or `evolution_db.sqlite` when only that exists, without checking that the file holds programs. With neither, it takes the only other `.sqlite` or `.db` file in the directory (not `prompts.sqlite`) and stops when there are several: pass the database file path then.

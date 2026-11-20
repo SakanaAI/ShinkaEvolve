@@ -32,6 +32,8 @@ def runner(tmp_path):
     runner.db = db
     runner.prompt_db = None
     runner.total_api_cost = 0.0
+    runner.completed_proposal_costs = []
+    runner.avg_proposal_cost = 0.0
     runner.llm_selection = None
     runner.verbose = False
     runner.evo_config = EvolutionConfig(max_patch_attempts=2, max_api_costs=5)

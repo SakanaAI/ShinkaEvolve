@@ -30,6 +30,8 @@ def _resume_runner(tmp_path: Path, db_config: DatabaseConfig, budget: int):
     runner.assigned_generations = set()
     runner.active_proposal_tasks = {}
     runner.total_proposals_generated = 0
+    runner.completed_proposal_costs = []
+    runner.avg_proposal_cost = 0.0
     runner.meta_summarizer = None
     runner.llm_selection = None
     runner.lang_ext = "py"
@@ -531,6 +533,8 @@ def test_resume_journals_orphan_terminal_failure_once_before_budget_check(tmp_pa
                     await runner._setup_async()
 
                 assert runner.total_api_cost == pytest.approx(2.0)
+                # The recovered failures are the cost history of the resumed run.
+                assert runner._proposal_reservation() == pytest.approx(1.0)
                 event, historical = runner.db.conn.execute(
                     "SELECT generation, stage, details FROM attempt_log ORDER BY generation"
                 ).fetchall()

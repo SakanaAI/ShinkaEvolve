@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 from eval_integrity_utils import SEED_ID, open_database
+from rich.console import Console
 from shinka.database import Program, ProgramDatabase
 
 
@@ -79,5 +80,27 @@ def test_metadata_update_cleans_non_finite_values(tmp_path: Path) -> None:
 
             assert _metadata_is_valid_json(sync_db, "updated")
             assert sync_db.get("updated").metadata["meta_cost"] is None
+
+    asyncio.run(run())
+
+
+def test_summary_displays_survive_a_cost_stored_as_null(tmp_path: Path) -> None:
+    """A non-finite cost is stored as null, which the displays must count as zero."""
+
+    async def run() -> None:
+        async with open_database(tmp_path) as (sync_db, _):
+            console = Console(force_terminal=False, color_system=None, width=140)
+            sync_db.set_display_console(console)
+
+            with console.capture() as capture:
+                sync_db.add(_program("null-cost"), verbose=True)
+                stored = sync_db.get("null-cost")
+                sync_db._print_sampling_summary_helper(stored, [], [])
+                sync_db.print_summary()
+
+            assert stored.metadata["api_costs"] is None
+            output = capture.get()
+            assert output.count("$0.000") == 2  # the program's row in both tables
+            assert "$nan" not in output
 
     asyncio.run(run())
