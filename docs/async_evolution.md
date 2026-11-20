@@ -88,6 +88,13 @@ requested and the granted number:
 Concurrency clamp: max_evaluation_jobs requested 16, granted 10 (one CPU-bound evaluation per core, 10 CPU cores)
 ```
 
+With a Slurm job config the runner does not know the cluster's limits. Keep
+`max_evaluation_jobs` at or below the number of jobs your account may have
+submitted at one time (`MaxSubmitJobs` of your Slurm association or QOS). A
+submission that `sbatch` rejects is recorded as a failed generation, and the
+LLM calls for its proposal are already paid for. Jobs above a limit on running
+jobs wait in the queue, and each holds an evaluation slot until Slurm starts it.
+
 `max_proposal_jobs` is a ceiling, not a target. Without controlled
 oversubscription the runner keeps proposals plus running evaluations at
 `max_evaluation_jobs`, so a reduced evaluation count also reduces the proposals
