@@ -2,6 +2,7 @@ import gc
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -225,6 +226,32 @@ def test_second_fatal_signal_does_not_interrupt_the_first(tmp_path: Path) -> Non
         assert wait_until(lambda: not is_alive(worker))
 
 
+def test_fatal_signal_taken_by_another_thread_ends_a_blocked_process(
+    tmp_path: Path,
+) -> None:
+    # Linux gives the second of two signals sent back to back to another
+    # thread, which then takes both and leaves the main thread asleep.
+    signal_another_thread = """
+        import signal
+
+        def take_the_signal():
+            while not os.path.exists(os.path.join(results_dir, "worker.pid")):
+                time.sleep(0.01)
+            signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+
+        threading.Thread(target=take_the_signal, daemon=True).start()
+        time.sleep(30)
+        """
+    with _orchestrator(tmp_path, then=signal_another_thread) as (
+        runner,
+        evaluator,
+        worker,
+    ):
+        assert runner.wait(timeout=10.0) == -signal.SIGTERM
+        assert wait_until(lambda: not is_alive(evaluator))
+        assert wait_until(lambda: not is_alive(worker))
+
+
 @pytest.mark.parametrize(
     "child_ends", ["sys.exit(0)", "os.kill(os.getpid(), signal.SIGTERM)"]
 )
@@ -249,6 +276,9 @@ def test_forked_child_leaves_its_parents_evaluators_alone(
         child = int(runner.stdout.readline())
         try:
             assert wait_until(lambda: not is_alive(child))
+            # A signal of the child's that reached the parent would end it now.
+            with pytest.raises(subprocess.TimeoutExpired):
+                runner.wait(timeout=0.5)
             assert is_alive(evaluator)
             assert is_alive(worker)
         finally:
@@ -350,6 +380,60 @@ def test_fatal_signal_hook_leaves_application_handlers_alone() -> None:
     finally:
         signal.signal(signal.SIGTERM, previous)
         signal.signal(signal.SIGHUP, hangup)
+
+
+def test_signal_relay_passes_on_only_fatal_signals_the_hook_still_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def application_handler(signum, frame) -> None:
+        pass
+
+    relayed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        local.signal,
+        "pthread_kill",
+        lambda thread_id, signum: relayed.append((thread_id, signum)),
+    )
+    monkeypatch.setattr(local, "_RELAY_SECONDS", 0.0)
+    read_fd, write_fd = os.pipe()
+    previous = signal.signal(signal.SIGTERM, local._die_with_evaluators)
+    hangup = signal.signal(signal.SIGHUP, application_handler)
+    try:
+        os.write(write_fd, bytes([signal.SIGINT, signal.SIGHUP, signal.SIGTERM]))
+        os.close(write_fd)
+
+        local._relay_fatal_signals(read_fd, 1234)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGHUP, hangup)
+        os.close(read_fd)
+
+    assert relayed == [(1234, signal.SIGTERM)]
+
+
+def test_signal_relay_leaves_an_event_loops_signal_reports_alone() -> None:
+    # asyncio takes the reports once it has a signal handler, and wakes for them.
+    reader, event_loop = socket.socketpair()
+    with reader, event_loop:
+        event_loop.setblocking(False)
+        previous = signal.set_wakeup_fd(event_loop.fileno())
+        try:
+            local._relay_fatal_signals_to_the_main_thread()
+        finally:
+            reported_to = signal.set_wakeup_fd(previous)
+        assert reported_to == event_loop.fileno()
+
+
+def test_signal_relay_takes_the_signal_reports_back_once_they_are_free() -> None:
+    previous = signal.set_wakeup_fd(-1)
+    try:
+        local._relay_fatal_signals_to_the_main_thread()
+        local._relay_fatal_signals_to_the_main_thread()
+
+        assert local._signal_reports is not None
+        assert signal.set_wakeup_fd(-1) == local._signal_reports[1]
+    finally:
+        signal.set_wakeup_fd(previous)
 
 
 def test_an_exited_evaluator_is_never_signalled(
