@@ -291,17 +291,21 @@ presets and examples. Rules for `db_path` in a run:
   the runner stops with an error that lists the files: set `db_path` to the one
   to continue.
 - A configured database that exists but cannot be read (damaged, locked, not
-  permitted, or with a `programs` table of another layout) is not swapped for
-  another file in the directory. The run fails when it opens it. A file without
-  a `programs` table counts as having no programs.
+  permitted, or with a `programs` table that lacks the `id` or `generation`
+  column) is not swapped for another file in the directory. The run opens it
+  and fails if it still cannot be read then; a lock that has cleared by then
+  does no harm. A file without a `programs` table, or with an empty one, counts
+  as having no programs.
 
 The database presets carry `db_path: null`, so `db_config.db_path=<name>` works
 as a Hydra override. With `shinka_run`, use `--set db.db_path=<name>`.
 
 `load_programs_to_df(results_dir)`, `python -m shinka.plots.code_path_anim` and
-the `shinka-inspect` skill look in the same places. Because reading changes
-nothing, they also load a database under an unknown name when it is the only
-one in the directory. When `load_programs_to_df` loads another file than
+the `shinka-inspect` skill look in `programs.sqlite`, `evolution_db.sqlite` and
+the file named `None`. They do not know the run's `db_path`, so they do not
+look in the nested first-release path: pass that file's path. Because reading
+changes nothing, they also load a database under an unknown name when it is the
+only one directly in the directory. When `load_programs_to_df` loads another file than
 `programs.sqlite`, it prints `Loading <name>: programs.sqlite holds no programs.`
 With several such databases none of them guesses: `load_programs_to_df` prints
 the error and returns `None`, and the skill stops with it. Both take the path
