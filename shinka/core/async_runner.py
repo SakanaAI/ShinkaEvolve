@@ -120,6 +120,14 @@ from shinka.utils.languages import get_evolve_comment_prefix
 
 logger = logging.getLogger(__name__)
 
+# Settings of AsymmetricUCB's cost term, among them the default selection kwargs.
+_UCB_COST_KWARGS = (
+    "cost_aware_coef",
+    "cost_exploration_coef",
+    "cost_power",
+    "cost_ref_percentile",
+)
+
 # The outcomes of the proposal task this coroutine runs in, if it runs in one.
 _task_outcomes: ContextVar[Optional[ProposalOutcomes]] = ContextVar(
     "task_outcomes", default=None
@@ -477,29 +485,7 @@ class ShinkaEvolveRunner:
         self.console = RichTeeConsole(Console(), Path(log_filename))
 
         # Initialize LLM selection strategy
-        if evo_config.llm_dynamic_selection is None:
-            self.llm_selection = None
-        elif isinstance(evo_config.llm_dynamic_selection, BanditBase):
-            self.llm_selection = evo_config.llm_dynamic_selection
-        elif evo_config.llm_dynamic_selection.lower() == "fixed":
-            self.llm_selection = FixedSampler(
-                arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
-            )
-        elif (evo_config.llm_dynamic_selection.lower() == "ucb") or (
-            evo_config.llm_dynamic_selection.lower() == "ucb1"
-        ):
-            self.llm_selection = AsymmetricUCB(
-                arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
-            )
-        elif evo_config.llm_dynamic_selection.lower() == "thompson":
-            self.llm_selection = ThompsonSampler(
-                arm_names=evo_config.llm_models,
-                **evo_config.llm_dynamic_selection_kwargs,
-            )
-        else:
-            raise ValueError("Invalid llm_dynamic_selection")
+        self.llm_selection = self._llm_selection_from(evo_config)
 
         # Store db_config for later initialization (after results_dir is set)
         # Database will be initialized in _setup_async()
@@ -697,6 +683,33 @@ class ShinkaEvolveRunner:
         # Meta task logging state (to reduce verbosity)
         self._last_meta_log_state: dict | None = None
         self._last_meta_log_info_time: float | None = None
+
+    @staticmethod
+    def _llm_selection_from(evo_config: EvolutionConfig) -> Optional[BanditBase]:
+        """The model-selection bandit `evo_config` asks for, or None."""
+        selection = evo_config.llm_dynamic_selection
+        if selection is None or isinstance(selection, BanditBase):
+            return selection
+        name = selection.lower()
+        models = evo_config.llm_models
+        kwargs = dict(evo_config.llm_dynamic_selection_kwargs)
+        if name == "fixed":
+            return FixedSampler(arm_names=models, **kwargs)
+        if name in ("ucb", "ucb1"):
+            return AsymmetricUCB(arm_names=models, **kwargs)
+        if name == "thompson":
+            # The default kwargs set the cost term of UCB. Thompson sampling
+            # has none and must still start from the default config.
+            ignored = sorted(key for key in kwargs if key in _UCB_COST_KWARGS)
+            if ignored:
+                logger.info(
+                    "Thompson sampling has no cost term; ignoring %s.",
+                    ", ".join(ignored),
+                )
+            for key in ignored:
+                del kwargs[key]
+            return ThompsonSampler(arm_names=models, **kwargs)
+        raise ValueError("Invalid llm_dynamic_selection")
 
     def _save_bandit_state(self) -> None:
         """Save the LLM selection bandit state to disk."""
