@@ -1584,12 +1584,15 @@ class ShinkaEvolveRunner:
             try:
                 # A connection of its own: this may not be the thread that
                 # opened the run's. It waits this long for a lock, no longer.
-                with closing(
-                    sqlite3.connect(str(path), timeout=_WAL_FOLD_LOCK_SECONDS)
-                ) as connection:
+                connection = sqlite3.connect(
+                    str(path), timeout=_WAL_FOLD_LOCK_SECONDS
+                )
+                try:
                     blocked = connection.execute(
                         "PRAGMA wal_checkpoint(TRUNCATE)"
                     ).fetchone()[0]
+                finally:
+                    connection.close()
                 reason = "another connection is using the database"
             except sqlite3.Error as exc:
                 blocked, reason = True, str(exc)
