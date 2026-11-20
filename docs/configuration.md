@@ -130,7 +130,8 @@ runs with `max_tokens` 4096.
 API no longer accepts a temperature, so they sample at its default. It is also
 not sent to OpenAI reasoning models, DeepSeek V4 models, and the Gemini models
 that take a thinking level. OpenRouter models listed as reasoning models always
-get temperature 1.0.
+get temperature 1.0. Azure deployments differ from the OpenAI models they
+serve: see the note below the effort table.
 
 `reasoning_efforts` accepts `disabled`, `none`, `min`, `minimal`, `low`,
 `medium`, `high`, `xhigh` and `max`, in any letter case. An unset value, `""`
@@ -143,11 +144,19 @@ every model and mapped onto what the model offers:
 |--------|---------|
 | Models the pricing catalog does not list as reasoning models (for example `gpt-4.1` and `local/...` endpoints) | Ignored. |
 | OpenAI and OpenRouter reasoning models before GPT-6 | Sent as named, except `min` → `low` and `max` → `high`. `none`, `minimal` and `xhigh` exist only on some of these models: where the model lacks the level, the name is still sent and the provider decides. `disabled` sends no effort, so the provider's default applies, or `low` to a model that cannot run without reasoning. |
-| GPT-6 family | `disabled` and `none` → `none`, or `low` on GPT-6 Astra and GPT-6.1 Sol, which require reasoning. `min` and `minimal` → `low`. The rest as named. |
+| GPT-6 family, on OpenAI or as an Azure deployment named after the model | `disabled` and `none` → `none`, or `low` on GPT-6 Astra and GPT-6.1 Sol, which require reasoning. `min` and `minimal` → `low`. The rest as named. |
 | Claude with adaptive thinking (Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) | `disabled`, `none`, `min` and `minimal` → `low`. The rest as named. `disabled` and `none` also set thinking to `disabled` on Haiku 5.5 and to `between_tools` on Sonnet 5.5; on Fable and Opus it stays adaptive. |
 | Models with a thinking-token budget (older Claude models, Gemini models without thinking levels) | `min` and `minimal` 1024 tokens, `low` 2048, `medium` 4096, `high` 8192, `xhigh` 12288, `max` 16384. A budget that is not below `max_tokens` falls back to 1024: with `max_tokens: 16384`, `max` gives 1024, so set `max_tokens` above the budget you want. `disabled` and `none` turn thinking off, or set a 128-token budget on Gemini 2.5 Pro and Gemini 3 Pro preview, which cannot turn it off. |
 | Gemini with thinking levels (3.5 Flash-Lite, 3.6 to 3.8 Flash, Gemini 4) | `min`, `minimal` and `low` → `LOW`, except `min` and `minimal` → `MINIMAL` on 3.5 Flash-Lite; `medium` → `MEDIUM`; `high`, `xhigh` and `max` → `HIGH`. `disabled` and `none` send no level. |
 | DeepSeek reasoning models | `disabled` and `none` turn thinking off. `max` → `max`. Every other name → `high`. |
+
+Azure deployments (`azure-<deployment name>`) are looked up in the catalog
+under the prefixed name, and the catalog lists no Azure models. A deployment
+named after a GPT-6 model (`azure-gpt-6-luna`) follows the GPT-6 row. Every
+other deployment falls under the first row, also when it serves a reasoning
+model: for `azure-gpt-5-mini` or `azure-o4-mini`, `reasoning_efforts` is
+ignored without a warning and a `temperatures` value is sent, where
+`gpt-5-mini` and `o4-mini` get the effort and no temperature.
 
 #### LLM endpoint failures
 
