@@ -118,6 +118,9 @@ class BanditBase(ABC):
         # patch and of proposals that did not.
         self.recent_delivered = np.zeros(self._n_arms, dtype=np.float64)
         self.recent_failed = np.zeros(self._n_arms, dtype=np.float64)
+        # Every failed proposal of the run, counted also when failure_memory
+        # is 0: whether an arm was ever tried is not a matter of weighting.
+        self.n_failed = np.zeros(self._n_arms, dtype=np.float64)
         self._warned_untracked_arm = False
 
     @property
@@ -145,6 +148,7 @@ class BanditBase(ABC):
         """
         i = self._outcome_arm(arm)
         if i is not None:
+            self.n_failed[i] += 1.0
             self._record_outcome(i, self.recent_failed)
             self._add_failed_cost(i, cost)
 
@@ -455,6 +459,7 @@ class BanditBase(ABC):
         return {
             "recent_delivered": self.recent_delivered.copy(),
             "recent_failed": self.recent_failed.copy(),
+            "n_failed": self.n_failed.copy(),
         }
 
     def _restore_outcomes(self, state: Dict[str, Any]) -> None:
@@ -462,14 +467,16 @@ class BanditBase(ABC):
         zeros = np.zeros(self.n_arms, dtype=np.float64)
         delivered = self._align_state_array(state, "recent_delivered", zeros)
         failed = self._align_state_array(state, "recent_failed", zeros)
-        for counts in (delivered, failed):
+        n_failed = self._align_state_array(state, "n_failed", zeros)
+        for counts in (delivered, failed, n_failed):
             if not (np.isfinite(counts).all() and (counts >= 0.0).all()):
                 logger.warning(
                     "Bandit state contains invalid proposal outcome counts; "
                     "resetting them."
                 )
-                delivered, failed = zeros.copy(), zeros.copy()
+                delivered, failed, n_failed = zeros.copy(), zeros.copy(), zeros.copy()
                 break
+        self.n_failed = n_failed
         # An arm's counts add up to at most failure_memory. A state saved with
         # a longer memory, or edited, is scaled down to that: it keeps its
         # reliability and the arm does not take longer than usual to recover.
@@ -1666,7 +1673,7 @@ class ThompsonSampler(BanditBase):
         # outcome: an arm whose proposals only fail never completes one, and
         # would otherwise be drawn as unseen for the rest of the run.
         n_sub = self.n_completed[idx]
-        unseen = np.where((n_sub <= 0.0) & (self.recent_failed[idx] <= 0.0))[0]
+        unseen = np.where((n_sub <= 0.0) & (self.n_failed[idx] <= 0.0))[0]
         if unseen.size > 0:
             n_sub = self.n[idx]
             # Handle empty subset

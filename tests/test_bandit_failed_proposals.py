@@ -409,6 +409,43 @@ def test_thompson_does_not_keep_drawing_a_model_that_never_completes():
     assert all(bandit.posterior()[DEAD] < 1.0 for _ in range(50))
 
 
+def test_thompson_without_failure_memory_still_sees_that_a_model_was_tried(tmp_path):
+    """failure_memory 0 switches the weighting off, not this: an arm that
+    only fails would otherwise be drawn as unseen for the rest of the run."""
+    bandit = ThompsonSampler(arm_names=ARMS, seed=0, failure_memory=0)
+    bandit.set_baseline_score(BASELINE)
+    bandit.update_submitted("ok")
+    bandit.update_delivered("ok")
+    bandit.update("ok", BASELINE + 0.2, baseline=BASELINE)
+    bandit.update_submitted("dead")
+    assert bandit.posterior()[DEAD] == 1.0
+
+    bandit.update_failed("dead")
+
+    assert bandit.reliability().tolist() == [1.0, 1.0]
+    assert all(bandit.posterior()[DEAD] < 1.0 for _ in range(50))
+
+    # A resumed run does not start drawing it as unseen again.
+    bandit.save_state(tmp_path / "bandit_state.pkl")
+    resumed = ThompsonSampler(arm_names=ARMS, seed=1, failure_memory=0)
+    resumed.load_state(tmp_path / "bandit_state.pkl")
+    assert all(resumed.posterior()[DEAD] < 1.0 for _ in range(50))
+
+
+def test_thompson_without_failure_memory_does_not_send_everything_to_a_dead_model():
+    def thompson(seed):
+        return ThompsonSampler(arm_names=ARMS, seed=seed, failure_memory=0)
+
+    dead_submissions = [
+        _draws(thompson, seed, 50, lambda step: True).sum() for seed in range(20)
+    ]
+
+    # 49 of 50 while a failed arm still counted as unseen. With the weighting
+    # off it is now drawn like any arm that has earned no reward: about 30.
+    assert np.mean(dead_submissions) < 36
+    assert max(dead_submissions) < 46
+
+
 @pytest.mark.parametrize("cost_aware_coef", [0.0, 0.5])
 def test_one_failure_does_not_take_the_lead_from_the_best_model(cost_aware_coef):
     """A failure costs a model that share of its probability, not its rank."""
