@@ -355,16 +355,37 @@ def test_forked_child_starts_without_its_parents_runs_and_request(
 
     assert fatal_signals._stops == []
     assert fatal_signals._unhandled_since == {}
+    # The child has no relay, which the hook needs to interrupt a main thread
+    # that is about to block: until it hooks the signals itself, they kill it.
+    for signum in FATAL_SIGNALS:
+        assert signal.getsignal(signum) is signal.SIG_DFL
 
     # A run that the child starts is not asked to stop for its parent's signal.
     asked: list[int] = []
     stop = fatal_signals.stop_on_fatal_signals(asked.append)
 
     assert asked == []
+    assert fatal_signals._is_hooked(signal.SIGTERM)
 
     stop.finish()
 
     assert deaths == []
+
+
+def test_forked_child_keeps_the_handlers_of_its_application(
+    deaths: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def application_handler(signum, frame) -> None:
+        pass
+
+    monkeypatch.setattr(fatal_signals, "_signal_reports", None)
+    signal.signal(signal.SIGHUP, application_handler)
+    fatal_signals.kill_evaluators_on_fatal_signals()
+
+    fatal_signals._forget_the_parent_after_fork()
+
+    assert signal.getsignal(signal.SIGHUP) is application_handler
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
 
 
 def test_run_off_the_main_thread_leaves_the_signals_alone(deaths: list[int]) -> None:

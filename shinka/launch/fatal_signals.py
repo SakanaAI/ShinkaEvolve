@@ -60,6 +60,13 @@ def _forget_the_parent_after_fork() -> None:
     _stops.clear()
     _asked_to_stop = None
     _unhandled_since.clear()
+    # The child has neither evaluators nor a relay thread. The hook without
+    # the relay misses a signal that arrives as the main thread is about to
+    # block, until that block ends: the default kills the child at once. A
+    # scheduler or a run in the child hooks the signals again.
+    for signum in _fatal_signals():
+        if _is_hooked(signum):
+            signal.signal(signum, signal.SIG_DFL)
     if _signal_reports is None:
         return
     # The parent's relay would take this process's signals for its own.
