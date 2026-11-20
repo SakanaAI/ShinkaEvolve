@@ -446,8 +446,10 @@ What it guarantees:
   cap. A charge is known when the reply arrives, not when the request is sent.
 - A proposal starts only if the cap covers the known charges plus one
   reservation for the new proposal and one for every proposal still in flight.
-  The reservation is the cost of the most expensive proposal so far: the
-  evolved programs and failed proposals of this results directory.
+  The reservation is the cost of the most expensive proposal so far, among the
+  evolved programs and failed proposals of this results directory. What a
+  proposal in flight has already been charged counts on top of its
+  reservation.
 - When the cap cannot cover even one more reservation, the run finishes the
   work in flight and stops. The log line names the amounts, for example
   `API cost budget cannot cover another proposal: $0.3978 charged + $0.1497
@@ -456,23 +458,27 @@ What it guarantees:
   the rest.
 
 What it does not guarantee: that the total stays below the cap. The price of a
-request is known only after the reply. The total passes the cap when
+request is known only after the reply, and a request that is in flight when
+the known charges reach the cap is still billed. The total passes the cap by
+at most the cost of those requests. That happens when
 
-- a proposal costs more than every proposal before it, by at most that
-  difference for each proposal in flight. This includes the first
-  `max_proposal_jobs` proposals of a new results directory, which start
-  without any cost history and so without a reservation;
+- a proposal costs more than its reservation, that is, more than every
+  proposal before it. The first `max_proposal_jobs` proposals of a new results
+  directory start without any cost history and so without a reservation. A
+  proposal joins the history when its program is handed to evaluation or when
+  it has failed for good;
 - a meta summary, a prompt evolution step or an LLM-generated initial program
-  is in flight when the cap is reached. These calls are not reserved; they
-  start whenever the known charges are below the cap.
+  runs. These calls are not reserved. They start whenever the known charges
+  are below the cap, and what they cost is then missing for the proposals in
+  flight.
 
-One LLM call costs at most about `max_tokens` output tokens at the model's
+One LLM request costs at most about `max_tokens` output tokens at the model's
 output price, plus its prompt; reasoning tokens count as output. With
 `max_tokens: 32768`, one `gpt-5.4-mini` reply that spends the whole output
-budget costs $0.15. A proposal makes up to `max_patch_resamples` x
-`max_patch_attempts` such calls for each of its `max_novelty_attempts`. For a
-limit that must hold, set the cap below it by that worst case times
-`max_proposal_jobs`, or lower `max_tokens` and the reasoning effort.
+budget costs $0.15. To keep the total below a fixed limit, set the cap lower
+than the limit by that amount for every request that can be in flight at once
+(the proposals of all `max_proposal_jobs` workers, and a meta summary or
+prompt evolution step), or lower `max_tokens` and the reasoning effort.
 
 ### Database Presets
 
