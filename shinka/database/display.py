@@ -11,6 +11,11 @@ from rich.table import Table as RichTable  # type: ignore
 logger = logging.getLogger(__name__)
 
 
+def _number(value: Any) -> float:
+    """Read a cost or duration from metadata, where a non-finite one is stored as null."""
+    return float(value or 0.0)
+
+
 class DatabaseDisplay:
     """Handles rich console display and formatting for database summaries."""
 
@@ -57,13 +62,13 @@ class DatabaseDisplay:
                 if row["metadata"]:
                     metadata = json.loads(row["metadata"] or "{}")
                     if "api_costs" in metadata:
-                        total_api_cost += float(metadata["api_costs"])
+                        total_api_cost += _number(metadata["api_costs"])
                     if "embed_cost" in metadata:
-                        total_api_cost += float(metadata["embed_cost"])
+                        total_api_cost += _number(metadata["embed_cost"])
                     if "novelty_cost" in metadata:
-                        total_api_cost += float(metadata["novelty_cost"])
+                        total_api_cost += _number(metadata["novelty_cost"])
                     if "meta_cost" in metadata:
-                        total_api_cost += float(metadata["meta_cost"])
+                        total_api_cost += _number(metadata["meta_cost"])
 
         # Create a table with headers - include generation and total cost
         table = RichTable(
@@ -129,10 +134,10 @@ class DatabaseDisplay:
         # Format cost breakdown
         cost_display = "[dim]N/A[/dim]"
         if program.metadata:
-            api_cost = float(program.metadata.get("api_costs", 0))
-            embed_cost = float(program.metadata.get("embed_cost", 0))
-            novelty_cost = float(program.metadata.get("novelty_cost", 0))
-            meta_cost = float(program.metadata.get("meta_cost", 0))
+            api_cost = _number(program.metadata.get("api_costs"))
+            embed_cost = _number(program.metadata.get("embed_cost"))
+            novelty_cost = _number(program.metadata.get("novelty_cost"))
+            meta_cost = _number(program.metadata.get("meta_cost"))
             total_cost = api_cost + embed_cost + novelty_cost + meta_cost
             cost_display = f"${total_cost:.3f}"
 
@@ -212,17 +217,17 @@ class DatabaseDisplay:
                 if row["metadata"]:
                     metadata = json.loads(row["metadata"] or "{}")
                     if "api_costs" in metadata:
-                        total_api_cost += float(metadata["api_costs"])
+                        total_api_cost += _number(metadata["api_costs"])
                     if "embed_cost" in metadata:
-                        total_embed_cost += float(metadata["embed_cost"])
+                        total_embed_cost += _number(metadata["embed_cost"])
                     if "novelty_cost" in metadata:
-                        total_novelty_cost += float(metadata["novelty_cost"])
+                        total_novelty_cost += _number(metadata["novelty_cost"])
                     if "meta_cost" in metadata:
-                        total_meta_cost += float(metadata["meta_cost"])
+                        total_meta_cost += _number(metadata["meta_cost"])
                     if "compute_time" in metadata:
-                        total_compute_time += float(metadata["compute_time"])
+                        total_compute_time += _number(metadata["compute_time"])
                     elif "pipeline_seconds" in metadata:
-                        total_compute_time += float(metadata["pipeline_seconds"])
+                        total_compute_time += _number(metadata["pipeline_seconds"])
 
                 if row["combined_score"] is not None:
                     score = float(row["combined_score"])
@@ -549,13 +554,13 @@ class DatabaseDisplay:
                 if row["metadata"]:
                     metadata = json.loads(row["metadata"] or "{}")
                     if "api_costs" in metadata:
-                        total_api_cost += float(metadata["api_costs"])
+                        total_api_cost += _number(metadata["api_costs"])
                     if "embed_cost" in metadata:
-                        total_api_cost += float(metadata["embed_cost"])
+                        total_api_cost += _number(metadata["embed_cost"])
                     if "novelty_cost" in metadata:
-                        total_api_cost += float(metadata["novelty_cost"])
+                        total_api_cost += _number(metadata["novelty_cost"])
                     if "meta_cost" in metadata:
-                        total_api_cost += float(metadata["meta_cost"])
+                        total_api_cost += _number(metadata["meta_cost"])
 
         # Create title with generation and attempt information
         title_parts = [
@@ -638,10 +643,10 @@ class DatabaseDisplay:
             # Cost breakdown
             cost_display = "[dim]N/A[/dim]"
             if prog.metadata:
-                api_cost = float(prog.metadata.get("api_costs", 0))
-                embed_cost = float(prog.metadata.get("embed_cost", 0))
-                novelty_cost = float(prog.metadata.get("novelty_cost", 0))
-                meta_cost = float(prog.metadata.get("meta_cost", 0))
+                api_cost = _number(prog.metadata.get("api_costs"))
+                embed_cost = _number(prog.metadata.get("embed_cost"))
+                novelty_cost = _number(prog.metadata.get("novelty_cost"))
+                meta_cost = _number(prog.metadata.get("meta_cost"))
                 total_cost = api_cost + embed_cost + novelty_cost + meta_cost
                 cost_display = f"${total_cost:.3f}"
 
