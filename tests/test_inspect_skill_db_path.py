@@ -25,8 +25,15 @@ def _load_script() -> ModuleType:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # Its dataclass looks the module up by name while the class is built.
+    registered = sys.modules.get(spec.name)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if registered is None:
+            del sys.modules[spec.name]
+        else:
+            sys.modules[spec.name] = registered
     return module
 
 
@@ -86,13 +93,14 @@ def test_several_unknown_databases_are_not_guessed_between(tmp_path, inspect_scr
         inspect_script._resolve_db_path(str(tmp_path))
 
 
-def test_database_file_is_used_as_given(tmp_path, inspect_script):
+@pytest.mark.parametrize("db_name", ["other.sqlite", "other.db"])
+def test_database_file_is_used_as_given(tmp_path, inspect_script, db_name):
     _write_db(tmp_path / "programs.sqlite")
-    _write_db(tmp_path / "other.sqlite")
+    _write_db(tmp_path / db_name)
 
-    resolved = inspect_script._resolve_db_path(str(tmp_path / "other.sqlite"))
+    resolved = inspect_script._resolve_db_path(str(tmp_path / db_name))
 
-    assert resolved == tmp_path / "other.sqlite"
+    assert resolved == tmp_path / db_name
 
 
 def test_directory_without_database_resolves_to_the_default_name(
@@ -101,15 +109,46 @@ def test_directory_without_database_resolves_to_the_default_name(
     assert inspect_script._resolve_db_path(str(tmp_path)) == tmp_path / "programs.sqlite"
 
 
-def test_shinka_without_the_shared_resolver_reads_the_name_it_writes(
-    tmp_path, monkeypatch
-):
-    # Releases up to 0.0.8 always wrote programs.sqlite and had no resolver.
+@pytest.fixture
+def script_for_old_shinka(monkeypatch) -> ModuleType:
+    # Releases up to 0.0.8 have no shinka.database.run_db_path.
     monkeypatch.setitem(sys.modules, "shinka.database.run_db_path", None)
-    inspect_script = _load_script()
+    return _load_script()
+
+
+def test_shinka_without_the_shared_resolver_reads_the_default_name(
+    tmp_path, script_for_old_shinka
+):
     _write_db(tmp_path / "custom.sqlite")
 
-    assert inspect_script._resolve_db_path(str(tmp_path)) == tmp_path / "programs.sqlite"
+    resolved = script_for_old_shinka._resolve_db_path(str(tmp_path))
+
+    assert resolved == tmp_path / "programs.sqlite"
+
+
+def test_shinka_without_the_shared_resolver_still_finds_the_first_release_name(
+    tmp_path, script_for_old_shinka
+):
+    _write_db(tmp_path / "evolution_db.sqlite")
+
+    resolved = script_for_old_shinka._resolve_db_path(str(tmp_path))
+
+    assert resolved == tmp_path / "evolution_db.sqlite"
+
+    _write_db(tmp_path / "programs.sqlite")
+
+    resolved = script_for_old_shinka._resolve_db_path(str(tmp_path))
+
+    assert resolved == tmp_path / "programs.sqlite"
+
+
+def test_another_import_failure_is_not_taken_for_an_old_shinka(monkeypatch):
+    # The resolver exists but one of its own imports is broken.
+    monkeypatch.delitem(sys.modules, "shinka.database.run_db_path")
+    monkeypatch.setitem(sys.modules, "sqlite3", None)
+
+    with pytest.raises(ModuleNotFoundError, match="sqlite3"):
+        _load_script()
 
 
 def test_bundle_is_built_from_a_custom_named_database(

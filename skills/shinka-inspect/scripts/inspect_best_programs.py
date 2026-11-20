@@ -26,8 +26,8 @@ try:
 except ModuleNotFoundError as missing:
     if missing.name != "shinka.database.run_db_path":
         raise
-    # The skill can be newer than the installed shinka. Releases up to 0.0.8
-    # have no resolver and always wrote <results_dir>/programs.sqlite.
+    # The skill can be newer than the installed shinka: releases up to 0.0.8
+    # have no resolver.
     find_run_db_path = None  # type: ignore[assignment]
 
 
@@ -121,7 +121,11 @@ def _resolve_db_path(results_dir_or_db: str) -> Path:
     if provided.suffix in {".sqlite", ".db"}:
         return provided
     if find_run_db_path is None:
-        return provided / "programs.sqlite"
+        # What a shinka without the resolver wrote: programs.sqlite, or the
+        # evolution_db.sqlite its first presets configured.
+        legacy = provided / "evolution_db.sqlite"
+        default = provided / "programs.sqlite"
+        return legacy if legacy.exists() and not default.exists() else default
     # The file the run wrote: programs.sqlite, a custom db_path or a
     # first-release name. Raises if several databases could be meant.
     return find_run_db_path(provided)
