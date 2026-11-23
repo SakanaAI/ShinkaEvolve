@@ -205,6 +205,9 @@ All notable changes to `shinka-evolve` are documented in this file.
   `time` formats, the local hang limit, async Slurm status handling,
   child-result validation and retries, the endpoint-failure stop, and the
   reasoning-effort mapping per model family.
+- Apply SEARCH/REPLACE patches with an empty SEARCH or REPLACE section in
+  PR #239. Empty SEARCH appends to the editable region and empty REPLACE
+  deletes the matched text. Thanks @ixchio.
 
 ### Security
 
