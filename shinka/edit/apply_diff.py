@@ -18,9 +18,11 @@ from .marker_validation import validate_evolve_markers
 
 logger = logging.getLogger(__name__)
 
+# A section may hold no lines, so its closing marker can sit directly below the
+# line that opens it.
 PATCH_PATTERN = re.compile(
-    r"<{7}\s*SEARCH\s*\n(.*?)\n\s*={7}\s*\n(.*?)\n\s*>{7}\s*REPLACE\s*",
-    re.DOTALL,
+    r"<{7}\s*SEARCH\s*\n(.*?)(?:^|\n)\s*={7}\s*\n(.*?)(?:^|\n)\s*>{7}\s*REPLACE\s*",
+    re.DOTALL | re.MULTILINE,
 )
 
 
