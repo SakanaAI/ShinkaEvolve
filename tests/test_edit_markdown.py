@@ -82,6 +82,24 @@ def test_diff_patch_keeps_first_replacement_line_with_marker_prefix(quote):
     assert updated == original.replace("Old text", replacement)
 
 
+@pytest.mark.parametrize("indent", ["", "  "])
+def test_diff_patch_can_search_for_setext_heading_underline(indent):
+    underline = f"{indent}======="
+    replacement = f"{indent}-------"
+    original = (
+        f"<!-- EVOLVE-BLOCK-START -->\nHeading\n{underline}\n<!-- EVOLVE-BLOCK-END -->\n"
+    )
+    patch = f"<<<<<<< SEARCH\n{underline}\n=======\n{replacement}\n>>>>>>> REPLACE"
+
+    updated, applied, _, error, _, _ = apply_diff_patch(
+        patch, original, language="markdown"
+    )
+
+    assert error is None
+    assert applied == 1
+    assert updated == original.replace(underline, replacement)
+
+
 def test_apply_full_patch_supports_markdown(tmp_path):
     """Full patching works with markdown code fences."""
     original_content = """<!-- EVOLVE-BLOCK-START -->

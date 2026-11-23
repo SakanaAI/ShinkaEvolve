@@ -18,11 +18,16 @@ from .marker_validation import validate_evolve_markers
 
 logger = logging.getLogger(__name__)
 
+# When SEARCH opens with two adjacent separators, the first is SEARCH text,
+# as in a Markdown Setext heading underline.
+_TWO_SEARCH_SEPARATOR_LINES = r"(?:[^\S\n]*={7}[^\S\n]*\n){2}"
+
 # A section may hold no lines, so its closing marker can sit directly below the
 # line that opens it.
 PATCH_PATTERN = re.compile(
     r"<{7}\s*SEARCH\s*\n"
-    r"(.*?)(?:^|\n)\s*={7}\s*\n"
+    rf"(.*?)(?:\n|^(?!{_TWO_SEARCH_SEPARATOR_LINES}))"
+    r"\s*={7}\s*\n"
     r"(.*?)(?:^|\n)\s*>{7}[^\S\n]*REPLACE[^\S\n]*$",
     re.DOTALL | re.MULTILINE,
 )
