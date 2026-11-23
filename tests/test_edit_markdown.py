@@ -86,9 +86,7 @@ def test_diff_patch_keeps_first_replacement_line_with_marker_prefix(quote):
 def test_diff_patch_can_search_for_setext_heading_underline(indent):
     underline = f"{indent}======="
     replacement = f"{indent}-------"
-    original = (
-        f"<!-- EVOLVE-BLOCK-START -->\nHeading\n{underline}\n<!-- EVOLVE-BLOCK-END -->\n"
-    )
+    original = f"<!-- EVOLVE-BLOCK-START -->\nHeading\n{underline}\n<!-- EVOLVE-BLOCK-END -->\n"
     patch = f"<<<<<<< SEARCH\n{underline}\n=======\n{replacement}\n>>>>>>> REPLACE"
 
     updated, applied, _, error, _, _ = apply_diff_patch(
