@@ -1,3 +1,5 @@
+import pytest
+
 from shinka.edit import apply_diff_patch, apply_full_patch
 from shinka.utils.languages import (
     get_code_fence_languages,
@@ -63,6 +65,21 @@ Run the new command.
     assert diff_path == patch_dir / "edit.diff"
     assert diff_path is not None and diff_path.exists()
     assert patch_txt is not None and "Run the new command." in patch_txt
+
+
+@pytest.mark.parametrize("quote", [">>>>>>> REPLACEMENT", ">>>>>>> REPLACE this"])
+def test_diff_patch_keeps_first_replacement_line_with_marker_prefix(quote):
+    original = "<!-- EVOLVE-BLOCK-START -->\nOld text\n<!-- EVOLVE-BLOCK-END -->\n"
+    replacement = f"{quote}\nMore text"
+    patch = f"<<<<<<< SEARCH\nOld text\n=======\n{replacement}\n>>>>>>> REPLACE"
+
+    updated, applied, _, error, _, _ = apply_diff_patch(
+        patch, original, language="markdown"
+    )
+
+    assert error is None
+    assert applied == 1
+    assert updated == original.replace("Old text", replacement)
 
 
 def test_apply_full_patch_supports_markdown(tmp_path):
