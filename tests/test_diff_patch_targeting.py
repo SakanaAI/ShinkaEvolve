@@ -466,3 +466,34 @@ def test_written_file_keeps_the_final_newline(tmp_path):
     assert result[2] is not None
     assert result[2].read_bytes() == _with_immutable("x = 2\n").encode()
     assert (tmp_path / "original.py").read_bytes() == original.encode()
+
+
+# -- empty SEARCH or REPLACE section -------------------------------------------
+
+_SRC = "# EVOLVE-BLOCK-START\ndebug = True\ntotal = 1\n# EVOLVE-BLOCK-END\n"
+_EDIT = _patch("total = 1", "total = 2")
+
+
+@pytest.mark.parametrize("gap", ["", "\n"], ids=["no line", "blank line"])
+@pytest.mark.parametrize("neighbour", ["alone", "after an edit", "before an edit"])
+@pytest.mark.parametrize("kind", ["delete", "insert"])
+def test_block_with_an_empty_section(kind, neighbour, gap):
+    if kind == "delete":
+        block = f"<<<<<<< SEARCH\ndebug = True\n=======\n{gap}>>>>>>> REPLACE"
+        expected = _SRC.replace("debug = True", "")
+    else:
+        block = f"<<<<<<< SEARCH\n{gap}=======\nlast = 9\n>>>>>>> REPLACE"
+        expected = _SRC.replace("total = 1\n", "total = 1\nlast = 9\n")
+    blocks = {
+        "alone": [block],
+        "after an edit": [_EDIT, block],
+        "before an edit": [block, _EDIT],
+    }[neighbour]
+    if len(blocks) == 2:
+        expected = expected.replace("total = 1", "total = 2")
+
+    updated, num_applied, error = _apply(_SRC, "\n\n".join(blocks))
+
+    assert error is None
+    assert num_applied == len(blocks)
+    assert updated == expected
