@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Optional, Union
 from .apply_diff import write_git_diff, _mutable_ranges, EVOLVE_START, EVOLVE_END
@@ -11,6 +12,24 @@ from shinka.utils.languages import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _code_section_block(patch_str: str, fence_tags: tuple[str, ...]) -> Optional[str]:
+    """Return the fenced block inside <CODE>, read up to the section's last fence.
+
+    The program may contain code fences of its own (a Markdown document, a
+    prompt in a string), so the first closing fence is not the end of it.
+    """
+    section = re.search(r"<CODE>(.*)</CODE>", patch_str, re.DOTALL)
+    if section is None:
+        return None
+    tags = "|".join(re.escape(tag) for tag in fence_tags)
+    block = re.search(
+        rf"^`{{3,}}(?:{tags})[ \t]*\n(.*)^`{{3,}}[ \t]*$",
+        section.group(1),
+        re.DOTALL | re.MULTILINE,
+    )
+    return block.group(1).strip() if block else None
 
 
 def apply_full_patch(
@@ -42,20 +61,22 @@ def apply_full_patch(
     output_path: Optional[Path] = None
 
     # Extract code from language fences (accept canonical and common aliases).
-    extracted_code = "none"
-    for language_fence in language_fences:
-        extracted_code = extract_between(
-            patch_str,
-            f"```{language_fence}",
-            "```",
-            False,
-        )
-        if (
-            extracted_code is not None
-            and not isinstance(extracted_code, dict)
-            and extracted_code != "none"
-        ):
-            break
+    extracted_code = _code_section_block(patch_str, language_fences)
+    if extracted_code is None:
+        extracted_code = "none"
+        for language_fence in language_fences:
+            extracted_code = extract_between(
+                patch_str,
+                f"```{language_fence}",
+                "```",
+                False,
+            )
+            if (
+                extracted_code is not None
+                and not isinstance(extracted_code, dict)
+                and extracted_code != "none"
+            ):
+                break
 
     # Handle the case where extract_between returns None, dict, or "none"
     if (
