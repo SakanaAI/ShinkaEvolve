@@ -16,7 +16,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Iterable
 
-from shinka.pricing.catalog import PricingCatalog, catalog_from_models_dev_payload
+from shinka.pricing.catalog import PricingCatalog
+from shinka.pricing.normalization import catalog_from_payload
 from shinka.pricing.rendering import render_embedding_row, render_llm_row
 
 
@@ -459,9 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     embedding_targets = read_targets(
         args.embedding_output, "embedding", EMBEDDING_HEADERS
     )
-    catalog = catalog_from_models_dev_payload(
-        payload, args.overlay_json, include_bundled=False
-    )
+    catalog = catalog_from_payload(payload, args.overlay_json, include_bundled=False)
     llm_csv = render_csv(
         LLM_HEADERS,
         [

@@ -6,6 +6,7 @@ import csv
 import json
 import math
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ def catalog_from_payload(
     overlay_path: Path | None = None,
     *,
     include_bundled: bool = True,
+    as_of: date | None = None,
 ) -> PricingCatalog:
     if not isinstance(payload, dict):
         raise ValueError("models.dev payload must be an object")
@@ -41,12 +43,20 @@ def catalog_from_payload(
     discovered = _add_discovered_entries(entries, payload)
     if discovered == 0:
         raise ValueError("models.dev payload contains no supported priced models")
-    _apply_overlay(entries, overlay_path or _OVERLAY_JSON)
+    _apply_overlay(entries, overlay_path or _OVERLAY_JSON, as_of)
     return PricingCatalog(tuple(entries.values()))
 
 
-def load_bundled_entries() -> tuple[ModelPrice, ...]:
-    return tuple(_load_llm_csv()) + tuple(_load_embedding_csv())
+def load_bundled_entries(*, as_of: date | None = None) -> tuple[ModelPrice, ...]:
+    entries = tuple(_load_llm_csv()) + tuple(_load_embedding_csv())
+    if as_of is None:
+        return entries
+    by_key = {
+        (entry.kind, entry.provider, entry.api_model_name): entry for entry in entries
+    }
+    overrides = _read_overlay(_OVERLAY_JSON).get("llm_overrides", [])
+    _apply_llm_overrides(by_key, overrides, as_of)
+    return tuple(by_key.values())
 
 
 def _add_discovered_entries(
@@ -112,10 +122,11 @@ def _models_dev_entry(provider: str, model_id: str, model: Any) -> ModelPrice | 
 def _apply_overlay(
     entries: dict[tuple[ModelKind, str, str], ModelPrice],
     overlay_path: Path,
+    as_of: date | None,
 ) -> None:
     overlay = _read_overlay(overlay_path)
     _add_model_aliases(entries, overlay.get("model_aliases", []))
-    _apply_llm_overrides(entries, overlay.get("llm_overrides", []))
+    _apply_llm_overrides(entries, overlay.get("llm_overrides", []), as_of)
     _apply_embedding_overrides(entries, overlay.get("embedding_overrides", []))
 
 
@@ -163,7 +174,9 @@ def _add_model_aliases(
 
 
 def _apply_llm_overrides(
-    entries: dict[tuple[ModelKind, str, str], ModelPrice], overrides: Any
+    entries: dict[tuple[ModelKind, str, str], ModelPrice],
+    overrides: Any,
+    as_of: date | None,
 ) -> None:
     if not isinstance(overrides, list):
         return
@@ -182,17 +195,44 @@ def _apply_llm_overrides(
         for field in ("is_reasoning", "think_temp_fixed", "requires_reasoning"):
             if field in override:
                 values[field] = bool(override[field])
+        prices = _llm_price_overrides(entry, override, as_of)
         for field in (
             "input_price",
             "output_price",
             "input_price_tier2",
             "output_price_tier2",
         ):
-            _apply_price_override(values, override, field)
+            _apply_price_override(values, prices, field)
         threshold = _optional_int(override.get("tier_threshold"))
         if threshold is not None:
             values["tier_threshold"] = threshold
         entries[key] = ModelPrice(**values)
+
+
+def _llm_price_overrides(
+    entry: ModelPrice, override: dict[str, Any], as_of: date | None
+) -> dict[str, Any]:
+    introductory = override.get("introductory_prices")
+    if as_of is None or not isinstance(introductory, dict):
+        return override
+    ends_before = introductory.get("ends_before")
+    if not isinstance(ends_before, str):
+        return override
+    try:
+        cutoff = date.fromisoformat(ends_before)
+    except ValueError:
+        return override
+    if as_of < cutoff:
+        return {**override, **introductory}
+
+    # Correct a stale introductory pair and keep subsequent upstream prices.
+    introductory_rates = (
+        _per_token(_finite_price(introductory.get("input_price"))),
+        _per_token(_finite_price(introductory.get("output_price"))),
+    )
+    if entry.rates() == introductory_rates:
+        return override
+    return {**override, "input_price": None, "output_price": None}
 
 
 def _apply_embedding_overrides(

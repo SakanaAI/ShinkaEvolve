@@ -34,7 +34,7 @@ The packaged offline catalog includes these current text models:
 |----------|-----------|-----------|
 | OpenAI | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` | [OpenAI models](https://developers.openai.com/api/docs/models) |
 | Anthropic | `claude-fable-5-2`, `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | [Claude models](https://platform.claude.com/docs/en/models/overview) |
-| Google | `gemini-4-hydrogen`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash-lite` | [Gemini models](https://ai.google.dev/gemini-api/docs/models) |
+| Google | `gemini-4-neon`, `gemini-4-carbon`, `gemini-4-hydrogen`, `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.5-flash-lite` | [Gemini models](https://ai.google.dev/gemini-api/docs/models) |
 
 Live discovery can add models before the packaged snapshot is updated. Discovery
 provides pricing and routing metadata; model-specific request settings still
@@ -64,10 +64,12 @@ thinking that is always on; disabling reasoning in Shinka cannot turn it off
 for those models. Thinking tokens contribute to billed output, so use a suitable
 token limit and run budget when comparing models.
 
-Gemini 4 Argon's bundled price is introductory through November 30, 2026;
-refresh pricing for runs after that date. Its synchronous output limit is
-65,536 tokens; larger outputs require Google's background API, which Shinka
-does not currently use. See the [Argon guide](https://ai.google.dev/gemini-api/docs/whats-new-gemini-4-argon).
+Gemini 4 Neon and Carbon require a paid Gemini API project. Add either model ID
+to `llm_models` to use it. Gemini 4 Argon and Carbon cost $2 per million input
+tokens and $10 per million output tokens through November 30, 2026. New
+pricing snapshots use $4 and $20, respectively, starting December 1 (UTC).
+Gemini 4 Neon costs $3 and $15, respectively. Gemini 4 synchronous requests
+support up to 65,536 output tokens. See the [Gemini API pricing page](https://aistudio.google.com/docs/pricing).
 
 Older IDs removed from `models.dev` retain explicitly labeled historical prices
 in the overlay so their bundled snapshots remain reproducible. A retained ID

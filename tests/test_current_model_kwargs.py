@@ -131,6 +131,8 @@ def test_current_models_reject_unknown_effort_before_request(model):
 @pytest.mark.parametrize(
     "model",
     [
+        "gemini-4-carbon",
+        "gemini-4-neon",
         "gemini-4-argon",
         "gemini-4-hydrogen",
         "gemini-3.8-flash",

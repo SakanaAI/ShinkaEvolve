@@ -143,6 +143,8 @@ def test_build_gemini_thinking_level_config_rejects_unknown_level():
         "gemini-3.7-flash",
         "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
+        "gemini-4-carbon",
+        "gemini-4-neon",
         "gemini-4-argon",
         "gemini-4-hydrogen",
     ],
@@ -339,7 +341,14 @@ def test_async_query_uses_shared_generation_config_builder(monkeypatch, model_na
 
 @pytest.mark.parametrize(
     "model_name",
-    ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-hydrogen"],
+    [
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-4-carbon",
+        "gemini-4-neon",
+        "gemini-4-argon",
+        "gemini-4-hydrogen",
+    ],
 )
 def test_generation_config_rejects_minimal_for_models_without_support(model_name):
     with pytest.raises(gemini.NonRetryableLLMError, match="MINIMAL.*not supported"):
@@ -359,6 +368,8 @@ def test_generation_config_rejects_minimal_for_models_without_support(model_name
     [
         ("gemini-3.5-flash-lite", "MINIMAL"),
         ("gemini-3.8-flash", None),
+        ("gemini-4-carbon", "MEDIUM"),
+        ("gemini-4-neon", "HIGH"),
         ("gemini-4-argon", None),
         ("gemini-4-hydrogen", None),
     ],

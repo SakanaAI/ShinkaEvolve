@@ -109,6 +109,35 @@
     },
     {
       "provider": "google",
+      "model_name": "gemini-4-neon",
+      "is_reasoning": true
+    },
+    {
+      "provider": "google",
+      "model_name": "gemini-4-carbon",
+      "input_price": 4.0,
+      "output_price": 20.0,
+      "is_reasoning": true,
+      "introductory_prices": {
+        "ends_before": "2026-12-01",
+        "input_price": 2.0,
+        "output_price": 10.0
+      }
+    },
+    {
+      "provider": "google",
+      "model_name": "gemini-4-argon",
+      "input_price": 4.0,
+      "output_price": 20.0,
+      "is_reasoning": true,
+      "introductory_prices": {
+        "ends_before": "2026-12-01",
+        "input_price": 2.0,
+        "output_price": 10.0
+      }
+    },
+    {
+      "provider": "google",
       "model_name": "gemini-3.7-flash",
       "input_price": 0.75,
       "output_price": 3.75,

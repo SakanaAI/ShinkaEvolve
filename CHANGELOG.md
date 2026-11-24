@@ -6,6 +6,8 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Added
 
+- Add Gemini 4 Neon (`gemini-4-neon`) and Carbon (`gemini-4-carbon`) as
+  opt-in models with bundled pricing and Gemini thinking-level support.
 - Honor `DatabaseConfig.db_path` as the run database's file name inside
   `results_dir` (default `programs.sqlite`) in PR #227. The database presets
   carry `db_path: null`, so `db_config.db_path=<name>` works as a Hydra
@@ -19,6 +21,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Changed
 
+- Use the standard Gemini 4 Argon and Carbon rates in new pricing snapshots
+  starting December 1, 2026 (UTC). Saved runs retain their recorded rates.
+- Refresh the Python dependency lockfile with the weekly workflow in PR #238.
 - `shinka_visualize` listens on `127.0.0.1` by default in PR #228. Use `--host`
   to listen elsewhere; an SSH tunnel that reaches the server over the network
   (`-L 8888:compute-node:8888` through a login node) needs it. `--db` must name

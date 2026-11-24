@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from shinka.llm.providers.model_resolver import resolve_model_backend
 from shinka.llm.providers.pricing import get_model_prices
+from shinka.pricing import catalog as catalog_module
 from shinka.pricing.catalog import (
     PricingConfig,
     activate_model_catalog,
@@ -23,7 +25,9 @@ CURRENT_MODELS = [
     ("anthropic", "claude-opus-5-5", 4.0, 20.0, True),
     ("anthropic", "claude-sonnet-5-5", 2.0, 10.0, False),
     ("anthropic", "claude-haiku-5-5", 0.1, 0.5, False),
-    ("google", "gemini-4-argon", 2.0, 10.0, False),
+    ("google", "gemini-4-neon", 3.0, 15.0, False),
+    ("google", "gemini-4-carbon", 4.0, 20.0, False),
+    ("google", "gemini-4-argon", 4.0, 20.0, False),
     ("google", "gemini-4-hydrogen", 1.5, 7.5, False),
     ("google", "gemini-3.8-flash", 0.75, 3.75, False),
     ("google", "gemini-3.5-flash-lite", 0.3, 2.5, False),
@@ -31,8 +35,22 @@ CURRENT_MODELS = [
 
 
 @pytest.fixture
-def offline_catalog(tmp_path: Path):
+def freeze_pricing_time(monkeypatch):
+    def freeze(instant: datetime) -> None:
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return instant.astimezone(tz)
+
+        monkeypatch.setattr(catalog_module, "datetime", FrozenDateTime)
+
+    return freeze
+
+
+@pytest.fixture
+def offline_catalog(tmp_path: Path, freeze_pricing_time):
     previous = get_catalog()
+    freeze_pricing_time(datetime(2026, 12, 1, tzinfo=timezone.utc))
     snapshot = refresh_model_catalog(PricingConfig(mode="offline", cache_dir=tmp_path))
     assert snapshot.source == "bundled"
     try:
@@ -63,6 +81,58 @@ def test_current_models_resolve_with_bundled_prices_and_reasoning_metadata(
     entry = offline_catalog.get(provider, model_name)
     assert entry.is_reasoning
     assert entry.requires_reasoning is requires_reasoning
+
+
+@pytest.mark.parametrize(
+    ("instant", "input_price", "output_price"),
+    [
+        (datetime(2026, 11, 30, 23, 59, tzinfo=timezone.utc), 2.0, 10.0),
+        (datetime(2026, 12, 1, tzinfo=timezone.utc), 4.0, 20.0),
+    ],
+)
+def test_gemini_introductory_rates_expire_in_bundled_and_discovered_catalogs(
+    tmp_path: Path,
+    freeze_pricing_time,
+    instant: datetime,
+    input_price: float,
+    output_price: float,
+):
+    previous = get_catalog()
+    freeze_pricing_time(instant)
+    models = ("gemini-4-argon", "gemini-4-carbon")
+    payload = {
+        "google": {
+            "models": {model: {"cost": {"input": 2, "output": 10}} for model in models}
+        }
+    }
+    try:
+        bundled = refresh_model_catalog(
+            PricingConfig(mode="offline", cache_dir=tmp_path)
+        )
+        discovered = catalog_from_models_dev_payload(payload, include_bundled=False)
+        for model in models:
+            expected = (input_price / 1_000_000, output_price / 1_000_000)
+            assert bundled.catalog.get("google", model).rates() == expected
+            assert discovered.get("google", model).rates() == expected
+    finally:
+        activate_model_catalog(previous)
+
+
+@pytest.mark.parametrize(
+    "model", ["gemini-4-argon", "gemini-4-carbon", "gemini-4-neon"]
+)
+def test_gemini_discovery_keeps_updated_prices_and_reasoning(
+    freeze_pricing_time, model
+):
+    freeze_pricing_time(datetime(2026, 12, 1, tzinfo=timezone.utc))
+    payload = {"google": {"models": {model: {"cost": {"input": 3, "output": 18}}}}}
+
+    entry = catalog_from_models_dev_payload(payload, include_bundled=False).get(
+        "google", model
+    )
+
+    assert entry.rates() == (3 / 1_000_000, 18 / 1_000_000)
+    assert entry.is_reasoning
 
 
 @pytest.mark.parametrize(

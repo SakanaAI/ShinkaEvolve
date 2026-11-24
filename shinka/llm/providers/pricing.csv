@@ -63,7 +63,9 @@ deepseek-chat,deepseek,0.14,0.28,,,,False,0,0
 deepseek-reasoner,deepseek,0.14,0.28,,,,True,0,0
 deepseek-v4-flash,deepseek,0.15,0.6,,,,True,0,0
 deepseek-v4-pro,deepseek,0.66,1.9800000000000002,,,,True,0,0
-gemini-4-argon,google,2.0,10.0,,,,True,0,0
+gemini-4-carbon,google,4.0,20.0,,,,True,0,0
+gemini-4-neon,google,3.0,15.0,,,,True,0,0
+gemini-4-argon,google,4.0,20.0,,,,True,0,0
 gemini-4-hydrogen,google,1.5,7.5,,,,True,0,0
 gemini-3.8-flash,google,0.75,3.75,,,,True,0,0
 gemini-3.5-flash-lite,google,0.3,2.5,,,,True,0,0

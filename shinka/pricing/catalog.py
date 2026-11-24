@@ -187,7 +187,10 @@ def catalog_from_models_dev_payload(
     from .normalization import catalog_from_payload
 
     return catalog_from_payload(
-        payload, overlay_path, include_bundled=include_bundled
+        payload,
+        overlay_path,
+        include_bundled=include_bundled,
+        as_of=datetime.now(timezone.utc).date(),
     )
 
 
@@ -434,7 +437,7 @@ def _validated_cache(envelope: dict[str, Any] | None) -> dict[str, Any] | None:
 def _bundled_snapshot(stale: bool) -> CatalogSnapshot:
     from .normalization import load_bundled_entries
 
-    entries = load_bundled_entries()
+    entries = load_bundled_entries(as_of=datetime.now(timezone.utc).date())
     digest = _payload_digest([asdict(entry) for entry in entries])
     return CatalogSnapshot(
         PricingCatalog(entries), "bundled", None, None, digest, stale
