@@ -79,6 +79,27 @@ def test_code_tag_mentioned_after_the_rewrite_is_not_a_section_end():
     assert _apply(reply, PY, "python") == (new, 1, None)
 
 
+def test_unsupported_code_fence_does_not_apply_description_example():
+    description = "For example:\n```python\ndef prompt(task):\n    return None\n```"
+    reply = _reply(PY, "text", description=description)
+
+    assert _apply(reply, PY, "python") == (
+        PY,
+        0,
+        "Could not extract code from patch string",
+    )
+
+
+def test_shorter_inner_fence_does_not_close_code_section():
+    reply = '<CODE>\n````python\ndef prompt(task):\n    return """\n```text\nx\n```\n</CODE>'
+
+    assert _apply(reply, PY, "python") == (
+        PY,
+        0,
+        "Could not extract code from patch string",
+    )
+
+
 def test_first_block_is_used_without_a_code_section():
     new = PY.replace("return task", "return task.strip()")
     reply = f"```python\n{new}```\n\nCheck it with:\n```bash\npython main.py\n```"

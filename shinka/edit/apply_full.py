@@ -16,20 +16,21 @@ logger = logging.getLogger(__name__)
 _CODE_SECTION_START = re.compile(r"^[ \t]*<CODE>[ \t]*(?=\r?$|`{3,})", re.MULTILINE)
 
 
-def _code_section_block(patch_str: str, fence_tags: tuple[str, ...]) -> Optional[str]:
-    """Return the fenced block inside <CODE>, read up to the section's last fence.
+def _code_section_block(section: str, fence_tags: tuple[str, ...]) -> Optional[str]:
+    """Read a fenced rewrite from the text following the opening <CODE> tag.
 
     The program may contain code fences of its own (a Markdown document, a
     prompt in a string), so the first closing fence is not the end of it.
     """
-    section = _CODE_SECTION_START.search(patch_str)
-    if section is None:
-        return None
     tags = "|".join(re.escape(tag) for tag in fence_tags)
+    opening = re.match(rf"(?:[ \t]*\n)*(`{{3,}})(?:{tags})[ \t]*\n", section)
+    if opening is None:
+        return None
+
+    fence_width = len(opening.group(1))
     block = re.match(
-        rf"(?:[ \t]*\n)*`{{3,}}(?:{tags})[ \t]*\n(.*)"
-        r"^`{3,}[ \t]*(?:\n[ \t]*)*</CODE>[ \t]*$",
-        patch_str[section.end() :],
+        rf"(.*)^`{{{fence_width},}}[ \t]*(?:\n[ \t]*)*</CODE>[ \t]*$",
+        section[opening.end() :],
         re.DOTALL | re.MULTILINE,
     )
     return block.group(1).strip() if block else None
@@ -64,8 +65,12 @@ def apply_full_patch(
     output_path: Optional[Path] = None
 
     # Extract code from language fences (accept canonical and common aliases).
-    extracted_code = _code_section_block(patch_str, language_fences)
-    if extracted_code is None:
+    section_start = _CODE_SECTION_START.search(patch_str)
+    if section_start is not None:
+        extracted_code = _code_section_block(
+            patch_str[section_start.end() :], language_fences
+        )
+    else:
         extracted_code = "none"
         for language_fence in language_fences:
             extracted_code = extract_between(
