@@ -4,9 +4,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from shinka.core.async_novelty_judge import AsyncNoveltyJudge
 from shinka.core.async_runner import ShinkaEvolveRunner
 from shinka.edit import async_apply
 from shinka.edit import summary as summary_module
+from shinka.utils import general as general_module
 from shinka.utils import load_df as load_df_module
 
 
@@ -253,3 +255,44 @@ def test_async_runner_read_file_async_uses_utf8(
     result = asyncio.run(runner._read_file_async(str(file_path)))
 
     assert result == content
+
+
+def test_async_novelty_judge_reads_code_file_as_utf8(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    content = 'print("smart quote ”")\n'
+    file_path = tmp_path / "candidate.py"
+    file_path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(
+        "shinka.core.async_novelty_judge.open",
+        _open_with_cp1252_default,
+        raising=False,
+    )
+    judge = AsyncNoveltyJudge(sync_novelty_judge=None)
+
+    assert judge._read_code_file(str(file_path)) == content
+
+
+def test_load_result_logs_reads_evaluator_logs_as_utf8(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    original_read_text = Path.read_text
+    stdout = "score → 0.5\n"
+    stderr = 'ValueError: bad value "漢"\n'
+    (tmp_path / "job_log.out").write_text(stdout, encoding="utf-8")
+    (tmp_path / "job_log.err").write_text(stderr, encoding="utf-8")
+
+    def read_text_with_cp1252_default(self, encoding=None, errors=None):
+        return original_read_text(
+            self,
+            encoding=encoding or "cp1252",
+            errors=errors,
+        )
+
+    monkeypatch.setattr(Path, "read_text", read_text_with_cp1252_default)
+
+    logs = general_module.load_result_logs(str(tmp_path))
+
+    assert logs == {"stdout_log": stdout, "stderr_log": stderr}

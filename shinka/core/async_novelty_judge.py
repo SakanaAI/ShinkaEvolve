@@ -274,7 +274,7 @@ class AsyncNoveltyJudge:
     def _read_code_file(self, exec_fname: str) -> Optional[str]:
         """Read code file content."""
         try:
-            with open(exec_fname, "r") as f:
+            with open(exec_fname, "r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             logger.warning(f"Failed to read code file {exec_fname}: {e}")

@@ -51,7 +51,8 @@ def load_result_logs(results_dir: str) -> dict[str, str]:
     ):
         path = Path(results_dir) / filename
         try:
-            logs[stream] = path.read_text(errors="replace")
+            # The evaluator is launched with PYTHONIOENCODING=utf-8
+            logs[stream] = path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             logs[stream] = ""
         except OSError as exc:
