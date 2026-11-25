@@ -208,6 +208,10 @@ All notable changes to `shinka-evolve` are documented in this file.
 - Apply SEARCH/REPLACE patches with an empty SEARCH or REPLACE section in
   PR #239. Empty SEARCH appends to the editable region and empty REPLACE
   deletes the matched text. Thanks @ixchio.
+- Preserve nested code fences in full rewrites in PR #240. Read the fenced
+  program from `<CODE>`, support CRLF and indented fences, and reject malformed
+  sections so examples in the description cannot become the rewrite.
+  Thanks @ixchio.
 
 ### Security
 
