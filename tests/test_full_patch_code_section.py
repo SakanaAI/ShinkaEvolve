@@ -75,12 +75,16 @@ def test_fenced_snippet_in_the_description_is_not_the_program():
     assert updated == new
 
 
-def test_code_tag_mentioned_in_description_is_not_a_section_start():
+@pytest.mark.parametrize(
+    "description_prefix",
+    ["The <CODE> section revises this example:", "Example reply:\n<CODE>"],
+)
+def test_code_tag_mentioned_in_description_is_not_a_section_start(description_prefix):
     new = PY.replace("return task", "return task.strip()")
     reply = _reply(
         new,
         "python",
-        description=f"The <CODE> section revises this example:\n```py\n{PY}```",
+        description=f"{description_prefix}\n```py\n{PY}```",
     )
 
     assert _apply(reply, PY, "python") == (new, 1, None)
@@ -94,9 +98,28 @@ def test_code_tag_mentioned_after_the_rewrite_is_not_a_section_end():
     assert _apply(reply, PY, "python") == (new, 1, None)
 
 
-def test_unsupported_code_fence_does_not_apply_description_example():
+def test_later_tagged_example_is_outside_the_rewrite():
+    new = PY.replace("return task", "return task.strip()")
+    reply = _reply("def prompt(task):\n    return task.strip()\n", "python")
+    reply += (
+        "\n\nExample reply format:\n<CODE>\n```python\nprint('example')\n```\n</CODE>"
+    )
+
+    assert _apply(reply, PY, "python") == (new, 1, None)
+
+
+def test_tagged_example_inside_a_longer_outer_fence_is_part_of_the_program():
+    new = NEW_PY.replace("```python\n...\n```", "<CODE>\n```python\n...\n```\n</CODE>")
+
+    assert _apply(_reply(new, "python", ticks="````"), PY, "python") == (new, 1, None)
+
+
+@pytest.mark.parametrize(
+    "section", ["<CODE>plain text</CODE>", f"<CODE>\n```text\n{PY}```\n</CODE>"]
+)
+def test_malformed_code_section_does_not_apply_description_example(section):
     description = "For example:\n```python\ndef prompt(task):\n    return None\n```"
-    reply = _reply(PY, "text", description=description)
+    reply = f"<DESCRIPTION>\n{description}\n</DESCRIPTION>\n{section}"
 
     assert _apply(reply, PY, "python") == (
         PY,
@@ -124,3 +147,10 @@ def test_first_block_is_used_without_a_code_section():
     assert error is None
     assert num_applied == 1
     assert updated == new
+
+
+def test_code_tag_in_a_bare_fenced_rewrite_is_part_of_the_program():
+    new = MD.replace("Run it.", "Insert the following tag:\n\n<CODE>")
+    reply = f"```markdown\n{new}```"
+
+    assert _apply(reply, MD, "markdown") == (new, 1, None)

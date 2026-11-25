@@ -13,7 +13,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_CODE_SECTION_START = re.compile(r"^[ \t]*<CODE>[ \t]*(?=\r?$|`{3,})", re.MULTILINE)
+# Skip descriptions and bare fenced blocks while looking for an envelope tag.
+_REPLY_SECTION = re.compile(
+    r"^[ \t]*(?:<DESCRIPTION>(?s:.*?)</DESCRIPTION>[ \t]*\r?$"
+    r"|(?P<fence>`{3,})[^`\r\n]*\r?\n(?s:.*?)^[ \t]*(?P=fence)`*[ \t]*\r?$"
+    r"|(?P<code><CODE>[ \t]*))",
+    re.MULTILINE,
+)
 
 
 def _code_section_block(section: str, fence_tags: tuple[str, ...]) -> Optional[str]:
@@ -31,12 +37,13 @@ def _code_section_block(section: str, fence_tags: tuple[str, ...]) -> Optional[s
         return None
 
     fence_width = len(opening.group(1))
-    block = re.match(
-        rf"(.*)^[ ]{{0,3}}`{{{fence_width},}}[ \t]*(?:\r?\n[ \t]*)*</CODE>[ \t]*\r?$",
-        section[opening.end() :],
-        re.DOTALL | re.MULTILINE,
+    body = section[opening.end() :]
+    closing = re.search(
+        rf"^[ ]{{0,3}}`{{{fence_width},}}[ \t]*(?:\r?\n[ \t]*)*</CODE>[ \t]*\r?$",
+        body,
+        re.MULTILINE,
     )
-    return block.group(1).strip() if block else None
+    return body[: closing.start()].strip() if closing else None
 
 
 def apply_full_patch(
@@ -68,7 +75,10 @@ def apply_full_patch(
     output_path: Optional[Path] = None
 
     # Extract code from language fences (accept canonical and common aliases).
-    section_start = _CODE_SECTION_START.search(patch_str)
+    section_start = next(
+        (section for section in _REPLY_SECTION.finditer(patch_str) if section["code"]),
+        None,
+    )
     if section_start is not None:
         extracted_code = _code_section_block(
             patch_str[section_start.end() :], language_fences
