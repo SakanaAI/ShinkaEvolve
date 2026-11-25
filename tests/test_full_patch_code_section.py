@@ -49,6 +49,21 @@ def test_code_fences_inside_the_program_are_kept(original, new, language, ticks)
     assert updated == new
 
 
+def test_code_section_accepts_crlf():
+    reply = _reply(NEW_PY, "python").replace("\n", "\r\n")
+    original = PY.replace("\n", "\r\n")
+    new = NEW_PY.replace("\n", "\r\n")
+
+    assert _apply(reply, original, "python") == (new, 1, None)
+
+
+@pytest.mark.parametrize("indent", [" ", "  ", "   "])
+def test_code_section_accepts_indented_outer_fences(indent):
+    reply = _reply(NEW_PY, "python", ticks="````").replace("````", f"{indent}````")
+
+    assert _apply(reply, PY, "python") == (NEW_PY, 1, None)
+
+
 def test_fenced_snippet_in_the_description_is_not_the_program():
     new = PY.replace("return task", "return task.strip()")
     reply = _reply(new, "python", description="Replaces\n```python\nreturn task\n```")

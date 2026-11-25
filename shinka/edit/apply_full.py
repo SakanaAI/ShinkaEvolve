@@ -23,13 +23,16 @@ def _code_section_block(section: str, fence_tags: tuple[str, ...]) -> Optional[s
     prompt in a string), so the first closing fence is not the end of it.
     """
     tags = "|".join(re.escape(tag) for tag in fence_tags)
-    opening = re.match(rf"(?:[ \t]*\n)*(`{{3,}})(?:{tags})[ \t]*\n", section)
+    opening = re.match(
+        rf"(?:[ \t]*\r?\n)*[ ]{{0,3}}(`{{3,}})(?:{tags})[ \t]*\r?\n",
+        section,
+    )
     if opening is None:
         return None
 
     fence_width = len(opening.group(1))
     block = re.match(
-        rf"(.*)^`{{{fence_width},}}[ \t]*(?:\n[ \t]*)*</CODE>[ \t]*$",
+        rf"(.*)^[ ]{{0,3}}`{{{fence_width},}}[ \t]*(?:\r?\n[ \t]*)*</CODE>[ \t]*\r?$",
         section[opening.end() :],
         re.DOTALL | re.MULTILINE,
     )
