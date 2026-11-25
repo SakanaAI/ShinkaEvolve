@@ -13,6 +13,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_CODE_SECTION_START = re.compile(r"^[ \t]*<CODE>[ \t]*(?=\r?$|`{3,})", re.MULTILINE)
+
 
 def _code_section_block(patch_str: str, fence_tags: tuple[str, ...]) -> Optional[str]:
     """Return the fenced block inside <CODE>, read up to the section's last fence.
@@ -20,13 +22,14 @@ def _code_section_block(patch_str: str, fence_tags: tuple[str, ...]) -> Optional
     The program may contain code fences of its own (a Markdown document, a
     prompt in a string), so the first closing fence is not the end of it.
     """
-    section = re.search(r"<CODE>(.*)</CODE>", patch_str, re.DOTALL)
+    section = _CODE_SECTION_START.search(patch_str)
     if section is None:
         return None
     tags = "|".join(re.escape(tag) for tag in fence_tags)
-    block = re.search(
-        rf"^`{{3,}}(?:{tags})[ \t]*\n(.*)^`{{3,}}[ \t]*$",
-        section.group(1),
+    block = re.match(
+        rf"(?:[ \t]*\n)*`{{3,}}(?:{tags})[ \t]*\n(.*)"
+        r"^`{3,}[ \t]*(?:\n[ \t]*)*</CODE>[ \t]*$",
+        patch_str[section.end() :],
         re.DOTALL | re.MULTILINE,
     )
     return block.group(1).strip() if block else None

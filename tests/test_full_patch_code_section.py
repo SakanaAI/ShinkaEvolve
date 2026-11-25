@@ -60,6 +60,25 @@ def test_fenced_snippet_in_the_description_is_not_the_program():
     assert updated == new
 
 
+def test_code_tag_mentioned_in_description_is_not_a_section_start():
+    new = PY.replace("return task", "return task.strip()")
+    reply = _reply(
+        new,
+        "python",
+        description=f"The <CODE> section revises this example:\n```py\n{PY}```",
+    )
+
+    assert _apply(reply, PY, "python") == (new, 1, None)
+
+
+def test_code_tag_mentioned_after_the_rewrite_is_not_a_section_end():
+    new = PY.replace("return task", "return task.strip()")
+    reply = _reply("def prompt(task):\n    return task.strip()\n", "python")
+    reply += "\n\nFor example:\n```python\nprompt(' task ')\n```\nSee `</CODE>` above."
+
+    assert _apply(reply, PY, "python") == (new, 1, None)
+
+
 def test_first_block_is_used_without_a_code_section():
     new = PY.replace("return task", "return task.strip()")
     reply = f"```python\n{new}```\n\nCheck it with:\n```bash\npython main.py\n```"
