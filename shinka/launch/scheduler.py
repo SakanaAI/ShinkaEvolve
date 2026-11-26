@@ -156,13 +156,14 @@ class JobScheduler:
         return python_cmd
 
     def _build_eval_env(self) -> Dict[str, str]:
-        """Environment for the eval subprocess: verbosity + numeric-thread caps.
+        """Set evaluator output encoding, verbosity, and numeric-thread caps.
 
         Shared by both the local path (Popen env overrides) and the SLURM path
         (exported inside the batch script), so behaviour is identical across
         job types.
         """
         env: Dict[str, str] = {
+            "PYTHONIOENCODING": "utf-8",
             "SHINKA_EVAL_VERBOSE": "1" if self.config.eval_verbose else "0",
         }
         env.update(_numeric_thread_env(self.config.numeric_threads_per_job))

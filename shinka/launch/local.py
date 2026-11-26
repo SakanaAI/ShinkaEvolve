@@ -1,5 +1,6 @@
 import atexit
 from contextlib import ExitStack
+import locale
 import subprocess
 import time
 import threading
@@ -194,7 +195,15 @@ def _stream_output(pipe, file_handle, verbose_prefix=None):
     try:
         for line in iter(pipe.readline, ""):
             if line:
-                file_handle.write(line)
+                try:
+                    file_handle.write(line)
+                except UnicodeEncodeError:
+                    # Native tools can write in the host locale to the same pipe.
+                    raw_line = line.encode(pipe.encoding, errors="surrogateescape")
+                    line = raw_line.decode(
+                        locale.getpreferredencoding(False), errors="replace"
+                    )
+                    file_handle.write(line)
                 file_handle.flush()  # Force immediate write to disk
                 if verbose_prefix:
                     logger.debug(f"{verbose_prefix}: {line.strip()}")
@@ -267,12 +276,17 @@ def submit(
     env["PYTHONIOENCODING"] = "utf-8"  # Ensure proper encoding
     if env_overrides:
         env.update(env_overrides)
+    pipe_encoding = env["PYTHONIOENCODING"].partition(":")[0] or None
 
     start_new_session = os.name == "posix"
     with ExitStack() as cleanup:
         files = (
-            cleanup.enter_context(open(stdout_path, "w", buffering=1)),
-            cleanup.enter_context(open(stderr_path, "w", buffering=1)),
+            cleanup.enter_context(
+                open(stdout_path, "w", encoding="utf-8", buffering=1)
+            ),
+            cleanup.enter_context(
+                open(stderr_path, "w", encoding="utf-8", buffering=1)
+            ),
         )
         launched_at = time.monotonic()
         process = subprocess.Popen(
@@ -280,6 +294,8 @@ def submit(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding=pipe_encoding,
+            errors="surrogateescape",
             bufsize=1,
             env=env,
             start_new_session=start_new_session,

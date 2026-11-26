@@ -76,7 +76,7 @@ SBATCH_DOCKER_TEMPLATE = """\
 module --quiet purge
 
 echo "Job running on $(hostname) under Slurm job $SLURM_JOB_ID"
-echo "Launching Docker container…"
+echo "Launching Docker container..."
 
 # Load image from tar if specified, otherwise pull from registry
 {load_command}
