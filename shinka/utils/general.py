@@ -42,6 +42,15 @@ def load_configs_from_yaml(config_path: str):
     return evo_cfg, db_cfg
 
 
+def _read_evaluator_log(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # Older jobs and non-Python tools may emit locale-encoded logs.
+        pass
+    return path.read_text(errors="replace")
+
+
 def load_result_logs(results_dir: str) -> dict[str, str]:
     """Read evaluator logs even when its result files cannot be loaded."""
     logs = {}
@@ -51,7 +60,7 @@ def load_result_logs(results_dir: str) -> dict[str, str]:
     ):
         path = Path(results_dir) / filename
         try:
-            logs[stream] = path.read_text(errors="replace")
+            logs[stream] = _read_evaluator_log(path)
         except FileNotFoundError:
             logs[stream] = ""
         except OSError as exc:

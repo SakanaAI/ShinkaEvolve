@@ -212,6 +212,9 @@ All notable changes to `shinka-evolve` are documented in this file.
   program from `<CODE>`, support CRLF and indented fences, and reject malformed
   sections so examples in the description cannot become the rewrite.
   Thanks @ixchio.
+- Read async novelty-check candidates and capture local and Slurm Python
+  evaluator logs as UTF-8 in PR #241. Logs with invalid UTF-8 fall back to the
+  host locale. Thanks @xiao98.
 
 ### Security
 

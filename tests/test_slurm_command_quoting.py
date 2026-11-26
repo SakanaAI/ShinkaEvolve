@@ -75,6 +75,7 @@ def test_async_conda_script_keeps_arguments_with_spaces_intact(
     # Plain values are written exactly as before.
     assert "export OMP_NUM_THREADS=2" in lines
     assert "export SHINKA_EVAL_VERBOSE=1" in lines
+    assert "export PYTHONIOENCODING=utf-8" in lines
 
 
 def test_async_docker_script_keeps_arguments_with_spaces_intact(
@@ -92,7 +93,9 @@ def test_async_docker_script_keeps_arguments_with_spaces_intact(
 
     (command,) = [line.strip() for line in lines if "/workspace/evaluate.py" in line]
     assert shlex.split(command)[-2:] == ["--note", "two words"]
+    assert 'echo "Launching Docker container..."' in lines
     assert "-e SHINKA_EVAL_VERBOSE=1" in "\n".join(lines)
+    assert "-e PYTHONIOENCODING=utf-8" in "\n".join(lines)
 
 
 def test_env_values_are_quoted_for_the_shell() -> None:
