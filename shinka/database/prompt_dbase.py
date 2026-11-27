@@ -1005,6 +1005,13 @@ class SystemPromptDatabase:
             logger.debug("Archive update skipped.")
             return
 
+        # A member stays a member: its new score replaces nobody.
+        self.cursor.execute(
+            "SELECT 1 FROM prompt_archive WHERE prompt_id = ?", (prompt.id,)
+        )
+        if self.cursor.fetchone():
+            return
+
         self.cursor.execute("SELECT COUNT(*) FROM prompt_archive")
         count = (self.cursor.fetchone() or [0])[0]
 
