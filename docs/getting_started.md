@@ -307,6 +307,8 @@ def main(program_path: str, results_dir: str):
     )
 ```
 
+`num_runs` must be at least 1. A zero or negative count raises `ValueError`
+before the evaluator writes any results.
 `run_workers` controls repeated runs *inside one evaluation call* — separate
 from evolution-level concurrency (`max_evaluation_jobs`).
 

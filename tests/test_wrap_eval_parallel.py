@@ -179,6 +179,21 @@ def test_parallel_mode_rejects_early_stop(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("num_runs", [0, -1])
+def test_run_shinka_eval_rejects_nonpositive_run_count(
+    tmp_path: Path, num_runs: int
+) -> None:
+    program_path = _write_program(tmp_path, "def run_experiment(seed): return seed")
+    with pytest.raises(ValueError, match="num_runs must be >= 1"):
+        run_shinka_eval(
+            program_path=program_path,
+            results_dir=str(tmp_path),
+            experiment_fn_name="run_experiment",
+            num_runs=num_runs,
+        )
+    assert not (tmp_path / "correct.json").exists()
+
+
 def test_invalid_worker_configuration_raises(tmp_path: Path) -> None:
     program_path = _write_program(
         tmp_path,
