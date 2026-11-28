@@ -167,7 +167,7 @@ def run_shinka_eval(
         program_path: Path to the Python script/module to evaluate.
         results_dir: Directory to save `metrics.json` and `correct.json`.
         experiment_fn_name: Name of function to call in the loaded module.
-        num_runs: Number of times to run the experiment function.
+        num_runs: Number of times to run the experiment function (at least 1).
         get_experiment_kwargs: Opt. fn (run_idx_0_based -> kwargs_dict)
                                for experiment args. Seed passed if None.
         aggregate_metrics_fn: Opt. fn (raw_results_list -> metrics_dict)
@@ -212,18 +212,16 @@ def run_shinka_eval(
         if default_metrics_on_error
         else DEFAULT_METRICS_ON_ERROR.copy()
     )
+    if num_runs < 1:
+        raise ValueError("num_runs must be >= 1")
     if run_workers < 1:
         raise ValueError("run_workers must be >= 1")
     if max_workers_cap is not None and max_workers_cap < 1:
         raise ValueError("max_workers_cap must be >= 1 when provided")
 
-    effective_run_workers = run_workers
+    effective_run_workers = min(run_workers, num_runs)
     if max_workers_cap is not None:
         effective_run_workers = min(effective_run_workers, max_workers_cap)
-    if num_runs > 0:
-        effective_run_workers = min(effective_run_workers, num_runs)
-    else:
-        effective_run_workers = 1
 
     parallel_enabled = num_runs > 1 and effective_run_workers > 1
 
