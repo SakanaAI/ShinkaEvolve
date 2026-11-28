@@ -89,6 +89,9 @@ All notable changes to `shinka-evolve` are documented in this file.
 
 ### Fixed
 
+- Keep prompt archive membership intact when an archived prompt reports fitness
+  in PR #242. Avoid duplicate inserts that evicted another member and triggered
+  a blocking database retry. Thanks to @ixchio for the fix and regression test.
 - Bound Slurm cancellation waits and retain evaluations submitted during a
   hung-job cancellation so their results persist and their slots are released
   in PR #219.
