@@ -223,6 +223,30 @@ class TestSystemPromptDatabase:
         archive = memory_db.get_archive()
         assert len(archive) <= 5
 
+    def test_fitness_report_keeps_archive_members(self, memory_db):
+        """A score for an archived prompt does not push another prompt out."""
+        seed = create_system_prompt(prompt_text="seed", patch_type="init")
+        memory_db.add(seed)
+        for _ in range(3):
+            memory_db.update_fitness(seed.id, percentile=0.5)
+        evolved = [
+            create_system_prompt(
+                prompt_text=f"evolved {i}",
+                parent_id=seed.id,
+                generation=i + 1,
+                patch_type="diff",
+            )
+            for i in range(4)
+        ]
+        for prompt in evolved:
+            memory_db.add(prompt)
+        members = {seed.id, *(prompt.id for prompt in evolved)}
+        assert {prompt.id for prompt in memory_db.get_archive()} == members
+
+        memory_db.update_fitness(seed.id, percentile=0.9)
+
+        assert {prompt.id for prompt in memory_db.get_archive()} == members
+
     def test_update_fitness(self, memory_db):
         """Test updating prompt fitness with percentiles."""
         prompt = create_system_prompt(
